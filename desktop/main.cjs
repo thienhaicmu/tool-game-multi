@@ -3,6 +3,7 @@ const path = require('node:path');
 const { randomUUID } = require('node:crypto');
 
 let shell;
+let detailWindow;
 let browserSession;
 const pending = new Map();
 const replayable = new Map();
@@ -76,6 +77,14 @@ function createWindow() {
   shell.loadURL('app://ui/desktop.html');
 }
 
+function openDetailWindow(payload) {
+  if (detailWindow && !detailWindow.isDestroyed()) { detailWindow.focus(); detailWindow.webContents.send('detail-data', payload); return; }
+  detailWindow = new BrowserWindow({ width: 620, height: 760, minWidth: 480, minHeight: 520, title: 'Request Detail', parent: shell, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
+  detailWindow.loadURL('app://ui/request-detail.html');
+  detailWindow.webContents.once('did-finish-load', () => detailWindow.webContents.send('detail-data', payload));
+  detailWindow.on('closed', () => { detailWindow = null; });
+}
+
 app.whenReady().then(() => {
   protocol.registerFileProtocol('app', (request, callback) => {
     const pathname = new URL(request.url).pathname.replace(/^\/+/, '');
@@ -85,6 +94,7 @@ app.whenReady().then(() => {
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
+ipcMain.on('open-request-detail', (_event, payload) => openDetailWindow(payload));
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {
   const item = replayable.get(id);

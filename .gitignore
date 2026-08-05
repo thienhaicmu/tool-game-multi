@@ -9,3 +9,7 @@ build/
 *.db
 artifacts/
 .env
+node_modules/
+*.log
+pytest-cache-files-*/
+dist-electron/
