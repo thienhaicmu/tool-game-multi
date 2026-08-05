@@ -12,6 +12,7 @@ try { scopeInput.value = localStorage.getItem('observatory-scope') || ''; } catc
 document.querySelector('.address').insertBefore(scopeInput, document.querySelector('#open'));
 const allEvents = [];
 const marked = new Set();
+const selected = new Set();
 let currentTab = 'network';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function hostPath(raw) { try { const u = new URL(raw); return { host: u.host, path: u.pathname + (u.search ? u.search : '') }; } catch { return { host: '', path: raw }; } }
@@ -27,8 +28,9 @@ function renderEvents() {
   countEl.textContent = rows.length;
   if (!rows.length) { eventsEl.innerHTML = '<div class="empty-small">Waiting for browser traffic…</div>'; return; }
   eventsEl.innerHTML = rows.slice().reverse().map(e => { const p = hostPath(e.url); const response = allEvents.find(x => x.kind === 'response' && x.id === e.id); return '<div class="event ' + (marked.has(e.id) ? 'marked' : '') + '" data-id="' + e.id + '"><span class="method">' + e.method + '</span><span>' + (e.resourceType === 'fetch' || e.resourceType === 'xhr' ? '<b class="tag">API</b>' : esc(e.resourceType)) + '</span><span><b class="host">' + esc(p.host) + '</b><br><span class="path">' + esc(p.path) + '</span></span><span class="status">' + (response ? response.status : '…') + '</span><span class="scope ' + (e.scope === 'allow_metadata_only' ? 'meta' : '') + '">' + (e.scope === 'allow_metadata_only' ? 'metadata' : 'in scope') + '</span><span class="time">' + (response ? response.duration + ' ms' : 'pending') + '</span></div>'; }).join('');
-  document.querySelectorAll('.event').forEach(row => row.onclick = () => showDetail(row.dataset.id));
+  document.querySelectorAll('.event').forEach(row => row.onclick = event => { if (event.ctrlKey || event.metaKey) { selected.has(row.dataset.id) ? selected.delete(row.dataset.id) : selected.add(row.dataset.id); row.classList.toggle('selected', selected.has(row.dataset.id)); updateSelectionBar(); } else showDetail(row.dataset.id); });
 }
+function updateSelectionBar() { let bar = document.querySelector('#selection-bar'); if (!bar) { bar = document.createElement('div'); bar.id = 'selection-bar'; bar.style.cssText = 'position:absolute;bottom:285px;left:225px;right:0;background:#17323b;color:#fff;padding:10px 18px;z-index:3'; document.querySelector('.workspace').appendChild(bar); } bar.innerHTML = selected.size ? '<b>' + selected.size + ' request(s) selected</b> <button id="bulk-replace">Review selected</button>' : ''; bar.style.display = selected.size ? 'block' : 'none'; if (selected.size) bar.querySelector('#bulk-replace').onclick = () => showDetail([...selected][0]); }
 function showDetail(id) {
   const request = allEvents.find(e => e.kind === 'request' && e.id === id); const response = allEvents.find(e => e.kind === 'response' && e.id === id); if (!request) return;
   showReplacePanel(request, response); return;
