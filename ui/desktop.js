@@ -8,7 +8,7 @@ const scopeInput = document.createElement('input');
 scopeInput.id = 'scope'; scopeInput.placeholder = 'Scope: app.local, api.local, *.cdn.com'; scopeInput.spellcheck = false;
 scopeInput.style.cssText = 'width:230px;flex:0 0 230px;padding:8px;border:1px solid #38505b;border-radius:4px;background:#20343e;color:#fff';
 document.querySelector('#url').style.cssText += ';min-width:260px';
-scopeInput.value = localStorage.getItem('observatory-scope') || '';
+try { scopeInput.value = localStorage.getItem('observatory-scope') || ''; } catch { scopeInput.value = ''; }
 document.querySelector('.address').insertBefore(scopeInput, document.querySelector('#open'));
 const allEvents = [];
 const marked = new Set();
@@ -18,7 +18,7 @@ function hostPath(raw) { try { const u = new URL(raw); return { host: u.host, pa
 function openTarget() {
   let value = urlInput.value.trim(); if (!value) return;
   if (!/^https?:\/\//i.test(value)) value = 'https://' + value;
-  try { const u = new URL(value); const scopeText = scopeInput.value.trim() || u.hostname; scopeInput.value = scopeText; localStorage.setItem('observatory-scope', scopeText); const hosts = scopeText.split(',').map(x => x.trim().toLowerCase()).filter(Boolean); window.desktopCapture?.setScope(hosts); } catch { return; }
+  try { const u = new URL(value); const scopeText = scopeInput.value.trim() || u.hostname; scopeInput.value = scopeText; try { localStorage.setItem('observatory-scope', scopeText); } catch {} const hosts = scopeText.split(',').map(x => x.trim().toLowerCase()).filter(Boolean); window.desktopCapture?.setScope(hosts); } catch { return; }
   window.desktopCapture?.openBrowser(value); browser.classList.remove('open'); empty.style.display = 'grid'; statusEl.textContent = 'Capturing external browser'; document.querySelector('#session-name').textContent = new URL(value).hostname;
 }
 function renderEvents() {

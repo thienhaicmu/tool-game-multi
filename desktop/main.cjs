@@ -83,7 +83,7 @@ function openBrowserWindow(url) {
   if (browserWindow && !browserWindow.isDestroyed()) {
     browserWindow.loadURL(url); browserWindow.focus(); return true;
   }
-  browserWindow = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, title: 'Target browser', session: browserSession, webPreferences: { contextIsolation: true, sandbox: true } });
+  browserWindow = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, title: 'Target browser', webPreferences: { session: browserSession, contextIsolation: true, sandbox: true } });
   browserWindow.loadURL(url);
   browserWindow.on('closed', () => { browserWindow = null; });
   return true;
