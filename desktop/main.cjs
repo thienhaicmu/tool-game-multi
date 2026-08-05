@@ -55,7 +55,8 @@ function attachCapture() {
     callback({});
   });
   browserSession.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, callback) => {
-    const item = [...replayable.values()].find(value => value.url === details.url && value.method === details.method);
+    const pendingRequest = pending.get(details.id);
+    const item = pendingRequest ? replayable.get(pendingRequest.id) : [...replayable.values()].find(value => value.url === details.url && value.method === details.method);
     if (item) { item.headers = details.requestHeaders; emit({ kind: 'request-headers', id: item.id, headers: inScope(details.url) ? safeHeaders(details.requestHeaders) : {} }); }
     callback({ requestHeaders: details.requestHeaders });
   });
