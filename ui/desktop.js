@@ -38,7 +38,8 @@ function showDetail(id) {
 }
 function showReplacePanel(request, response) {
   document.querySelector('.detail-overlay')?.remove();
-  const panel = document.createElement('div'); panel.className = 'detail-overlay';
+  const panel = document.createElement('div'); panel.className = 'detail-overlay replace-panel';
+  panel.insertAdjacentHTML('afterbegin', '<style>.replace-panel{padding:28px 34px;background:#f6f8f9}.replace-panel h2{font-size:20px;margin:8px 0 22px;color:#17323b}.replace-panel h3{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#65767d;margin:22px 0 10px;border:0}.replace-panel input,.replace-panel textarea{border:1px solid #d5e0e3;border-radius:8px;background:#fff;color:#20343d;font:13px system-ui;padding:10px;box-shadow:0 1px 2px #102a3510}.replace-panel label{background:#fff;border:1px solid #e0e8ea;border-radius:8px;padding:8px 10px!important}.replace-panel .close-detail{background:#fff;border:1px solid #d5e0e3}.replace-panel #replace-send{border:0;border-radius:8px;padding:11px 18px;font-weight:700;float:none;cursor:pointer}.replace-panel #replace-result{margin-top:16px}.replace-panel .eyebrow{color:#0b9e89;font-weight:700}</style>');
   let parsed; try { parsed = new URL(request.url); } catch { parsed = null; }
   const params = parsed ? [...parsed.searchParams.entries()] : [];
   const body = request.bodyPreview || '';
