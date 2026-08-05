@@ -4,6 +4,10 @@ const urlInput = document.querySelector('#url');
 const eventsEl = document.querySelector('#events');
 const countEl = document.querySelector('#count');
 const statusEl = document.querySelector('#status');
+const scopeInput = document.createElement('input');
+scopeInput.id = 'scope'; scopeInput.placeholder = 'Scope: app.local, api.local, *.cdn.com'; scopeInput.spellcheck = false;
+scopeInput.style.cssText = 'min-width:260px;padding:8px;border:1px solid #38505b;border-radius:4px;background:#20343e;color:#fff';
+document.querySelector('.address').insertBefore(scopeInput, document.querySelector('#open'));
 const allEvents = [];
 const marked = new Set();
 let currentTab = 'network';
@@ -12,7 +16,7 @@ function hostPath(raw) { try { const u = new URL(raw); return { host: u.host, pa
 function openTarget() {
   let value = urlInput.value.trim(); if (!value) return;
   if (!/^https?:\/\//i.test(value)) value = 'https://' + value;
-  try { const u = new URL(value); window.desktopCapture?.setScope([u.hostname, '*.' + u.hostname]); } catch { return; }
+  try { const u = new URL(value); const hosts = (scopeInput.value || u.hostname).split(',').map(x => x.trim().toLowerCase()).filter(Boolean); window.desktopCapture?.setScope(hosts); } catch { return; }
   browser.src = value; browser.classList.add('open'); empty.style.display = 'none'; statusEl.textContent = 'Capturing'; document.querySelector('#session-name').textContent = new URL(value).hostname;
 }
 function renderEvents() {
