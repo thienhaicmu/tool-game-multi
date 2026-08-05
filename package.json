@@ -1,0 +1,14 @@
+{
+  "name": "web-security-observatory-ui",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron ."
+  },
+  "devDependencies": {
+    "electron": "^36.0.0"
+  }
+}
