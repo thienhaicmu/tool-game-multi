@@ -17,7 +17,7 @@ function openTarget() {
   let value = urlInput.value.trim(); if (!value) return;
   if (!/^https?:\/\//i.test(value)) value = 'https://' + value;
   try { const u = new URL(value); const hosts = (scopeInput.value || u.hostname).split(',').map(x => x.trim().toLowerCase()).filter(Boolean); window.desktopCapture?.setScope(hosts); } catch { return; }
-  browser.src = value; browser.classList.add('open'); empty.style.display = 'none'; statusEl.textContent = 'Capturing'; document.querySelector('#session-name').textContent = new URL(value).hostname;
+  window.desktopCapture?.openBrowser(value); browser.classList.remove('open'); empty.style.display = 'grid'; statusEl.textContent = 'Capturing external browser'; document.querySelector('#session-name').textContent = new URL(value).hostname;
 }
 function renderEvents() {
   const query = document.querySelector('#search').value.toLowerCase(); const type = document.querySelector('#type').value;
