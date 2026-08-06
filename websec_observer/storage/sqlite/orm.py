@@ -131,6 +131,21 @@ class NetworkResponseRow(Base):
     __table_args__ = (Index("ix_responses_status", "status"),)
 
 
+class ReplayRunRow(Base):
+    __tablename__ = "replay_runs"
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    session_id: Mapped[str] = mapped_column(ForeignKey("test_sessions.id", ondelete="CASCADE"), nullable=False)
+    request_id: Mapped[str] = mapped_column(ForeignKey("network_requests.id", ondelete="CASCADE"), nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False)
+    overrides: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False, default=list)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    response_status: Mapped[int | None] = mapped_column(Integer)
+    response_preview: Mapped[str | None] = mapped_column(Text)
+    error: Mapped[str | None] = mapped_column(Text)
+    __table_args__ = (Index("ix_replay_runs_session_started", "session_id", "started_at"),)
+
+
 class WebSocketConnectionRow(Base):
     __tablename__ = "websocket_connections"
     id: Mapped[str] = mapped_column(String(36), primary_key=True)

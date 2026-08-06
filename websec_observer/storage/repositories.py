@@ -4,7 +4,7 @@ from collections.abc import Sequence
 from typing import Protocol
 from uuid import UUID
 
-from websec_observer.domain.models import CapturedTransaction, Finding, TestProject, TestSession, WebSocketConnection, WebSocketFrame
+from websec_observer.domain.models import CapturedTransaction, Finding, ReplayRun, TestProject, TestSession, WebSocketConnection, WebSocketFrame
 
 
 class ProjectRepository(Protocol):
@@ -29,6 +29,11 @@ class TransactionRepository(Protocol):
     async def list_for_session(self, session_id: UUID) -> Sequence[CapturedTransaction]: ...
 
 
+class ReplayRepository(Protocol):
+    async def add(self, replay: ReplayRun) -> None: ...
+    async def list_for_session(self, session_id: UUID) -> Sequence[ReplayRun]: ...
+
+
 class WebSocketRepository(Protocol):
     async def add_connection(self, connection: WebSocketConnection) -> None: ...
     async def close_connection(self, connection_id: UUID, closed_at: object) -> None: ...
@@ -41,6 +46,7 @@ class UnitOfWork(Protocol):
     sessions: SessionRepository
     findings: FindingRepository
     transactions: TransactionRepository
+    replays: ReplayRepository
     websockets: WebSocketRepository
 
     async def __aenter__(self) -> UnitOfWork: ...
