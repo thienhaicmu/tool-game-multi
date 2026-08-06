@@ -10,7 +10,7 @@ Requires Python 3.12+. Install development dependencies with
 Active validation is disabled by default. Browser capture is delivered by a later approved work
 unit.
 
-## UI demo
+## Desktop prototype and product architecture
 
 Run the standalone UI with:
 
@@ -18,6 +18,7 @@ Run the standalone UI with:
 npm start
 ```
 
-Then open `http://127.0.0.1:5173`. It includes Overview, Live Network, Request Detail, Findings,
-Actions, and Scope & policy views with safe demo data. The frontend is independent of Playwright and
-ready to connect to the FastAPI/SSE API in the next integration work unit.
+`npm start` launches the Electron desktop prototype. The target Chromium window and the inspector
+are currently functional, but capture persistence/application-service integration is still the next
+planned milestone. The Python package remains the authoritative domain, policy, storage, analysis,
+and reporting implementation; see `docs/adr/0001-desktop-application-boundary.md`.
