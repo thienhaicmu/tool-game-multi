@@ -96,6 +96,24 @@ def import_journal_command(journal: Path, database: Path, session_id: UUID) -> N
 
 async def _import_journal(journal: Path, database: Path, session_id: UUID) -> None:
     engine, factory = _factory(database)
+    async with SqliteUnitOfWork(factory) as uow:
+        if await uow.sessions.get(session_id) is None:
+            first_url = "http://localhost/"
+            for line in journal.read_text(encoding="utf-8").splitlines():
+                try:
+                    event = json.loads(line)
+                    if event.get("kind") == "request" and event.get("url"):
+                        first_url = str(event["url"])
+                        break
+                except json.JSONDecodeError:
+                    continue
+            from urllib.parse import urlsplit
+            parsed = urlsplit(first_url)
+            project = TestProject(name="Imported Electron session", base_url=first_url, allowed_hosts=(parsed.hostname or "localhost",))
+            session = TestSession(id=session_id, project_id=project.id)
+            await uow.projects.add(project)
+            await uow.sessions.add(session)
+            await uow.commit()
     count = await import_journal(journal, session_id=session_id, factory=factory)
     await engine.dispose()
     typer.echo(json.dumps({"session_id": str(session_id), "imported": count}))
