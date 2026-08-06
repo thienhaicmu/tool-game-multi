@@ -1,6 +1,7 @@
 const { app, BrowserWindow, ipcMain, session, protocol, net } = require('electron');
 const path = require('node:path');
 const { randomUUID } = require('node:crypto');
+const { EventJournal } = require('./event-journal.cjs');
 
 let shell;
 let detailWindow;
@@ -10,6 +11,8 @@ const pending = new Map();
 const replayable = new Map();
 let allowedHosts = new Set();
 let capturePaused = false;
+let sessionId = randomUUID();
+let journal;
 
 function inScope(rawUrl) {
   try {
@@ -40,7 +43,9 @@ function safeHeaders(headers) {
 }
 
 function emit(event) {
-  if (shell && !shell.isDestroyed()) shell.webContents.send('capture-event', event);
+  const normalized = { sessionId, ...event };
+  try { journal?.append(normalized); } catch { /* journal failure must not stop capture */ }
+  if (shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
 }
 
 function attachCapture() {
@@ -75,6 +80,8 @@ function attachCapture() {
 function createWindow() {
   shell = new BrowserWindow({ width: 1500, height: 950, minWidth: 1100, minHeight: 700, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
   browserSession = session.fromPartition('persist:observatory-browser');
+  const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
+  journal = new EventJournal(journalPath);
   attachCapture();
   shell.loadURL('app://ui/desktop.html');
 }
