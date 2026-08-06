@@ -15,13 +15,35 @@
   "build": {
     "appId": "com.websecurityobservatory.desktop",
     "productName": "Web Security Observatory",
-    "directories": { "output": "release" },
-    "files": ["desktop/**/*", "ui/**/*", "package.json"],
-    "win": { "target": [{ "target": "nsis", "arch": ["x64"] }] },
-    "nsis": { "oneClick": false, "allowToChangeInstallationDirectory": true, "createDesktopShortcut": true }
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "ui/**/*",
+      "package.json"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   },
   "devDependencies": {
     "electron": "^36.0.0",
     "electron-builder": "^26.15.3"
+  },
+  "dependencies": {
+    "chrome-remote-interface": "^0.34.0"
   }
 }

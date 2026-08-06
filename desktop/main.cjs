@@ -6,11 +6,13 @@ const { spawn } = require('node:child_process');
 const { execFile } = require('node:child_process');
 const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
+const CDP = require('chrome-remote-interface');
 
 let shell;
 let detailWindow;
 let browserWindow;
 let chromeProcess;
+let cdpClient;
 let browserSession;
 const pending = new Map();
 const replayable = new Map();
@@ -122,11 +124,30 @@ function openBrowserWindow(url) {
   const candidates = [process.env.OBSERVATORY_CHROME, process.env.CHROME_PATH, path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google/Chrome/Application/chrome.exe')].filter(Boolean);
   const executable = candidates.find(candidate => fs.existsSync(candidate));
   if (!executable) return false;
-  if (chromeProcess && !chromeProcess.killed) return true;
+  if (chromeProcess && !chromeProcess.killed) { connectChromeCdp(Number(process.env.OBSERVATORY_CDP_PORT || 9222)); return true; }
   const profile = process.env.OBSERVATORY_CHROME_PROFILE || path.join(app.getPath('userData'), 'chrome-profile');
-  chromeProcess = spawn(executable, [`--remote-debugging-port=${process.env.OBSERVATORY_CDP_PORT || 9222}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', url], { detached: true, windowsHide: false, stdio: 'ignore' });
+  chromeProcess = spawn(executable, [`--remote-debugging-port=${process.env.OBSERVATORY_CDP_PORT || 9222}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--new-window', url], { detached: true, windowsHide: false, stdio: 'ignore' });
   chromeProcess.unref(); chromeProcess.once('exit', () => { chromeProcess = null; });
+  connectChromeCdp(Number(process.env.OBSERVATORY_CDP_PORT || 9222));
   return true;
+}
+
+async function connectChromeCdp(port, attempt = 0) {
+  if (cdpClient || attempt > 12) return;
+  try {
+    cdpClient = await CDP({ port });
+    const { Network, Page } = cdpClient;
+    await Network.enable(); await Page.enable();
+    Network.requestWillBeSent(params => {
+      const id = `cdp:${params.requestId}`;
+      const target = new URL(params.request.url);
+      replayable.set(id, { method: params.request.method, url: params.request.url, uploadData: params.request.postData ? [{ bytes: Buffer.from(params.request.postData) }] : [], headers: params.request.headers || {} });
+      const allowed = inScope(params.request.url);
+      emit({ kind: 'request', id, requestId: params.requestId, method: params.request.method, url: allowed ? safeDisplayUrl(params.request.url) : target.origin + '/', resourceType: String(params.type || 'other').toLowerCase(), scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(params.request.headers) : {}, bodyPreview: allowed ? String(params.request.postData || '').slice(0, 4000) : null, timestamp: new Date().toISOString() });
+    });
+    Network.responseReceived(params => { const id = `cdp:${params.requestId}`; emit({ kind: 'response', id, requestId: params.requestId, url: safeDisplayUrl(params.response.url), status: params.response.status, duration: 0, timestamp: new Date().toISOString() }); });
+    cdpClient.on('disconnect', () => { cdpClient = null; });
+  } catch { cdpClient = null; setTimeout(() => connectChromeCdp(port, attempt + 1), 1000); }
 }
 
 function openDetailWindow(payload) {
