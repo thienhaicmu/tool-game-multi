@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 from websec_observer.storage.sqlite.repositories import (
     SqliteFindingRepository,
     SqliteProjectRepository,
+    SqliteReplayRepository,
     SqliteSessionRepository,
     SqliteTransactionRepository,
     SqliteWebSocketRepository,
@@ -24,6 +25,7 @@ class SqliteUnitOfWork:
         self.sessions = SqliteSessionRepository(self._session)
         self.findings = SqliteFindingRepository(self._session)
         self.transactions = SqliteTransactionRepository(self._session)
+        self.replays = SqliteReplayRepository(self._session)
         self.websockets = SqliteWebSocketRepository(self._session)
         return self
 
