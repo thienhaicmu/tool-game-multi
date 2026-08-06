@@ -6,6 +6,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   replay: (id, overrides) => ipcRenderer.invoke('replay-request', id, overrides),
   openDetail: payload => ipcRenderer.send('open-request-detail', payload),
   openBrowser: url => ipcRenderer.invoke('open-browser', url),
+  onBrowserTarget: callback => ipcRenderer.on('browser-target', (_event, url) => callback(url)),
   onDetailData: callback => ipcRenderer.on('detail-data', (_event, payload) => callback(payload)),
   onEvent: callback => {
     const listener = (_event, payload) => callback(payload);

@@ -81,10 +81,11 @@ function createWindow() {
 
 function openBrowserWindow(url) {
   if (browserWindow && !browserWindow.isDestroyed()) {
-    browserWindow.loadURL(url); browserWindow.focus(); return true;
+    browserWindow.webContents.send('browser-target', url); browserWindow.focus(); return true;
   }
-  browserWindow = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, title: 'Target browser', webPreferences: { session: browserSession, contextIsolation: true, sandbox: true } });
-  browserWindow.loadURL(url);
+  browserWindow = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, title: 'Chromium — Target browser', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
+  browserWindow.loadURL('app://ui/browser.html');
+  browserWindow.webContents.once('did-finish-load', () => browserWindow.webContents.send('browser-target', url));
   browserWindow.on('closed', () => { browserWindow = null; });
   return true;
 }
