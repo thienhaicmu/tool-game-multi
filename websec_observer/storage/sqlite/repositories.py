@@ -10,6 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from websec_observer.domain.enums import (
     Confidence,
     FindingStatus,
+    ReplayStatus,
     ScopeDisposition,
     Severity,
     SessionStatus,
@@ -19,6 +20,8 @@ from websec_observer.domain.models import (
     CapturedResponse,
     CapturedTransaction,
     Finding,
+    ParameterOverride,
+    ReplayRun,
     TestProject,
     TestSession,
     WebSocketConnection,
@@ -29,6 +32,7 @@ from websec_observer.storage.sqlite.orm import (
     NetworkRequestRow,
     NetworkResponseRow,
     ProjectRow,
+    ReplayRunRow,
     SessionRow,
     WebSocketConnectionRow,
     WebSocketFrameRow,
@@ -402,3 +406,28 @@ def _captured_response_from_row(row: NetworkResponseRow) -> CapturedResponse:
         truncated=row.truncated,
         decode_error=row.decode_error,
     )
+
+
+class SqliteReplayRepository:
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def add(self, replay: ReplayRun) -> None:
+        self._session.add(ReplayRunRow(
+            id=str(replay.id), session_id=str(replay.session_id), request_id=str(replay.request_id),
+            status=replay.status.value,
+            overrides=[{"location": item.location, "name": item.name, "value": item.value} for item in replay.overrides],
+            started_at=replay.started_at, ended_at=replay.ended_at,
+            response_status=replay.response_status, response_preview=replay.response_preview, error=replay.error,
+        ))
+        await self._session.flush()
+
+    async def list_for_session(self, session_id: UUID) -> Sequence[ReplayRun]:
+        rows = (await self._session.scalars(select(ReplayRunRow).where(ReplayRunRow.session_id == str(session_id)).order_by(ReplayRunRow.started_at, ReplayRunRow.id))).all()
+        return tuple(ReplayRun(
+            id=UUID(row.id), session_id=UUID(row.session_id), request_id=UUID(row.request_id),
+            status=ReplayStatus(row.status),
+            overrides=tuple(ParameterOverride(**item) for item in row.overrides),
+            started_at=row.started_at, ended_at=row.ended_at,
+            response_status=row.response_status, response_preview=row.response_preview, error=row.error,
+        ) for row in rows)
