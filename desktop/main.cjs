@@ -169,6 +169,12 @@ ipcMain.handle('export-session-report', async (_event, id, format = 'html') => {
   const args = format === 'har' ? ['-m', 'websec_observer.cli.main', 'export', database, id, '--format', 'har'] : ['-m', 'websec_observer.cli.main', 'report', database, id, '--format', format, '--output', choice.filePath];
   return await new Promise(resolve => { execFile(python, args, { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => { if (error) resolve({ ok: false, error: String(stderr || error.message) }); else if (format === 'har') { fs.writeFileSync(choice.filePath, stdout, 'utf8'); resolve({ ok: true, path: choice.filePath }); } else resolve({ ok: true, path: choice.filePath }); }); });
 });
+ipcMain.handle('analyze-session', async (_event, id) => {
+  const database = process.env.OBSERVATORY_DATABASE;
+  if (!database || !/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Analysis requires database and valid session id' };
+  const python = process.env.OBSERVATORY_PYTHON || 'python';
+  return await new Promise(resolve => execFile(python, ['-m', 'websec_observer.cli.main', 'analyze', database, id], { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => error ? resolve({ ok: false, error: String(stderr || error.message) }) : resolve({ ok: true, output: stdout }))); 
+});
 ipcMain.handle('browser-replay', async (_event, id, payload = {}) => {
   if (!browserWindow || browserWindow.isDestroyed()) return { ok: false, error: 'Chromium window is not open' };
   const token = randomUUID();
