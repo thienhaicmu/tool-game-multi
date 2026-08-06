@@ -413,7 +413,7 @@ class SqliteReplayRepository:
         self._session = session
 
     async def add(self, replay: ReplayRun) -> None:
-        self._session.add(ReplayRunRow(
+        await self._session.merge(ReplayRunRow(
             id=str(replay.id), session_id=str(replay.session_id), request_id=str(replay.request_id),
             status=replay.status.value,
             overrides=[{"location": item.location, "name": item.name, "value": item.value} for item in replay.overrides],
