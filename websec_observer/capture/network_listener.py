@@ -81,7 +81,13 @@ class NetworkListener:
     async def drain(self) -> None:
         self._closed = True
         if self._tasks:
-            await asyncio.gather(*tuple(self._tasks), return_exceptions=False)
+            tasks = tuple(self._tasks)
+            try:
+                await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=False), timeout=15)
+            except TimeoutError:
+                for task in tasks:
+                    task.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
 
     def _schedule(self, coroutine: Any) -> None:
         if self._closed:
