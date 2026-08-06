@@ -19,14 +19,13 @@ let journal;
 let importStarted = false;
 
 function importJournalOnExit() {
-  if (importStarted || !journal) return;
+  if (importStarted || !journal) return null;
   const database = process.env.OBSERVATORY_DATABASE;
-  if (!database) return;
+  if (!database) return null;
   importStarted = true;
   const python = process.env.OBSERVATORY_PYTHON || 'python';
   const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
-  const child = spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
-  child.unref();
+  return spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
 }
 
 function inScope(rawUrl) {
@@ -129,7 +128,14 @@ app.whenReady().then(() => {
   createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
-app.on('before-quit', importJournalOnExit);
+app.on('before-quit', event => {
+  if (importStarted) return;
+  const child = importJournalOnExit();
+  if (!child) return;
+  event.preventDefault();
+  child.once('close', () => app.quit());
+  child.once('error', () => app.quit());
+});
 ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
 ipcMain.on('open-request-detail', (_event, payload) => openDetailWindow(payload));
 ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
