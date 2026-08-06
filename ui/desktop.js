@@ -65,7 +65,8 @@ document.querySelector('#open').onclick = openTarget; document.querySelector('#e
 document.querySelector('#reload').onclick = () => browser.reload(); document.querySelector('#back').onclick = () => browser.goBack(); document.querySelector('#forward').onclick = () => browser.goForward();
 document.querySelector('#search').oninput = renderEvents; document.querySelector('#type').onchange = renderEvents;
 const replayTab = document.createElement('button'); replayTab.className = 'tab'; replayTab.dataset.tab = 'replays'; replayTab.innerHTML = '↻ <span>Replay history</span>'; document.querySelector('.side').insertBefore(replayTab, document.querySelector('.side-label.lower'));
-const controls = document.createElement('div'); controls.className = 'capture-controls'; controls.innerHTML = '<button id="pause-capture">Pause capture</button><button id="clear-events">Clear</button><button id="export-events">Export JSON</button>'; document.querySelector('.inspect-head').prepend(controls);
+const controls = document.createElement('div'); controls.className = 'capture-controls'; controls.innerHTML = '<button id="pause-capture">Pause capture</button><button id="select-all">Select all</button><button id="clear-events">Clear</button><button id="export-events">Export JSON</button>'; document.querySelector('.inspect-head').prepend(controls);
+document.querySelector('#select-all').onclick = () => { allEvents.filter(event => event.kind === 'request').forEach(event => selected.add(event.id)); renderEvents(); updateSelectionBar(); };
 let paused = false;
 document.querySelector('#pause-capture').onclick = async () => { paused = !paused; await window.desktopCapture?.setPaused(paused); document.querySelector('#pause-capture').textContent = paused ? 'Resume capture' : 'Pause capture'; statusEl.textContent = paused ? 'Paused' : 'Capturing'; };
 document.querySelector('#clear-events').onclick = () => { allEvents.length = 0; marked.clear(); renderEvents(); };
