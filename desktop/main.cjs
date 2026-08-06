@@ -10,6 +10,7 @@ const { normalizeCaptureEvent } = require('./event-contract.cjs');
 let shell;
 let detailWindow;
 let browserWindow;
+let chromeProcess;
 let browserSession;
 const pending = new Map();
 const replayable = new Map();
@@ -118,13 +119,13 @@ function createWindow() {
 }
 
 function openBrowserWindow(url) {
-  if (browserWindow && !browserWindow.isDestroyed()) {
-    browserWindow.webContents.send('browser-target', url); browserWindow.focus(); return true;
-  }
-  browserWindow = new BrowserWindow({ width: 1280, height: 860, minWidth: 900, minHeight: 600, title: 'Chromium — Target browser', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
-  browserWindow.loadURL('app://ui/browser.html');
-  browserWindow.webContents.once('did-finish-load', () => browserWindow.webContents.send('browser-target', url));
-  browserWindow.on('closed', () => { browserWindow = null; });
+  const candidates = [process.env.OBSERVATORY_CHROME, process.env.CHROME_PATH, path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google/Chrome/Application/chrome.exe')].filter(Boolean);
+  const executable = candidates.find(candidate => fs.existsSync(candidate));
+  if (!executable) return false;
+  if (chromeProcess && !chromeProcess.killed) return true;
+  const profile = process.env.OBSERVATORY_CHROME_PROFILE || path.join(app.getPath('userData'), 'chrome-profile');
+  chromeProcess = spawn(executable, [`--remote-debugging-port=${process.env.OBSERVATORY_CDP_PORT || 9222}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', url], { detached: true, windowsHide: false, stdio: 'ignore' });
+  chromeProcess.unref(); chromeProcess.once('exit', () => { chromeProcess = null; });
   return true;
 }
 
