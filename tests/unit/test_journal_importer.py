@@ -31,6 +31,7 @@ async def test_import_journal_persists_request_and_response(tmp_path) -> None:
         json.dumps({"kind":"response","id":event_id,"status":200,"duration":12,"timestamp":datetime.now(UTC).isoformat()}),
     ]), encoding="utf-8")
     assert await import_journal(journal, session_id=session.id, factory=factory) == 1
+    assert await import_journal(journal, session_id=session.id, factory=factory) == 1
     async with factory() as db:
         row = await db.get(NetworkRequestRow, str(uuid5(_EVENT_NAMESPACE, event_id)))
         assert row is not None

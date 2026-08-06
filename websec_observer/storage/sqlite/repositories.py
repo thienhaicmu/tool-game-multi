@@ -141,10 +141,14 @@ class SqliteTransactionRepository:
         self._session = session
 
     async def add_many(self, transactions: Sequence[CapturedTransaction]) -> None:
+        incoming_ids = [str(item.request.id) for item in transactions]
+        existing_ids = set((await self._session.scalars(select(NetworkRequestRow.id).where(NetworkRequestRow.id.in_(incoming_ids)))).all()) if incoming_ids else set()
         request_rows: list[NetworkRequestRow] = []
         response_rows: list[NetworkResponseRow] = []
         for transaction in transactions:
             request = transaction.request
+            if str(request.id) in existing_ids:
+                continue
             request_rows.append(
                 NetworkRequestRow(
                     id=str(request.id),

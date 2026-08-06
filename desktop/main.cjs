@@ -18,6 +18,8 @@ let capturePaused = false;
 let sessionId = randomUUID();
 let journal;
 let importStarted = false;
+let importInProgress = false;
+let importTimer;
 const browserReplayWaiters = new Map();
 
 function importJournalOnExit() {
@@ -28,6 +30,17 @@ function importJournalOnExit() {
   const python = process.env.OBSERVATORY_PYTHON || 'python';
   const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
   return spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
+}
+
+function importJournalNow() {
+  const database = process.env.OBSERVATORY_DATABASE;
+  if (!database || importInProgress || !journal) return;
+  importInProgress = true;
+  const python = process.env.OBSERVATORY_PYTHON || 'python';
+  const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
+  const child = spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
+  child.once('close', () => { importInProgress = false; });
+  child.once('error', () => { importInProgress = false; });
 }
 
 function inScope(rawUrl) {
@@ -99,6 +112,7 @@ function createWindow() {
   browserSession = session.fromPartition('persist:observatory-browser');
   const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
   journal = new EventJournal(journalPath);
+  importTimer = setInterval(importJournalNow, 10_000);
   attachCapture();
   shell.loadURL('app://ui/product.html');
 }
@@ -131,6 +145,7 @@ app.whenReady().then(() => {
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('before-quit', event => {
+  if (importTimer) clearInterval(importTimer);
   if (importStarted) return;
   const child = importJournalOnExit();
   if (!child) return;
