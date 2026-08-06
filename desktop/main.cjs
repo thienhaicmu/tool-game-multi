@@ -84,7 +84,7 @@ function createWindow() {
   const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
   journal = new EventJournal(journalPath);
   attachCapture();
-  shell.loadURL('app://ui/desktop.html');
+  shell.loadURL('app://ui/product.html');
 }
 
 function openBrowserWindow(url) {
