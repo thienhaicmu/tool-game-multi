@@ -1,4 +1,6 @@
 const browser = document.querySelector('#browser');
+document.querySelectorAll('.nav-item').forEach(item => item.classList.add('tab'));
+if (!document.querySelector('#empty-open')) { const hiddenOpen = document.createElement('button'); hiddenOpen.id = 'empty-open'; hiddenOpen.style.display = 'none'; document.body.appendChild(hiddenOpen); }
 const empty = document.querySelector('#empty');
 const urlInput = document.querySelector('#url');
 const eventsEl = document.querySelector('#events');
