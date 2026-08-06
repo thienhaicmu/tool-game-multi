@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, protocol, net } = require('electron');
+const { app, BrowserWindow, ipcMain, session, protocol, net, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
@@ -127,6 +127,14 @@ ipcMain.handle('read-session', (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return [];
   const file = path.join(app.getPath('userData'), 'sessions', String(id) + '.jsonl');
   try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); } catch { return []; }
+});
+ipcMain.handle('export-session', async (_event, id) => {
+  if (!/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Invalid session id' };
+  const source = path.join(app.getPath('userData'), 'sessions', String(id) + '.jsonl');
+  if (!fs.existsSync(source)) return { ok: false, error: 'Session not found' };
+  const choice = await dialog.showSaveDialog(shell, { defaultPath: `observatory-${id}.jsonl`, filters: [{ name: 'Session journal', extensions: ['jsonl'] }] });
+  if (choice.canceled || !choice.filePath) return { ok: false, error: 'Export canceled' };
+  fs.copyFileSync(source, choice.filePath); return { ok: true, path: choice.filePath };
 });
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {
