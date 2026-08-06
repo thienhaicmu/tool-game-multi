@@ -119,7 +119,7 @@ ipcMain.on('open-request-detail', (_event, payload) => openDetailWindow(payload)
 ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
 ipcMain.handle('list-sessions', () => {
   const dir = path.join(app.getPath('userData'), 'sessions');
-  try { return fs.readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => ({ id: name.slice(0, -6), file: name })); } catch { return []; }
+  try { return fs.readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => { const id = name.slice(0, -6); const file = path.join(dir, name); const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean); const events = lines.map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean); return { id, file: name, startedAt: events[0]?.timestamp || events[0]?.journaledAt || null, requestCount: events.filter(event => event.kind === 'request').length }; }); } catch { return []; }
 });
 ipcMain.handle('read-session', (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return [];

@@ -17,7 +17,7 @@ async function loadSessionHistory() {
   const sessions = await window.desktopCapture?.listSessions?.() || [];
   const card = document.querySelector('.session'); if (!card || !sessions.length) return;
   const select = document.createElement('select'); select.id = 'session-history'; select.style.cssText = 'width:100%;padding:6px;border:1px solid #dfe6e9;border-radius:5px;font-size:10px';
-  select.innerHTML = '<option value="">Load saved session…</option>' + sessions.slice().reverse().map(item => '<option value="' + esc(item.id) + '">' + esc(item.id.slice(0, 8)) + '</option>').join('');
+  select.innerHTML = '<option value="">Load saved session…</option>' + sessions.slice().reverse().map(item => '<option value="' + esc(item.id) + '">' + esc(item.startedAt ? new Date(item.startedAt).toLocaleString() : item.id.slice(0, 8)) + ' · ' + item.requestCount + ' req</option>').join('');
   card.appendChild(select); select.onchange = async () => { if (!select.value) return; const events = await window.desktopCapture.readSession(select.value); allEvents.length = 0; allEvents.push(...events); selected.clear(); renderEvents(); statusEl.textContent = 'Loaded session · ' + events.filter(e => e.kind === 'request').length + ' requests'; };
 }
 let currentTab = 'network';
