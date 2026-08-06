@@ -142,6 +142,12 @@ ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {
   try {
     const response = await net.fetch(url, { method, headers, body: ['GET', 'HEAD'].includes(method) ? undefined : body });
     const text = await response.text();
-    return { ok: true, status: response.status, statusText: response.statusText, bodyPreview: text.slice(0, 4000) };
-  } catch (error) { return { ok: false, error: String(error.message || error) }; }
+    const result = { ok: true, status: response.status, statusText: response.statusText, bodyPreview: text.slice(0, 4000) };
+    emit({ kind: 'replay', id: String(id), method, url: safeDisplayUrl(url.toString()), status: response.status, overrides: Object.keys(overrides), timestamp: new Date().toISOString() });
+    return result;
+  } catch (error) {
+    const message = String(error.message || error);
+    emit({ kind: 'replay', id: String(id), method, url: safeDisplayUrl(url.toString()), status: 0, error: message, overrides: Object.keys(overrides), timestamp: new Date().toISOString() });
+    return { ok: false, error: message };
+  }
 });
