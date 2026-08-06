@@ -213,7 +213,14 @@ ipcMain.handle('analyze-session', async (_event, id) => {
   return await new Promise(resolve => execFile(python, ['-m', 'websec_observer.cli.main', 'analyze', database, id], { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => error ? resolve({ ok: false, error: String(stderr || error.message) }) : resolve({ ok: true, output: stdout }))); 
 });
 ipcMain.handle('browser-replay', async (_event, id, payload = {}) => {
-  if (!browserWindow || browserWindow.isDestroyed()) return { ok: false, error: 'Chromium window is not open' };
+  if (!cdpClient && (!browserWindow || browserWindow.isDestroyed())) return { ok: false, error: 'Chrome debugging session is not connected' };
+  if (cdpClient) {
+    try {
+      const expression = `(async()=>{const r=await fetch(${JSON.stringify(payload.url)},${JSON.stringify({ method: payload.method || 'GET', headers: payload.headers || {}, body: ['GET','HEAD'].includes(payload.method || 'GET') ? undefined : payload.body, credentials: 'include' })});return {ok:true,status:r.status,statusText:r.statusText,bodyPreview:(await r.text()).slice(0,4000)}})()`;
+      const result = await cdpClient.Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
+      return result.result?.value || { ok: false, error: 'No replay result returned by Chrome' };
+    } catch (error) { return { ok: false, error: String(error.message || error) }; }
+  }
   const token = randomUUID();
   const result = new Promise(resolve => browserReplayWaiters.set(token, resolve));
   browserWindow.webContents.send('browser-replay', token, { id, ...payload });
