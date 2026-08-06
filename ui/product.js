@@ -2,6 +2,8 @@ const events = [];
 const selected = new Set();
 const rows = document.querySelector('#requests');
 const workspace = document.querySelector('#workspace');
+const copy = { vi: { status: 'Sẵn sàng', open: 'Mở Chromium', title: 'Requests', subtitle: 'Chọn request để xem và thay giá trị.', captured: 'Requests đã bắt', select: 'Chọn tất cả', empty: 'Chưa có request', emptyHint: 'Mở Chromium và thao tác trên webapp.', workspace: 'Request workspace', workspaceHint: 'Chọn request để sửa value và replay.', search: 'Tìm host, path hoặc method' }, en: { status: 'Ready', open: 'Open Chromium', title: 'Requests', subtitle: 'Select requests to review and replace values.', captured: 'Captured requests', select: 'Select all', empty: 'No requests yet', emptyHint: 'Open Chromium and use your webapp.', workspace: 'Request workspace', workspaceHint: 'Choose a request to edit values and replay.', search: 'Search host, path or method' } };
+function applyLanguage(language) { const text = copy[language] || copy.en; document.querySelector('#status').textContent = text.status; document.querySelector('#open').textContent = text.open; document.querySelector('#view-title').textContent = text.title; document.querySelector('#view-subtitle').textContent = text.subtitle; document.querySelector('.list-head b').textContent = text.captured; document.querySelector('#select-all').textContent = text.select; document.querySelector('#search').placeholder = text.search; document.documentElement.lang = language; try { localStorage.setItem('observatory-language', language); } catch {} }
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
 function urlInfo(raw) { try { const url = new URL(raw); return { url, path: url.pathname + (url.search || '') }; } catch { return { url: null, path: raw }; } }
 function render() {
@@ -28,5 +30,7 @@ document.querySelector('#search').oninput = render;
 document.querySelector('#type').onchange = render;
 document.querySelector('#select-all').onclick = () => { events.filter(event => event.kind === 'request').forEach(event => selected.add(event.id)); render(); };
 document.querySelector('#theme').onclick = () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; try { localStorage.setItem('observatory-theme', next); } catch {} };
+const language = document.querySelector('#lang'); const savedLanguage = (() => { try { return localStorage.getItem('observatory-language') || 'vi'; } catch { return 'vi'; } })(); language.value = savedLanguage; applyLanguage(savedLanguage); language.onchange = () => applyLanguage(language.value);
+try { document.documentElement.dataset.theme = localStorage.getItem('observatory-theme') || 'light'; } catch {}
 window.desktopCapture?.onEvent(event => { events.push(event); render(); });
 render();
