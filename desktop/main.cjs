@@ -1,5 +1,6 @@
 const { app, BrowserWindow, ipcMain, session, protocol, net } = require('electron');
 const path = require('node:path');
+const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { EventJournal } = require('./event-journal.cjs');
 
@@ -116,6 +117,15 @@ app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(
 ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
 ipcMain.on('open-request-detail', (_event, payload) => openDetailWindow(payload));
 ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
+ipcMain.handle('list-sessions', () => {
+  const dir = path.join(app.getPath('userData'), 'sessions');
+  try { return fs.readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => ({ id: name.slice(0, -6), file: name })); } catch { return []; }
+});
+ipcMain.handle('read-session', (_event, id) => {
+  if (!/^[a-f0-9-]{36}$/i.test(String(id))) return [];
+  const file = path.join(app.getPath('userData'), 'sessions', String(id) + '.jsonl');
+  try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); } catch { return []; }
+});
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {
   const item = replayable.get(id);
