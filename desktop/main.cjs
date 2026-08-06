@@ -18,6 +18,7 @@ let capturePaused = false;
 let sessionId = randomUUID();
 let journal;
 let importStarted = false;
+const browserReplayWaiters = new Map();
 
 function importJournalOnExit() {
   if (importStarted || !journal) return null;
@@ -168,6 +169,14 @@ ipcMain.handle('export-session-report', async (_event, id, format = 'html') => {
   const args = format === 'har' ? ['-m', 'websec_observer.cli.main', 'export', database, id, '--format', 'har'] : ['-m', 'websec_observer.cli.main', 'report', database, id, '--format', format, '--output', choice.filePath];
   return await new Promise(resolve => { execFile(python, args, { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => { if (error) resolve({ ok: false, error: String(stderr || error.message) }); else if (format === 'har') { fs.writeFileSync(choice.filePath, stdout, 'utf8'); resolve({ ok: true, path: choice.filePath }); } else resolve({ ok: true, path: choice.filePath }); }); });
 });
+ipcMain.handle('browser-replay', async (_event, id, payload = {}) => {
+  if (!browserWindow || browserWindow.isDestroyed()) return { ok: false, error: 'Chromium window is not open' };
+  const token = randomUUID();
+  const result = new Promise(resolve => browserReplayWaiters.set(token, resolve));
+  browserWindow.webContents.send('browser-replay', token, { id, ...payload });
+  return await Promise.race([result, new Promise(resolve => setTimeout(() => { browserReplayWaiters.delete(token); resolve({ ok: false, error: 'Browser replay timeout' }); }, 30000))]);
+});
+ipcMain.handle('browser-replay-result', (_event, token, result) => { const resolve = browserReplayWaiters.get(token); if (!resolve) return false; browserReplayWaiters.delete(token); resolve(result); return true; });
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {
   const item = replayable.get(id);

@@ -11,6 +11,9 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   readSession: sessionId => ipcRenderer.invoke('read-session', sessionId),
   exportSession: sessionId => ipcRenderer.invoke('export-session', sessionId),
   exportSessionReport: (sessionId, format) => ipcRenderer.invoke('export-session-report', sessionId, format),
+  browserReplay: (id, payload) => ipcRenderer.invoke('browser-replay', id, payload),
+  onBrowserReplay: callback => ipcRenderer.on('browser-replay', (_event, token, payload) => callback(token, payload)),
+  browserReplayResult: (token, result) => ipcRenderer.invoke('browser-replay-result', token, result),
   onDetailData: callback => ipcRenderer.on('detail-data', (_event, payload) => callback(payload)),
   onEvent: callback => {
     const listener = (_event, payload) => callback(payload);
