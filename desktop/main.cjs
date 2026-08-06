@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { EventJournal } = require('./event-journal.cjs');
+const { normalizeCaptureEvent } = require('./event-contract.cjs');
 
 let shell;
 let detailWindow;
@@ -44,7 +45,8 @@ function safeHeaders(headers) {
 }
 
 function emit(event) {
-  const normalized = { sessionId, ...event };
+  const normalized = normalizeCaptureEvent(event, sessionId);
+  if (!normalized) return;
   try { journal?.append(normalized); } catch { /* journal failure must not stop capture */ }
   if (shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
 }
