@@ -2,6 +2,7 @@ const { app, BrowserWindow, ipcMain, session, protocol, net, dialog } = require(
 const path = require('node:path');
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
+const { spawn } = require('node:child_process');
 const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
 
@@ -15,6 +16,18 @@ let allowedHosts = new Set();
 let capturePaused = false;
 let sessionId = randomUUID();
 let journal;
+let importStarted = false;
+
+function importJournalOnExit() {
+  if (importStarted || !journal) return;
+  const database = process.env.OBSERVATORY_DATABASE;
+  if (!database) return;
+  importStarted = true;
+  const python = process.env.OBSERVATORY_PYTHON || 'python';
+  const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
+  const child = spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
+  child.unref();
+}
 
 function inScope(rawUrl) {
   try {
@@ -116,6 +129,7 @@ app.whenReady().then(() => {
   createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+app.on('before-quit', importJournalOnExit);
 ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
 ipcMain.on('open-request-detail', (_event, payload) => openDetailWindow(payload));
 ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
