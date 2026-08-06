@@ -13,6 +13,13 @@ document.querySelector('.address').insertBefore(scopeInput, document.querySelect
 const allEvents = [];
 const marked = new Set();
 const selected = new Set();
+async function loadSessionHistory() {
+  const sessions = await window.desktopCapture?.listSessions?.() || [];
+  const card = document.querySelector('.session'); if (!card || !sessions.length) return;
+  const select = document.createElement('select'); select.id = 'session-history'; select.style.cssText = 'width:100%;padding:6px;border:1px solid #dfe6e9;border-radius:5px;font-size:10px';
+  select.innerHTML = '<option value="">Load saved session…</option>' + sessions.slice().reverse().map(item => '<option value="' + esc(item.id) + '">' + esc(item.id.slice(0, 8)) + '</option>').join('');
+  card.appendChild(select); select.onchange = async () => { if (!select.value) return; const events = await window.desktopCapture.readSession(select.value); allEvents.length = 0; allEvents.push(...events); selected.clear(); renderEvents(); statusEl.textContent = 'Loaded session · ' + events.filter(e => e.kind === 'request').length + ' requests'; };
+}
 let currentTab = 'network';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function hostPath(raw) { try { const u = new URL(raw); return { host: u.host, path: u.pathname + (u.search ? u.search : '') }; } catch { return { host: '', path: raw }; } }
@@ -68,3 +75,4 @@ browser.addEventListener('did-fail-load', event => { if (event.isMainFrame) stat
 browser.addEventListener('did-start-loading', () => { statusEl.textContent = 'Loading'; });
 browser.addEventListener('did-stop-loading', () => { statusEl.textContent = 'Capturing'; });
 browser.addEventListener('did-fail-load', event => { if (event.isMainFrame) { statusEl.textContent = 'Load failed: ' + (event.errorDescription || event.errorCode); empty.style.display = 'grid'; } });
+loadSessionHistory();
