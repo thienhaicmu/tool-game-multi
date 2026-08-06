@@ -9,6 +9,7 @@ import typer
 
 from websec_observer.analysis.service import SessionAnalysisService
 from websec_observer.capture.browser_controller import BrowserOptions
+from websec_observer.capture.journal_importer import import_journal
 from websec_observer.capture.session_service import CaptureSessionService
 from websec_observer.config import ProjectConfig, load_project_config
 from websec_observer.domain.models import TestProject, TestSession
@@ -83,6 +84,21 @@ async def _run(project_config: ProjectConfig, url: str, database: Path, headed: 
 def analyze(database: Path, session_id: UUID) -> None:
     """Run enabled passive rules for a persisted session."""
     asyncio.run(_analyze(database, session_id))
+
+
+@app.command("import-journal")
+def import_journal_command(journal: Path, database: Path, session_id: UUID) -> None:
+    """Import a redacted Electron session journal into SQLite."""
+    if not journal.is_file():
+        raise typer.BadParameter(f"journal does not exist: {journal}")
+    asyncio.run(_import_journal(journal, database, session_id))
+
+
+async def _import_journal(journal: Path, database: Path, session_id: UUID) -> None:
+    engine, factory = _factory(database)
+    count = await import_journal(journal, session_id=session_id, factory=factory)
+    await engine.dispose()
+    typer.echo(json.dumps({"session_id": str(session_id), "imported": count}))
 
 
 async def _analyze(database: Path, session_id: UUID) -> None:
