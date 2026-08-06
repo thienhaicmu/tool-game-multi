@@ -22,6 +22,7 @@ class BrowserOptions:
     storage_state: Path | None = None
     proxy_server: str | None = None
     ignore_https_errors: bool = False
+    launch_timeout_ms: float = 30_000
 
 
 class BrowserController:
@@ -49,11 +50,13 @@ class BrowserController:
                     headless=self._options.headless,
                     proxy=proxy,
                     ignore_https_errors=self._options.ignore_https_errors,
+                    timeout=self._options.launch_timeout_ms,
                 )
             else:
                 self._browser = await self._playwright.chromium.launch(
                     headless=self._options.headless,
                     proxy=proxy,
+                    timeout=self._options.launch_timeout_ms,
                 )
                 self._context = await self._browser.new_context(
                     storage_state=(
