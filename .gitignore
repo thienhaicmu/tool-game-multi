@@ -15,3 +15,6 @@ pytest-cache-files-*/
 dist-electron/
 release/
 release2/
+release3/
+release4/
+release5/
