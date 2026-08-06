@@ -70,6 +70,7 @@ class NetworkListener:
         self._action_lookup = action_lookup
         self._pending: dict[int, _PendingRequest] = {}
         self._request_ids: dict[int, UUID] = {}
+        self._request_url_ids: dict[str, UUID] = {}
         self._tasks: set[asyncio.Task[None]] = set()
         self._closed = False
 
@@ -106,9 +107,12 @@ class NetworkListener:
         if request.resource_type not in self._resource_types:
             return
         redirected = request.redirected_from
-        redirect_id = self._request_ids.get(id(redirected)) if redirected else None
+        redirect_id = None
+        if redirected:
+            redirect_id = self._request_ids.get(id(redirected)) or self._request_url_ids.get(redirected.url)
         request_id = uuid4()
         self._request_ids[id(request)] = request_id
+        self._request_url_ids[request.url] = request_id
         self._pending[id(request)] = _PendingRequest(
             id=request_id,
             browser_id=str(uuid4()),

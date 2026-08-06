@@ -42,7 +42,12 @@ class ActionTracker:
             )
 
         async def setup() -> None:
-            await page.expose_binding("__websec_record_action", binding)
+            try:
+                await page.expose_binding("__websec_record_action", binding)
+            except Exception:
+                # A page can be attached twice during popup/redirect setup.
+                # The binding is already installed in that case.
+                return
             await page.add_init_script(
             """(() => {
               const send = (action_type, event) => {
