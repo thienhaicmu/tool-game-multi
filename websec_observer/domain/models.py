@@ -10,6 +10,7 @@ from websec_observer.domain.enums import (
     ScopeDisposition,
     Severity,
     SessionStatus,
+    ReplayStatus,
 )
 
 
@@ -120,6 +121,29 @@ class CapturedResponse:
 class CapturedTransaction:
     request: CapturedRequest
     response: CapturedResponse | None
+
+
+@dataclass(frozen=True, slots=True)
+class ParameterOverride:
+    """A user-approved value change; parameter identity remains immutable."""
+
+    location: str  # query, json, form
+    name: str
+    value: str
+
+
+@dataclass(frozen=True, slots=True)
+class ReplayRun:
+    session_id: UUID
+    request_id: UUID
+    status: ReplayStatus = ReplayStatus.CREATED
+    overrides: tuple[ParameterOverride, ...] = ()
+    id: UUID = field(default_factory=uuid4)
+    started_at: datetime | None = None
+    ended_at: datetime | None = None
+    response_status: int | None = None
+    response_preview: str | None = None
+    error: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

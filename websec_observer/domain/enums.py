@@ -37,3 +37,11 @@ class FindingStatus(StrEnum):
     FALSE_POSITIVE = "false_positive"
     ACCEPTED_RISK = "accepted_risk"
     RESOLVED = "resolved"
+
+
+class ReplayStatus(StrEnum):
+    CREATED = "created"
+    RUNNING = "running"
+    SUCCEEDED = "succeeded"
+    FAILED = "failed"
+    BLOCKED = "blocked"
