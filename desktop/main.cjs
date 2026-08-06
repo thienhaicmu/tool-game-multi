@@ -3,6 +3,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
 const { spawn } = require('node:child_process');
+const { execFile } = require('node:child_process');
 const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
 
@@ -155,6 +156,17 @@ ipcMain.handle('export-session', async (_event, id) => {
   const choice = await dialog.showSaveDialog(shell, { defaultPath: `observatory-${id}.jsonl`, filters: [{ name: 'Session journal', extensions: ['jsonl'] }] });
   if (choice.canceled || !choice.filePath) return { ok: false, error: 'Export canceled' };
   fs.copyFileSync(source, choice.filePath); return { ok: true, path: choice.filePath };
+});
+ipcMain.handle('export-session-report', async (_event, id, format = 'html') => {
+  if (!/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Invalid session id' };
+  const database = process.env.OBSERVATORY_DATABASE;
+  if (!database) return { ok: false, error: 'OBSERVATORY_DATABASE is not configured' };
+  const extension = format === 'har' ? 'har' : format === 'json' ? 'json' : 'html';
+  const choice = await dialog.showSaveDialog(shell, { defaultPath: `observatory-${id}.${extension}`, filters: [{ name: extension.toUpperCase(), extensions: [extension] }] });
+  if (choice.canceled || !choice.filePath) return { ok: false, error: 'Export canceled' };
+  const python = process.env.OBSERVATORY_PYTHON || 'python';
+  const args = format === 'har' ? ['-m', 'websec_observer.cli.main', 'export', database, id, '--format', 'har'] : ['-m', 'websec_observer.cli.main', 'report', database, id, '--format', format, '--output', choice.filePath];
+  return await new Promise(resolve => { execFile(python, args, { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => { if (error) resolve({ ok: false, error: String(stderr || error.message) }); else if (format === 'har') { fs.writeFileSync(choice.filePath, stdout, 'utf8'); resolve({ ok: true, path: choice.filePath }); } else resolve({ ok: true, path: choice.filePath }); }); });
 });
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {

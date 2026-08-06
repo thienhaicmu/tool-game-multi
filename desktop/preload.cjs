@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   listSessions: () => ipcRenderer.invoke('list-sessions'),
   readSession: sessionId => ipcRenderer.invoke('read-session', sessionId),
   exportSession: sessionId => ipcRenderer.invoke('export-session', sessionId),
+  exportSessionReport: (sessionId, format) => ipcRenderer.invoke('export-session-report', sessionId, format),
   onDetailData: callback => ipcRenderer.on('detail-data', (_event, payload) => callback(payload)),
   onEvent: callback => {
     const listener = (_event, payload) => callback(payload);
