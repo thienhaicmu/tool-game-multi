@@ -22,6 +22,11 @@
       <select id="targets" title="Debug target" aria-label="Debug target"><option value="">No targets</option></select>
     </div>
     <span class="tb-sep"></span>
+    <div class="group" role="group" aria-label="Session">
+      <button id="ck-save" class="btn" title="Save the current login/session cookies to a persistent profile">⇩ Save session</button>
+      <button id="ck-restore" class="btn" title="Restore saved session cookies into the current target (and reload)">⇧ Restore</button>
+    </div>
+    <span class="tb-sep"></span>
     <div class="chips" role="status">
       <span id="chip-conn" class="chip off">Disconnected</span>
       <span id="chip-cap" class="chip off">Idle</span>

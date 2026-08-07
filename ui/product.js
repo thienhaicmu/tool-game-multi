@@ -295,6 +295,8 @@ api.onTargetsChanged && api.onTargetsChanged((list) => {
   setChip('chip-cap', connected, connected ? 'Capturing' : 'Idle');
 });
 $('targets').onchange = () => { if ($('targets').value) api.selectTarget($('targets').value); };
+$('ck-save').onclick = async () => { const r = await api.cookiesSave(); toast(r && r.ok ? `Saved session (${r.count} cookies${r.host ? ' · ' + r.host : ''})` : ((r && r.error && r.error.code) || 'Save failed')); };
+$('ck-restore').onclick = async () => { const r = await api.cookiesRestore(undefined, true); toast(r && r.ok ? (r.count ? `Restored ${r.count} cookies${r.host ? ' · ' + r.host : ''} · reloading` : 'No saved session for this host') : ((r && r.error && r.error.code) || 'Restore failed')); };
 api.onCdpError && api.onCdpError((e) => toast((e && e.code) || 'CDP error'));
 
 // ---- intercept bar ----

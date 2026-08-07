@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   replayExecute: draftId => ipcRenderer.invoke('replay-execute', draftId),
   replayHistory: capturedRequestId => ipcRenderer.invoke('replay-history', capturedRequestId),
   timelineBuild: capturedRequestId => ipcRenderer.invoke('timeline-build', capturedRequestId),
+  cookiesSave: targetId => ipcRenderer.invoke('cookies-save', targetId),
+  cookiesRestore: (targetId, reload) => ipcRenderer.invoke('cookies-restore', targetId, reload),
   interceptEnable: (rule, targetId) => ipcRenderer.invoke('intercept-enable', rule, targetId),
   interceptDisable: targetId => ipcRenderer.invoke('intercept-disable', targetId),
   interceptList: () => ipcRenderer.invoke('intercept-list'),

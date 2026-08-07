@@ -11,6 +11,7 @@ const { TargetManager } = require('./cdp/target-manager.cjs');
 const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { InterceptEngine } = require('./cdp/intercept.cjs');
+const { CookieVault, hostMatches } = require('./cookie-vault.cjs');
 const { ReplayEngine } = require('./replay/replay-engine.cjs');
 const { Timeline } = require('./timeline.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
@@ -83,6 +84,10 @@ function createWindow() {
   const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
   journal = new EventJournal(journalPath);
   importTimer = setInterval(importJournalNow, 10_000);
+  cookieVault = new CookieVault(path.join(app.getPath('userData'), 'cookie-vault.json'));
+  // Auto-save the session so a fresh login is captured for next time.
+  const cookieTimer = setInterval(() => { if (selectedTargetId) saveCookiesFor(selectedTargetId).catch(() => {}); }, 12_000);
+  if (cookieTimer.unref) cookieTimer.unref();
   shell.loadURL('app://ui/product.html');
 }
 
@@ -144,6 +149,37 @@ const replay = new ReplayEngine({
 });
 // WU5: read-only aggregation of capture + replay + intercept evidence.
 const timeline = new Timeline({ capture, replay, intercept });
+// Persistent session store (cookies) — independent of launching Chrome, so a
+// login survives reconnects on Chrome / WebView / WebView2 / CEF alike.
+let cookieVault;
+function targetHost(targetId) { const s = targetManager && targetManager.getSession(targetId); try { return s ? new URL(s.target.url).hostname : ''; } catch { return ''; } }
+async function saveCookiesFor(targetId) {
+  const client = resolveTargetClient(targetId);
+  if (!client || !cookieVault) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'No attached target' } };
+  try { const { cookies } = await client.Network.getAllCookies(); return { ok: true, count: cookieVault.save(cookies), host: targetHost(targetId) }; }
+  catch (e) { return { ok: false, error: { code: 'COOKIE_SAVE_FAILED', message: String(e && e.message || e) } }; }
+}
+async function restoreCookiesFor(targetId, reload) {
+  const client = resolveTargetClient(targetId);
+  if (!client || !cookieVault) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'No attached target' } };
+  const host = targetHost(targetId);
+  const params = host ? cookieVault.paramsForHost(host) : [];
+  if (!params.length) return { ok: true, count: 0, host };
+  try { await client.Network.setCookies({ cookies: params }); if (reload) { try { await client.Page.reload(); } catch { /* ignore */ } } return { ok: true, count: params.length, host }; }
+  catch (e) { return { ok: false, error: { code: 'COOKIE_RESTORE_FAILED', message: String(e && e.message || e) } }; }
+}
+// On attach, restore the saved session ONLY if the target has none for its host
+// (never clobber a live/newer login).
+async function autoRestoreOnAttach(targetId) {
+  const client = resolveTargetClient(targetId); const host = targetHost(targetId);
+  if (!client || !cookieVault || !host || !cookieVault.hasForHost(host)) return;
+  try {
+    const { cookies } = await client.Network.getAllCookies();
+    if ((cookies || []).some((c) => hostMatches(host, c.domain))) return;
+    const params = cookieVault.paramsForHost(host);
+    if (params.length) await client.Network.setCookies({ cookies: params });
+  } catch { /* best effort */ }
+}
 // Bridge raw model -> the existing display/journal pipeline (which may mask
 // secrets for display only; raw evidence stays in `capture`).
 capture.on('request', req => {
@@ -184,6 +220,7 @@ async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = 
   manager.on('attached', ({ target, client }) => {
     if (!selectedTargetId) selectedTargetId = target.cdpTargetId; // auto-select first attachable target
     attachCdpCapture(client, target);
+    autoRestoreOnAttach(target.cdpTargetId).catch(() => {});
     broadcastTargets();
   });
   manager.on('target-added', broadcastTargets);
@@ -260,6 +297,8 @@ ipcMain.handle('replay-update-draft', (_event, draftId, patch = {}) => replay.up
 ipcMain.handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
 ipcMain.handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
 ipcMain.handle('timeline-build', (_event, capturedRequestId) => timeline.build(String(capturedRequestId)));
+ipcMain.handle('cookies-save', (_event, targetId) => saveCookiesFor(String(targetId || selectedTargetId || '')));
+ipcMain.handle('cookies-restore', (_event, targetId, reload) => restoreCookiesFor(String(targetId || selectedTargetId || ''), !!reload));
 // WU4 intercept IPC. Default scope is the selected target only.
 ipcMain.handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
 ipcMain.handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || selectedTargetId || '')));
