@@ -110,11 +110,16 @@ class InterceptEngine extends EventEmitter {
     if (patch.url !== undefined) { try { new URL(String(patch.url)); } catch { return { error: { code: CODES.INVALID_INTERCEPT_DRAFT, message: 'Invalid URL' } }; } rec.draft.url = String(patch.url); }
     if (patch.headers !== undefined) {
       if (patch.headers === null || typeof patch.headers !== 'object' || Array.isArray(patch.headers)) return { error: { code: CODES.INVALID_INTERCEPT_DRAFT, message: 'headers must be an object' } };
+      // Self-sanitizing (see replay-engine): drop unsettable/malformed headers
+      // rather than blocking the continue.
+      const clean = {};
       for (const [k, v] of Object.entries(patch.headers)) {
-        if (!HEADER_NAME.test(k)) return { error: { code: CODES.INVALID_INTERCEPT_DRAFT, message: 'Invalid header name: ' + k } };
-        if (/[\r\n]/.test(String(v))) return { error: { code: CODES.INVALID_INTERCEPT_DRAFT, message: 'Invalid header value for ' + k } };
+        if (String(k).startsWith(':')) continue; // HTTP/2 pseudo-header
+        if (!HEADER_NAME.test(k)) continue;       // malformed name
+        if (/[\r\n]/.test(String(v))) continue;   // header-injection guard
+        clean[k] = v;
       }
-      rec.draft.headers = { ...patch.headers };
+      rec.draft.headers = clean;
     }
     if (patch.body !== undefined) rec.draft.body = patch.body === null ? null : String(patch.body);
     this.emit('changed');
@@ -161,7 +166,7 @@ class InterceptEngine extends EventEmitter {
       if (d.url !== rec.original.url) params.url = d.url;
       if (d.method !== rec.original.method) params.method = d.method;
       const headerArr = [];
-      for (const [name, value] of Object.entries(d.headers || {})) headerArr.push({ name, value: String(value) });
+      for (const [name, value] of Object.entries(d.headers || {})) { if (String(name).startsWith(':')) continue; headerArr.push({ name, value: String(value) }); }
       params.headers = headerArr;
       if (d.body != null && !['GET', 'HEAD'].includes(d.method)) params.postData = Buffer.from(String(d.body), 'utf8').toString('base64');
     }

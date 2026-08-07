@@ -23,6 +23,10 @@ function headersToObject(headers) {
   if (Array.isArray(headers)) { const o = {}; for (const [k, v] of headers) o[k] = v; return o; }
   return { ...headers };
 }
+// HTTP/2 pseudo-headers (:authority, :method, :path, :scheme) are captured from
+// ExtraInfo but are browser-managed and cannot be set via fetch/HTTP client.
+const isPseudo = (name) => String(name).startsWith(':');
+function dropPseudo(h) { const o = {}; for (const [k, v] of Object.entries(h || {})) if (!isPseudo(k)) o[k] = v; return o; }
 
 /**
  * ReplayEngine builds replay from the immutable WU2 CapturedRequest.
@@ -66,7 +70,7 @@ class ReplayEngine extends EventEmitter {
       mode: options.mode && MODES[options.mode] ? options.mode : MODES.WEBVIEW_CONTEXT,
       method: captured.method,
       url: captured.url,
-      headers: headersToObject(captured.headers),
+      headers: dropPseudo(headersToObject(captured.headers)),
       cookies: Array.isArray(captured.cookies) ? captured.cookies.map(c => ({ name: c.name, value: c.value })) : [],
       body: captured.body && captured.body.raw != null
         ? { mode: 'raw', raw: String(captured.body.raw), contentType: captured.body.contentType || null }
@@ -99,11 +103,17 @@ class ReplayEngine extends EventEmitter {
     }
     if (patch.headers !== undefined) {
       if (patch.headers === null || typeof patch.headers !== 'object' || Array.isArray(patch.headers)) return { error: { code: CODES.INVALID_HEADER, message: 'Headers must be an object' } };
+      // Self-sanitizing: a replay must never be blocked by a header the browser
+      // itself managed. Drop unsettable/malformed headers instead of erroring so
+      // any captured request (http/https/WebView/WebView2/CEF) can be replayed.
+      const clean = {};
       for (const [k, v] of Object.entries(patch.headers)) {
-        if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(k)) return { error: { code: CODES.INVALID_HEADER, message: `Invalid header name: ${k}` } };
-        if (/[\r\n]/.test(String(v))) return { error: { code: CODES.INVALID_HEADER, message: `Invalid header value for ${k}` } };
+        if (isPseudo(k)) continue;                                   // HTTP/2 pseudo-header
+        if (!/^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/.test(k)) continue;      // malformed name
+        if (/[\r\n]/.test(String(v))) continue;                      // header-injection guard
+        clean[k] = v;
       }
-      draft.headers = { ...patch.headers };
+      draft.headers = clean;
     }
     if (patch.cookies !== undefined) {
       if (!Array.isArray(patch.cookies)) return { error: { code: CODES.INVALID_DRAFT, message: 'cookies must be an array' } };
@@ -139,6 +149,7 @@ class ReplayEngine extends EventEmitter {
     const outHeaders = {};
     for (const [k, v] of Object.entries(draft.headers || {})) {
       const lk = k.toLowerCase();
+      if (isPseudo(k)) { warnings.push({ header: k, policy: 'ignored', reason: 'HTTP/2 pseudo-header (browser-managed)' }); continue; }
       if (draft.mode === MODES.WEBVIEW_CONTEXT && BROWSER_CONTROLLED.has(lk)) {
         warnings.push({ header: k, policy: 'ignored', reason: 'browser-controlled in WebView context' });
         continue;

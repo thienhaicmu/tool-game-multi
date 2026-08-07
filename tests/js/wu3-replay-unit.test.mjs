@@ -41,14 +41,16 @@ test('createDraft on unknown request returns REQUEST_NOT_FOUND', () => {
   assert.equal(eng.createDraft('nope').error.code, 'REQUEST_NOT_FOUND');
 });
 
-test('updateDraft validates method / url / header', () => {
+test('updateDraft validates method/url; malformed headers are skipped, not fatal', () => {
   const eng = engineWith(capturedFixture());
   const d = eng.createDraft('cap1');
   assert.equal(eng.updateDraft(d.id, { method: 'FOO' }).error.code, 'INVALID_DRAFT');
   assert.equal(eng.updateDraft(d.id, { url: 'not a url' }).error.code, 'INVALID_DRAFT');
-  assert.equal(eng.updateDraft(d.id, { headers: [] }).error.code, 'INVALID_HEADER');
-  assert.equal(eng.updateDraft(d.id, { headers: { 'Bad Header': 'x' } }).error.code, 'INVALID_HEADER');
-  assert.equal(eng.updateDraft(d.id, { headers: { Good: 'line1\nline2' } }).error.code, 'INVALID_HEADER');
+  assert.equal(eng.updateDraft(d.id, { headers: [] }).error.code, 'INVALID_HEADER'); // wrong type still errors
+  const r = eng.updateDraft(d.id, { headers: { 'Bad Header': 'x', 'X-OK': '1', Evil: 'a\nb' } });
+  assert.ok(!r.error, 'malformed header name/value skipped, replay not blocked');
+  assert.equal(r.headers['X-OK'], '1');
+  assert.ok(!('Bad Header' in r.headers) && !('Evil' in r.headers));
 });
 
 test('WebView build: browser-controlled headers dropped with warning; cookies warned', async () => {
@@ -100,6 +102,26 @@ test('each execute appends history; nothing overwritten', async () => {
   assert.equal(h.executions[0].seq, 0);
   assert.equal(h.executions[1].seq, 1);
   assert.equal(h.drafts.length, 1);
+});
+
+test('HTTP/2 pseudo-headers are stripped, not rejected (real bug: :authority)', async () => {
+  const cap = capturedFixture({
+    headers: { ':authority': 'chamhinh.vinasoy.com', ':method': 'POST', ':path': '/x', ':scheme': 'https', 'X-Requested-With': 'XMLHttpRequest', 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: { raw: 'Modal=keyshop&Param=53', contentType: 'application/x-www-form-urlencoded' },
+  });
+  let sent;
+  const eng = engineWith(cap, { httpFetch: async (url, opts) => { sent = opts; return { status: 200, headers: {}, body: 'ok' }; } });
+  const draft = eng.createDraft('cap1', { mode: 'HTTP_DIRECT' });
+  // createDraft must not carry pseudo-headers into the editable draft.
+  assert.ok(!Object.keys(draft.headers).some((k) => k.startsWith(':')), 'pseudo-headers stripped from draft');
+  assert.equal(draft.headers['X-Requested-With'], 'XMLHttpRequest');
+  // Re-sending the full header set (as the UI does) must NOT error on ":authority".
+  const upd = eng.updateDraft(draft.id, { headers: { ':authority': 'h', 'X-Requested-With': 'XMLHttpRequest' } });
+  assert.ok(!upd.error, 'update tolerates pseudo-headers');
+  assert.ok(!('/:authority/' in upd.headers) && !Object.keys(upd.headers).some((k) => k.startsWith(':')));
+  const ex = await eng.execute(draft.id);
+  assert.equal(ex.status, 'COMPLETED');
+  assert.ok(!Object.keys(sent.headers).some((k) => k.startsWith(':')), 'no pseudo-header reaches the transport');
 });
 
 test('WebView fetch rejection surfaces REPLAY_BLOCKED_BY_BROWSER', async () => {
