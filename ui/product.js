@@ -12,6 +12,11 @@ let selectedId = null, detail = null, draft = null, timelineData = null, selecte
 let activeTab = 'overview';
 let interceptOn = false, paused = [], pausedSelected = null;
 let listDirty = false;
+// User actions (clicks) captured in the target, and the request->click link.
+const actions = [];            // newest-first click records { id, text, tag, selector, url, timestamp, count }
+const actionById = new Map();
+let actionFilter = null;       // when set, the request list shows only this click's requests
+let actionsDirty = false;
 
 function urlParts(u) { try { const x = new URL(u); return { host: x.host, path: x.pathname + (x.search || '') }; } catch { return { host: '', path: u }; } }
 
@@ -29,14 +34,22 @@ api.onEvent && api.onEvent((ev) => {
   if (ev.kind === 'request') {
     if (!reqs.has(ev.id)) order.push(ev.id);
     const prev = reqs.get(ev.id) || {};
-    reqs.set(ev.id, { ...prev, id: ev.id, method: ev.method, url: ev.url, targetId: ev.targetId, cdpRequestId: ev.requestId, resourceType: (ev.resourceType || '').toLowerCase(), status: prev.status ?? null, duration: prev.duration ?? null, ...urlParts(ev.url) });
+    const causedBy = ev.causedBy || prev.causedBy || null;
+    reqs.set(ev.id, { ...prev, id: ev.id, method: ev.method, url: ev.url, targetId: ev.targetId, cdpRequestId: ev.requestId, resourceType: (ev.resourceType || '').toLowerCase(), causedBy, status: prev.status ?? null, duration: prev.duration ?? null, ...urlParts(ev.url) });
+    if (ev.causedBy && !prev.causedBy) { const a = actionById.get(ev.causedBy); if (a) { a.count = (a.count || 0) + 1; markActionsDirty(); } }
     markDirty();
   } else if (ev.kind === 'response') {
     const r = reqs.get(ev.id);
     if (r) { r.status = ev.status; r.duration = ev.duration; markDirty(); if (selectedId === ev.id && activeTab === 'overview') renderDetail(); }
+  } else if (ev.kind === 'interaction') {
+    const a = { id: ev.id, text: ev.text || '', tag: ev.tag || '', selector: ev.selector || '', url: ev.url || '', timestamp: ev.timestamp, count: 0 };
+    actions.unshift(a); actionById.set(a.id, a);
+    if (actions.length > 500) { const old = actions.pop(); actionById.delete(old.id); }
+    markActionsDirty();
   }
 });
 function markDirty() { if (listDirty) return; listDirty = true; requestAnimationFrame(() => { listDirty = false; renderList(); }); }
+function markActionsDirty() { if (actionsDirty) return; actionsDirty = true; requestAnimationFrame(() => { actionsDirty = false; renderActions(); }); }
 
 // ---- request list (windowed) ----
 const MAX_ROWS = 400;
@@ -47,6 +60,9 @@ function filtered() {
   const out = [];
   for (let i = order.length - 1; i >= 0; i--) {
     const r = reqs.get(order[i]); if (!r) continue;
+    if (actionFilter && r.causedBy !== actionFilter) continue;
+    if (f === 'ws' && r.resourceType !== 'websocket') continue;
+    if (f === 'wssent' && !(r.resourceType === 'websocket' && String(r.method || '').indexOf('▶') >= 0)) continue;
     if (f === 'fetch' && r.resourceType !== 'fetch') continue;
     if (f === 'xhr' && r.resourceType !== 'xhr') continue;
     if (f === 'failed' && !(r.status === 0 || (r.status != null && r.status >= 400))) continue;
@@ -78,6 +94,30 @@ function renderList() {
     el.oncontextmenu = (e) => { e.preventDefault(); openContextMenu(e.clientX, e.clientY, el.dataset.id); };
   }
 }
+
+// ---- actions panel (clicks -> requests) ----
+function fmtTimeShort(t) { try { return new Date(t).toLocaleTimeString(); } catch { return ''; } }
+function renderActions() {
+  const badge = $('act-count'); if (badge) badge.textContent = actions.length ? String(actions.length) : '';
+  const el = $('actions'); if (!el) return;
+  const showall = $('act-showall'); if (showall) showall.hidden = !actionFilter;
+  if (!actions.length) { el.innerHTML = '<div class="empty">Chưa có thao tác.<div class="empty-sub">Hãy click trong target (nút Cược…). Mỗi click hiện ở đây kèm số request nó tạo ra.</div></div>'; return; }
+  el.innerHTML = actions.map((a) => {
+    const label = a.text || a.selector || a.tag || 'click';
+    return `<div class="act-item ${actionFilter === a.id ? 'sel' : ''}" data-a="${esc(a.id)}" title="${esc(a.selector || '')}">`
+      + `<div class="act-main"><span class="act-ic">👆</span><b>${esc(label)}</b></div>`
+      + `<div class="act-meta">${esc(a.tag || 'click')} · ${fmtTimeShort(a.timestamp)} · <span class="act-n ${a.count ? 'has' : ''}">${a.count || 0} req</span></div>`
+      + `</div>`;
+  }).join('');
+  for (const c of el.querySelectorAll('[data-a]')) c.onclick = () => {
+    actionFilter = (actionFilter === c.dataset.a) ? null : c.dataset.a; // toggle
+    renderActions(); renderList();
+  };
+}
+$('act-toggle').onclick = () => { const p = $('act-panel'); p.hidden = !p.hidden; };
+$('act-close').onclick = () => { $('act-panel').hidden = true; };
+$('act-showall').onclick = () => { actionFilter = null; renderActions(); renderList(); };
+$('act-clear').onclick = () => { actions.length = 0; actionById.clear(); actionFilter = null; renderActions(); renderList(); };
 
 // ---- selection -> detail + timeline + editor ----
 async function selectRequest(id) {
@@ -197,6 +237,7 @@ function fmtTime(t) { try { return new Date(t).toLocaleTimeString(); } catch { r
 function renderEditor() {
   const el = $('editor');
   if (pausedSelected) return renderInterceptEditor(el, pausedSelected);
+  if (detail && detail.isWebSocket) return renderWsEditor(el, detail);
   if (!draft) { el.innerHTML = '<div class="empty">Select a request to replay, or a paused request to intercept.</div>'; return; }
   el.innerHTML = `<h3>↺ Replay <span class="faint" style="font-weight:400;font-size:var(--t-sm)">— duplicated from captured request (original unchanged)</span></h3>`
     + `<div class="row2"><div class="field" style="flex:0 0 168px"><span class="lbl">Mode</span><select id="e-mode"><option value="WEBVIEW_CONTEXT">WebView Context</option><option value="HTTP_DIRECT">HTTP Direct</option></select></div>`
@@ -227,6 +268,23 @@ async function sendReplay() {
   }
   timelineData = await api.timelineBuild(selectedId); renderTimeline();
   btn.disabled = false; btn.textContent = 'Send';
+}
+
+function renderWsEditor(el, r) {
+  const dir = r.wsDirection === 'recv' ? 'nhận ◀' : 'gửi ▶';
+  el.innerHTML = `<h3>⇄ WebSocket <span class="faint" style="font-weight:400;font-size:var(--t-sm)">— ${esc(r.host)} · frame ${esc(dir)} · sửa payload rồi gửi lại qua đúng kết nối của trang</span></h3>`
+    + `<div class="row2"><div class="field"><span class="lbl">Payload</span><textarea id="ws-body" rows="6" class="mono">${esc((r.body && r.body.raw) || '')}</textarea></div></div>`
+    + `<div class="row2"><button class="primary" id="ws-send" title="Ctrl+Enter">Send frame ⌘↵</button>`
+    + `<span class="faint" style="align-self:center">Nếu báo WS_SEND_FAILED: Reload game rồi thử lại (socket phải gửi ≥1 frame để tool bám vào).</span></div>`
+    + `<div id="ws-result"></div>`;
+  $('ws-send').onclick = async () => {
+    const btn = $('ws-send'); btn.disabled = true; btn.textContent = 'Sending…';
+    const res = await api.wsSend(r.id, $('ws-body').value);
+    $('ws-result').innerHTML = res && res.ok
+      ? `<div class="result"><div class="st ok">Sent ✓</div><div class="muted">Đã gửi lại 1 frame qua WebSocket của trang.</div></div>`
+      : `<div class="errb">${esc(res && res.error && res.error.code || 'WS_SEND_FAILED')}: ${esc(res && res.error && res.error.message || '')}</div>`;
+    btn.disabled = false; btn.textContent = 'Send frame';
+  };
 }
 
 function renderInterceptEditor(el, p) {
@@ -277,7 +335,12 @@ function toCurl(d) {
 // ---- targets / connection ----
 function parseHostPort(s) { const m = String(s).trim().match(/^(?:https?:\/\/)?([^:/\s]+)(?::(\d+))?/); return m ? { host: m[1], port: Number(m[2] || 9222) } : { host: '127.0.0.1', port: 9222 }; }
 $('connect').onclick = async () => { const r = await api.connect(parseHostPort($('host').value)); if (r && r.error) toast(r.error.code || 'Connect failed'); };
-$('launch').onclick = async () => { const url = $('url').value.trim(); if (!url) return toast('Enter a URL'); try { await api.setScope([new URL(url).hostname]); } catch { /* allow all */ } await api.openBrowser(url); $('chip-cap').textContent = 'Launching…'; };
+// Scope: when "All domains" is on, capture EVERYTHING fully (no redaction) — needed
+// for games whose WS/API live on sibling domains. Off = only the launched host.
+async function applyScope() { if ($('scope-all').checked) { await api.setScope([]); } else { let h = null; try { h = new URL($('url').value.trim()).hostname; } catch { /* none */ } await api.setScope(h ? [h] : []); } }
+$('scope-all').onchange = () => { applyScope(); toast($('scope-all').checked ? 'Bắt tất cả domain' : 'Chỉ bắt host game'); };
+applyScope();
+$('launch').onclick = async () => { const url = $('url').value.trim(); if (!url) return toast('Enter a URL'); await applyScope(); await api.openBrowser(url); $('chip-cap').textContent = 'Launching…'; };
 $('adb').onclick = async () => {
   const r = await api.adbListWebviews();
   if (!r || !r.ok) return toast((r && r.error && r.error.code) || 'adb unavailable');
@@ -322,7 +385,7 @@ function renderPausedStrip() {
 // ---- toolbar misc ----
 $('search').oninput = markDirty;
 $('filter').onchange = renderList;
-$('clear').onclick = () => { reqs.clear(); order.length = 0; replayedIds.clear(); interceptedIds.clear(); selectedId = null; detail = null; draft = null; timelineData = null; renderList(); $('timeline').innerHTML = '<div class="empty">Select a request.</div>'; $('detail').innerHTML = '<div class="empty">Select a request.</div>'; renderEditor(); };
+$('clear').onclick = () => { reqs.clear(); order.length = 0; replayedIds.clear(); interceptedIds.clear(); actions.length = 0; actionById.clear(); actionFilter = null; selectedId = null; detail = null; draft = null; timelineData = null; renderList(); renderActions(); $('timeline').innerHTML = '<div class="empty">Select a request.</div>'; $('detail').innerHTML = '<div class="empty">Select a request.</div>'; renderEditor(); };
 $('theme').onclick = () => { const n = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = n; try { localStorage.setItem('wvd-theme', n); } catch { /* ignore */ } };
 try { document.documentElement.dataset.theme = localStorage.getItem('wvd-theme') || 'light'; } catch { /* ignore */ }
 function setChip(id, on, text) { const c = $(id); c.textContent = text; c.className = 'chip ' + (on ? 'on' : 'off'); }
@@ -331,7 +394,7 @@ function setChip(id, on, text) { const c = $(id); c.textContent = text; c.classN
 document.addEventListener('keydown', (e) => {
   const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement && document.activeElement.tagName);
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); $('search').focus(); return; }
-  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); if (pausedSelected) { const b = $('i-mod'); b && b.click(); } else { const b = $('e-send'); b && b.click(); } return; }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); const b = $('i-mod') || $('ws-send') || $('e-send'); b && b.click(); return; }
   if (e.key === 'Escape') { if (ctxEl) { closeContextMenu(); return; } if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return; }
   if (e.key === 'Delete' && !typing) { e.preventDefault(); $('clear').click(); return; }
   if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !typing) {
@@ -343,3 +406,4 @@ document.addEventListener('keydown', (e) => {
 });
 
 renderList();
+renderActions();

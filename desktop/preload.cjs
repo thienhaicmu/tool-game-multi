@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   replayUpdateDraft: (draftId, patch) => ipcRenderer.invoke('replay-update-draft', draftId, patch),
   replayExecute: draftId => ipcRenderer.invoke('replay-execute', draftId),
   replayHistory: capturedRequestId => ipcRenderer.invoke('replay-history', capturedRequestId),
+  wsSend: (capturedId, payload) => ipcRenderer.invoke('ws-send', capturedId, payload),
   timelineBuild: capturedRequestId => ipcRenderer.invoke('timeline-build', capturedRequestId),
   cookiesSave: targetId => ipcRenderer.invoke('cookies-save', targetId),
   cookiesRestore: (targetId, reload) => ipcRenderer.invoke('cookies-restore', targetId, reload),

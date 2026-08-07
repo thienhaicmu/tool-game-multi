@@ -47,16 +47,19 @@ class CaptureCorrelator extends EventEmitter {
     this._current = new Map();        // cdpKey -> capturedId (in-flight hop)
     this._pendingReqExtra = new Map();// cdpKey -> requestWillBeSentExtraInfo params
     this._pendingRespExtra = new Map();// cdpKey -> responseReceivedExtraInfo params
+    this._ws = new Map();             // cdpKey -> { id, url, frameSeq } (open WebSocket)
     this._seq = 0;
   }
 
   get(id) { const r = this._store.get(id); return r ? r : undefined; }
   list() { return [...this._store.values()]; }
 
-  _key(targetId, requestId) { return `${targetId}:${requestId}`; }
+  // sessionId distinguishes flattened child sessions (OOPIF / worker) that share
+  // one connection but reuse requestId numbering independently.
+  _key(targetId, requestId, sessionId) { return `${targetId}:${sessionId || ''}:${requestId}`; }
 
-  onRequestWillBeSent(targetId, p) {
-    const cdpKey = this._key(targetId, p.requestId);
+  onRequestWillBeSent(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
     let redirectFromId = null;
     if (p.redirectResponse && this._current.has(cdpKey)) {
       // Finalize the previous hop; do NOT overwrite its evidence.
@@ -73,7 +76,7 @@ class CaptureCorrelator extends EventEmitter {
     const id = `${cdpKey}#${hop}`;
     const parsed = parseUrl(p.request.url);
     const request = {
-      id, targetId, cdpRequestId: String(p.requestId), hop,
+      id, targetId, cdpRequestId: String(p.requestId), cdpSessionId: sessionId || null, hop,
       loaderId: p.loaderId || null, frameId: p.frameId || null, documentURL: p.documentURL || null,
       startedAt: new Date().toISOString(), timestamp: p.timestamp, wallTime: p.wallTime,
       startMonotonic: p.timestamp,
@@ -91,8 +94,8 @@ class CaptureCorrelator extends EventEmitter {
     this.emit('request', request);
   }
 
-  onRequestWillBeSentExtraInfo(targetId, p) {
-    const cdpKey = this._key(targetId, p.requestId);
+  onRequestWillBeSentExtraInfo(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
     const id = this._current.get(cdpKey);
     const req = id && this._store.get(id);
     if (req && !req.response) { this._mergeRequestExtra(req, p); this.emit('update', req); }
@@ -107,8 +110,8 @@ class CaptureCorrelator extends EventEmitter {
     if (extra.connectTiming) req.connectTiming = extra.connectTiming;
   }
 
-  onResponseReceived(targetId, p) {
-    const cdpKey = this._key(targetId, p.requestId);
+  onResponseReceived(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
     const id = this._current.get(cdpKey);
     const req = id && this._store.get(id);
     if (!req) return;
@@ -119,8 +122,8 @@ class CaptureCorrelator extends EventEmitter {
     this.emit('response', req);
   }
 
-  onResponseReceivedExtraInfo(targetId, p) {
-    const cdpKey = this._key(targetId, p.requestId);
+  onResponseReceivedExtraInfo(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
     const id = this._current.get(cdpKey);
     const req = id && this._store.get(id);
     if (req && req.response) { this._mergeResponseExtra(req.response, p); this.emit('update', req); }
@@ -150,8 +153,8 @@ class CaptureCorrelator extends EventEmitter {
     if (setCookie) resp.setCookies = String(setCookie).split('\n').map(s => s.trim()).filter(Boolean);
   }
 
-  onLoadingFinished(targetId, p) {
-    const cdpKey = this._key(targetId, p.requestId);
+  onLoadingFinished(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
     const id = this._current.get(cdpKey);
     const req = id && this._store.get(id);
     if (!req) return;
@@ -168,8 +171,8 @@ class CaptureCorrelator extends EventEmitter {
     this.emit('update', req);
   }
 
-  onLoadingFailed(targetId, p) {
-    const cdpKey = this._key(targetId, p.requestId);
+  onLoadingFailed(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
     const id = this._current.get(cdpKey);
     const req = id && this._store.get(id);
     if (!req) return;
@@ -188,6 +191,79 @@ class CaptureCorrelator extends EventEmitter {
     this._pendingRespExtra.delete(cdpKey);
   }
 
+  // ---- WebSocket capture ----
+  // HTTP capture never sees WS traffic: the bet/action of real-time games is a
+  // WebSocket *frame*, not an HTTP request. We surface the connection as one row
+  // and every data frame as its own selectable row so the payload is inspectable.
+  onWebSocketCreated(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
+    const id = `${cdpKey}#ws`;
+    const req = {
+      id, targetId, cdpRequestId: String(p.requestId), cdpSessionId: sessionId || null, hop: 0,
+      startedAt: new Date().toISOString(),
+      method: 'WS', url: p.url, ...parseUrl(p.url),
+      headers: {}, cookies: [], body: { hasBody: false, raw: null },
+      resourceType: 'WebSocket', initiator: p.initiator || null,
+      redirectFromId: null, response: null, failure: null, state: 'REQUEST_SENT',
+      isWebSocket: true, seq: this._seq++,
+    };
+    this._store.set(id, req);
+    this._ws.set(cdpKey, { id, url: p.url, frameSeq: 0 });
+    this.emit('request', req);
+  }
+
+  onWebSocketWillSendHandshakeRequest(targetId, p, sessionId) {
+    const conn = this._ws.get(this._key(targetId, p.requestId, sessionId));
+    const req = conn && this._store.get(conn.id);
+    if (req && p.request && p.request.headers) { req.headers = { ...req.headers, ...p.request.headers }; this.emit('update', req); }
+  }
+
+  onWebSocketHandshakeResponseReceived(targetId, p, sessionId) {
+    const conn = this._ws.get(this._key(targetId, p.requestId, sessionId));
+    const req = conn && this._store.get(conn.id);
+    if (!req) return;
+    req.response = this._buildResponse(p.response || { status: 101, statusText: 'Switching Protocols' }, req.response);
+    req.state = 'RESPONSE_RECEIVED';
+    this.emit('response', req);
+  }
+
+  onWebSocketClosed(targetId, p, sessionId) {
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
+    const conn = this._ws.get(cdpKey);
+    const req = conn && this._store.get(conn.id);
+    if (req) { req.state = 'FINISHED'; this.emit('update', req); }
+    this._ws.delete(cdpKey);
+  }
+
+  onWebSocketFrameSent(targetId, p, sessionId) { this._frame(targetId, p, sessionId, 'send'); }
+  onWebSocketFrameReceived(targetId, p, sessionId) { this._frame(targetId, p, sessionId, 'recv'); }
+
+  _frame(targetId, p, sessionId, dir) {
+    const r = p.response || {};
+    // opcode 1 = text, 2 = binary. Skip control frames (ping/pong/close) as noise.
+    if (r.opcode !== 1 && r.opcode !== 2) return;
+    const cdpKey = this._key(targetId, p.requestId, sessionId);
+    const conn = this._ws.get(cdpKey);
+    const url = conn ? conn.url : '';
+    const seq = conn ? conn.frameSeq++ : this._seq;
+    const id = `${cdpKey}#${dir}${seq}`;
+    const raw = r.opcode === 2 ? `[binary ${String(r.payloadData || '').length} bytes]` : String(r.payloadData || '');
+    const looksJson = /^[[{]/.test(raw.trim());
+    const req = {
+      id, targetId, cdpRequestId: String(p.requestId), cdpSessionId: sessionId || null, hop: 0,
+      startedAt: new Date().toISOString(), durationMs: 0,
+      method: dir === 'send' ? 'WS▶' : 'WS◀', url, ...parseUrl(url),
+      headers: {}, cookies: [],
+      body: { raw, hasBody: true, contentType: looksJson ? 'application/json' : 'text/plain', size: raw.length },
+      resourceType: 'WebSocket', initiator: null, redirectFromId: null,
+      response: { status: 101, statusText: dir === 'send' ? 'Frame Sent' : 'Frame Received', headers: {}, setCookies: [], mimeType: null, body: { state: 'UNAVAILABLE', reason: 'websocket frame' } },
+      failure: null, state: 'BODY_AVAILABLE', isWebSocket: true, wsDirection: dir, seq: this._seq++,
+    };
+    this._store.set(id, req);
+    this.emit('request', req);
+    this.emit('response', req);
+  }
+
   // Lazy, target-bound response body retrieval. MUST use the request's own target
   // client — never a global/selected/other target.
   async getResponseBody(capturedId) {
@@ -201,7 +277,9 @@ class CaptureCorrelator extends EventEmitter {
     if (!client) return { available: false, error: { code: CODES.TARGET_CONTEXT_UNAVAILABLE, message: 'The target that produced this request is no longer attached', context: { targetId: req.targetId } } };
     let result;
     try {
-      result = await client.Network.getResponseBody({ requestId: req.cdpRequestId });
+      // For flattened child sessions (OOPIF / worker) the body must be fetched on
+      // that session; CRI routes the command when a sessionId is passed.
+      result = await client.Network.getResponseBody({ requestId: req.cdpRequestId }, req.cdpSessionId || undefined);
     } catch (err) {
       // Common for cache/service-worker/redirect/no-body responses.
       const body = { available: false, error: { code: CODES.RESPONSE_BODY_UNAVAILABLE, message: String(err && err.message || err), cause: { fromDiskCache: req.response.fromDiskCache, fromServiceWorker: req.response.fromServiceWorker } } };

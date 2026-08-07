@@ -10,6 +10,8 @@ const CDP = require('chrome-remote-interface');
 const { TargetManager } = require('./cdp/target-manager.cjs');
 const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
+const { InteractionTracker } = require('./cdp/interaction-tracker.cjs');
+const { WsReplay } = require('./cdp/ws-replay.cjs');
 const { InterceptEngine } = require('./cdp/intercept.cjs');
 const { CookieVault, hostMatches } = require('./cookie-vault.cjs');
 const { ReplayEngine } = require('./replay/replay-engine.cjs');
@@ -133,6 +135,14 @@ async function connectEndpointWithRetry(endpoint, attempt = 0) {
 // resolves response bodies through each request's OWN target client.
 function resolveTargetClient(targetId) { const s = targetManager && targetManager.getSession(targetId); return s ? s.client : null; }
 const capture = new CaptureCorrelator({ resolveClient: resolveTargetClient });
+// User-action tracking: records clicks in the target (page + iframes) and links
+// each click to the requests it triggers, so you can see which action fired which
+// request. Correlation is time-based on the same target.
+const interactions = new InteractionTracker();
+interactions.on('interaction', ev => emit({ kind: 'interaction', id: ev.id, targetId: ev.targetId, text: ev.text, tag: ev.tag, selector: ev.selector, url: ev.url, timestamp: ev.timestamp }));
+// WebSocket "replace": resend a captured frame (with edited payload) over the
+// page's own live socket — the only way to replay WS, since CDP can't inject frames.
+const wsReplay = new WsReplay({ resolveClient: resolveTargetClient, getCaptured: id => capture.get(id) });
 // WU4: live request interception (Fetch domain), target-bound.
 const intercept = new InterceptEngine({ resolveClient: resolveTargetClient });
 intercept.on('changed', () => { if (shell && !shell.isDestroyed()) shell.webContents.send('intercept-changed', intercept.listPaused()); });
@@ -186,7 +196,11 @@ capture.on('request', req => {
   let origin = '/';
   try { origin = new URL(req.url).origin + '/'; } catch { /* opaque */ }
   const allowed = inScope(req.url);
-  emit({ kind: 'request', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, method: req.method, url: allowed ? safeDisplayUrl(req.url) : origin, resourceType: String(req.resourceType || 'other').toLowerCase(), scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(req.headers) : {}, bodyPreview: allowed ? String((req.body && req.body.raw) || '').slice(0, 4000) : null, timestamp: req.startedAt });
+  // Attribute meaningful requests (the ones a click actually fires) to the most
+  // recent click on this target; noise like images/scripts is left unlinked.
+  const rt = String(req.resourceType || 'other').toLowerCase();
+  const causedBy = (rt === 'fetch' || rt === 'xhr' || rt === 'websocket') ? interactions.linkRequest(req) : null;
+  emit({ kind: 'request', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, method: req.method, url: allowed ? safeDisplayUrl(req.url) : origin, resourceType: rt, scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(req.headers) : {}, bodyPreview: allowed ? String((req.body && req.body.raw) || '').slice(0, 4000) : null, causedBy, timestamp: req.startedAt });
 });
 capture.on('response', req => { if (!req.response) return; emit({ kind: 'response', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, url: safeDisplayUrl(req.url), status: req.response.status, duration: Math.round(req.durationMs || 0), timestamp: new Date().toISOString() }); });
 capture.on('update', req => { if (req.state === 'BODY_AVAILABLE' && req.response) emit({ kind: 'response', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, url: safeDisplayUrl(req.url), status: req.response.status, duration: Math.round(req.durationMs || 0), timestamp: new Date().toISOString() }); });
@@ -199,15 +213,53 @@ async function attachCdpCapture(client, target) {
   const { Network } = client;
   const tid = target.cdpTargetId;
   try { await Network.enable(); } catch { return; }
-  Network.requestWillBeSent(p => capture.onRequestWillBeSent(tid, p));
-  Network.requestWillBeSentExtraInfo(p => capture.onRequestWillBeSentExtraInfo(tid, p));
-  Network.responseReceived(p => capture.onResponseReceived(tid, p));
-  Network.responseReceivedExtraInfo(p => capture.onResponseReceivedExtraInfo(tid, p));
-  Network.loadingFinished(p => capture.onLoadingFinished(tid, p));
-  Network.loadingFailed(p => capture.onLoadingFailed(tid, p));
+  // CRI passes (params, sessionId): sessionId is undefined for this page's own
+  // session and set for flattened child sessions (OOPIF / worker) — see below.
+  Network.requestWillBeSent((p, sid) => capture.onRequestWillBeSent(tid, p, sid));
+  Network.requestWillBeSentExtraInfo((p, sid) => capture.onRequestWillBeSentExtraInfo(tid, p, sid));
+  Network.responseReceived((p, sid) => capture.onResponseReceived(tid, p, sid));
+  Network.responseReceivedExtraInfo((p, sid) => capture.onResponseReceivedExtraInfo(tid, p, sid));
+  Network.loadingFinished((p, sid) => capture.onLoadingFinished(tid, p, sid));
+  Network.loadingFailed((p, sid) => capture.onLoadingFailed(tid, p, sid));
+  // WebSocket frames — the bet/action of real-time games rides here, not HTTP.
+  Network.webSocketCreated((p, sid) => capture.onWebSocketCreated(tid, p, sid));
+  Network.webSocketWillSendHandshakeRequest((p, sid) => capture.onWebSocketWillSendHandshakeRequest(tid, p, sid));
+  Network.webSocketHandshakeResponseReceived((p, sid) => capture.onWebSocketHandshakeResponseReceived(tid, p, sid));
+  Network.webSocketFrameSent((p, sid) => capture.onWebSocketFrameSent(tid, p, sid));
+  Network.webSocketFrameReceived((p, sid) => capture.onWebSocketFrameReceived(tid, p, sid));
+  Network.webSocketClosed((p, sid) => capture.onWebSocketClosed(tid, p, sid));
   // Fetch events only fire once intercept.enable() calls Fetch.enable on this
   // client; harmless to subscribe always.
-  client.Fetch.requestPaused(p => intercept.onRequestPaused(tid, p));
+  client.Fetch.requestPaused((p, sid) => intercept.onRequestPaused(tid, p, sid));
+
+  // Fix A: cross-origin iframes (OOPIFs) and workers run in their OWN CDP
+  // session, so their network events never reach the page session. Auto-attach
+  // (flatten) multiplexes those child sessions over THIS connection; we enable
+  // Network on each so the game's requests/WS — often inside an embedded iframe —
+  // are captured. Child events arrive on the handlers above with `sid` set.
+  const autoAttachArgs = { autoAttach: true, waitForDebuggerOnStart: false, flatten: true };
+  try { await client.Target.setAutoAttach(autoAttachArgs); } catch { /* target may not support it */ }
+  client.Target.attachedToTarget(async ({ sessionId, targetInfo }) => {
+    const type = targetInfo && targetInfo.type;
+    // Top-level pages/popups are discovered by the poll loop and get their own
+    // dedicated client; capturing them here too would double-count. Only child
+    // frames (OOPIF) and workers need this session.
+    if (type === 'page') return;
+    try {
+      await client.Network.enable({}, sessionId);
+      // Recurse so nested OOPIFs / workers under this child also attach.
+      await client.Target.setAutoAttach(autoAttachArgs, sessionId);
+    } catch { /* child gone or unsupported */ }
+    // The game's buttons AND its WebSocket usually live in a cross-origin iframe —
+    // inject the click hook + WS send-hook there too.
+    if (type === 'iframe') {
+      interactions.injectSession(client, tid, sessionId).catch(() => {});
+      wsReplay.injectSession(client, sessionId).catch(() => {});
+    }
+  });
+  // Root-session click tracking + WS send-hook.
+  interactions.attach(client, tid).catch(() => {});
+  wsReplay.injectSession(client, undefined).catch(() => {});
 }
 
 function broadcastTargets() {
@@ -296,6 +348,7 @@ ipcMain.handle('replay-create-draft', (_event, capturedRequestId, options = {}) 
 ipcMain.handle('replay-update-draft', (_event, draftId, patch = {}) => replay.updateDraft(String(draftId), patch));
 ipcMain.handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
 ipcMain.handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
+ipcMain.handle('ws-send', (_event, capturedId, payload) => wsReplay.send(String(capturedId), payload == null ? '' : String(payload)));
 ipcMain.handle('timeline-build', (_event, capturedRequestId) => timeline.build(String(capturedRequestId)));
 ipcMain.handle('cookies-save', (_event, targetId) => saveCookiesFor(String(targetId || selectedTargetId || '')));
 ipcMain.handle('cookies-restore', (_event, targetId, reload) => restoreCookiesFor(String(targetId || selectedTargetId || ''), !!reload));

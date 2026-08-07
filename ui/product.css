@@ -176,3 +176,25 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .ctx button:hover{background:var(--accent-weak);color:var(--accent)}
 .toast{position:fixed;bottom:18px;left:50%;transform:translateX(-50%) translateY(6px);background:var(--elevate);color:var(--text);border:1px solid var(--line-strong);padding:8px 14px;border-radius:var(--r3);font-size:var(--t-sm);z-index:60;opacity:0;transition:opacity .18s,transform .18s;pointer-events:none;box-shadow:var(--shadow)}
 .toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+
+/* ---- actions panel (user clicks -> requests) — docked atop the request list ---- */
+.act-panel{flex:0 0 auto;max-height:45%;display:flex;flex-direction:column;background:var(--surface);border-bottom:2px solid var(--line-strong);overflow:hidden}
+.act-panel[hidden]{display:none}
+.act-head{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid var(--line);background:var(--panel)}
+.act-head .act-sub{font-size:var(--t-cap);color:var(--faint)}
+.act-head .spacer{flex:1}
+.act-list{overflow:auto;padding:4px}
+.act-item{padding:7px 9px;border:1px solid transparent;border-radius:var(--r2);cursor:pointer;transition:background .1s,border-color .1s}
+.act-item:hover{background:var(--accent-weak)}
+.act-item.sel{background:var(--accent-weak);border-color:var(--accent)}
+.act-main{display:flex;align-items:center;gap:6px;font-size:var(--t-md)}
+.act-main b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.act-ic{flex:0 0 auto}
+.act-meta{margin-top:2px;font-size:var(--t-cap);color:var(--faint)}
+.act-n{color:var(--faint)}
+.act-n.has{color:var(--accent);font-weight:600}
+#act-count{color:var(--accent);font-weight:600}
+
+/* ---- scope-all toggle ---- */
+.scope-all{display:inline-flex;align-items:center;gap:5px;font-size:var(--t-sm);color:var(--dim);cursor:pointer;user-select:none;padding:4px 8px;border:1px solid var(--line-strong);border-radius:var(--r2);background:var(--surface)}
+.scope-all input{margin:0;cursor:pointer}

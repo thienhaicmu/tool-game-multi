@@ -38,15 +38,19 @@
       <div class="search"><span class="search-ic">⌕</span><input id="search" placeholder="Search   e.g. POST 500 purchase" aria-label="Search requests"></div>
       <select id="filter" aria-label="Filter">
         <option value="all">All</option>
+        <option value="ws">WebSocket</option>
+        <option value="wssent">WS sent ▶</option>
         <option value="fetch">Fetch</option>
         <option value="xhr">XHR</option>
         <option value="failed">Failed</option>
         <option value="replayed">Replayed</option>
         <option value="intercepted">Intercepted</option>
       </select>
+      <label class="scope-all" title="Bắt tất cả domain — không lọc, không che payload (tắt để chỉ bắt host game)"><input type="checkbox" id="scope-all" checked> 🌐 All domains</label>
     </div>
     <span class="tb-sep"></span>
     <div class="group" role="group" aria-label="Utility">
+      <button id="act-toggle" class="btn" title="User actions (clicks) captured in the target">👆 Actions <span id="act-count" class="count"></span></button>
       <button id="clear" class="btn icon" title="Clear (Delete)">⌫</button>
       <button id="theme" class="btn icon" title="Toggle theme">☾</button>
     </div>
@@ -63,6 +67,17 @@
 
   <main class="grid">
     <section class="col list-col" style="flex-basis:var(--col1,320px)">
+      <div id="act-panel" class="act-panel" hidden aria-label="User actions">
+        <div class="act-head">
+          <b>👆 Actions</b>
+          <span class="act-sub">clicks → requests</span>
+          <div class="spacer"></div>
+          <button id="act-showall" class="btn" title="Remove the action filter — show all requests" hidden>Show all</button>
+          <button id="act-clear" class="btn icon" title="Clear actions">⌫</button>
+          <button id="act-close" class="btn icon" title="Hide panel">✕</button>
+        </div>
+        <div id="actions" class="act-list"><div class="empty">Chưa có thao tác.<div class="empty-sub">Hãy click trong target (nút Cược…). Mỗi click hiện ở đây kèm số request nó tạo ra.</div></div></div>
+      </div>
       <div class="col-head">Requests <span id="count" class="count"></span></div>
       <div id="list" class="rows"><div class="empty"><div class="empty-ic">◴</div>Waiting for network activity…<div class="empty-sub">Connect a target, then use your WebView.</div></div></div>
     </section>
@@ -86,6 +101,7 @@
 
   <div class="v-gutter" data-vgutter="1" title="Drag to resize editor"></div>
   <footer id="editor" class="editor" style="height:var(--editor-h,240px)"><div class="empty"><div class="empty-ic">↺</div>Select a request to replay, or a paused request to intercept.</div></footer>
+
   <script src="product.js"></script>
   <script src="panels.js"></script>
 </body>
