@@ -13,8 +13,13 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   exportSessionReport: (sessionId, format) => ipcRenderer.invoke('export-session-report', sessionId, format),
   analyzeSession: sessionId => ipcRenderer.invoke('analyze-session', sessionId),
   browserReplay: (id, payload) => ipcRenderer.invoke('browser-replay', id, payload),
-  onBrowserReplay: callback => ipcRenderer.on('browser-replay', (_event, token, payload) => callback(token, payload)),
-  browserReplayResult: (token, result) => ipcRenderer.invoke('browser-replay-result', token, result),
+  connect: endpoint => ipcRenderer.invoke('cdp-connect', endpoint),
+  listTargets: () => ipcRenderer.invoke('list-targets'),
+  selectTarget: id => ipcRenderer.invoke('select-target', id),
+  adbListWebviews: () => ipcRenderer.invoke('adb-list-webviews'),
+  adbForwardWebview: (socket, localPort) => ipcRenderer.invoke('adb-forward-webview', socket, localPort),
+  onTargetsChanged: callback => ipcRenderer.on('targets-changed', (_event, targets) => callback(targets)),
+  onCdpError: callback => ipcRenderer.on('cdp-error', (_event, error) => callback(error)),
   onDetailData: callback => ipcRenderer.on('detail-data', (_event, payload) => callback(payload)),
   onEvent: callback => {
     const listener = (_event, payload) => callback(payload);

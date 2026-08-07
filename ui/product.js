@@ -43,5 +43,26 @@ document.querySelector('#select-all').onclick = () => { events.filter(event => e
 document.querySelector('#theme').onclick = () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; try { localStorage.setItem('observatory-theme', next); } catch {} };
 const language = document.querySelector('#lang'); const savedLanguage = (() => { try { return localStorage.getItem('observatory-language') || 'vi'; } catch { return 'vi'; } })(); language.value = savedLanguage; applyLanguage(savedLanguage); language.onchange = () => applyLanguage(language.value);
 try { document.documentElement.dataset.theme = localStorage.getItem('observatory-theme') || 'light'; } catch {}
+// WU1: target selector. Discovered targets (Chrome page / WebView2 / CEF / Android
+// WebView) appear here; selecting one binds capture + replay to that target.
+const topActions = document.querySelector('.top-actions');
+if (topActions) {
+  const targetSelect = document.createElement('select');
+  targetSelect.id = 'targets';
+  targetSelect.title = 'Debug target';
+  targetSelect.style.cssText = 'height:28px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text);font-size:11px;max-width:280px';
+  targetSelect.innerHTML = '<option value="">No targets</option>';
+  topActions.insertBefore(targetSelect, document.querySelector('#theme'));
+  targetSelect.onchange = () => { if (targetSelect.value) window.desktopCapture?.selectTarget(targetSelect.value); };
+  const runtimeBadge = { CHROME: 'Chrome', WEBVIEW2: 'WebView2', CEF: 'CEF', ANDROID_WEBVIEW: 'Android WebView', OTHER: 'Target' };
+  window.desktopCapture?.onTargetsChanged(list => {
+    const current = targetSelect.value;
+    if (!list || !list.length) { targetSelect.innerHTML = '<option value="">No targets</option>'; return; }
+    targetSelect.innerHTML = list.map(t => '<option value="' + esc(t.cdpTargetId) + '">' + esc((runtimeBadge[t.runtime] || t.runtime) + ' · ' + (t.title || t.url || t.cdpTargetId)) + '</option>').join('');
+    if (list.some(t => t.cdpTargetId === current)) targetSelect.value = current;
+    document.querySelector('#status').textContent = 'Connected · ' + list.length + ' target' + (list.length > 1 ? 's' : '');
+  });
+  window.desktopCapture?.onCdpError(err => { document.querySelector('#status').textContent = (err && err.code) || 'CDP error'; });
+}
 window.desktopCapture?.onEvent(event => { events.push(event); render(); });
 render();

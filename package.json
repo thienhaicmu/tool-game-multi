@@ -9,6 +9,7 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "test": "node --test \"tests/js/**/*.test.mjs\"",
     "dist": "electron-builder --win nsis --x64",
     "dist:dir": "electron-builder --win dir --x64"
   },

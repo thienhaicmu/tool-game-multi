@@ -7,12 +7,16 @@ const { execFile } = require('node:child_process');
 const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
 const CDP = require('chrome-remote-interface');
+const { TargetManager } = require('./cdp/target-manager.cjs');
+const androidBridge = require('./cdp/android-bridge.cjs');
+const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
 let detailWindow;
-let browserWindow;
 let chromeProcess;
-let cdpClient;
+let targetManager = null;
+let selectedTargetId = null;
+const capturedClients = new WeakSet();
 let browserSession;
 const pending = new Map();
 const replayable = new Map();
@@ -23,7 +27,6 @@ let journal;
 let importStarted = false;
 let importInProgress = false;
 let importTimer;
-const browserReplayWaiters = new Map();
 
 function importJournalOnExit() {
   if (importStarted || !journal) return null;
@@ -124,30 +127,72 @@ function openBrowserWindow(url) {
   const candidates = [process.env.OBSERVATORY_CHROME, process.env.CHROME_PATH, path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google/Chrome/Application/chrome.exe')].filter(Boolean);
   const executable = candidates.find(candidate => fs.existsSync(candidate));
   if (!executable) return false;
-  if (chromeProcess && !chromeProcess.killed) { connectChromeCdp(Number(process.env.OBSERVATORY_CDP_PORT || 9222)); return true; }
+  const cdpPort = Number(process.env.OBSERVATORY_CDP_PORT || 9222);
+  if (chromeProcess && !chromeProcess.killed) { connectEndpointWithRetry({ port: cdpPort }); return true; }
   const profile = process.env.OBSERVATORY_CHROME_PROFILE || path.join(app.getPath('userData'), 'chrome-profile');
   chromeProcess = spawn(executable, [`--remote-debugging-port=${process.env.OBSERVATORY_CDP_PORT || 9222}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--new-window', url], { detached: true, windowsHide: false, stdio: 'ignore' });
   chromeProcess.unref(); chromeProcess.once('exit', () => { chromeProcess = null; });
-  connectChromeCdp(Number(process.env.OBSERVATORY_CDP_PORT || 9222));
+  connectEndpointWithRetry({ port: cdpPort });
   return true;
 }
 
-async function connectChromeCdp(port, attempt = 0) {
-  if (cdpClient || attempt > 12) return;
+// Newly launched Chrome needs ~1s before its CDP endpoint answers; retry connect.
+async function connectEndpointWithRetry(endpoint, attempt = 0) {
+  const result = await connectEndpoint(endpoint);
+  if (!result.ok && attempt < 12) { setTimeout(() => connectEndpointWithRetry(endpoint, attempt + 1), 1000); }
+  return result;
+}
+
+// WU1: attach network capture to a specific target's own CDP client. Each request
+// is tagged with its targetId so replay/intercept can bind back to the exact
+// WebView it came from (see selectedClient / browser-replay).
+async function attachCdpCapture(client, target) {
+  if (capturedClients.has(client)) return;
+  capturedClients.add(client);
+  const { Network } = client;
+  try { await Network.enable(); } catch { return; }
+  Network.requestWillBeSent(params => {
+    const id = `cdp:${target.cdpTargetId}:${params.requestId}`;
+    let origin = '/';
+    try { origin = new URL(params.request.url).origin + '/'; } catch { /* opaque */ }
+    replayable.set(id, { targetId: target.cdpTargetId, method: params.request.method, url: params.request.url, uploadData: params.request.postData ? [{ bytes: Buffer.from(params.request.postData) }] : [], headers: params.request.headers || {} });
+    if (replayable.size > 500) replayable.delete(replayable.keys().next().value);
+    const allowed = inScope(params.request.url);
+    emit({ kind: 'request', id, requestId: params.requestId, targetId: target.cdpTargetId, method: params.request.method, url: allowed ? safeDisplayUrl(params.request.url) : origin, resourceType: String(params.type || 'other').toLowerCase(), scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(params.request.headers) : {}, bodyPreview: allowed ? String(params.request.postData || '').slice(0, 4000) : null, timestamp: new Date().toISOString() });
+  });
+  Network.responseReceived(params => { const id = `cdp:${target.cdpTargetId}:${params.requestId}`; emit({ kind: 'response', id, requestId: params.requestId, targetId: target.cdpTargetId, url: safeDisplayUrl(params.response.url), status: params.response.status, duration: 0, timestamp: new Date().toISOString() }); });
+}
+
+function broadcastTargets() {
+  if (shell && !shell.isDestroyed() && targetManager) shell.webContents.send('targets-changed', targetManager.listTargets());
+}
+
+async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = null } = {}) {
+  if (targetManager) { try { await targetManager.stop(); } catch { /* ignore */ } targetManager = null; selectedTargetId = null; }
+  const manager = new TargetManager({ host, port, runtimeHint });
+  manager.on('attached', ({ target, client }) => {
+    if (!selectedTargetId) selectedTargetId = target.cdpTargetId; // auto-select first attachable target
+    attachCdpCapture(client, target);
+    broadcastTargets();
+  });
+  manager.on('target-added', broadcastTargets);
+  manager.on('target-updated', broadcastTargets);
+  manager.on('target-removed', id => { if (selectedTargetId === id) selectedTargetId = null; broadcastTargets(); });
+  manager.on('error', err => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) }); });
   try {
-    cdpClient = await CDP({ port });
-    const { Network, Page } = cdpClient;
-    await Network.enable(); await Page.enable();
-    Network.requestWillBeSent(params => {
-      const id = `cdp:${params.requestId}`;
-      const target = new URL(params.request.url);
-      replayable.set(id, { method: params.request.method, url: params.request.url, uploadData: params.request.postData ? [{ bytes: Buffer.from(params.request.postData) }] : [], headers: params.request.headers || {} });
-      const allowed = inScope(params.request.url);
-      emit({ kind: 'request', id, requestId: params.requestId, method: params.request.method, url: allowed ? safeDisplayUrl(params.request.url) : target.origin + '/', resourceType: String(params.type || 'other').toLowerCase(), scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(params.request.headers) : {}, bodyPreview: allowed ? String(params.request.postData || '').slice(0, 4000) : null, timestamp: new Date().toISOString() });
-    });
-    Network.responseReceived(params => { const id = `cdp:${params.requestId}`; emit({ kind: 'response', id, requestId: params.requestId, url: safeDisplayUrl(params.response.url), status: params.response.status, duration: 0, timestamp: new Date().toISOString() }); });
-    cdpClient.on('disconnect', () => { cdpClient = null; });
-  } catch { cdpClient = null; setTimeout(() => connectChromeCdp(port, attempt + 1), 1000); }
+    await manager.start();
+    targetManager = manager;
+    broadcastTargets();
+    return { ok: true, targets: manager.listTargets() };
+  } catch (err) {
+    return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err && err.message || err) } };
+  }
+}
+
+function selectedClient() {
+  if (!targetManager || !selectedTargetId) return null;
+  const session = targetManager.getSession(selectedTargetId);
+  return session ? session.client : null;
 }
 
 function openDetailWindow(payload) {
@@ -212,21 +257,40 @@ ipcMain.handle('analyze-session', async (_event, id) => {
   const python = process.env.OBSERVATORY_PYTHON || 'python';
   return await new Promise(resolve => execFile(python, ['-m', 'websec_observer.cli.main', 'analyze', database, id], { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => error ? resolve({ ok: false, error: String(stderr || error.message) }) : resolve({ ok: true, output: stdout }))); 
 });
+// WU3 Mode A foundation: WebView-context replay runs inside the captured target's
+// OWN client. We resolve the request's target (falling back to the selected one)
+// so the fetch executes in the correct WebView, never a default page.
 ipcMain.handle('browser-replay', async (_event, id, payload = {}) => {
-  if (!cdpClient && (!browserWindow || browserWindow.isDestroyed())) return { ok: false, error: 'Chrome debugging session is not connected' };
-  if (cdpClient) {
-    try {
-      const expression = `(async()=>{const r=await fetch(${JSON.stringify(payload.url)},${JSON.stringify({ method: payload.method || 'GET', headers: payload.headers || {}, body: ['GET','HEAD'].includes(payload.method || 'GET') ? undefined : payload.body, credentials: 'include' })});return {ok:true,status:r.status,statusText:r.statusText,bodyPreview:(await r.text()).slice(0,4000)}})()`;
-      const result = await cdpClient.Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
-      return result.result?.value || { ok: false, error: 'No replay result returned by Chrome' };
-    } catch (error) { return { ok: false, error: String(error.message || error) }; }
-  }
-  const token = randomUUID();
-  const result = new Promise(resolve => browserReplayWaiters.set(token, resolve));
-  browserWindow.webContents.send('browser-replay', token, { id, ...payload });
-  return await Promise.race([result, new Promise(resolve => setTimeout(() => { browserReplayWaiters.delete(token); resolve({ ok: false, error: 'Browser replay timeout' }); }, 30000))]);
+  const captured = replayable.get(id);
+  const targetId = payload.targetId || captured?.targetId || selectedTargetId;
+  const session = targetManager && targetId ? targetManager.getSession(targetId) : null;
+  const client = session ? session.client : selectedClient();
+  if (!client) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'The WebView that produced this request is no longer attached. Reconnect or choose another target.' } };
+  try {
+    const expression = `(async()=>{const r=await fetch(${JSON.stringify(payload.url)},${JSON.stringify({ method: payload.method || 'GET', headers: payload.headers || {}, body: ['GET','HEAD'].includes(payload.method || 'GET') ? undefined : payload.body, credentials: 'include' })});return {ok:true,status:r.status,statusText:r.statusText,bodyPreview:(await r.text()).slice(0,4000)}})()`;
+    const result = await client.Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
+    return result.result?.value || { ok: false, error: { code: 'REPLAY_FAILED', message: 'No replay result returned by the WebView' } };
+  } catch (error) { return { ok: false, error: { code: 'REPLAY_FAILED', message: String(error.message || error) } }; }
 });
-ipcMain.handle('browser-replay-result', (_event, token, result) => { const resolve = browserReplayWaiters.get(token); if (!resolve) return false; browserReplayWaiters.delete(token); resolve(result); return true; });
+ipcMain.handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
+ipcMain.handle('list-targets', () => targetManager ? targetManager.listTargets() : []);
+ipcMain.handle('select-target', (_event, id) => {
+  if (!targetManager) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Not connected to a CDP endpoint' } };
+  const session = targetManager.getSession(id);
+  if (!session) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Target is no longer available' } };
+  selectedTargetId = String(id);
+  return { ok: true, selectedTargetId };
+});
+ipcMain.handle('adb-list-webviews', async () => {
+  try { return { ok: true, sockets: await androidBridge.listWebviewSockets(process.env.OBSERVATORY_ADB || 'adb') }; }
+  catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
+});
+ipcMain.handle('adb-forward-webview', async (_event, socket, localPort = 9223) => {
+  try {
+    const endpoint = await androidBridge.forwardSocket(process.env.OBSERVATORY_ADB || 'adb', localPort, String(socket));
+    return await connectEndpoint(endpoint);
+  } catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
+});
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {
   const item = replayable.get(id);
