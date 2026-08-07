@@ -9,6 +9,7 @@ const { normalizeCaptureEvent } = require('./event-contract.cjs');
 const CDP = require('chrome-remote-interface');
 const { TargetManager } = require('./cdp/target-manager.cjs');
 const androidBridge = require('./cdp/android-bridge.cjs');
+const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
@@ -143,24 +144,38 @@ async function connectEndpointWithRetry(endpoint, attempt = 0) {
   return result;
 }
 
-// WU1: attach network capture to a specific target's own CDP client. Each request
-// is tagged with its targetId so replay/intercept can bind back to the exact
-// WebView it came from (see selectedClient / browser-replay).
+// Shared correlator: holds RAW evidence (unredacted) for all attached targets and
+// resolves response bodies through each request's OWN target client.
+const capture = new CaptureCorrelator({
+  resolveClient: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.client : null; },
+});
+// Bridge raw model -> the existing display/journal pipeline (which may mask
+// secrets for display only; raw evidence stays in `capture`).
+capture.on('request', req => {
+  let origin = '/';
+  try { origin = new URL(req.url).origin + '/'; } catch { /* opaque */ }
+  replayable.set(req.id, { targetId: req.targetId, method: req.method, url: req.url, uploadData: req.body && req.body.raw != null ? [{ bytes: Buffer.from(req.body.raw) }] : [], headers: req.headers || {} });
+  if (replayable.size > 1000) replayable.delete(replayable.keys().next().value);
+  const allowed = inScope(req.url);
+  emit({ kind: 'request', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, method: req.method, url: allowed ? safeDisplayUrl(req.url) : origin, resourceType: String(req.resourceType || 'other').toLowerCase(), scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(req.headers) : {}, bodyPreview: allowed ? String((req.body && req.body.raw) || '').slice(0, 4000) : null, timestamp: req.startedAt });
+});
+capture.on('response', req => { if (!req.response) return; emit({ kind: 'response', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, url: safeDisplayUrl(req.url), status: req.response.status, duration: Math.round(req.durationMs || 0), timestamp: new Date().toISOString() }); });
+capture.on('update', req => { if (req.state === 'BODY_AVAILABLE' && req.response) emit({ kind: 'response', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, url: safeDisplayUrl(req.url), status: req.response.status, duration: Math.round(req.durationMs || 0), timestamp: new Date().toISOString() }); });
+
+// WU2: attach full network capture to a target's own CDP client and route every
+// event through the shared correlator, tagged with this target's id.
 async function attachCdpCapture(client, target) {
   if (capturedClients.has(client)) return;
   capturedClients.add(client);
   const { Network } = client;
+  const tid = target.cdpTargetId;
   try { await Network.enable(); } catch { return; }
-  Network.requestWillBeSent(params => {
-    const id = `cdp:${target.cdpTargetId}:${params.requestId}`;
-    let origin = '/';
-    try { origin = new URL(params.request.url).origin + '/'; } catch { /* opaque */ }
-    replayable.set(id, { targetId: target.cdpTargetId, method: params.request.method, url: params.request.url, uploadData: params.request.postData ? [{ bytes: Buffer.from(params.request.postData) }] : [], headers: params.request.headers || {} });
-    if (replayable.size > 500) replayable.delete(replayable.keys().next().value);
-    const allowed = inScope(params.request.url);
-    emit({ kind: 'request', id, requestId: params.requestId, targetId: target.cdpTargetId, method: params.request.method, url: allowed ? safeDisplayUrl(params.request.url) : origin, resourceType: String(params.type || 'other').toLowerCase(), scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(params.request.headers) : {}, bodyPreview: allowed ? String(params.request.postData || '').slice(0, 4000) : null, timestamp: new Date().toISOString() });
-  });
-  Network.responseReceived(params => { const id = `cdp:${target.cdpTargetId}:${params.requestId}`; emit({ kind: 'response', id, requestId: params.requestId, targetId: target.cdpTargetId, url: safeDisplayUrl(params.response.url), status: params.response.status, duration: 0, timestamp: new Date().toISOString() }); });
+  Network.requestWillBeSent(p => capture.onRequestWillBeSent(tid, p));
+  Network.requestWillBeSentExtraInfo(p => capture.onRequestWillBeSentExtraInfo(tid, p));
+  Network.responseReceived(p => capture.onResponseReceived(tid, p));
+  Network.responseReceivedExtraInfo(p => capture.onResponseReceivedExtraInfo(tid, p));
+  Network.loadingFinished(p => capture.onLoadingFinished(tid, p));
+  Network.loadingFailed(p => capture.onLoadingFailed(tid, p));
 }
 
 function broadcastTargets() {
@@ -272,6 +287,8 @@ ipcMain.handle('browser-replay', async (_event, id, payload = {}) => {
     return result.result?.value || { ok: false, error: { code: 'REPLAY_FAILED', message: 'No replay result returned by the WebView' } };
   } catch (error) { return { ok: false, error: { code: 'REPLAY_FAILED', message: String(error.message || error) } }; }
 });
+ipcMain.handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
+ipcMain.handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
 ipcMain.handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
 ipcMain.handle('list-targets', () => targetManager ? targetManager.listTargets() : []);
 ipcMain.handle('select-target', (_event, id) => {

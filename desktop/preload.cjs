@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   exportSessionReport: (sessionId, format) => ipcRenderer.invoke('export-session-report', sessionId, format),
   analyzeSession: sessionId => ipcRenderer.invoke('analyze-session', sessionId),
   browserReplay: (id, payload) => ipcRenderer.invoke('browser-replay', id, payload),
+  getResponseBody: capturedId => ipcRenderer.invoke('get-response-body', capturedId),
+  getRequestDetail: capturedId => ipcRenderer.invoke('get-request-detail', capturedId),
   connect: endpoint => ipcRenderer.invoke('cdp-connect', endpoint),
   listTargets: () => ipcRenderer.invoke('list-targets'),
   selectTarget: id => ipcRenderer.invoke('select-target', id),
