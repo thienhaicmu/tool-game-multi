@@ -8,52 +8,65 @@
 </head>
 <body>
   <header class="topbar">
-    <div class="brand"><span class="glyph">◇</span><b>WebView Debugger</b></div>
-    <div class="connect">
-      <input id="host" value="127.0.0.1:9222" title="CDP endpoint host:port">
-      <button id="connect">Connect</button>
-      <input id="url" placeholder="https://your.app" title="Launch Chrome at URL">
-      <button id="launch">Launch Chrome</button>
-      <button id="adb" title="Attach Android WebView via adb">ADB</button>
+    <div class="brand"><span class="glyph">◇</span><b>WebView&nbsp;Debugger</b></div>
+    <span class="tb-sep"></span>
+    <div class="group" role="group" aria-label="Connection">
+      <input id="host" class="mono" value="127.0.0.1:9222" title="CDP endpoint host:port" aria-label="CDP endpoint">
+      <button id="connect" class="btn">Connect</button>
+      <input id="url" placeholder="https://your.app" title="Launch Chrome at URL" aria-label="Launch URL">
+      <button id="launch" class="btn">Launch</button>
+      <button id="adb" class="btn" title="Attach Android WebView via adb">ADB</button>
     </div>
-    <select id="targets" title="Debug target"><option value="">No targets</option></select>
-    <div class="chips">
+    <span class="tb-sep"></span>
+    <div class="group" role="group" aria-label="Target">
+      <select id="targets" title="Debug target" aria-label="Debug target"><option value="">No targets</option></select>
+    </div>
+    <span class="tb-sep"></span>
+    <div class="chips" role="status">
       <span id="chip-conn" class="chip off">Disconnected</span>
       <span id="chip-cap" class="chip off">Idle</span>
-      <span id="chip-intc" class="chip off">Intercept OFF</span>
-      <span id="chip-paused" class="chip" hidden>0 paused</span>
+      <span id="chip-intc" class="chip off">Intercept&nbsp;OFF</span>
+      <span id="chip-paused" class="chip warn" hidden>0&nbsp;paused</span>
     </div>
     <div class="spacer"></div>
-    <input id="search" placeholder="Search  (Ctrl+F)  e.g. POST 500 purchase">
-    <select id="filter">
-      <option value="all">All</option>
-      <option value="fetch">Fetch</option>
-      <option value="xhr">XHR</option>
-      <option value="failed">Failed</option>
-      <option value="replayed">Replayed</option>
-      <option value="intercepted">Intercepted</option>
-    </select>
-    <button id="clear" title="Clear (Delete)">Clear</button>
-    <button id="theme" class="icon">☾</button>
+    <div class="group" role="group" aria-label="Search">
+      <div class="search"><span class="search-ic">⌕</span><input id="search" placeholder="Search   e.g. POST 500 purchase" aria-label="Search requests"></div>
+      <select id="filter" aria-label="Filter">
+        <option value="all">All</option>
+        <option value="fetch">Fetch</option>
+        <option value="xhr">XHR</option>
+        <option value="failed">Failed</option>
+        <option value="replayed">Replayed</option>
+        <option value="intercepted">Intercepted</option>
+      </select>
+    </div>
+    <span class="tb-sep"></span>
+    <div class="group" role="group" aria-label="Utility">
+      <button id="clear" class="btn icon" title="Clear (Delete)">⌫</button>
+      <button id="theme" class="btn icon" title="Toggle theme">☾</button>
+    </div>
   </header>
 
-  <div class="intercept-bar">
-    <label><input type="checkbox" id="intc-toggle"> Intercept selected target</label>
-    <input id="intc-host" placeholder="host (optional)">
-    <input id="intc-method" placeholder="method">
-    <input id="intc-url" placeholder="url contains">
+  <div class="intercept-bar" id="intercept-bar">
+    <span class="mode-label">INTERCEPT</span>
+    <label class="switch"><input type="checkbox" id="intc-toggle"><span class="track"></span></label>
+    <input id="intc-host" placeholder="host" aria-label="Intercept host">
+    <input id="intc-method" placeholder="method" aria-label="Intercept method">
+    <input id="intc-url" placeholder="url contains" aria-label="Intercept url contains">
     <span id="paused-strip" class="paused-strip"></span>
   </div>
 
   <main class="grid">
-    <section class="col list-col">
-      <div class="col-head">Requests <span id="count" class="muted"></span></div>
-      <div id="list" class="rows"><div class="empty">Waiting for network activity…</div></div>
+    <section class="col list-col" style="flex-basis:var(--col1,320px)">
+      <div class="col-head">Requests <span id="count" class="count"></span></div>
+      <div id="list" class="rows"><div class="empty"><div class="empty-ic">◴</div>Waiting for network activity…<div class="empty-sub">Connect a target, then use your WebView.</div></div></div>
     </section>
-    <section class="col timeline-col">
+    <div class="gutter" data-gutter="1" title="Drag to resize"></div>
+    <section class="col timeline-col" style="flex-basis:var(--col2,300px)">
       <div class="col-head">Timeline</div>
-      <div id="timeline" class="tl"><div class="empty">Select a request.</div></div>
+      <div id="timeline" class="tl"><div class="empty"><div class="empty-ic">◷</div>Select a request.</div></div>
     </section>
+    <div class="gutter" data-gutter="2" title="Drag to resize"></div>
     <section class="col detail-col">
       <div class="tabs" id="detail-tabs">
         <button class="tab active" data-tab="overview">Overview</button>
@@ -62,11 +75,13 @@
         <button class="tab" data-tab="diff">Diff</button>
         <button class="tab" data-tab="history">History</button>
       </div>
-      <div id="detail" class="detail"><div class="empty">Select a request.</div></div>
+      <div id="detail" class="detail"><div class="empty"><div class="empty-ic">▦</div>Select a request to inspect.</div></div>
     </section>
   </main>
 
-  <footer id="editor" class="editor"><div class="empty">Select a request to replay, or a paused request to intercept.</div></footer>
+  <div class="v-gutter" data-vgutter="1" title="Drag to resize editor"></div>
+  <footer id="editor" class="editor" style="height:var(--editor-h,240px)"><div class="empty"><div class="empty-ic">↺</div>Select a request to replay, or a paused request to intercept.</div></footer>
   <script src="product.js"></script>
+  <script src="panels.js"></script>
 </body>
 </html>

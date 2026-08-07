@@ -66,9 +66,9 @@ function renderList() {
   if (!total) { $('list').innerHTML = '<div class="empty">Waiting for network activity…</div>'; return; }
   if (!list.length) { $('list').innerHTML = '<div class="empty">No requests match the filter.</div>'; return; }
   $('list').innerHTML = list.map((r) => {
-    const badges = (replayedIds.has(r.id) ? '<span class="badge">R</span>' : '') + (interceptedIds.has(r.id) ? '<span class="badge">I</span>' : '');
+    const badges = (replayedIds.has(r.id) ? '<span class="badge">R</span>' : '') + (interceptedIds.has(r.id) ? '<span class="badge i">I</span>' : '');
     return `<div class="row ${selectedId === r.id ? 'selected' : ''}" data-id="${esc(r.id)}">`
-      + `<span class="m">${esc(r.method)}</span>`
+      + `<span class="m" data-m="${esc(r.method)}">${esc(r.method)}</span>`
       + `<span class="u"><b>${esc(r.path)}${badges}</b><span>${esc(r.host)} · ${esc(r.resourceType || 'other')}</span></span>`
       + `<span class="t">${r.duration != null ? Math.round(r.duration) + 'ms' : ''}</span>`
       + `<span class="s ${statusClass(r.status)}">${r.status == null ? '…' : (r.status || 'ERR')}</span></div>`;
@@ -94,11 +94,11 @@ function renderTimeline() {
   if (!timelineData || timelineData.error) { el.innerHTML = '<div class="empty">Select a request.</div>'; return; }
   const s = timelineData.summary;
   const glyph = { capture: '●', replay: '↻', intercept: '⧗' };
-  const head = `<div class="tl-card" style="cursor:default"><div class="k">Summary</div><div class="l">${s.replayed} replay · ${s.intercepted} intercept · last ${s.lastStatus ?? '—'}</div>${s.lastError ? `<div class="meta errb">error: ${esc(s.lastError.code)}</div>` : ''}</div>`;
+  const head = `<div class="tl-card summary"><div class="k">Summary</div><div class="l">${s.replayed} replay · ${s.intercepted} intercept · last ${s.lastStatus ?? '—'}</div>${s.lastError ? `<div class="meta errb">error: ${esc(s.lastError.code)}</div>` : ''}</div>`;
   const cards = timelineData.events.map((e) => {
     const when = fmtTime(e.time);
     const st = e.status != null ? ` → ${e.status}` : '';
-    return `<div class="tl-card ${selectedEventId === e.id ? 'sel' : ''}" data-ev="${esc(e.id)}">`
+    return `<div class="tl-card ${selectedEventId === e.id ? 'sel' : ''}" data-kind="${esc(e.kind)}" data-ev="${esc(e.id)}">`
       + `<div class="k">${glyph[e.kind] || '•'} ${esc(e.kind)}${e.mode ? ' · ' + esc(e.mode) : ''}</div>`
       + `<div class="l">${esc(e.method || '')} ${esc(e.summary)}${st}</div>`
       + `<div class="meta">${when} · ${esc(e.state)}${e.error ? ' · ' + esc(e.error.code) : ''}</div></div>`;
@@ -198,12 +198,13 @@ function renderEditor() {
   const el = $('editor');
   if (pausedSelected) return renderInterceptEditor(el, pausedSelected);
   if (!draft) { el.innerHTML = '<div class="empty">Select a request to replay, or a paused request to intercept.</div>'; return; }
-  el.innerHTML = `<h3>Replay <span class="muted">— duplicated from captured request (original unchanged)</span></h3>`
-    + `<div class="row2"><select id="e-mode"><option value="WEBVIEW_CONTEXT">WebView Context</option><option value="HTTP_DIRECT">HTTP Direct</option></select>`
-    + `<input id="e-method" value="${esc(draft.method)}" style="width:90px"><input id="e-url" value="${esc(draft.url)}" style="flex:1">`
-    + `<button class="primary" id="e-send" title="Ctrl+Enter">Send</button></div>`
-    + `<div class="row2" style="align-items:flex-start"><div style="flex:1"><div class="muted">Headers (JSON)</div><textarea id="e-headers" rows="4">${esc(JSON.stringify(draft.headers, null, 2))}</textarea></div>`
-    + `<div style="flex:1"><div class="muted">Body (raw)</div><textarea id="e-body" rows="4">${esc(draft.body && draft.body.raw || '')}</textarea></div></div>`
+  el.innerHTML = `<h3>↺ Replay <span class="faint" style="font-weight:400;font-size:var(--t-sm)">— duplicated from captured request (original unchanged)</span></h3>`
+    + `<div class="row2"><div class="field" style="flex:0 0 168px"><span class="lbl">Mode</span><select id="e-mode"><option value="WEBVIEW_CONTEXT">WebView Context</option><option value="HTTP_DIRECT">HTTP Direct</option></select></div>`
+    + `<div class="field" style="flex:0 0 96px"><span class="lbl">Method</span><input id="e-method" class="mono" value="${esc(draft.method)}"></div>`
+    + `<div class="field"><span class="lbl">URL</span><input id="e-url" class="url-in" value="${esc(draft.url)}"></div>`
+    + `<div class="field" style="flex:0 0 auto"><span class="lbl">&nbsp;</span><button class="primary" id="e-send" title="Ctrl+Enter">Send ⌘↵</button></div></div>`
+    + `<div class="row2"><div class="field"><span class="lbl">Headers (JSON)</span><textarea id="e-headers" rows="4">${esc(JSON.stringify(draft.headers, null, 2))}</textarea></div>`
+    + `<div class="field"><span class="lbl">Body (raw)</span><textarea id="e-body" rows="4">${esc(draft.body && draft.body.raw || '')}</textarea></div></div>`
     + `<div id="e-result"></div>`;
   $('e-send').onclick = sendReplay;
 }
@@ -229,11 +230,12 @@ async function sendReplay() {
 }
 
 function renderInterceptEditor(el, p) {
-  el.innerHTML = `<h3>Intercept — <span class="muted">${esc(p.targetId)} · paused ${esc(fmtTime(p.pausedAt))}</span></h3>`
-    + `<div class="row2"><input id="i-method" value="${esc(p.draft.method)}" style="width:90px"><input id="i-url" value="${esc(p.draft.url)}" style="flex:1"></div>`
-    + `<div class="row2" style="align-items:flex-start"><div style="flex:1"><div class="muted">Headers (JSON)</div><textarea id="i-headers" rows="4">${esc(JSON.stringify(p.draft.headers, null, 2))}</textarea></div>`
-    + `<div style="flex:1"><div class="muted">Body (raw)</div><textarea id="i-body" rows="4">${esc(p.draft.body || '')}</textarea></div></div>`
-    + `<div class="row2"><button class="primary" id="i-mod" title="Ctrl+Enter">Continue Modified</button><button id="i-cont">Continue</button><button id="i-abort">Abort</button></div><div id="i-result"></div>`;
+  el.innerHTML = `<h3>⧗ Intercept <span class="faint" style="font-weight:400;font-size:var(--t-sm)">— ${esc(p.targetId)} · paused ${esc(fmtTime(p.pausedAt))}</span></h3>`
+    + `<div class="row2"><div class="field" style="flex:0 0 96px"><span class="lbl">Method</span><input id="i-method" class="mono" value="${esc(p.draft.method)}"></div>`
+    + `<div class="field"><span class="lbl">URL</span><input id="i-url" class="url-in" value="${esc(p.draft.url)}"></div></div>`
+    + `<div class="row2"><div class="field"><span class="lbl">Headers (JSON)</span><textarea id="i-headers" rows="4">${esc(JSON.stringify(p.draft.headers, null, 2))}</textarea></div>`
+    + `<div class="field"><span class="lbl">Body (raw)</span><textarea id="i-body" rows="4">${esc(p.draft.body || '')}</textarea></div></div>`
+    + `<div class="row2"><button class="primary" id="i-mod" title="Ctrl+Enter">Continue Modified</button><button id="i-cont">Continue</button><button id="i-abort" class="danger">Abort</button></div><div id="i-result"></div>`;
   const show = (r) => { $('i-result').innerHTML = r && r.error ? `<div class="errb">${esc(r.error.code)}: ${esc(r.error.message || '')}</div>` : `<div class="muted">${esc(r.state)}</div>`; };
   $('i-cont').onclick = async () => { show(await api.interceptContinue(p.id)); pausedSelected = null; };
   $('i-abort').onclick = async () => { show(await api.interceptAbort(p.id)); pausedSelected = null; };
@@ -301,6 +303,7 @@ $('intc-toggle').onchange = async () => {
   if ($('intc-toggle').checked) { const r = await api.interceptEnable(rule); if (r && r.error) { $('intc-toggle').checked = false; toast(r.error.code); return; } interceptOn = true; }
   else { await api.interceptDisable(); interceptOn = false; }
   setChip('chip-intc', interceptOn, interceptOn ? 'Intercept ON' : 'Intercept OFF');
+  $('intercept-bar').classList.toggle('armed', interceptOn);
 };
 api.onInterceptChanged && api.onInterceptChanged((list) => {
   paused = list || [];
