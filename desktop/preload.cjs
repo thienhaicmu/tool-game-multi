@@ -7,6 +7,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   replayUpdateDraft: (draftId, patch) => ipcRenderer.invoke('replay-update-draft', draftId, patch),
   replayExecute: draftId => ipcRenderer.invoke('replay-execute', draftId),
   replayHistory: capturedRequestId => ipcRenderer.invoke('replay-history', capturedRequestId),
+  timelineBuild: capturedRequestId => ipcRenderer.invoke('timeline-build', capturedRequestId),
   interceptEnable: (rule, targetId) => ipcRenderer.invoke('intercept-enable', rule, targetId),
   interceptDisable: targetId => ipcRenderer.invoke('intercept-disable', targetId),
   interceptList: () => ipcRenderer.invoke('intercept-list'),

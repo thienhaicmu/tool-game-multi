@@ -12,6 +12,7 @@ const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { InterceptEngine } = require('./cdp/intercept.cjs');
 const { ReplayEngine } = require('./replay/replay-engine.cjs');
+const { Timeline } = require('./timeline.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
@@ -124,6 +125,8 @@ const replay = new ReplayEngine({
     return { status: response.status, statusText: response.statusText, headers, body: text };
   },
 });
+// WU5: read-only aggregation of capture + replay + intercept evidence.
+const timeline = new Timeline({ capture, replay, intercept });
 // Bridge raw model -> the existing display/journal pipeline (which may mask
 // secrets for display only; raw evidence stays in `capture`).
 capture.on('request', req => {
@@ -248,6 +251,7 @@ ipcMain.handle('replay-create-draft', (_event, capturedRequestId, options = {}) 
 ipcMain.handle('replay-update-draft', (_event, draftId, patch = {}) => replay.updateDraft(String(draftId), patch));
 ipcMain.handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
 ipcMain.handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
+ipcMain.handle('timeline-build', (_event, capturedRequestId) => timeline.build(String(capturedRequestId)));
 // WU4 intercept IPC. Default scope is the selected target only.
 ipcMain.handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
 ipcMain.handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || selectedTargetId || '')));

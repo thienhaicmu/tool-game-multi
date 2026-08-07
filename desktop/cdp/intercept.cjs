@@ -52,6 +52,7 @@ class InterceptEngine extends EventEmitter {
 
   isActive(targetId) { return this._active.has(targetId); }
   listPaused() { return [...this._paused.values()].filter((r) => r.state === STATES.PAUSED).map(publicRec); }
+  listAll() { return [...this._paused.values()].map(publicRec); } // includes resolved records (WU5 history)
   getPaused(id) { const r = this._paused.get(id); return r ? publicRec(r) : undefined; }
 
   async enable(targetId, rule = {}) {

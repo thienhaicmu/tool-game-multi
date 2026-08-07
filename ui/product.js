@@ -29,6 +29,48 @@ async function replaySequence() {
   for (const id of chosen) { const draft = await window.desktopCapture?.replayCreateDraft(id, {}); if (!draft || draft.error) { results.push({ id, error: draft && draft.error }); continue; } const exec = await window.desktopCapture?.replayExecute(draft.id); results.push({ id, mode: exec.mode, status: exec.response ? exec.response.status : 0, state: exec.status, error: exec.error }); }
   workspace.innerHTML = '<div class="replace"><h2>Replay sequence</h2><p class="subtitle">Completed ' + results.length + ' request(s).</p><div class="response-card"><pre>' + esc(JSON.stringify(results, null, 2)) + '</pre></div></div>';
 }
+// WU5: render an evidence timeline (capture -> replay(s) -> intercept) with diffs.
+function fmtRequestDiff(d) {
+  if (!d || !d.changed) return '  (request identical to original)';
+  const lines = [];
+  if (d.method.changed) lines.push('  method: ' + d.method.from + ' → ' + d.method.to);
+  if (d.url.changed) lines.push('  url: ' + d.url.from + ' → ' + d.url.to);
+  for (const h of d.headers.changed) lines.push('  header ' + h.name + ': ' + h.from + ' → ' + h.to);
+  for (const h of d.headers.added) lines.push('  + header ' + h.name + ': ' + h.value);
+  for (const h of d.headers.removed) lines.push('  - header ' + h.name);
+  if (d.body && d.body.changed) {
+    if (d.body.type === 'json') for (const c of d.body.changes) lines.push('  body ' + c.path + ': ' + (c.op === 'change' ? JSON.stringify(c.from) + ' → ' + JSON.stringify(c.to) : c.op === 'add' ? '+ ' + JSON.stringify(c.to) : '- ' + JSON.stringify(c.from)));
+    else lines.push('  body changed (' + (d.body.type || 'raw') + ')');
+  }
+  return lines.join('\n') || '  (changed)';
+}
+function fmtResponseDiff(d) {
+  if (!d) return '';
+  if (!d.comparable) return '  response: ' + (d.reason || 'not comparable');
+  const lines = [];
+  if (d.status.changed) lines.push('  status: ' + d.status.from + ' → ' + d.status.to);
+  if (d.headers.count) lines.push('  response headers changed: ' + d.headers.count);
+  if (d.body && d.body.changed === true) lines.push('  response body changed' + (d.body.type ? ' (' + d.body.type + ')' : ''));
+  if (d.body && d.body.comparable === false) lines.push('  response body: ' + (d.body.reason || 'not comparable'));
+  if (d.duration && d.duration.deltaMs != null) lines.push('  duration Δ: ' + d.duration.deltaMs + 'ms');
+  return lines.join('\n');
+}
+function renderTimeline(tl) {
+  const el = document.querySelector('#timeline'); if (!el) return;
+  if (!tl || tl.error) { el.textContent = (tl && tl.error && tl.error.code) || 'No timeline'; return; }
+  const badge = { capture: '●', replay: '↻', intercept: '⧗' };
+  const head = 'captured:' + tl.summary.captured + '  replayed:' + tl.summary.replayed + '  intercepted:' + tl.summary.intercepted + '  last:' + (tl.summary.lastStatus ?? '—') + (tl.summary.lastError ? '  error:' + tl.summary.lastError.code : '') + '\n\n';
+  const body = tl.events.map(e => {
+    const when = (() => { try { return new Date(e.time).toLocaleTimeString(); } catch { return e.time; } })();
+    let block = (badge[e.kind] || '•') + ' ' + when + '  ' + e.summary + '  [' + e.state + ']  ' + (e.method || '') + ' ' + (e.status != null ? '→ ' + e.status : '');
+    if (e.error) block += '\n  error: ' + e.error.code + (e.error.message ? ' — ' + e.error.message : '');
+    if (e.warnings && e.warnings.length) block += '\n  warnings: ' + e.warnings.map(w => w.header ? w.header + ':' + w.policy : (w.policy || w.reason)).join(', ');
+    if (e.requestDiff) block += '\n' + fmtRequestDiff(e.requestDiff);
+    if (e.responseDiff) { const r = fmtResponseDiff(e.responseDiff); if (r) block += '\n' + r; }
+    return block;
+  }).join('\n\n');
+  el.innerHTML = '<pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">' + esc(head + body) + '</pre>';
+}
 // WU3: duplicate the immutable CapturedRequest into a ReplayDraft, edit, and send.
 async function openWorkspace(id) {
   const detail = await window.desktopCapture?.getRequestDetail(id);
@@ -44,7 +86,10 @@ async function openWorkspace(id) {
     + '<button class="replay" id="rsend">Send</button>'
     + '<div class="response-card"><small>REPLAY RESULT</small><strong id="rstatus">—</strong><pre id="rresult"></pre></div>'
     + '<div class="response-card"><small>ORIGINAL RESPONSE BODY</small><button class="row-replace" id="load-body" type="button">Load response body</button><pre id="bodyout"></pre></div>'
-    + '<div class="response-card"><small>REPLAY HISTORY</small><pre id="rhistory"></pre></div></div>';
+    + '<div class="response-card"><small>REPLAY HISTORY</small><pre id="rhistory"></pre></div>'
+    + '<div class="response-card"><small>TIMELINE</small><button class="row-replace" id="load-timeline" type="button">Load timeline</button><div id="timeline"></div></div></div>';
+  const tlBtn = document.querySelector('#load-timeline');
+  if (tlBtn) tlBtn.onclick = async () => { tlBtn.textContent = 'Loading…'; renderTimeline(await window.desktopCapture?.timelineBuild(id)); tlBtn.textContent = 'Reload timeline'; };
   const loadBodyBtn = document.querySelector('#load-body');
   loadBodyBtn.onclick = async () => { loadBodyBtn.textContent = 'Loading…'; const r = await window.desktopCapture?.getResponseBody(id); const out = document.querySelector('#bodyout'); if (r && r.available) out.textContent = r.base64Encoded ? '[base64 ' + (r.length || 0) + ' bytes' + (r.truncated ? ', truncated' : '') + ']\n' + String(r.body).slice(0, 4000) : String(r.body).slice(0, 20000); else out.textContent = (r && r.error && r.error.code) ? r.error.code + ': ' + (r.error.message || '') : 'No body'; loadBodyBtn.textContent = 'Load response body'; };
   async function refreshHistory() { const h = await window.desktopCapture?.replayHistory(id); document.querySelector('#rhistory').textContent = (h.executions || []).map(e => '#' + (e.seq + 1) + ' ' + e.mode + ' → ' + (e.response ? e.response.status + ' (' + (e.response.duration || 0) + 'ms)' : (e.error && e.error.code) || e.status)).join('\n') || 'No replays yet'; }

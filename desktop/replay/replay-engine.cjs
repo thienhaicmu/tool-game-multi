@@ -163,6 +163,8 @@ class ReplayEngine extends EventEmitter {
       id: 'exec_' + randomUUID(), draftId, capturedRequestId: draft.capturedRequestId,
       mode: draft.mode, startedAt: new Date().toISOString(), finishedAt: null,
       status: 'SENDING', error: null, response: null, warnings: built.warnings,
+      // Snapshot of the request actually sent (for WU5 timeline/diff).
+      request: { method: built.method, url: built.url, headers: { ...built.headers }, body: built.body != null ? built.body : null },
       seq: this._executions.size,
     };
     this._executions.set(execution.id, execution);
