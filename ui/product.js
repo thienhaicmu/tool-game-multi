@@ -1,196 +1,340 @@
-const events = [];
-const selected = new Set();
-const rows = document.querySelector('#requests');
-const workspace = document.querySelector('#workspace');
-const projectCard = document.querySelector('.project-switch');
-const productStyle = document.createElement('style'); productStyle.textContent = '.project-field{display:grid;gap:4px;color:var(--muted);font-size:10px}.project-field input{width:100%;height:28px;border:1px solid var(--line);border-radius:6px;padding:0 7px;background:var(--surface);color:var(--text);font-size:10px}.response-card{margin-top:25px;border:1px solid var(--line);border-radius:9px;background:var(--surface);padding:14px}.response-card small{display:block;color:var(--muted);font-size:9px;letter-spacing:.1em}.response-card strong{display:block;color:var(--accent);font-size:22px;margin:8px 0}.response-card pre{max-height:220px;overflow:auto;white-space:pre-wrap;color:var(--muted);font-size:11px}.session-row{display:flex;justify-content:space-between;align-items:center;padding:16px 18px;border-bottom:1px solid var(--line);background:var(--surface)}.session-row b,.session-row span{display:block}.session-row span{color:var(--muted);font-size:11px;margin-top:4px}.session-row button{border:1px solid var(--line);background:var(--surface);color:var(--accent);border-radius:6px;padding:8px 11px}.row-replace{border:1px solid var(--accent);background:var(--surface);color:var(--accent);border-radius:5px;padding:5px 7px;font-size:10px;cursor:pointer}#selection-bar{display:none;position:absolute;bottom:18px;left:18px;right:18px;z-index:4;gap:10px;align-items:center;padding:10px 12px;background:var(--header);color:#fff;border-radius:8px;box-shadow:0 5px 20px #0003}#selection-bar button{border:1px solid #52717a;background:transparent;color:#fff;border-radius:5px;padding:6px 9px;font-size:10px}#selection-bar button:first-of-type{margin-left:auto;background:var(--accent);border-color:var(--accent)}'; document.head.appendChild(productStyle);
-projectCard.insertAdjacentHTML('beforeend', '<label class="project-field">Webapp URL<input id="target-url" value="https://staging.example.com"></label><label class="project-field">Allowed domains<input id="scope" placeholder="app.local, api.local, *.cdn.com"></label>');
-try { document.querySelector('#target-url').value = localStorage.getItem('observatory-target-url') || 'https://staging.example.com'; document.querySelector('#scope').value = localStorage.getItem('observatory-scope') || ''; } catch {}
-const copy = { vi: { status: 'Sẵn sàng', open: 'Mở Chromium', title: 'Requests', subtitle: 'Chọn request để xem và thay giá trị.', captured: 'Requests đã bắt', select: 'Chọn tất cả', empty: 'Chưa có request', emptyHint: 'Mở Chromium và thao tác trên webapp.', workspace: 'Request workspace', workspaceHint: 'Chọn request để sửa value và replay.', search: 'Tìm host, path hoặc method' }, en: { status: 'Ready', open: 'Open Chromium', title: 'Requests', subtitle: 'Select requests to review and replace values.', captured: 'Captured requests', select: 'Select all', empty: 'No requests yet', emptyHint: 'Open Chromium and use your webapp.', workspace: 'Request workspace', workspaceHint: 'Choose a request to edit values and replay.', search: 'Search host, path or method' } };
-function applyLanguage(language) { const text = copy[language] || copy.en; document.querySelector('#status').textContent = text.status; document.querySelector('#open').textContent = text.open; document.querySelector('#view-title').textContent = text.title; document.querySelector('#view-subtitle').textContent = text.subtitle; document.querySelector('.list-head b').textContent = text.captured; document.querySelector('#select-all').textContent = text.select; document.querySelector('#search').placeholder = text.search; document.documentElement.lang = language; try { localStorage.setItem('observatory-language', language); } catch {} }
-const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[char]));
-function urlInfo(raw) { try { const url = new URL(raw); return { url, path: url.pathname + (url.search || '') }; } catch { return { url: null, path: raw }; } }
-function render() {
-  const query = document.querySelector('#search').value.toLowerCase();
-  const type = document.querySelector('#type').value;
-  const list = events.filter(event => event.kind === 'request').filter(event => type === 'all' || event.resourceType === type).filter(event => !query || (event.url + event.method).toLowerCase().includes(query));
-  document.querySelector('#count').textContent = list.length;
-  if (!list.length) { rows.innerHTML = '<div class="empty"><strong>No requests yet</strong><span>Open Chromium and use your webapp.</span></div>'; return; }
-  rows.innerHTML = list.slice().reverse().map(event => {
-    const info = urlInfo(event.url); const response = events.find(item => item.kind === 'response' && item.id === event.id);
-    return '<div class="row ' + (selected.has(event.id) ? 'selected' : '') + '" data-id="' + esc(event.id) + '"><input type="checkbox" ' + (selected.has(event.id) ? 'checked' : '') + '><span class="method">' + esc(event.method) + '</span><span>' + esc(event.resourceType) + '</span><span><b class="host">' + esc(info.url?.host || '') + '</b><span class="path">' + esc(info.path) + '</span></span><span class="status">' + esc(response?.status || '…') + '</span><button class="row-replace" type="button">Replace</button></div>';
+'use strict';
+const api = window.desktopCapture || {};
+const $ = (id) => document.getElementById(id);
+const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+// ---- state ----
+const reqs = new Map();        // id -> { id, method, url, host, path, targetId, cdpRequestId, resourceType, status, duration }
+const order = [];              // capture order (append)
+const replayedIds = new Set();
+const interceptedIds = new Set();
+let selectedId = null, detail = null, draft = null, timelineData = null, selectedEventId = null;
+let activeTab = 'overview';
+let interceptOn = false, paused = [], pausedSelected = null;
+let listDirty = false;
+
+function urlParts(u) { try { const x = new URL(u); return { host: x.host, path: x.pathname + (x.search || '') }; } catch { return { host: '', path: u }; } }
+
+// ---- toast ----
+let toastEl, toastTimer;
+function toast(msg) {
+  if (!toastEl) { toastEl = document.createElement('div'); toastEl.className = 'toast'; document.body.appendChild(toastEl); }
+  toastEl.textContent = msg; toastEl.classList.add('show');
+  clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1600);
+}
+async function copy(text, label) { try { await navigator.clipboard.writeText(text); toast((label || 'Copied') + ' ✓'); } catch { toast('Copy failed'); } }
+
+// ---- capture stream ----
+api.onEvent && api.onEvent((ev) => {
+  if (ev.kind === 'request') {
+    if (!reqs.has(ev.id)) order.push(ev.id);
+    const prev = reqs.get(ev.id) || {};
+    reqs.set(ev.id, { ...prev, id: ev.id, method: ev.method, url: ev.url, targetId: ev.targetId, cdpRequestId: ev.requestId, resourceType: (ev.resourceType || '').toLowerCase(), status: prev.status ?? null, duration: prev.duration ?? null, ...urlParts(ev.url) });
+    markDirty();
+  } else if (ev.kind === 'response') {
+    const r = reqs.get(ev.id);
+    if (r) { r.status = ev.status; r.duration = ev.duration; markDirty(); if (selectedId === ev.id && activeTab === 'overview') renderDetail(); }
+  }
+});
+function markDirty() { if (listDirty) return; listDirty = true; requestAnimationFrame(() => { listDirty = false; renderList(); }); }
+
+// ---- request list (windowed) ----
+const MAX_ROWS = 400;
+function filtered() {
+  const q = $('search').value.trim().toLowerCase();
+  const f = $('filter').value;
+  const terms = q ? q.split(/\s+/) : [];
+  const out = [];
+  for (let i = order.length - 1; i >= 0; i--) {
+    const r = reqs.get(order[i]); if (!r) continue;
+    if (f === 'fetch' && r.resourceType !== 'fetch') continue;
+    if (f === 'xhr' && r.resourceType !== 'xhr') continue;
+    if (f === 'failed' && !(r.status === 0 || (r.status != null && r.status >= 400))) continue;
+    if (f === 'replayed' && !replayedIds.has(r.id)) continue;
+    if (f === 'intercepted' && !interceptedIds.has(r.id)) continue;
+    if (terms.length) { const hay = (r.method + ' ' + r.host + ' ' + r.path + ' ' + (r.status ?? '')).toLowerCase(); if (!terms.every((t) => hay.includes(t))) continue; }
+    out.push(r);
+    if (out.length >= MAX_ROWS) break;
+  }
+  return out;
+}
+function statusClass(s) { return s == null ? 'pending' : (s === 0 || s >= 400) ? 'err' : 'ok'; }
+function renderList() {
+  const list = filtered();
+  const total = reqs.size;
+  $('count').textContent = total ? (list.length < total ? `${list.length} of ${total}` : `${total}`) : '';
+  if (!total) { $('list').innerHTML = '<div class="empty">Waiting for network activity…</div>'; return; }
+  if (!list.length) { $('list').innerHTML = '<div class="empty">No requests match the filter.</div>'; return; }
+  $('list').innerHTML = list.map((r) => {
+    const badges = (replayedIds.has(r.id) ? '<span class="badge">R</span>' : '') + (interceptedIds.has(r.id) ? '<span class="badge">I</span>' : '');
+    return `<div class="row ${selectedId === r.id ? 'selected' : ''}" data-id="${esc(r.id)}">`
+      + `<span class="m">${esc(r.method)}</span>`
+      + `<span class="u"><b>${esc(r.path)}${badges}</b><span>${esc(r.host)} · ${esc(r.resourceType || 'other')}</span></span>`
+      + `<span class="t">${r.duration != null ? Math.round(r.duration) + 'ms' : ''}</span>`
+      + `<span class="s ${statusClass(r.status)}">${r.status == null ? '…' : (r.status || 'ERR')}</span></div>`;
   }).join('');
-  rows.querySelectorAll('.row').forEach(row => { row.onclick = event => { if (event.target.tagName === 'INPUT') { event.stopPropagation(); row.querySelector('input').checked ? selected.add(row.dataset.id) : selected.delete(row.dataset.id); row.classList.toggle('selected', selected.has(row.dataset.id)); return; } openWorkspace(row.dataset.id); }; row.querySelector('.row-replace').onclick = event => { event.stopPropagation(); openWorkspace(row.dataset.id); }; });
-  renderSelectionBar();
-}
-function renderSelectionBar() { let bar = document.querySelector('#selection-bar'); if (!bar) { bar = document.createElement('div'); bar.id = 'selection-bar'; document.querySelector('.request-list').appendChild(bar); } bar.innerHTML = selected.size ? '<b>' + selected.size + ' selected</b><button id="bulk-replay">Replay sequence</button><button id="clear-selected">Clear selection</button>' : ''; bar.style.display = selected.size ? 'flex' : 'none'; if (selected.size) { bar.querySelector('#clear-selected').onclick = () => { selected.clear(); render(); }; bar.querySelector('#bulk-replay').onclick = replaySequence; } }
-async function replaySequence() {
-  const chosen = [...selected]; const results = [];
-  for (const id of chosen) { const draft = await window.desktopCapture?.replayCreateDraft(id, {}); if (!draft || draft.error) { results.push({ id, error: draft && draft.error }); continue; } const exec = await window.desktopCapture?.replayExecute(draft.id); results.push({ id, mode: exec.mode, status: exec.response ? exec.response.status : 0, state: exec.status, error: exec.error }); }
-  workspace.innerHTML = '<div class="replace"><h2>Replay sequence</h2><p class="subtitle">Completed ' + results.length + ' request(s).</p><div class="response-card"><pre>' + esc(JSON.stringify(results, null, 2)) + '</pre></div></div>';
-}
-// WU5: render an evidence timeline (capture -> replay(s) -> intercept) with diffs.
-function fmtRequestDiff(d) {
-  if (!d || !d.changed) return '  (request identical to original)';
-  const lines = [];
-  if (d.method.changed) lines.push('  method: ' + d.method.from + ' → ' + d.method.to);
-  if (d.url.changed) lines.push('  url: ' + d.url.from + ' → ' + d.url.to);
-  for (const h of d.headers.changed) lines.push('  header ' + h.name + ': ' + h.from + ' → ' + h.to);
-  for (const h of d.headers.added) lines.push('  + header ' + h.name + ': ' + h.value);
-  for (const h of d.headers.removed) lines.push('  - header ' + h.name);
-  if (d.body && d.body.changed) {
-    if (d.body.type === 'json') for (const c of d.body.changes) lines.push('  body ' + c.path + ': ' + (c.op === 'change' ? JSON.stringify(c.from) + ' → ' + JSON.stringify(c.to) : c.op === 'add' ? '+ ' + JSON.stringify(c.to) : '- ' + JSON.stringify(c.from)));
-    else lines.push('  body changed (' + (d.body.type || 'raw') + ')');
+  for (const el of $('list').querySelectorAll('.row')) {
+    el.onclick = () => selectRequest(el.dataset.id);
+    el.oncontextmenu = (e) => { e.preventDefault(); openContextMenu(e.clientX, e.clientY, el.dataset.id); };
   }
-  return lines.join('\n') || '  (changed)';
 }
-function fmtResponseDiff(d) {
-  if (!d) return '';
-  if (!d.comparable) return '  response: ' + (d.reason || 'not comparable');
-  const lines = [];
-  if (d.status.changed) lines.push('  status: ' + d.status.from + ' → ' + d.status.to);
-  if (d.headers.count) lines.push('  response headers changed: ' + d.headers.count);
-  if (d.body && d.body.changed === true) lines.push('  response body changed' + (d.body.type ? ' (' + d.body.type + ')' : ''));
-  if (d.body && d.body.comparable === false) lines.push('  response body: ' + (d.body.reason || 'not comparable'));
-  if (d.duration && d.duration.deltaMs != null) lines.push('  duration Δ: ' + d.duration.deltaMs + 'ms');
-  return lines.join('\n');
+
+// ---- selection -> detail + timeline + editor ----
+async function selectRequest(id) {
+  selectedId = id; pausedSelected = null; selectedEventId = null; renderList();
+  detail = await api.getRequestDetail(id);
+  timelineData = await api.timelineBuild(id);
+  const d = await api.replayCreateDraft(id, {});
+  draft = d && !d.error ? d : null;
+  renderTimeline(); renderDetail(); renderEditor();
 }
-function renderTimeline(tl) {
-  const el = document.querySelector('#timeline'); if (!el) return;
-  if (!tl || tl.error) { el.textContent = (tl && tl.error && tl.error.code) || 'No timeline'; return; }
-  const badge = { capture: '●', replay: '↻', intercept: '⧗' };
-  const head = 'captured:' + tl.summary.captured + '  replayed:' + tl.summary.replayed + '  intercepted:' + tl.summary.intercepted + '  last:' + (tl.summary.lastStatus ?? '—') + (tl.summary.lastError ? '  error:' + tl.summary.lastError.code : '') + '\n\n';
-  const body = tl.events.map(e => {
-    const when = (() => { try { return new Date(e.time).toLocaleTimeString(); } catch { return e.time; } })();
-    let block = (badge[e.kind] || '•') + ' ' + when + '  ' + e.summary + '  [' + e.state + ']  ' + (e.method || '') + ' ' + (e.status != null ? '→ ' + e.status : '');
-    if (e.error) block += '\n  error: ' + e.error.code + (e.error.message ? ' — ' + e.error.message : '');
-    if (e.warnings && e.warnings.length) block += '\n  warnings: ' + e.warnings.map(w => w.header ? w.header + ':' + w.policy : (w.policy || w.reason)).join(', ');
-    if (e.requestDiff) block += '\n' + fmtRequestDiff(e.requestDiff);
-    if (e.responseDiff) { const r = fmtResponseDiff(e.responseDiff); if (r) block += '\n' + r; }
-    return block;
-  }).join('\n\n');
-  el.innerHTML = '<pre style="white-space:pre-wrap;font-size:11px;color:var(--muted)">' + esc(head + body) + '</pre>';
+
+function renderTimeline() {
+  const el = $('timeline');
+  if (!timelineData || timelineData.error) { el.innerHTML = '<div class="empty">Select a request.</div>'; return; }
+  const s = timelineData.summary;
+  const glyph = { capture: '●', replay: '↻', intercept: '⧗' };
+  const head = `<div class="tl-card" style="cursor:default"><div class="k">Summary</div><div class="l">${s.replayed} replay · ${s.intercepted} intercept · last ${s.lastStatus ?? '—'}</div>${s.lastError ? `<div class="meta errb">error: ${esc(s.lastError.code)}</div>` : ''}</div>`;
+  const cards = timelineData.events.map((e) => {
+    const when = fmtTime(e.time);
+    const st = e.status != null ? ` → ${e.status}` : '';
+    return `<div class="tl-card ${selectedEventId === e.id ? 'sel' : ''}" data-ev="${esc(e.id)}">`
+      + `<div class="k">${glyph[e.kind] || '•'} ${esc(e.kind)}${e.mode ? ' · ' + esc(e.mode) : ''}</div>`
+      + `<div class="l">${esc(e.method || '')} ${esc(e.summary)}${st}</div>`
+      + `<div class="meta">${when} · ${esc(e.state)}${e.error ? ' · ' + esc(e.error.code) : ''}</div></div>`;
+  }).join('');
+  el.innerHTML = head + cards;
+  for (const c of el.querySelectorAll('[data-ev]')) c.onclick = () => { selectedEventId = c.dataset.ev; activeTab = 'diff'; syncTabs(); renderTimeline(); renderDetail(); };
 }
-// WU3: duplicate the immutable CapturedRequest into a ReplayDraft, edit, and send.
-async function openWorkspace(id) {
-  const detail = await window.desktopCapture?.getRequestDetail(id);
-  if (!detail || detail.error) { workspace.innerHTML = '<div class="empty"><strong>Request unavailable</strong><span>' + esc(detail && detail.error && detail.error.code || 'Not found') + '</span></div>'; return; }
-  const draft = await window.desktopCapture?.replayCreateDraft(id, {});
-  if (!draft || draft.error) { workspace.innerHTML = '<div class="empty"><strong>Cannot duplicate</strong><span>' + esc(draft && draft.error && draft.error.code || 'error') + '</span></div>'; return; }
-  const host = (() => { try { return new URL(draft.url).host; } catch { return ''; } })();
-  workspace.innerHTML = '<div class="replace"><div class="subtitle">' + esc(draft.method) + ' · ' + esc(host) + ' · duplicated from captured request (original unchanged)</div><h2>Replay</h2>'
-    + '<h3>Mode</h3><select id="rmode"><option value="WEBVIEW_CONTEXT">WebView Context — uses WebView cookies/session; browser policies apply</option><option value="HTTP_DIRECT">HTTP Direct — sent from debugger; no WebView session</option></select>'
-    + '<h3>Method &amp; URL</h3><input id="rmethod" value="' + esc(draft.method) + '" style="width:90px"><input id="rurl" value="' + esc(draft.url) + '" style="width:calc(100% - 100px)">'
-    + '<h3>Headers (JSON)</h3><textarea id="rheaders" rows="6" style="width:100%">' + esc(JSON.stringify(draft.headers, null, 2)) + '</textarea>'
-    + '<h3>Body (raw)</h3><textarea id="rbody" rows="6" style="width:100%">' + esc(draft.body && draft.body.raw || '') + '</textarea>'
-    + '<button class="replay" id="rsend">Send</button>'
-    + '<div class="response-card"><small>REPLAY RESULT</small><strong id="rstatus">—</strong><pre id="rresult"></pre></div>'
-    + '<div class="response-card"><small>ORIGINAL RESPONSE BODY</small><button class="row-replace" id="load-body" type="button">Load response body</button><pre id="bodyout"></pre></div>'
-    + '<div class="response-card"><small>REPLAY HISTORY</small><pre id="rhistory"></pre></div>'
-    + '<div class="response-card"><small>TIMELINE</small><button class="row-replace" id="load-timeline" type="button">Load timeline</button><div id="timeline"></div></div></div>';
-  const tlBtn = document.querySelector('#load-timeline');
-  if (tlBtn) tlBtn.onclick = async () => { tlBtn.textContent = 'Loading…'; renderTimeline(await window.desktopCapture?.timelineBuild(id)); tlBtn.textContent = 'Reload timeline'; };
-  const loadBodyBtn = document.querySelector('#load-body');
-  loadBodyBtn.onclick = async () => { loadBodyBtn.textContent = 'Loading…'; const r = await window.desktopCapture?.getResponseBody(id); const out = document.querySelector('#bodyout'); if (r && r.available) out.textContent = r.base64Encoded ? '[base64 ' + (r.length || 0) + ' bytes' + (r.truncated ? ', truncated' : '') + ']\n' + String(r.body).slice(0, 4000) : String(r.body).slice(0, 20000); else out.textContent = (r && r.error && r.error.code) ? r.error.code + ': ' + (r.error.message || '') : 'No body'; loadBodyBtn.textContent = 'Load response body'; };
-  async function refreshHistory() { const h = await window.desktopCapture?.replayHistory(id); document.querySelector('#rhistory').textContent = (h.executions || []).map(e => '#' + (e.seq + 1) + ' ' + e.mode + ' → ' + (e.response ? e.response.status + ' (' + (e.response.duration || 0) + 'ms)' : (e.error && e.error.code) || e.status)).join('\n') || 'No replays yet'; }
-  document.querySelector('#rsend').onclick = async () => {
-    const btn = document.querySelector('#rsend'); btn.textContent = 'Sending…';
-    let headers; try { headers = JSON.parse(document.querySelector('#rheaders').value || '{}'); } catch { document.querySelector('#rresult').textContent = 'INVALID_HEADER: headers must be valid JSON'; btn.textContent = 'Send'; return; }
-    const patch = { mode: document.querySelector('#rmode').value, method: document.querySelector('#rmethod').value.trim().toUpperCase(), url: document.querySelector('#rurl').value.trim(), headers, body: document.querySelector('#rbody').value };
-    const upd = await window.desktopCapture?.replayUpdateDraft(draft.id, patch);
-    if (upd && upd.error) { document.querySelector('#rresult').textContent = upd.error.code + ': ' + (upd.error.message || ''); btn.textContent = 'Send'; return; }
-    const exec = await window.desktopCapture?.replayExecute(draft.id);
-    const status = document.querySelector('#rstatus'); const out = document.querySelector('#rresult');
-    if (exec.status === 'COMPLETED') { status.textContent = exec.response.status + ' ' + (exec.response.statusText || ''); out.textContent = 'mode: ' + exec.response.mode + '\nduration: ' + (exec.response.duration || 0) + 'ms\n' + (exec.response.warnings && exec.response.warnings.length ? 'warnings: ' + JSON.stringify(exec.response.warnings) + '\n' : '') + '\nheaders: ' + JSON.stringify(exec.response.headers, null, 2) + '\n\nbody:\n' + String(exec.response.body || '').slice(0, 20000); }
-    else { status.textContent = 'Failed'; out.textContent = (exec.error && exec.error.code || 'REPLAY_FAILED') + ': ' + (exec.error && exec.error.message || ''); }
-    btn.textContent = 'Send'; refreshHistory();
-  };
-  refreshHistory();
+
+// ---- detail tabs ----
+for (const t of document.querySelectorAll('#detail-tabs .tab')) t.onclick = () => { activeTab = t.dataset.tab; syncTabs(); renderDetail(); };
+function syncTabs() { for (const t of document.querySelectorAll('#detail-tabs .tab')) t.classList.toggle('active', t.dataset.tab === activeTab); }
+
+function headersTable(h) {
+  const rows = Object.entries(h || {});
+  if (!rows.length) return '<div class="muted">none</div>';
+  return '<table>' + rows.map(([k, v]) => `<tr><td class="k">${esc(k)}</td><td>${esc(v)}</td></tr>`).join('') + '</table>';
 }
-function renderReplayHistory() { const items = events.filter(event => event.kind === 'replay').slice().reverse(); rows.innerHTML = items.length ? items.map(event => '<div class="row"><span></span><span class="method">REPLAY</span><span>' + esc(event.status || 0) + '</span><span><b class="host">' + esc(event.url) + '</b><span class="path">' + esc((event.overrides || []).join(', ') || 'captured values') + '</span></span><span class="status">' + esc(event.status || 0) + '</span><span>' + esc(event.timestamp || '') + '</span></div>').join('') : '<div class="empty"><strong>No replay history</strong><span>Replay results will appear here.</span></div>'; }
-function renderFindings() { const sessionId = events.find(event => event.sessionId)?.sessionId; rows.innerHTML = '<div class="empty"><strong>Passive findings</strong><span>Run the Python rule engine for this session.</span><button id="run-analysis" class="replay">Run analysis</button><pre id="analysis-result"></pre></div>'; document.querySelector('#run-analysis').onclick = async () => { const result = await window.desktopCapture?.analyzeSession(sessionId); document.querySelector('#analysis-result').textContent = JSON.stringify(result, null, 2); }; }
-async function renderSessions() { const sessions = await window.desktopCapture?.listSessions?.() || []; rows.innerHTML = sessions.length ? sessions.slice().reverse().map(session => '<div class="session-row"><div><b>' + esc(session.startedAt ? new Date(session.startedAt).toLocaleString() : session.id.slice(0, 8)) + '</b><span>' + esc(session.requestCount + ' requests') + '</span></div><button data-session="' + esc(session.id) + '">Load</button><button data-export="' + esc(session.id) + '">Journal</button><button data-report="' + esc(session.id) + '">HTML</button><button data-har="' + esc(session.id) + '">HAR</button></div>').join('') : '<div class="empty"><strong>No saved sessions</strong><span>Sessions appear after capture starts.</span></div>'; rows.querySelectorAll('[data-session]').forEach(button => button.onclick = async () => { const loaded = await window.desktopCapture.readSession(button.dataset.session); events.length = 0; events.push(...loaded); selected.clear(); document.querySelector('#view-title').textContent = 'Requests'; render(); }); rows.querySelectorAll('[data-export]').forEach(button => button.onclick = async () => { await window.desktopCapture.exportSession(button.dataset.export); }); rows.querySelectorAll('[data-report]').forEach(button => button.onclick = async () => { await window.desktopCapture.exportSessionReport(button.dataset.report, 'html'); }); rows.querySelectorAll('[data-har]').forEach(button => button.onclick = async () => { await window.desktopCapture.exportSessionReport(button.dataset.har, 'har'); }); }
-document.querySelectorAll('.nav').forEach(item => item.onclick = () => { document.querySelectorAll('.nav').forEach(nav => nav.classList.toggle('active', nav === item)); const view = item.dataset.view; if (view === 'replays') { document.querySelector('#view-title').textContent = 'Replay history'; document.querySelector('#view-subtitle').textContent = 'Review previous replay attempts.'; renderReplayHistory(); } else if (view === 'sessions') { document.querySelector('#view-title').textContent = 'Saved sessions'; document.querySelector('#view-subtitle').textContent = 'Load a previous capture session.'; renderSessions(); } else if (view === 'findings') { document.querySelector('#view-title').textContent = 'Findings'; document.querySelector('#view-subtitle').textContent = 'Passive analysis results.'; renderFindings(); } else { document.querySelector('#view-title').textContent = 'Requests'; document.querySelector('#view-subtitle').textContent = 'Select requests to review and replace values.'; render(); } });
-document.querySelector('#open').onclick = () => { const target = document.querySelector('#target-url').value.trim(); if (!target) return; const hosts = (document.querySelector('#scope').value || new URL(target).hostname).split(',').map(value => value.trim()).filter(Boolean); window.desktopCapture?.setScope(hosts); window.desktopCapture?.openBrowser(target); try { localStorage.setItem('observatory-target-url', target); localStorage.setItem('observatory-scope', hosts.join(', ')); } catch {} document.querySelector('#status').textContent = 'Capturing'; document.querySelector('#scope-label').textContent = hosts.join(', '); };
-document.querySelector('#search').oninput = render;
-document.querySelector('#type').onchange = render;
-document.querySelector('#select-all').onclick = () => { events.filter(event => event.kind === 'request').forEach(event => selected.add(event.id)); render(); };
-document.querySelector('#theme').onclick = () => { const next = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = next; try { localStorage.setItem('observatory-theme', next); } catch {} };
-const language = document.querySelector('#lang'); const savedLanguage = (() => { try { return localStorage.getItem('observatory-language') || 'vi'; } catch { return 'vi'; } })(); language.value = savedLanguage; applyLanguage(savedLanguage); language.onchange = () => applyLanguage(language.value);
-try { document.documentElement.dataset.theme = localStorage.getItem('observatory-theme') || 'light'; } catch {}
-// WU1: target selector. Discovered targets (Chrome page / WebView2 / CEF / Android
-// WebView) appear here; selecting one binds capture + replay to that target.
-const topActions = document.querySelector('.top-actions');
-if (topActions) {
-  const targetSelect = document.createElement('select');
-  targetSelect.id = 'targets';
-  targetSelect.title = 'Debug target';
-  targetSelect.style.cssText = 'height:28px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--text);font-size:11px;max-width:280px';
-  targetSelect.innerHTML = '<option value="">No targets</option>';
-  topActions.insertBefore(targetSelect, document.querySelector('#theme'));
-  targetSelect.onchange = () => { if (targetSelect.value) window.desktopCapture?.selectTarget(targetSelect.value); };
-  const runtimeBadge = { CHROME: 'Chrome', WEBVIEW2: 'WebView2', CEF: 'CEF', ANDROID_WEBVIEW: 'Android WebView', OTHER: 'Target' };
-  window.desktopCapture?.onTargetsChanged(list => {
-    const current = targetSelect.value;
-    if (!list || !list.length) { targetSelect.innerHTML = '<option value="">No targets</option>'; return; }
-    targetSelect.innerHTML = list.map(t => '<option value="' + esc(t.cdpTargetId) + '">' + esc((runtimeBadge[t.runtime] || t.runtime) + ' · ' + (t.title || t.url || t.cdpTargetId)) + '</option>').join('');
-    if (list.some(t => t.cdpTargetId === current)) targetSelect.value = current;
-    document.querySelector('#status').textContent = 'Connected · ' + list.length + ' target' + (list.length > 1 ? 's' : '');
-  });
-  window.desktopCapture?.onCdpError(err => { document.querySelector('#status').textContent = (err && err.code) || 'CDP error'; });
+function prettyBody(raw, contentType) {
+  if (raw == null || raw === '') return '<div class="muted">empty</div>';
+  const ct = (contentType || '').toLowerCase();
+  if (ct.includes('json') || /^[\[{]/.test(String(raw).trim())) { try { return `<pre>${esc(JSON.stringify(JSON.parse(raw), null, 2))}</pre>`; } catch { /* fall through */ } }
+  return `<pre>${esc(String(raw).slice(0, 20000))}</pre>`;
 }
-// WU4: minimal live-interception UI (nav view + rule + paused list + editor).
-(function setupIntercept() {
-  const navEl = document.querySelector('nav');
-  if (!navEl) return;
-  let interceptOn = false;
-  const state = { rule: { host: '', method: '', urlContains: '' } };
-  const navBtn = document.createElement('button');
-  navBtn.className = 'nav'; navBtn.dataset.view = 'intercept'; navBtn.innerHTML = '⧗ <span>Intercept</span>';
-  navEl.appendChild(navBtn);
-  navBtn.onclick = () => {
-    document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n === navBtn));
-    document.querySelector('#view-title').textContent = 'Intercept';
-    document.querySelector('#view-subtitle').textContent = 'Pause, edit and continue live requests before they reach the server.';
-    renderIntercept();
-  };
-  function renderIntercept() {
-    rows.innerHTML = '<div style="padding:12px;border-bottom:1px solid var(--line);display:grid;gap:8px">'
-      + '<div style="display:flex;gap:8px;align-items:center"><button id="intc-toggle" class="row-replace">' + (interceptOn ? 'Intercept: ON' : 'Intercept: OFF') + '</button><span style="color:var(--muted);font-size:10px">selected target only</span></div>'
-      + '<input id="intc-host" placeholder="host (optional)" value="' + esc(state.rule.host) + '" style="height:26px">'
-      + '<div style="display:flex;gap:8px"><input id="intc-method" placeholder="method (optional)" value="' + esc(state.rule.method) + '" style="height:26px;width:110px"><input id="intc-url" placeholder="url contains (optional)" value="' + esc(state.rule.urlContains) + '" style="height:26px;flex:1"></div>'
-      + '</div><div id="paused-list"></div>';
-    document.querySelector('#intc-toggle').onclick = async () => {
-      state.rule = { host: document.querySelector('#intc-host').value.trim(), method: document.querySelector('#intc-method').value.trim(), urlContains: document.querySelector('#intc-url').value.trim() };
-      if (!interceptOn) { const r = await window.desktopCapture?.interceptEnable(state.rule); if (r && r.error) { document.querySelector('#view-subtitle').textContent = r.error.code + ': ' + (r.error.message || ''); return; } interceptOn = true; }
-      else { await window.desktopCapture?.interceptDisable(); interceptOn = false; }
-      renderIntercept();
+function renderDetail() {
+  const el = $('detail');
+  if (!detail || detail.error) { el.innerHTML = `<div class="empty">${detail && detail.error ? esc(detail.error.code) : 'Select a request.'}</div>`; return; }
+  const r = detail, resp = r.response;
+  if (activeTab === 'overview') {
+    const lastErr = timelineData && timelineData.summary && timelineData.summary.lastError;
+    el.innerHTML = `<div class="kv">`
+      + kv('Method', r.method) + kv('Status', resp ? resp.status + ' ' + (resp.statusText || '') : (r.state === 'FAILED' ? 'FAILED' : 'pending'))
+      + kv('Duration', r.durationMs != null ? Math.round(r.durationMs) + 'ms' : '—') + kv('Target', r.targetId)
+      + kv('Type', r.resourceType) + kv('State', r.state) + kv('Host', r.host) + kv('Path', r.path)
+      + `</div><h4>URL</h4><pre>${esc(r.url)}</pre>`
+      + (r.failure ? `<h4>Failure</h4><div class="errb">${esc(r.failure.errorText || JSON.stringify(r.failure))}</div>` : '')
+      + (lastErr ? `<h4>Last error</h4><div class="errb">${esc(lastErr.code)}${lastErr.message ? ' — ' + esc(lastErr.message) : ''}</div>` : '');
+  } else if (activeTab === 'request') {
+    el.innerHTML = `<h4>Headers</h4>${headersTable(r.headers)}`
+      + `<h4>Cookies</h4>${(r.cookies && r.cookies.length) ? headersTable(Object.fromEntries(r.cookies.map((c) => [c.name, c.value]))) : '<div class="muted">none</div>'}`
+      + `<h4>Body</h4>${prettyBody(r.body && r.body.raw, r.body && r.body.contentType)}`;
+  } else if (activeTab === 'response') {
+    if (!resp) { el.innerHTML = '<div class="empty">No response' + (r.state === 'FAILED' ? ' (request failed)' : ' yet') + '.</div>'; return; }
+    el.innerHTML = `<div class="kv">${kv('Status', resp.status + ' ' + (resp.statusText || ''))}${kv('MIME', resp.mimeType || '—')}${kv('Protocol', resp.protocol || '—')}${kv('Remote', resp.remoteIP || '—')}${kv('Size', resp.encodedSize != null ? resp.encodedSize + ' B' : '—')}</div>`
+      + `<h4>Headers</h4>${headersTable(resp.headers)}`
+      + `<h4>Body</h4><button id="loadbody">Load response body</button><div id="respbody"></div>`;
+    $('loadbody').onclick = async () => {
+      const btn = $('loadbody'); btn.textContent = 'Loading…'; btn.disabled = true;
+      const b = await api.getResponseBody(r.id); const out = $('respbody');
+      if (b && b.available) out.innerHTML = b.base64Encoded
+        ? `<div class="muted">binary · ${b.length || 0} bytes${b.truncated ? ' · truncated' : ''}</div><pre>${esc(String(b.body).slice(0, 4000))}</pre>`
+        : prettyBody(b.body, resp.mimeType);
+      else out.innerHTML = `<div class="errb">${esc(b && b.error && b.error.code || 'RESPONSE_BODY_UNAVAILABLE')}${b && b.error && b.error.message ? ' — ' + esc(b.error.message) : ''}</div>`;
+      btn.textContent = 'Reload body'; btn.disabled = false;
     };
-    refreshPaused();
+  } else if (activeTab === 'diff') {
+    const ev = timelineData && timelineData.events.find((x) => x.id === selectedEventId);
+    if (!ev) { el.innerHTML = '<div class="empty">Pick a Replay or Intercept card in the Timeline to see what changed.</div>'; return; }
+    el.innerHTML = `<h4>${esc(ev.summary)}</h4><pre>${esc(fmtDiff(ev))}</pre>`;
+  } else if (activeTab === 'history') {
+    if (!timelineData) { el.innerHTML = '<div class="empty">No history.</div>'; return; }
+    el.innerHTML = '<pre>' + esc(timelineData.events.map((e) => `${fmtTime(e.time)}  ${e.kind}  ${e.summary}  [${e.state}]  ${e.method || ''} ${e.status != null ? '→ ' + e.status : ''}${e.error ? '  ' + e.error.code : ''}`).join('\n')) + '</pre>';
   }
-  async function refreshPaused(list) {
-    const pausedList = document.querySelector('#paused-list'); if (!pausedList) return;
-    const paused = list || await window.desktopCapture?.interceptList() || [];
-    pausedList.innerHTML = paused.length ? paused.map(p => '<div class="row" data-intc="' + esc(p.id) + '"><span class="method">' + esc(p.draft.method) + '</span><span>' + esc(p.resourceType || '') + '</span><span><b class="host">PAUSED</b><span class="path">' + esc((() => { try { return new URL(p.draft.url).pathname; } catch { return p.draft.url; } })()) + '</span></span><span class="status">⧗</span></div>').join('') : '<div class="empty"><strong>No paused requests</strong><span>Turn intercept ON and trigger a matching request.</span></div>';
-    pausedList.querySelectorAll('[data-intc]').forEach(row => { row.onclick = () => openPaused(paused.find(x => x.id === row.dataset.intc)); });
+}
+function kv(k, v) { return `<b>${esc(k)}</b><span>${esc(v)}</span>`; }
+
+function fmtDiff(e) {
+  const out = [];
+  const d = e.requestDiff;
+  if (d && d.changed) {
+    if (d.method.changed) out.push('method: ' + d.method.from + ' → ' + d.method.to);
+    if (d.url.changed) out.push('url: ' + d.url.from + ' → ' + d.url.to);
+    for (const h of d.headers.changed) out.push('header ' + h.name + ': ' + h.from + ' → ' + h.to);
+    for (const h of d.headers.added) out.push('+ header ' + h.name + ': ' + h.value);
+    for (const h of d.headers.removed) out.push('- header ' + h.name);
+    if (d.body && d.body.changed) {
+      if (d.body.type === 'json') for (const c of d.body.changes) out.push('body ' + c.path + ': ' + (c.op === 'change' ? JSON.stringify(c.from) + ' → ' + JSON.stringify(c.to) : c.op === 'add' ? '+ ' + JSON.stringify(c.to) : '- ' + JSON.stringify(c.from)));
+      else out.push('body changed (' + (d.body.type || 'raw') + ')');
+    }
+  } else if (d) out.push('request identical to original');
+  const rd = e.responseDiff;
+  if (rd && rd.comparable) {
+    out.push('');
+    if (rd.status.changed) out.push('response status: ' + rd.status.from + ' → ' + rd.status.to);
+    if (rd.headers.count) out.push('response headers changed: ' + rd.headers.count);
+    if (rd.body && rd.body.comparable === false) out.push('response body: ' + (rd.body.reason || 'not comparable'));
+    else if (rd.body && rd.body.changed) out.push('response body changed');
+    if (rd.duration && rd.duration.deltaMs != null) out.push('duration Δ: ' + rd.duration.deltaMs + 'ms');
   }
-  function openPaused(p) {
-    if (!p) return;
-    workspace.innerHTML = '<div class="replace"><div class="subtitle">Target ' + esc(p.targetId) + ' · ' + esc(p.resourceType || '') + ' · paused ' + esc(p.pausedAt) + '</div><h2>Paused request</h2>'
-      + '<h3>Method &amp; URL</h3><input id="p-method" value="' + esc(p.draft.method) + '" style="width:90px"><input id="p-url" value="' + esc(p.draft.url) + '" style="width:calc(100% - 100px)">'
-      + '<h3>Headers (JSON)</h3><textarea id="p-headers" rows="6" style="width:100%">' + esc(JSON.stringify(p.draft.headers, null, 2)) + '</textarea>'
-      + '<h3>Body (raw)</h3><textarea id="p-body" rows="6" style="width:100%">' + esc(p.draft.body || '') + '</textarea>'
-      + '<div style="display:flex;gap:8px;margin-top:10px"><button class="replay" id="p-continue">Continue</button><button class="replay" id="p-modified">Continue Modified</button><button class="row-replace" id="p-abort">Abort</button></div>'
-      + '<div class="response-card"><small>RESULT</small><pre id="p-result"></pre></div></div>';
-    const show = r => { document.querySelector('#p-result').textContent = r && r.error ? (r.error.code + ': ' + (r.error.message || '')) : JSON.stringify(r, null, 2); refreshPaused(); };
-    document.querySelector('#p-continue').onclick = async () => show(await window.desktopCapture?.interceptContinue(p.id));
-    document.querySelector('#p-abort').onclick = async () => show(await window.desktopCapture?.interceptAbort(p.id));
-    document.querySelector('#p-modified').onclick = async () => {
-      let headers; try { headers = JSON.parse(document.querySelector('#p-headers').value || '{}'); } catch { document.querySelector('#p-result').textContent = 'INVALID_INTERCEPT_DRAFT: headers must be valid JSON'; return; }
-      show(await window.desktopCapture?.interceptContinueModified(p.id, { method: document.querySelector('#p-method').value.trim().toUpperCase(), url: document.querySelector('#p-url').value.trim(), headers, body: document.querySelector('#p-body').value }));
-    };
+  if (e.warnings && e.warnings.length) { out.push(''); out.push('warnings: ' + e.warnings.map((w) => w.header ? w.header + ':' + w.policy : (w.policy || w.reason)).join(', ')); }
+  if (e.error) { out.push(''); out.push('error: ' + e.error.code + (e.error.message ? ' — ' + e.error.message : '')); }
+  return out.join('\n') || '(no changes)';
+}
+function fmtTime(t) { try { return new Date(t).toLocaleTimeString(); } catch { return t; } }
+
+// ---- editor (replay or intercept) ----
+function renderEditor() {
+  const el = $('editor');
+  if (pausedSelected) return renderInterceptEditor(el, pausedSelected);
+  if (!draft) { el.innerHTML = '<div class="empty">Select a request to replay, or a paused request to intercept.</div>'; return; }
+  el.innerHTML = `<h3>Replay <span class="muted">— duplicated from captured request (original unchanged)</span></h3>`
+    + `<div class="row2"><select id="e-mode"><option value="WEBVIEW_CONTEXT">WebView Context</option><option value="HTTP_DIRECT">HTTP Direct</option></select>`
+    + `<input id="e-method" value="${esc(draft.method)}" style="width:90px"><input id="e-url" value="${esc(draft.url)}" style="flex:1">`
+    + `<button class="primary" id="e-send" title="Ctrl+Enter">Send</button></div>`
+    + `<div class="row2" style="align-items:flex-start"><div style="flex:1"><div class="muted">Headers (JSON)</div><textarea id="e-headers" rows="4">${esc(JSON.stringify(draft.headers, null, 2))}</textarea></div>`
+    + `<div style="flex:1"><div class="muted">Body (raw)</div><textarea id="e-body" rows="4">${esc(draft.body && draft.body.raw || '')}</textarea></div></div>`
+    + `<div id="e-result"></div>`;
+  $('e-send').onclick = sendReplay;
+}
+async function sendReplay() {
+  if (!draft) return;
+  const btn = $('e-send'); btn.disabled = true; btn.textContent = 'Sending…';
+  let headers; try { headers = JSON.parse($('e-headers').value || '{}'); } catch { $('e-result').innerHTML = '<div class="errb">INVALID_HEADER: headers must be valid JSON</div>'; btn.disabled = false; btn.textContent = 'Send'; return; }
+  const patch = { mode: $('e-mode').value, method: $('e-method').value.trim().toUpperCase(), url: $('e-url').value.trim(), headers, body: $('e-body').value };
+  const upd = await api.replayUpdateDraft(draft.id, patch);
+  if (upd && upd.error) { $('e-result').innerHTML = `<div class="errb">${esc(upd.error.code)}: ${esc(upd.error.message || '')}</div>`; btn.disabled = false; btn.textContent = 'Send'; return; }
+  const ex = await api.replayExecute(draft.id);
+  const r = ex.response;
+  if (ex.status === 'COMPLETED') {
+    replayedIds.add(selectedId); markDirty();
+    $('e-result').innerHTML = `<div class="result"><div class="st ${statusClass(r.status)}">${r.status} ${esc(r.statusText || '')}</div><div class="muted">${esc(r.mode)} · ${r.duration || 0}ms</div>`
+      + (r.warnings && r.warnings.length ? `<div class="warnb">warnings: ${esc(r.warnings.map((w) => w.header ? w.header + ':' + w.policy : (w.policy || w.reason)).join(', '))}</div>` : '')
+      + `${prettyBody(r.body, r.headers && (r.headers['content-type'] || r.headers['Content-Type']))}</div>`;
+  } else {
+    $('e-result').innerHTML = `<div class="errb">${esc(ex.error && ex.error.code || 'REPLAY_FAILED')}: ${esc(ex.error && ex.error.message || '')}</div>`;
   }
-  window.desktopCapture?.onInterceptChanged(paused => { if (navBtn.classList.contains('active')) refreshPaused(paused); });
-})();
-window.desktopCapture?.onEvent(event => { events.push(event); render(); });
-render();
+  timelineData = await api.timelineBuild(selectedId); renderTimeline();
+  btn.disabled = false; btn.textContent = 'Send';
+}
+
+function renderInterceptEditor(el, p) {
+  el.innerHTML = `<h3>Intercept — <span class="muted">${esc(p.targetId)} · paused ${esc(fmtTime(p.pausedAt))}</span></h3>`
+    + `<div class="row2"><input id="i-method" value="${esc(p.draft.method)}" style="width:90px"><input id="i-url" value="${esc(p.draft.url)}" style="flex:1"></div>`
+    + `<div class="row2" style="align-items:flex-start"><div style="flex:1"><div class="muted">Headers (JSON)</div><textarea id="i-headers" rows="4">${esc(JSON.stringify(p.draft.headers, null, 2))}</textarea></div>`
+    + `<div style="flex:1"><div class="muted">Body (raw)</div><textarea id="i-body" rows="4">${esc(p.draft.body || '')}</textarea></div></div>`
+    + `<div class="row2"><button class="primary" id="i-mod" title="Ctrl+Enter">Continue Modified</button><button id="i-cont">Continue</button><button id="i-abort">Abort</button></div><div id="i-result"></div>`;
+  const show = (r) => { $('i-result').innerHTML = r && r.error ? `<div class="errb">${esc(r.error.code)}: ${esc(r.error.message || '')}</div>` : `<div class="muted">${esc(r.state)}</div>`; };
+  $('i-cont').onclick = async () => { show(await api.interceptContinue(p.id)); pausedSelected = null; };
+  $('i-abort').onclick = async () => { show(await api.interceptAbort(p.id)); pausedSelected = null; };
+  $('i-mod').onclick = async () => {
+    let headers; try { headers = JSON.parse($('i-headers').value || '{}'); } catch { $('i-result').innerHTML = '<div class="errb">INVALID_INTERCEPT_DRAFT: headers must be valid JSON</div>'; return; }
+    show(await api.interceptContinueModified(p.id, { method: $('i-method').value.trim().toUpperCase(), url: $('i-url').value.trim(), headers, body: $('i-body').value }));
+    pausedSelected = null;
+  };
+}
+
+// ---- context menu (copy) ----
+let ctxEl;
+async function openContextMenu(x, y, id) {
+  closeContextMenu();
+  const d = await api.getRequestDetail(id);
+  if (!d || d.error) return;
+  ctxEl = document.createElement('div'); ctxEl.className = 'ctx'; ctxEl.style.left = x + 'px'; ctxEl.style.top = y + 'px';
+  const items = [
+    ['Copy URL', () => copy(d.url, 'URL')],
+    ['Copy as cURL', () => copy(toCurl(d), 'cURL')],
+    ['Copy Headers', () => copy(Object.entries(d.headers || {}).map(([k, v]) => k + ': ' + v).join('\n'), 'Headers')],
+    ['Copy Body', () => copy((d.body && d.body.raw) || '', 'Body')],
+    ['Copy Response body', async () => { const b = await api.getResponseBody(id); copy(b && b.available ? b.body : ((b && b.error && b.error.code) || ''), 'Response'); }],
+  ];
+  ctxEl.innerHTML = items.map((_, i) => `<button data-i="${i}"></button>`).join('');
+  [...ctxEl.querySelectorAll('button')].forEach((b, i) => { b.textContent = items[i][0]; b.onclick = () => { items[i][1](); closeContextMenu(); }; });
+  document.body.appendChild(ctxEl);
+}
+function closeContextMenu() { if (ctxEl) { ctxEl.remove(); ctxEl = null; } }
+document.addEventListener('click', closeContextMenu);
+function toCurl(d) {
+  const q = (s) => "'" + String(s).replace(/'/g, "'\\''") + "'";
+  const parts = ['curl -X ' + d.method + ' ' + q(d.url)];
+  for (const [k, v] of Object.entries(d.headers || {})) parts.push('-H ' + q(k + ': ' + v));
+  if (d.body && d.body.raw) parts.push('--data-raw ' + q(d.body.raw));
+  return parts.join(' \\\n  ');
+}
+
+// ---- targets / connection ----
+function parseHostPort(s) { const m = String(s).trim().match(/^(?:https?:\/\/)?([^:/\s]+)(?::(\d+))?/); return m ? { host: m[1], port: Number(m[2] || 9222) } : { host: '127.0.0.1', port: 9222 }; }
+$('connect').onclick = async () => { const r = await api.connect(parseHostPort($('host').value)); if (r && r.error) toast(r.error.code || 'Connect failed'); };
+$('launch').onclick = async () => { const url = $('url').value.trim(); if (!url) return toast('Enter a URL'); try { await api.setScope([new URL(url).hostname]); } catch { /* allow all */ } await api.openBrowser(url); $('chip-cap').textContent = 'Launching…'; };
+$('adb').onclick = async () => {
+  const r = await api.adbListWebviews();
+  if (!r || !r.ok) return toast((r && r.error && r.error.code) || 'adb unavailable');
+  if (!r.sockets.length) return toast('No WebView sockets found');
+  const res = await api.adbForwardWebview(r.sockets[0]);
+  toast(res && res.ok ? 'Attached ' + r.sockets[0] : ((res && res.error && res.error.code) || 'adb forward failed'));
+};
+api.onTargetsChanged && api.onTargetsChanged((list) => {
+  const sel = $('targets'); const cur = sel.value;
+  const badge = { CHROME: 'Chrome', WEBVIEW2: 'WebView2', CEF: 'CEF', ANDROID_WEBVIEW: 'Android WebView', OTHER: 'Target' };
+  sel.innerHTML = list && list.length ? list.map((t) => `<option value="${esc(t.cdpTargetId)}">${esc((badge[t.runtime] || t.runtime) + ' · ' + (t.title || t.url || t.cdpTargetId))}</option>`).join('') : '<option value="">No targets</option>';
+  if (list && list.some((t) => t.cdpTargetId === cur)) sel.value = cur;
+  const connected = !!(list && list.length);
+  setChip('chip-conn', connected, connected ? 'Connected' : 'Disconnected');
+  setChip('chip-cap', connected, connected ? 'Capturing' : 'Idle');
+});
+$('targets').onchange = () => { if ($('targets').value) api.selectTarget($('targets').value); };
+api.onCdpError && api.onCdpError((e) => toast((e && e.code) || 'CDP error'));
+
+// ---- intercept bar ----
+$('intc-toggle').onchange = async () => {
+  const rule = { host: $('intc-host').value.trim(), method: $('intc-method').value.trim(), urlContains: $('intc-url').value.trim() };
+  if ($('intc-toggle').checked) { const r = await api.interceptEnable(rule); if (r && r.error) { $('intc-toggle').checked = false; toast(r.error.code); return; } interceptOn = true; }
+  else { await api.interceptDisable(); interceptOn = false; }
+  setChip('chip-intc', interceptOn, interceptOn ? 'Intercept ON' : 'Intercept OFF');
+};
+api.onInterceptChanged && api.onInterceptChanged((list) => {
+  paused = list || [];
+  const chip = $('chip-paused'); chip.hidden = !paused.length; chip.textContent = paused.length + ' paused'; chip.className = 'chip warn';
+  for (const p of paused) { const r = [...reqs.values()].find((x) => x.cdpRequestId === p.networkRequestId && x.targetId === p.targetId); if (r) interceptedIds.add(r.id); }
+  renderPausedStrip();
+  if (pausedSelected && !paused.some((p) => p.id === pausedSelected.id)) { pausedSelected = null; renderEditor(); }
+});
+function renderPausedStrip() {
+  $('paused-strip').innerHTML = paused.map((p) => { let path = p.draft.url; try { path = new URL(p.draft.url).pathname; } catch { /* keep */ } return `<button class="paused-pill" data-p="${esc(p.id)}">⧗ ${esc(p.draft.method)} ${esc(path)}</button>`; }).join('');
+  for (const b of $('paused-strip').querySelectorAll('[data-p]')) b.onclick = () => { pausedSelected = paused.find((x) => x.id === b.dataset.p); renderEditor(); };
+}
+
+// ---- toolbar misc ----
+$('search').oninput = markDirty;
+$('filter').onchange = renderList;
+$('clear').onclick = () => { reqs.clear(); order.length = 0; replayedIds.clear(); interceptedIds.clear(); selectedId = null; detail = null; draft = null; timelineData = null; renderList(); $('timeline').innerHTML = '<div class="empty">Select a request.</div>'; $('detail').innerHTML = '<div class="empty">Select a request.</div>'; renderEditor(); };
+$('theme').onclick = () => { const n = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = n; try { localStorage.setItem('wvd-theme', n); } catch { /* ignore */ } };
+try { document.documentElement.dataset.theme = localStorage.getItem('wvd-theme') || 'light'; } catch { /* ignore */ }
+function setChip(id, on, text) { const c = $(id); c.textContent = text; c.className = 'chip ' + (on ? 'on' : 'off'); }
+
+// ---- keyboard ----
+document.addEventListener('keydown', (e) => {
+  const typing = /INPUT|TEXTAREA|SELECT/.test(document.activeElement && document.activeElement.tagName);
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') { e.preventDefault(); $('search').focus(); return; }
+  if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); if (pausedSelected) { const b = $('i-mod'); b && b.click(); } else { const b = $('e-send'); b && b.click(); } return; }
+  if (e.key === 'Escape') { if (ctxEl) { closeContextMenu(); return; } if (document.activeElement && document.activeElement.blur) document.activeElement.blur(); return; }
+  if (e.key === 'Delete' && !typing) { e.preventDefault(); $('clear').click(); return; }
+  if ((e.key === 'ArrowDown' || e.key === 'ArrowUp') && !typing) {
+    e.preventDefault(); const list = filtered(); if (!list.length) return;
+    let idx = list.findIndex((r) => r.id === selectedId);
+    idx = e.key === 'ArrowDown' ? Math.min(list.length - 1, idx + 1) : Math.max(0, idx - 1);
+    if (idx < 0) idx = 0; selectRequest(list[idx].id);
+  }
+});
+
+renderList();

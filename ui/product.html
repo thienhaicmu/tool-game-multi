@@ -1,1 +1,72 @@
-<!doctype html><html lang="vi" data-theme="light"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Observatory</title><link rel="stylesheet" href="product.css"></head><body><header class="topbar"><div class="logo"><span>◇</span><div><b>OBSERVATORY</b><small>Webapp debugging workspace</small></div></div><div class="top-actions"><span class="live-dot"></span><span id="status">Sẵn sàng</span><button id="open" class="primary">Mở Chromium</button><button id="theme" class="icon">☾</button><select id="lang"><option value="vi">VI</option><option value="en">EN</option></select></div></header><div class="shell"><aside class="sidebar"><div class="project-switch"><small>DỰ ÁN</small><strong>Local webapp</strong><span id="scope-label">Scope chưa cấu hình</span></div><nav><button class="nav active" data-view="requests">◌ <span data-t="requests">Requests</span><b id="count">0</b></button><button class="nav" data-view="replays">↻ <span data-t="replays">Replay history</span></button><button class="nav" data-view="sessions">▣ <span data-t="sessions">Saved sessions</span></button></nav><div class="sidebar-bottom">Passive capture<br>Secrets are redacted</div></aside><main class="main"><div class="page-head"><div><h1 id="view-title">Requests</h1><p id="view-subtitle">Select requests to review and replace values.</p></div><div class="filters"><input id="search" placeholder="Search host, path or method"><select id="type"><option value="all">All types</option><option value="fetch">Fetch</option><option value="xhr">XHR</option><option value="document">Document</option><option value="websocket">WebSocket</option></select></div></div><div class="content-grid"><section class="request-list"><div class="list-head"><b>Captured requests</b><button id="select-all">Select all</button></div><div id="requests" class="rows"><div class="empty"><strong>No requests yet</strong><span>Open Chromium and use your webapp.</span></div></div></section><section id="workspace" class="workspace"><div class="empty"><span class="empty-icon">✦</span><strong>Request workspace</strong><span>Choose a request to edit values and replay.</span></div></section></div></main></div><script src="product.js"></script></body></html>
+<!doctype html>
+<html lang="en" data-theme="light">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>WebView Debugger</title>
+  <link rel="stylesheet" href="product.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand"><span class="glyph">◇</span><b>WebView Debugger</b></div>
+    <div class="connect">
+      <input id="host" value="127.0.0.1:9222" title="CDP endpoint host:port">
+      <button id="connect">Connect</button>
+      <input id="url" placeholder="https://your.app" title="Launch Chrome at URL">
+      <button id="launch">Launch Chrome</button>
+      <button id="adb" title="Attach Android WebView via adb">ADB</button>
+    </div>
+    <select id="targets" title="Debug target"><option value="">No targets</option></select>
+    <div class="chips">
+      <span id="chip-conn" class="chip off">Disconnected</span>
+      <span id="chip-cap" class="chip off">Idle</span>
+      <span id="chip-intc" class="chip off">Intercept OFF</span>
+      <span id="chip-paused" class="chip" hidden>0 paused</span>
+    </div>
+    <div class="spacer"></div>
+    <input id="search" placeholder="Search  (Ctrl+F)  e.g. POST 500 purchase">
+    <select id="filter">
+      <option value="all">All</option>
+      <option value="fetch">Fetch</option>
+      <option value="xhr">XHR</option>
+      <option value="failed">Failed</option>
+      <option value="replayed">Replayed</option>
+      <option value="intercepted">Intercepted</option>
+    </select>
+    <button id="clear" title="Clear (Delete)">Clear</button>
+    <button id="theme" class="icon">☾</button>
+  </header>
+
+  <div class="intercept-bar">
+    <label><input type="checkbox" id="intc-toggle"> Intercept selected target</label>
+    <input id="intc-host" placeholder="host (optional)">
+    <input id="intc-method" placeholder="method">
+    <input id="intc-url" placeholder="url contains">
+    <span id="paused-strip" class="paused-strip"></span>
+  </div>
+
+  <main class="grid">
+    <section class="col list-col">
+      <div class="col-head">Requests <span id="count" class="muted"></span></div>
+      <div id="list" class="rows"><div class="empty">Waiting for network activity…</div></div>
+    </section>
+    <section class="col timeline-col">
+      <div class="col-head">Timeline</div>
+      <div id="timeline" class="tl"><div class="empty">Select a request.</div></div>
+    </section>
+    <section class="col detail-col">
+      <div class="tabs" id="detail-tabs">
+        <button class="tab active" data-tab="overview">Overview</button>
+        <button class="tab" data-tab="request">Request</button>
+        <button class="tab" data-tab="response">Response</button>
+        <button class="tab" data-tab="diff">Diff</button>
+        <button class="tab" data-tab="history">History</button>
+      </div>
+      <div id="detail" class="detail"><div class="empty">Select a request.</div></div>
+    </section>
+  </main>
+
+  <footer id="editor" class="editor"><div class="empty">Select a request to replay, or a paused request to intercept.</div></footer>
+  <script src="product.js"></script>
+</body>
+</html>

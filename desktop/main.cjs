@@ -16,7 +16,6 @@ const { Timeline } = require('./timeline.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
-let detailWindow;
 let chromeProcess;
 let targetManager = null;
 let selectedTargetId = null;
@@ -183,18 +182,10 @@ async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = 
   }
 }
 
-function openDetailWindow(payload) {
-  if (detailWindow && !detailWindow.isDestroyed()) { detailWindow.focus(); detailWindow.webContents.send('detail-data', payload); return; }
-  detailWindow = new BrowserWindow({ width: 620, height: 760, minWidth: 480, minHeight: 520, title: 'Request Detail', parent: shell, webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true } });
-  detailWindow.loadURL('app://ui/request-detail.html');
-  detailWindow.webContents.once('did-finish-load', () => detailWindow.webContents.send('detail-data', payload));
-  detailWindow.on('closed', () => { detailWindow = null; });
-}
-
 app.whenReady().then(() => {
   protocol.registerFileProtocol('app', (request, callback) => {
     const pathname = new URL(request.url).pathname.replace(/^\/+/, '');
-    callback({ path: path.join(__dirname, '..', 'ui', pathname === 'ui/desktop.html' ? 'desktop.html' : pathname) });
+    callback({ path: path.join(__dirname, '..', 'ui', pathname) });
   });
   createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
@@ -209,7 +200,6 @@ app.on('before-quit', event => {
   child.once('error', () => app.quit());
 });
 ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
-ipcMain.on('open-request-detail', (_event, payload) => openDetailWindow(payload));
 ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
 ipcMain.handle('list-sessions', () => {
   const dir = path.join(app.getPath('userData'), 'sessions');
