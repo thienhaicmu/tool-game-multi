@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, session, protocol, net, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, net, dialog } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
@@ -10,6 +10,7 @@ const CDP = require('chrome-remote-interface');
 const { TargetManager } = require('./cdp/target-manager.cjs');
 const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
+const { ReplayEngine } = require('./replay/replay-engine.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
@@ -18,9 +19,6 @@ let chromeProcess;
 let targetManager = null;
 let selectedTargetId = null;
 const capturedClients = new WeakSet();
-let browserSession;
-const pending = new Map();
-const replayable = new Map();
 let allowedHosts = new Set();
 let capturePaused = false;
 let sessionId = randomUUID();
@@ -66,12 +64,6 @@ function safeDisplayUrl(rawUrl) {
     return url.toString();
   } catch { return '[REDACTED URL]'; }
 }
-function safeBody(uploadData) {
-  try {
-    const raw = (uploadData || []).map(part => part.bytes ? Buffer.from(part.bytes).toString('utf8') : '').join('').slice(0, 20000);
-    return raw.replace(/(password|passwd|token|secret|authorization|cookie|api[_-]?key|private[_-]?key)\s*([:=])\s*(["']?)[^,"'&\s}]+\3/ig, '$1$2[REDACTED]').slice(0, 4000);
-  } catch { return '[REDACTED]'; }
-}
 function safeHeaders(headers) {
   const output = {};
   for (const [key, value] of Object.entries(headers || {})) output[key] = /authorization|cookie|token|secret|api[-_]?key|password/i.test(key) ? '[REDACTED]' : String(value).slice(0, 1000);
@@ -85,42 +77,11 @@ function emit(event) {
   if (shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
 }
 
-function attachCapture() {
-  browserSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
-    if (details.url.startsWith('file:') || details.url.includes('127.0.0.1:5173')) { callback({}); return; }
-    if (capturePaused) { callback({}); return; }
-    const id = details.id + ':' + randomUUID();
-    replayable.set(id, { method: details.method, url: details.url, uploadData: details.uploadData || [] });
-    if (replayable.size > 200) replayable.delete(replayable.keys().next().value);
-    pending.set(details.id, { id, started: Date.now(), url: details.url });
-    const allowed = inScope(details.url);
-    emit({ kind: 'request', id, requestId: String(details.id), method: details.method, url: allowed ? safeDisplayUrl(details.url) : new URL(details.url).origin + '/', resourceType: details.resourceType, scope: allowed ? 'allow_full' : 'allow_metadata_only', bodyPreview: allowed ? safeBody(details.uploadData) : null, headers: {}, timestamp: new Date().toISOString() });
-    callback({});
-  });
-  browserSession.webRequest.onBeforeSendHeaders({ urls: ['*://*/*'] }, (details, callback) => {
-    const pendingRequest = pending.get(details.id);
-    const item = pendingRequest ? replayable.get(pendingRequest.id) : [...replayable.values()].find(value => value.url === details.url && value.method === details.method);
-    if (item) { item.headers = details.requestHeaders; emit({ kind: 'request-headers', id: item.id, headers: inScope(details.url) ? safeHeaders(details.requestHeaders) : {} }); }
-    callback({ requestHeaders: details.requestHeaders });
-  });
-  browserSession.webRequest.onCompleted(details => {
-    const item = pending.get(details.id); if (!item) return; pending.delete(details.id);
-    const allowed = inScope(item.url);
-    emit({ kind: 'response', id: item.id, requestId: String(details.id), url: allowed ? safeDisplayUrl(item.url) : new URL(item.url).origin + '/', status: details.statusCode, duration: Date.now() - item.started, timestamp: new Date().toISOString() });
-  });
-  browserSession.webRequest.onErrorOccurred(details => {
-    const item = pending.get(details.id); if (!item) return; pending.delete(details.id);
-    emit({ kind: 'response', id: item.id, requestId: String(details.id), url: item.url, status: 0, error: details.error, duration: Date.now() - item.started, timestamp: new Date().toISOString() });
-  });
-}
-
 function createWindow() {
   shell = new BrowserWindow({ width: 1500, height: 950, minWidth: 1100, minHeight: 700, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
-  browserSession = session.fromPartition('persist:observatory-browser');
   const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
   journal = new EventJournal(journalPath);
   importTimer = setInterval(importJournalNow, 10_000);
-  attachCapture();
   shell.loadURL('app://ui/product.html');
 }
 
@@ -146,16 +107,24 @@ async function connectEndpointWithRetry(endpoint, attempt = 0) {
 
 // Shared correlator: holds RAW evidence (unredacted) for all attached targets and
 // resolves response bodies through each request's OWN target client.
-const capture = new CaptureCorrelator({
-  resolveClient: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.client : null; },
+function resolveTargetClient(targetId) { const s = targetManager && targetManager.getSession(targetId); return s ? s.client : null; }
+const capture = new CaptureCorrelator({ resolveClient: resolveTargetClient });
+// WU3: replay is driven from the immutable CapturedRequest held by `capture`.
+const replay = new ReplayEngine({
+  getCaptured: id => capture.get(id),
+  resolveClient: resolveTargetClient,
+  httpFetch: async (url, opts) => {
+    const response = await net.fetch(url, { method: opts.method, headers: opts.headers, body: ['GET', 'HEAD'].includes(opts.method) ? undefined : opts.body });
+    const text = await response.text();
+    const headers = {}; response.headers.forEach((v, k) => { headers[k] = v; });
+    return { status: response.status, statusText: response.statusText, headers, body: text };
+  },
 });
 // Bridge raw model -> the existing display/journal pipeline (which may mask
 // secrets for display only; raw evidence stays in `capture`).
 capture.on('request', req => {
   let origin = '/';
   try { origin = new URL(req.url).origin + '/'; } catch { /* opaque */ }
-  replayable.set(req.id, { targetId: req.targetId, method: req.method, url: req.url, uploadData: req.body && req.body.raw != null ? [{ bytes: Buffer.from(req.body.raw) }] : [], headers: req.headers || {} });
-  if (replayable.size > 1000) replayable.delete(replayable.keys().next().value);
   const allowed = inScope(req.url);
   emit({ kind: 'request', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, method: req.method, url: allowed ? safeDisplayUrl(req.url) : origin, resourceType: String(req.resourceType || 'other').toLowerCase(), scope: allowed ? 'allow_full' : 'allow_metadata_only', headers: allowed ? safeHeaders(req.headers) : {}, bodyPreview: allowed ? String((req.body && req.body.raw) || '').slice(0, 4000) : null, timestamp: req.startedAt });
 });
@@ -202,12 +171,6 @@ async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = 
   } catch (err) {
     return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err && err.message || err) } };
   }
-}
-
-function selectedClient() {
-  if (!targetManager || !selectedTargetId) return null;
-  const session = targetManager.getSession(selectedTargetId);
-  return session ? session.client : null;
 }
 
 function openDetailWindow(payload) {
@@ -272,21 +235,12 @@ ipcMain.handle('analyze-session', async (_event, id) => {
   const python = process.env.OBSERVATORY_PYTHON || 'python';
   return await new Promise(resolve => execFile(python, ['-m', 'websec_observer.cli.main', 'analyze', database, id], { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => error ? resolve({ ok: false, error: String(stderr || error.message) }) : resolve({ ok: true, output: stdout }))); 
 });
-// WU3 Mode A foundation: WebView-context replay runs inside the captured target's
-// OWN client. We resolve the request's target (falling back to the selected one)
-// so the fetch executes in the correct WebView, never a default page.
-ipcMain.handle('browser-replay', async (_event, id, payload = {}) => {
-  const captured = replayable.get(id);
-  const targetId = payload.targetId || captured?.targetId || selectedTargetId;
-  const session = targetManager && targetId ? targetManager.getSession(targetId) : null;
-  const client = session ? session.client : selectedClient();
-  if (!client) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'The WebView that produced this request is no longer attached. Reconnect or choose another target.' } };
-  try {
-    const expression = `(async()=>{const r=await fetch(${JSON.stringify(payload.url)},${JSON.stringify({ method: payload.method || 'GET', headers: payload.headers || {}, body: ['GET','HEAD'].includes(payload.method || 'GET') ? undefined : payload.body, credentials: 'include' })});return {ok:true,status:r.status,statusText:r.statusText,bodyPreview:(await r.text()).slice(0,4000)}})()`;
-    const result = await client.Runtime.evaluate({ expression, awaitPromise: true, returnByValue: true });
-    return result.result?.value || { ok: false, error: { code: 'REPLAY_FAILED', message: 'No replay result returned by the WebView' } };
-  } catch (error) { return { ok: false, error: { code: 'REPLAY_FAILED', message: String(error.message || error) } }; }
-});
+// WU3: replay lifecycle. Draft duplicates an immutable CapturedRequest; execute
+// runs it in the request's OWN target (WEBVIEW_CONTEXT) or via HTTP_DIRECT.
+ipcMain.handle('replay-create-draft', (_event, capturedRequestId, options = {}) => replay.createDraft(String(capturedRequestId), options));
+ipcMain.handle('replay-update-draft', (_event, draftId, patch = {}) => replay.updateDraft(String(draftId), patch));
+ipcMain.handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
+ipcMain.handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
 ipcMain.handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
 ipcMain.handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
 ipcMain.handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
@@ -309,27 +263,3 @@ ipcMain.handle('adb-forward-webview', async (_event, socket, localPort = 9223) =
   } catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
 });
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
-ipcMain.handle('replay-request', async (_event, id, overrides = {}) => {
-  const item = replayable.get(id);
-  if (!item) return { ok: false, error: 'Request expired from memory' };
-  const target = new URL(item.url);
-  if (!inScope(item.url)) return { ok: false, error: 'Target is outside current scope' };
-  const method = String(overrides.method || item.method).toUpperCase();
-  if (!['GET', 'HEAD', 'OPTIONS', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) return { ok: false, error: 'Method is not allowed' };
-  const url = new URL(String(overrides.url || item.url));
-  if (url.hostname.toLowerCase() !== target.hostname.toLowerCase()) return { ok: false, error: 'Replay host must match captured host' };
-  const headers = { ...(item.headers || {}), ...(overrides.headers || {}) };
-  delete headers.host; delete headers['content-length']; delete headers.connection;
-  const body = overrides.body !== undefined ? String(overrides.body) : (item.uploadData && item.uploadData.length ? Buffer.concat(item.uploadData.map(part => part.bytes ? Buffer.from(part.bytes) : Buffer.alloc(0))) : undefined);
-  try {
-    const response = await net.fetch(url, { method, headers, body: ['GET', 'HEAD'].includes(method) ? undefined : body });
-    const text = await response.text();
-    const result = { ok: true, status: response.status, statusText: response.statusText, bodyPreview: text.slice(0, 4000) };
-    emit({ kind: 'replay', id: String(id), method, url: safeDisplayUrl(url.toString()), status: response.status, overrides: Object.keys(overrides), timestamp: new Date().toISOString() });
-    return result;
-  } catch (error) {
-    const message = String(error.message || error);
-    emit({ kind: 'replay', id: String(id), method, url: safeDisplayUrl(url.toString()), status: 0, error: message, overrides: Object.keys(overrides), timestamp: new Date().toISOString() });
-    return { ok: false, error: message };
-  }
-});
