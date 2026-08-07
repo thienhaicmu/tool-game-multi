@@ -94,5 +94,58 @@ if (topActions) {
   });
   window.desktopCapture?.onCdpError(err => { document.querySelector('#status').textContent = (err && err.code) || 'CDP error'; });
 }
+// WU4: minimal live-interception UI (nav view + rule + paused list + editor).
+(function setupIntercept() {
+  const navEl = document.querySelector('nav');
+  if (!navEl) return;
+  let interceptOn = false;
+  const state = { rule: { host: '', method: '', urlContains: '' } };
+  const navBtn = document.createElement('button');
+  navBtn.className = 'nav'; navBtn.dataset.view = 'intercept'; navBtn.innerHTML = '⧗ <span>Intercept</span>';
+  navEl.appendChild(navBtn);
+  navBtn.onclick = () => {
+    document.querySelectorAll('.nav').forEach(n => n.classList.toggle('active', n === navBtn));
+    document.querySelector('#view-title').textContent = 'Intercept';
+    document.querySelector('#view-subtitle').textContent = 'Pause, edit and continue live requests before they reach the server.';
+    renderIntercept();
+  };
+  function renderIntercept() {
+    rows.innerHTML = '<div style="padding:12px;border-bottom:1px solid var(--line);display:grid;gap:8px">'
+      + '<div style="display:flex;gap:8px;align-items:center"><button id="intc-toggle" class="row-replace">' + (interceptOn ? 'Intercept: ON' : 'Intercept: OFF') + '</button><span style="color:var(--muted);font-size:10px">selected target only</span></div>'
+      + '<input id="intc-host" placeholder="host (optional)" value="' + esc(state.rule.host) + '" style="height:26px">'
+      + '<div style="display:flex;gap:8px"><input id="intc-method" placeholder="method (optional)" value="' + esc(state.rule.method) + '" style="height:26px;width:110px"><input id="intc-url" placeholder="url contains (optional)" value="' + esc(state.rule.urlContains) + '" style="height:26px;flex:1"></div>'
+      + '</div><div id="paused-list"></div>';
+    document.querySelector('#intc-toggle').onclick = async () => {
+      state.rule = { host: document.querySelector('#intc-host').value.trim(), method: document.querySelector('#intc-method').value.trim(), urlContains: document.querySelector('#intc-url').value.trim() };
+      if (!interceptOn) { const r = await window.desktopCapture?.interceptEnable(state.rule); if (r && r.error) { document.querySelector('#view-subtitle').textContent = r.error.code + ': ' + (r.error.message || ''); return; } interceptOn = true; }
+      else { await window.desktopCapture?.interceptDisable(); interceptOn = false; }
+      renderIntercept();
+    };
+    refreshPaused();
+  }
+  async function refreshPaused(list) {
+    const pausedList = document.querySelector('#paused-list'); if (!pausedList) return;
+    const paused = list || await window.desktopCapture?.interceptList() || [];
+    pausedList.innerHTML = paused.length ? paused.map(p => '<div class="row" data-intc="' + esc(p.id) + '"><span class="method">' + esc(p.draft.method) + '</span><span>' + esc(p.resourceType || '') + '</span><span><b class="host">PAUSED</b><span class="path">' + esc((() => { try { return new URL(p.draft.url).pathname; } catch { return p.draft.url; } })()) + '</span></span><span class="status">⧗</span></div>').join('') : '<div class="empty"><strong>No paused requests</strong><span>Turn intercept ON and trigger a matching request.</span></div>';
+    pausedList.querySelectorAll('[data-intc]').forEach(row => { row.onclick = () => openPaused(paused.find(x => x.id === row.dataset.intc)); });
+  }
+  function openPaused(p) {
+    if (!p) return;
+    workspace.innerHTML = '<div class="replace"><div class="subtitle">Target ' + esc(p.targetId) + ' · ' + esc(p.resourceType || '') + ' · paused ' + esc(p.pausedAt) + '</div><h2>Paused request</h2>'
+      + '<h3>Method &amp; URL</h3><input id="p-method" value="' + esc(p.draft.method) + '" style="width:90px"><input id="p-url" value="' + esc(p.draft.url) + '" style="width:calc(100% - 100px)">'
+      + '<h3>Headers (JSON)</h3><textarea id="p-headers" rows="6" style="width:100%">' + esc(JSON.stringify(p.draft.headers, null, 2)) + '</textarea>'
+      + '<h3>Body (raw)</h3><textarea id="p-body" rows="6" style="width:100%">' + esc(p.draft.body || '') + '</textarea>'
+      + '<div style="display:flex;gap:8px;margin-top:10px"><button class="replay" id="p-continue">Continue</button><button class="replay" id="p-modified">Continue Modified</button><button class="row-replace" id="p-abort">Abort</button></div>'
+      + '<div class="response-card"><small>RESULT</small><pre id="p-result"></pre></div></div>';
+    const show = r => { document.querySelector('#p-result').textContent = r && r.error ? (r.error.code + ': ' + (r.error.message || '')) : JSON.stringify(r, null, 2); refreshPaused(); };
+    document.querySelector('#p-continue').onclick = async () => show(await window.desktopCapture?.interceptContinue(p.id));
+    document.querySelector('#p-abort').onclick = async () => show(await window.desktopCapture?.interceptAbort(p.id));
+    document.querySelector('#p-modified').onclick = async () => {
+      let headers; try { headers = JSON.parse(document.querySelector('#p-headers').value || '{}'); } catch { document.querySelector('#p-result').textContent = 'INVALID_INTERCEPT_DRAFT: headers must be valid JSON'; return; }
+      show(await window.desktopCapture?.interceptContinueModified(p.id, { method: document.querySelector('#p-method').value.trim().toUpperCase(), url: document.querySelector('#p-url').value.trim(), headers, body: document.querySelector('#p-body').value }));
+    };
+  }
+  window.desktopCapture?.onInterceptChanged(paused => { if (navBtn.classList.contains('active')) refreshPaused(paused); });
+})();
 window.desktopCapture?.onEvent(event => { events.push(event); render(); });
 render();

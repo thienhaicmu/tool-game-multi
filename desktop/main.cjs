@@ -10,6 +10,7 @@ const CDP = require('chrome-remote-interface');
 const { TargetManager } = require('./cdp/target-manager.cjs');
 const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
+const { InterceptEngine } = require('./cdp/intercept.cjs');
 const { ReplayEngine } = require('./replay/replay-engine.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
@@ -109,6 +110,9 @@ async function connectEndpointWithRetry(endpoint, attempt = 0) {
 // resolves response bodies through each request's OWN target client.
 function resolveTargetClient(targetId) { const s = targetManager && targetManager.getSession(targetId); return s ? s.client : null; }
 const capture = new CaptureCorrelator({ resolveClient: resolveTargetClient });
+// WU4: live request interception (Fetch domain), target-bound.
+const intercept = new InterceptEngine({ resolveClient: resolveTargetClient });
+intercept.on('changed', () => { if (shell && !shell.isDestroyed()) shell.webContents.send('intercept-changed', intercept.listPaused()); });
 // WU3: replay is driven from the immutable CapturedRequest held by `capture`.
 const replay = new ReplayEngine({
   getCaptured: id => capture.get(id),
@@ -145,6 +149,9 @@ async function attachCdpCapture(client, target) {
   Network.responseReceivedExtraInfo(p => capture.onResponseReceivedExtraInfo(tid, p));
   Network.loadingFinished(p => capture.onLoadingFinished(tid, p));
   Network.loadingFailed(p => capture.onLoadingFailed(tid, p));
+  // Fetch events only fire once intercept.enable() calls Fetch.enable on this
+  // client; harmless to subscribe always.
+  client.Fetch.requestPaused(p => intercept.onRequestPaused(tid, p));
 }
 
 function broadcastTargets() {
@@ -161,7 +168,7 @@ async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = 
   });
   manager.on('target-added', broadcastTargets);
   manager.on('target-updated', broadcastTargets);
-  manager.on('target-removed', id => { if (selectedTargetId === id) selectedTargetId = null; broadcastTargets(); });
+  manager.on('target-removed', id => { intercept.onTargetDetached(id); if (selectedTargetId === id) selectedTargetId = null; broadcastTargets(); });
   manager.on('error', err => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) }); });
   try {
     await manager.start();
@@ -241,6 +248,14 @@ ipcMain.handle('replay-create-draft', (_event, capturedRequestId, options = {}) 
 ipcMain.handle('replay-update-draft', (_event, draftId, patch = {}) => replay.updateDraft(String(draftId), patch));
 ipcMain.handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
 ipcMain.handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
+// WU4 intercept IPC. Default scope is the selected target only.
+ipcMain.handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
+ipcMain.handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || selectedTargetId || '')));
+ipcMain.handle('intercept-list', () => intercept.listPaused());
+ipcMain.handle('intercept-update-draft', (_event, id, patch = {}) => intercept.updateDraft(String(id), patch));
+ipcMain.handle('intercept-continue', (_event, id) => intercept.continue(String(id)));
+ipcMain.handle('intercept-continue-modified', (_event, id, patch) => intercept.continueModified(String(id), patch));
+ipcMain.handle('intercept-abort', (_event, id) => intercept.abort(String(id)));
 ipcMain.handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
 ipcMain.handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
 ipcMain.handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
