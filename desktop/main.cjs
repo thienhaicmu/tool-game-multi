@@ -86,6 +86,23 @@ function createWindow() {
   shell.loadURL('app://ui/product.html');
 }
 
+// Persist the login session across relaunches. The profile dir already keeps
+// persistent cookies; this makes Chrome ALSO keep *session* cookies (the common
+// auth-cookie case, e.g. .AspNetCore.Cookies) by enabling "continue where you
+// left off", which stops Chrome from purging non-persistent cookies on startup.
+function ensureChromePersistentSession(profile) {
+  try {
+    const dir = path.join(profile, 'Default');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, 'Preferences');
+    let prefs = {};
+    if (fs.existsSync(file)) { try { prefs = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { prefs = {}; } }
+    prefs.session = Object.assign({}, prefs.session, { restore_on_startup: 1 }); // 1 = continue where you left off
+    prefs.profile = Object.assign({}, prefs.profile, { exit_type: 'Normal', exited_cleanly: true });
+    fs.writeFileSync(file, JSON.stringify(prefs), 'utf8');
+  } catch { /* best effort — persistent cookies still work via the profile dir */ }
+}
+
 function openBrowserWindow(url) {
   const candidates = [process.env.OBSERVATORY_CHROME, process.env.CHROME_PATH, path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google/Chrome/Application/chrome.exe')].filter(Boolean);
   const executable = candidates.find(candidate => fs.existsSync(candidate));
@@ -93,7 +110,8 @@ function openBrowserWindow(url) {
   const cdpPort = Number(process.env.OBSERVATORY_CDP_PORT || 9222);
   if (chromeProcess && !chromeProcess.killed) { connectEndpointWithRetry({ port: cdpPort }); return true; }
   const profile = process.env.OBSERVATORY_CHROME_PROFILE || path.join(app.getPath('userData'), 'chrome-profile');
-  chromeProcess = spawn(executable, [`--remote-debugging-port=${process.env.OBSERVATORY_CDP_PORT || 9222}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--new-window', url], { detached: true, windowsHide: false, stdio: 'ignore' });
+  ensureChromePersistentSession(profile);
+  chromeProcess = spawn(executable, [`--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--restore-last-session', '--new-window', url], { detached: true, windowsHide: false, stdio: 'ignore' });
   chromeProcess.unref(); chromeProcess.once('exit', () => { chromeProcess = null; });
   connectEndpointWithRetry({ port: cdpPort });
   return true;
