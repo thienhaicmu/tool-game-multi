@@ -407,3 +407,222 @@ document.addEventListener('keydown', (e) => {
 
 renderList();
 renderActions();
+
+// ============================ WU7 PROTOCOL TEST HARNESS ============================
+// Authorized QA sender for observed Aviator WS flows. OBSERVE -> BUILD -> MODIFY ->
+// SEND (authorized session) -> RECORD -> VERIFY. No prediction, no wagering automation.
+(function protocolHarnessUI() {
+  if (!api.protocolExecute) return; // preload without WU7 — stay inert
+  let round = null;                 // current server round {sid,state,lastOdd,updatedAt}
+  let env = { allowed: false, name: null, host: '' };
+  let sidHistoryCache = [];
+  const execs = [];                 // newest-first execution records
+  const execById = new Map();
+
+  const numOrNull = (v) => { const s = String(v).trim(); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : s; };
+
+  function setEnvChips() {
+    const chip = $('proto-env-chip');
+    if (chip) { chip.textContent = env.allowed ? 'ENABLED' : 'OFF'; chip.className = 'chip ' + (env.allowed ? 'on' : 'off'); }
+    const badge = $('proto-env');
+    if (badge) {
+      badge.textContent = env.allowed ? `TEST CONTROL — ENABLED · ${env.name || env.host}` : `CONTROL DISABLED${env.host ? ' · ' + env.host : ''}`;
+      badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
+    }
+    const send = $('pf-send'); if (send) send.disabled = !env.allowed;
+  }
+  async function refreshEnv() { try { env = await api.protocolEnvironment(); } catch { env = { allowed: false }; } setEnvChips(); }
+
+  function renderState() {
+    $('ps-sid').textContent = round && round.sid != null ? round.sid : '—';
+    $('ps-state').textContent = round ? round.state : '—';
+    $('ps-odd').textContent = round && round.lastOdd != null ? round.lastOdd : '—';
+    $('ps-updated').textContent = round && round.updatedAt ? fmtTime(round.updatedAt) : '—';
+    refreshSidField();
+  }
+  function renderSidHistory(list) {
+    const el = $('ps-sidhist'); if (!el) return;
+    if (!list || !list.length) { el.innerHTML = '<span class="muted">none</span>'; return; }
+    const cur = round && round.sid != null ? String(round.sid) : null;
+    el.innerHTML = list.slice(-12).map((h) => `<span class="sid ${cur === String(h.sid) ? 'cur' : ''}">${esc(h.sid)}${h.delta != null ? `<span class="d"> ${h.delta >= 0 ? '+' : ''}${h.delta}</span>` : ''}</span>`).join('');
+  }
+
+  // sid is bound to the CURRENT server round (never guessed). Stale-sid negative
+  // test intentionally fills the PREVIOUS observed sid to verify server rejection.
+  function refreshSidField() {
+    const input = $('pf-sid'); if (!input) return;
+    const stale = $('pf-neg-stale').checked;
+    if (stale) {
+      const prev = sidHistoryCache.length >= 2 ? sidHistoryCache[sidHistoryCache.length - 2].sid : (round && round.sid != null ? Number(round.sid) - 1 : '');
+      input.value = prev != null ? prev : '';
+    } else if (round && round.sid != null) {
+      input.value = round.sid;
+    }
+    tagSid();
+  }
+  async function tagSid() {
+    const tag = $('pf-sid-tag'); if (!tag) return;
+    const sid = numOrNull($('pf-sid').value);
+    let check; try { check = await api.protocolCheckSid(sid); } catch { check = null; }
+    if (!check) { tag.textContent = ''; return; }
+    if (check.match) { tag.textContent = '← server'; tag.className = 'sid-tag ok'; }
+    else { tag.textContent = `STALE (server ${check.current ?? '—'})`; tag.className = 'sid-tag stale'; }
+  }
+
+  function buildPayload() {
+    const command = $('pf-command').value;
+    const invalidAmount = $('pf-neg-amount').checked;
+    const payload = command === 'cashout'
+      ? { cmd: 100003, sid: numOrNull($('pf-sid').value), aid: numOrNull($('pf-aid').value), eid: numOrNull($('pf-eid').value) }
+      : { cmd: 100002, b: invalidAmount ? -1 : numOrNull($('pf-b').value), sid: numOrNull($('pf-sid').value), aid: numOrNull($('pf-aid').value), eid: numOrNull($('pf-eid').value) };
+    return { command, payload };
+  }
+  function negFlags() {
+    return { stale: $('pf-neg-stale').checked, amount: $('pf-neg-amount').checked, dup: $('pf-neg-dup').checked };
+  }
+
+  $('pf-command').onchange = () => { $('pf-b').closest('label').style.display = $('pf-command').value === 'cashout' ? 'none' : ''; renderPreview(); };
+  for (const id of ['pf-b', 'pf-aid', 'pf-eid']) $(id).oninput = renderPreview;
+  $('pf-sid').oninput = () => { tagSid(); renderPreview(); };
+  for (const id of ['pf-neg-stale', 'pf-neg-amount', 'pf-neg-dup']) $(id).onchange = () => {
+    const anyNeg = $('pf-neg-stale').checked || $('pf-neg-amount').checked || $('pf-neg-dup').checked;
+    $('pf-neg-note').hidden = !anyNeg;
+    refreshSidField(); renderPreview();
+  };
+
+  function renderPreview() {
+    const { payload } = buildPayload();
+    const el = $('pf-json'); if (!el.hidden) el.textContent = JSON.stringify(payload, null, 2);
+  }
+  $('pf-preview').onclick = () => { const el = $('pf-json'); el.hidden = false; renderPreview(); };
+
+  $('pf-send').onclick = async () => {
+    const btn = $('pf-send'); btn.disabled = true; btn.textContent = 'Sending…';
+    const { command, payload } = buildPayload();
+    const neg = negFlags();
+    const negative = neg.stale || neg.amount || neg.dup;
+    try {
+      if (neg.dup) {
+        // Duplicate/replay-protection test: first send is the baseline, the SECOND
+        // is expected to be rejected if the server enforces idempotency (§8).
+        await api.protocolExecute({ command, payload, source: 'NEGATIVE_TEST', expect: null, allowMismatch: neg.stale });
+        await api.protocolExecute({ command, payload, source: 'NEGATIVE_TEST', negative: true, expect: 'reject', allowMismatch: neg.stale });
+      } else {
+        await api.protocolExecute({ command, payload, negative, expect: negative ? 'reject' : null, allowMismatch: neg.stale });
+      }
+    } catch { toast('Send failed'); }
+    btn.disabled = !env.allowed; btn.textContent = 'Send Test Request';
+  };
+
+  function renderExecs() {
+    const el = $('pf-executions'); if (!el) return;
+    if (!execs.length) { el.innerHTML = '<div class="muted">No tests run yet.</div>'; return; }
+    el.innerHTML = execs.slice(0, 40).map((x) => {
+      const err = x.error ? `<div class="errb">${esc(x.error.code)}${x.error.message ? ' — ' + esc(x.error.message) : ''}</div>` : '';
+      const resp = x.responsePayload ? ` · ack ${x.latencyMs != null ? x.latencyMs + 'ms' : ''}` : '';
+      const warn = (x.warnings && x.warnings.length) ? `<div class="ptx-meta">⚠ ${x.warnings.map((w) => esc(w.code || w)).join(', ')}</div>` : '';
+      return `<div class="ptx ${x.negative ? 'neg' : ''}">`
+        + `<div class="ptx-head"><span class="ptx-result ${esc(x.result || 'PENDING')}">${esc(x.result || '…')}</span>`
+        + `<span class="ptx-verdict ${esc(x.verdict || 'INCONCLUSIVE')}">${esc(x.verdict || '—')}</span></div>`
+        + `<div class="ptx-meta">cmd ${esc(x.command)} · sid ${esc(x.sid)} · ${esc(x.source)}${resp}</div>`
+        + warn + err + `</div>`;
+    }).join('');
+  }
+  function pushExec(x) {
+    if (execById.has(x.id)) { const i = execs.findIndex((e) => e.id === x.id); if (i >= 0) execs[i] = x; execById.set(x.id, x); }
+    else { execs.unshift(x); execById.set(x.id, x); if (execs.length > 200) { const old = execs.pop(); execById.delete(old.id); } }
+    renderExecs();
+  }
+
+  // ---- live streams ----
+  api.onAviatorRound && api.onAviatorRound((r) => { round = r; if (r && r.sid != null && !sidHistoryCache.some((h) => String(h.sid) === String(r.sid))) sidHistoryCache.push({ sid: r.sid, delta: null }); renderState(); renderSidHistory(sidHistoryCache); });
+  api.onProtocolExecution && api.onProtocolExecution((x) => pushExec(x));
+
+  // ---- panel open/close ----
+  $('proto-toggle').onclick = async () => {
+    const p = $('proto-panel'); p.hidden = !p.hidden;
+    if (!p.hidden) {
+      await refreshEnv();
+      try { const st = await api.protocolRoundState(); round = st.current; sidHistoryCache = st.sidHistory || []; renderState(); renderSidHistory(sidHistoryCache); } catch { /* ignore */ }
+      try { const list = await api.protocolExecutions(); execs.length = 0; execById.clear(); for (const x of list.reverse()) pushExec(x); } catch { /* ignore */ }
+    }
+  };
+  $('proto-close').onclick = () => { $('proto-panel').hidden = true; };
+
+  // Refresh env when the selected target changes (chain the existing handler).
+  const origTargetsChange = $('targets').onchange;
+  $('targets').onchange = (e) => { if (origTargetsChange) origTargetsChange.call($('targets'), e); setTimeout(refreshEnv, 60); };
+})();
+
+// ============================ WU8 READ-ONLY ROUND OBSERVER ============================
+// Watches the server-driven round/odd stream and records per-round evidence. It never
+// sends anything — RoundTracker owns sid/odd/state; this panel only reads and displays.
+(function roundObserverUI() {
+  if (!api.observerSnapshot) return; // preload without WU8 — stay inert
+  let snap = null;
+
+  function fmtNum(n, d) { return (n == null || !Number.isFinite(Number(n))) ? '—' : (d != null ? Number(n).toFixed(d) : String(n)); }
+
+  function render() {
+    if (!snap) return;
+    const chip = $('obs-status-chip'); if (chip) { chip.textContent = snap.status; chip.className = 'chip ' + (snap.status === 'OBSERVING' ? 'on' : (snap.status === 'COMPLETED' ? 'warn' : 'off')); }
+    const cur = snap.current || {};
+    const active = snap.active || {};
+    $('obs-status').textContent = snap.status;
+    $('obs-sid').textContent = cur.sid != null ? cur.sid : '—';
+    $('obs-phase').textContent = active.phase || (cur.state || '—');
+    $('obs-odd').textContent = cur.lastOdd != null ? cur.lastOdd : (active.currentOdd != null ? active.currentOdd : '—');
+    $('obs-target').textContent = snap.config.targetOdd != null ? snap.config.targetOdd : '—';
+    const m = snap.metrics || {};
+    $('obs-progress').textContent = m.target != null ? `${m.finished} / ${m.target}` : `${m.finished} observed`;
+
+    // Odd stream of the active round with the trigger frame marked.
+    const stream = $('obs-oddstream');
+    const buf = (active.oddBuffer || []);
+    if (!buf.length) stream.innerHTML = '<span class="muted">none</span>';
+    else stream.innerHTML = buf.slice(-40).map((o) => { const trig = active.triggerOdd != null && o.odd === active.triggerOdd; return `<span class="sid odd ${trig ? 'trig' : ''}">${esc(fmtNum(o.odd, 2))}${trig ? ' ◄' : ''}</span>`; }).join('');
+
+    $('obs-m-count').textContent = `${m.observed ?? 0} / ${m.completed ?? 0}`;
+    $('obs-m-early').textContent = m.endedBeforeTrigger ?? 0;
+    $('obs-m-bet').textContent = m.avgBetLatencyMs != null ? m.avgBetLatencyMs + 'ms' : '—';
+    $('obs-m-stop').textContent = m.avgCashoutLatencyMs != null ? m.avgCashoutLatencyMs + 'ms' : '—';
+    $('obs-m-trig').textContent = m.avgTriggerOdd != null ? m.avgTriggerOdd : '—';
+    $('obs-m-srv').textContent = m.avgServerOdd != null ? m.avgServerOdd : '—';
+
+    renderHistory(snap.rounds || []);
+  }
+
+  function renderHistory(rounds) {
+    const el = $('obs-history'); if (!el) return;
+    if (!rounds.length) { el.innerHTML = '<div class="muted">No rounds observed yet.</div>'; return; }
+    el.innerHTML = rounds.slice().reverse().slice(0, 40).map((r) => {
+      const bl = r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—';
+      const sl = r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—';
+      return `<div class="obs-round">`
+        + `<div class="obs-round-head"><b>#${esc(r.index + 1)} · sid ${esc(r.sid)}</b><span class="obs-res ${esc(r.result)}">${esc(r.result)}</span></div>`
+        + `<div class="obs-round-meta">trigger ${esc(fmtNum(r.triggerOdd, 2))} · ack ${esc(fmtNum(r.serverOdd, 2))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
+        + `<div class="obs-round-meta">bet ${esc(bl)} · cashout ${esc(sl)} · maxOdd ${esc(fmtNum(r.maxOdd, 2))}</div>`
+        + `</div>`;
+    }).join('');
+  }
+
+  api.onObserverUpdate && api.onObserverUpdate((s) => { snap = s; if (!$('obs-panel').hidden) render(); });
+
+  $('obs-apply').onclick = async () => {
+    const err = $('obs-cfg-err'); err.textContent = '';
+    const patch = { targetOdd: $('obs-cfg-target').value.trim(), observeRounds: $('obs-cfg-rounds').value.trim() };
+    const res = await api.observerConfig(patch);
+    if (res && res.error) { err.textContent = res.error.code + ': ' + (res.error.message || ''); return; }
+    snap = res; render();
+  };
+
+  $('obs-toggle').onclick = async () => {
+    const p = $('obs-panel'); p.hidden = !p.hidden;
+    if (!p.hidden) {
+      try { snap = await api.observerSnapshot(); } catch { snap = null; }
+      if (snap) { if (snap.config.targetOdd != null) $('obs-cfg-target').value = snap.config.targetOdd; if (snap.config.observeRounds != null) $('obs-cfg-rounds').value = snap.config.observeRounds; }
+      render();
+    }
+  };
+  $('obs-close').onclick = () => { $('obs-panel').hidden = true; };
+})();

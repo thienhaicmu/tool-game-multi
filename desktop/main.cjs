@@ -16,6 +16,9 @@ const { InterceptEngine } = require('./cdp/intercept.cjs');
 const { CookieVault, hostMatches } = require('./cookie-vault.cjs');
 const { ReplayEngine } = require('./replay/replay-engine.cjs');
 const { Timeline } = require('./timeline.cjs');
+const { RoundTracker } = require('./protocol/aviator.cjs');
+const { ProtocolHarness } = require('./protocol/harness.cjs');
+const { RoundObserver } = require('./protocol/round-observer.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
@@ -159,6 +162,38 @@ const replay = new ReplayEngine({
 });
 // WU5: read-only aggregation of capture + replay + intercept evidence.
 const timeline = new Timeline({ capture, replay, intercept });
+// WU7: Aviator protocol observer — classifies WS frames, tracks the authoritative
+// CurrentRound (sid from server cmd:100005 ONLY, never arithmetic), SID history and
+// send->ack ActionTraces. Fed from captured WebSocket data frames.
+const aviator = new RoundTracker();
+capture.on('request', req => {
+  if (req && req.isWebSocket && req.wsDirection) {
+    aviator.observe({ targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url, direction: req.wsDirection, raw: req.body && req.body.raw });
+  }
+});
+aviator.on('round', r => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-round', r); });
+aviator.on('actiontrace', t => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-actiontrace', t); });
+// WU7: Protocol Test Harness — authorized QA sender bound to the selected target's
+// own live socket (via wsReplay.sendRaw). Gated by an explicit host allowlist.
+const harness = new ProtocolHarness({
+  roundTracker: aviator,
+  send: (ctx, payload) => wsReplay.sendRaw(ctx, payload),
+  getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+  allowlist: (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean),
+});
+harness.on('execution', ex => {
+  try { journal?.append(normalizeCaptureEvent({ kind: 'protocol-test', id: ex.id, targetId: ex.targetId, timestamp: ex.sentAt, exec: ex }, sessionId)); } catch { /* journal failure must not stop testing */ }
+  if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-execution', ex);
+});
+// WU8: READ-ONLY multi-round observer. Consumes the RoundTracker frame stream and
+// records per-round evidence (sid, odd stream, bet/cashout timing, server odd/wm,
+// latencies). It never sends — RoundTracker stays the sole owner of sid/odd/state.
+const observer = new RoundObserver({ roundTracker: aviator });
+let observerDirty = false;
+observer.on('update', () => {
+  if (observerDirty) return; observerDirty = true;
+  setTimeout(() => { observerDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('observer-update', observer.snapshot()); }, 120);
+});
 // Persistent session store (cookies) — independent of launching Chrome, so a
 // login survives reconnects on Chrome / WebView / WebView2 / CEF alike.
 let cookieVault;
@@ -382,3 +417,15 @@ ipcMain.handle('adb-forward-webview', async (_event, socket, localPort = 9223) =
   } catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
 });
 ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
+// WU7 — Protocol Test Harness IPC. Every send is target-bound and gated by the
+// environment allowlist; sid is read from the observed server round, never guessed.
+ipcMain.handle('protocol-environment', (_event, targetId) => harness.environmentFor(String(targetId || selectedTargetId || '')));
+ipcMain.handle('protocol-allowlist', () => harness.allowlist());
+ipcMain.handle('protocol-round-state', () => ({ current: aviator.currentRound(), sidHistory: aviator.sidHistory(), roundHistory: aviator.roundHistory(), actionTraces: aviator.actionTraces() }));
+ipcMain.handle('protocol-template', (_event, command, overrides = {}) => { const payload = harness.buildTemplate(String(command), overrides || {}); return { payload, sidCheck: harness.checkSid(payload ? payload.sid : null) }; });
+ipcMain.handle('protocol-check-sid', (_event, sid) => harness.checkSid(sid));
+ipcMain.handle('protocol-execute', (_event, opts = {}) => harness.execute({ ...opts, targetId: opts.targetId || selectedTargetId || null }));
+ipcMain.handle('protocol-executions', () => harness.executions());
+// WU8 — read-only observer IPC (snapshot + display-only config; never sends).
+ipcMain.handle('observer-snapshot', () => observer.snapshot());
+ipcMain.handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });

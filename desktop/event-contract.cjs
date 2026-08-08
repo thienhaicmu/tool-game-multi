@@ -1,7 +1,13 @@
-const REQUEST_KINDS = new Set(['request', 'response', 'request-headers', 'replay', 'interaction']);
+const REQUEST_KINDS = new Set(['request', 'response', 'request-headers', 'replay', 'interaction', 'protocol-test']);
 
 function normalizeCaptureEvent(event, sessionId) {
   if (!event || !REQUEST_KINDS.has(event.kind)) return null;
+  // WU7 — protocol test executions are journaled verbatim as evidence. The fields
+  // under test (cmd/sid/b/aid/eid/wm/odd) are intentionally NOT masked (§21); the
+  // execution payload carries no credentials/tokens.
+  if (event.kind === 'protocol-test') {
+    return { schemaVersion: 1, sessionId, kind: 'protocol-test', id: event.id ? String(event.id) : undefined, targetId: event.targetId ? String(event.targetId) : undefined, timestamp: event.timestamp || new Date().toISOString(), exec: event.exec };
+  }
   return {
     schemaVersion: 1,
     sessionId,

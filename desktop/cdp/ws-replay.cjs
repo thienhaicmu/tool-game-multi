@@ -68,6 +68,24 @@ class WsReplay {
       return { ok: false, error: { code: 'WS_SEND_FAILED', message: String(e && e.message || e) } };
     }
   }
+
+  // WU7 send seam: send an arbitrary QA payload through the page's OWN live socket,
+  // bound to a specific target/session (never a second authenticated connection).
+  // ctx: { targetId, cdpSessionId?, host? } — usually the RoundTracker socketContext.
+  async sendRaw(ctx, payload) {
+    if (!ctx || !ctx.targetId) return { ok: false, error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for send' } };
+    const client = this._resolveClient(ctx.targetId);
+    if (!client) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'Kết nối tới target đã mất' } };
+    const urlPart = String(ctx.host || '');
+    const expr = `window.__wsoSendFrame && window.__wsoSendFrame(${JSON.stringify(urlPart)}, ${JSON.stringify(String(payload))})`;
+    try {
+      const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, ctx.cdpSessionId || undefined);
+      if (res && res.result && res.result.value === true) return { ok: true };
+      return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: 'Không tìm thấy WebSocket đang mở khớp trang. Hãy tương tác với app để socket gửi ≥1 frame rồi thử lại.' } };
+    } catch (e) {
+      return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: String(e && e.message || e) } };
+    }
+  }
 }
 
 module.exports = { WsReplay, WS_HOOK };

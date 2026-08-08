@@ -51,6 +51,8 @@
     <span class="tb-sep"></span>
     <div class="group" role="group" aria-label="Utility">
       <button id="act-toggle" class="btn" title="User actions (clicks) captured in the target">👆 Actions <span id="act-count" class="count"></span></button>
+      <button id="proto-toggle" class="btn" title="Protocol Test Harness (authorized QA/staging only)">🎯 Protocol <span id="proto-env-chip" class="chip off">OFF</span></button>
+      <button id="obs-toggle" class="btn" title="Read-only multi-round observer (records evidence, sends nothing)">👁 Observer <span id="obs-status-chip" class="chip off">IDLE</span></button>
       <button id="clear" class="btn icon" title="Clear (Delete)">⌫</button>
       <button id="theme" class="btn icon" title="Toggle theme">☾</button>
     </div>
@@ -101,6 +103,113 @@
 
   <div class="v-gutter" data-vgutter="1" title="Drag to resize editor"></div>
   <footer id="editor" class="editor" style="height:var(--editor-h,240px)"><div class="empty"><div class="empty-ic">↺</div>Select a request to replay, or a paused request to intercept.</div></footer>
+
+  <aside id="proto-panel" class="proto-panel" hidden aria-label="Protocol Test Harness">
+    <div class="proto-head">
+      <b>🎯 Protocol Test</b>
+      <span id="proto-env" class="proto-env off">CONTROL DISABLED</span>
+      <div class="spacer"></div>
+      <button id="proto-close" class="btn icon" title="Hide panel">✕</button>
+    </div>
+
+    <div class="proto-state">
+      <div class="proto-state-title">AVIATOR TEST STATE</div>
+      <div class="proto-kv"><span>Round</span><b id="ps-sid">—</b></div>
+      <div class="proto-kv"><span>State</span><b id="ps-state">—</b></div>
+      <div class="proto-kv"><span>Odd</span><b id="ps-odd">—</b></div>
+      <div class="proto-kv"><span>Updated</span><b id="ps-updated">—</b></div>
+      <div class="proto-sids">
+        <div class="proto-state-title">SID HISTORY <span class="faint">(diagnostic — no prediction)</span></div>
+        <div id="ps-sidhist" class="proto-sidhist"><span class="muted">none</span></div>
+      </div>
+    </div>
+
+    <div class="proto-form">
+      <div class="proto-row">
+        <label>Command
+          <select id="pf-command"><option value="bet">Bet</option><option value="cashout">Cashout</option></select>
+        </label>
+        <label>Amount (b)
+          <input id="pf-b" class="mono" value="5000">
+        </label>
+      </div>
+      <div class="proto-row">
+        <label>aid <input id="pf-aid" class="mono" value="1"></label>
+        <label>eid <input id="pf-eid" class="mono" value="1"></label>
+        <label>sid <input id="pf-sid" class="mono" value="" title="Bound to current server round"><span id="pf-sid-tag" class="sid-tag"></span></label>
+      </div>
+
+      <div class="proto-neg">
+        <div class="proto-state-title">NEGATIVE SECURITY TEST</div>
+        <label class="chk"><input type="checkbox" id="pf-neg-stale"> stale sid</label>
+        <label class="chk"><input type="checkbox" id="pf-neg-amount"> invalid amount</label>
+        <label class="chk"><input type="checkbox" id="pf-neg-dup"> duplicate request</label>
+        <div id="pf-neg-note" class="faint" hidden>Sends a mismatched/invalid request on purpose to verify server rejection.</div>
+      </div>
+
+      <div class="proto-row">
+        <button id="pf-preview" class="btn">Preview JSON</button>
+        <button id="pf-send" class="primary" title="Send through the page's own authorized socket">Send Test Request</button>
+      </div>
+      <pre id="pf-json" class="proto-json" hidden></pre>
+      <div id="pf-result"></div>
+    </div>
+
+    <div class="proto-hist">
+      <div class="proto-state-title">TEST HISTORY <span class="faint">(append-only)</span></div>
+      <div id="pf-executions" class="proto-execs"><div class="muted">No tests run yet.</div></div>
+    </div>
+  </aside>
+
+  <aside id="obs-panel" class="proto-panel" hidden aria-label="Read-only Round Observer">
+    <div class="proto-head">
+      <b>👁 Round Observer</b>
+      <span class="proto-env on" title="This panel only observes and records — it never sends a request">READ-ONLY</span>
+      <div class="spacer"></div>
+      <button id="obs-close" class="btn icon" title="Hide panel">✕</button>
+    </div>
+
+    <div class="proto-state">
+      <div class="proto-state-title">LIVE STATE <span class="faint">(from server frames)</span></div>
+      <div class="proto-kv"><span>Status</span><b id="obs-status">IDLE</b></div>
+      <div class="proto-kv"><span>SID</span><b id="obs-sid">—</b></div>
+      <div class="proto-kv"><span>Phase</span><b id="obs-phase">—</b></div>
+      <div class="proto-kv"><span>Current Odd</span><b id="obs-odd">—</b></div>
+      <div class="proto-kv"><span>Target Odd</span><b id="obs-target">—</b></div>
+      <div class="proto-kv"><span>Progress</span><b id="obs-progress">—</b></div>
+      <div class="proto-sids">
+        <div class="proto-state-title">ODD STREAM <span class="faint">(last 100, marker only)</span></div>
+        <div id="obs-oddstream" class="proto-sidhist"><span class="muted">none</span></div>
+      </div>
+    </div>
+
+    <div class="proto-form">
+      <div class="proto-state-title">DISPLAY CONFIG <span class="faint">(marker only — no send)</span></div>
+      <div class="proto-row">
+        <label>Target Odd (marker) <input id="obs-cfg-target" class="mono" placeholder="e.g. 1.50"></label>
+        <label>Observe rounds <input id="obs-cfg-rounds" class="mono" placeholder="optional"></label>
+      </div>
+      <div class="proto-row">
+        <button id="obs-apply" class="btn">Apply</button>
+        <span id="obs-cfg-err" class="errb"></span>
+      </div>
+    </div>
+
+    <div class="proto-state">
+      <div class="proto-state-title">METRICS</div>
+      <div class="proto-kv"><span>Observed / Completed</span><b id="obs-m-count">—</b></div>
+      <div class="proto-kv"><span>Ended before target</span><b id="obs-m-early">—</b></div>
+      <div class="proto-kv"><span>Avg bet latency</span><b id="obs-m-bet">—</b></div>
+      <div class="proto-kv"><span>Avg cashout latency</span><b id="obs-m-stop">—</b></div>
+      <div class="proto-kv"><span>Avg trigger odd</span><b id="obs-m-trig">—</b></div>
+      <div class="proto-kv"><span>Avg server odd</span><b id="obs-m-srv">—</b></div>
+    </div>
+
+    <div class="proto-hist">
+      <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only)</span></div>
+      <div id="obs-history" class="proto-execs"><div class="muted">No rounds observed yet.</div></div>
+    </div>
+  </aside>
 
   <script src="product.js"></script>
   <script src="panels.js"></script>

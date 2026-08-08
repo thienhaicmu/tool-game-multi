@@ -32,6 +32,21 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   selectTarget: id => ipcRenderer.invoke('select-target', id),
   adbListWebviews: () => ipcRenderer.invoke('adb-list-webviews'),
   adbForwardWebview: (socket, localPort) => ipcRenderer.invoke('adb-forward-webview', socket, localPort),
+  // WU7 — Protocol Test Harness
+  protocolEnvironment: targetId => ipcRenderer.invoke('protocol-environment', targetId),
+  protocolAllowlist: () => ipcRenderer.invoke('protocol-allowlist'),
+  protocolRoundState: () => ipcRenderer.invoke('protocol-round-state'),
+  protocolTemplate: (command, overrides) => ipcRenderer.invoke('protocol-template', command, overrides),
+  protocolCheckSid: sid => ipcRenderer.invoke('protocol-check-sid', sid),
+  protocolExecute: opts => ipcRenderer.invoke('protocol-execute', opts),
+  protocolExecutions: () => ipcRenderer.invoke('protocol-executions'),
+  onAviatorRound: callback => ipcRenderer.on('aviator-round', (_event, round) => callback(round)),
+  onAviatorActionTrace: callback => ipcRenderer.on('aviator-actiontrace', (_event, trace) => callback(trace)),
+  onProtocolExecution: callback => ipcRenderer.on('protocol-execution', (_event, ex) => callback(ex)),
+  // WU8 — read-only Round/ODD observer
+  observerSnapshot: () => ipcRenderer.invoke('observer-snapshot'),
+  observerConfig: patch => ipcRenderer.invoke('observer-config', patch),
+  onObserverUpdate: callback => ipcRenderer.on('observer-update', (_event, snap) => callback(snap)),
   onTargetsChanged: callback => ipcRenderer.on('targets-changed', (_event, targets) => callback(targets)),
   onCdpError: callback => ipcRenderer.on('cdp-error', (_event, error) => callback(error)),
   onEvent: callback => {
