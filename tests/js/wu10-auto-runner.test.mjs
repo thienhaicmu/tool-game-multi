@@ -96,6 +96,14 @@ test('live odd updates; trigger occurs only at the first odd >= stopOdd', async 
   assert.equal(runner.history()[0].triggerOdd, 2.01);
 });
 
+test('round snapshot 100008 starts an auto-run bet on the server SID', async () => {
+  const { runner, feed, sends, betCount } = make();
+  runner.start('T', { roundCount: 1, amount: 5000, stopOdd: 2.0 });
+  feed('["5",{"cmd":100008,"sid":2989872}]'); await flush();
+  assert.equal(betCount(), 1);
+  assert.equal(sends[0].sidAtSend, 2989872);
+});
+
 // ---------------------------------------------------------------------------
 // §14/§33 — EXACTLY-ONCE cashout under a burst of qualifying frames.
 // ---------------------------------------------------------------------------

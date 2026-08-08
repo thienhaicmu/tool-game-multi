@@ -146,7 +146,7 @@ class ProtocolHarness extends EventEmitter {
     // 4) Build the append-only record and emit it as pending.
     const rec = {
       id: 'ptx_' + randomUUID(), seq: this._seq++, targetId, source,
-      command, sid, eid, requestPayload: obj, requestJson: stableJson(obj),
+      command, sid, eid, requestPayload: obj, requestJson: stableJson(obj), wireJson: wireJson(obj),
       environment: { host: env.host, name: env.name },
       negative, expect: opts.expect || (negative ? 'reject' : null),
       sentAt: new Date().toISOString(), sentMonotonic: Date.now(),
@@ -162,7 +162,7 @@ class ProtocolHarness extends EventEmitter {
     if (!ctx) return this._complete(rec, RESULT.ERROR, null, { code: CODES.TEST_SESSION_UNAVAILABLE, message: 'No live game WebSocket observed for this target yet — interact with the app so the socket sends at least one frame.' });
 
     let sendRes;
-    try { sendRes = await this._send(ctx, rec.requestJson); }
+    try { sendRes = await this._send(ctx, rec.wireJson); }
     catch (e) { sendRes = { ok: false, error: { code: CODES.PROTOCOL_SEND_FAILED, message: String(e && e.message || e) } }; }
     if (!sendRes || !sendRes.ok) return this._complete(rec, RESULT.ERROR, null, (sendRes && sendRes.error) || { code: CODES.PROTOCOL_SEND_FAILED, message: 'Send failed' });
 
@@ -251,6 +251,12 @@ function verdictFor(expect, result) {
 // Deterministic JSON so the same draft serializes identically across sends.
 function stableJson(obj) {
   try { return JSON.stringify(obj); } catch { return String(obj); }
+}
+
+function wireJson(obj) {
+  const cmd = Number(obj && obj.cmd);
+  if (cmd === CMD.BET || cmd === CMD.CASHOUT) return stableJson(['6', 'MiniGame', 'aviatorPlugin', obj]);
+  return stableJson(obj);
 }
 
 module.exports = { ProtocolHarness, hostAllowed, normalizeAllowlist, isRejectFrame, verdictFor, DEFAULT_ALLOWLIST, RESULT, VERDICT };

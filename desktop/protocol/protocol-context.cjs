@@ -19,15 +19,23 @@ class ProtocolContext extends EventEmitter {
     this._aid = null;
     this._eid = null;
     this._at = null;
+    this._defaultEid = deps.defaultEid == null ? 1 : deps.defaultEid;
     if (deps.roundTracker && deps.roundTracker.on) deps.roundTracker.on('frame', (ev) => this.observe(ev));
   }
 
   // Adopt the first frame that carries both aid and eid.
   observe(ev) {
-    if (!ev || ev.aid == null || ev.eid == null) return;
+    if (!ev) return;
     if (this._aid != null) return; // already have the session context; keep it stable
-    this._aid = ev.aid;
-    this._eid = ev.eid;
+    if (ev.aid != null && ev.eid != null) {
+      this._aid = ev.aid;
+      this._eid = ev.eid;
+    } else if (ev.agentId != null) {
+      this._aid = Number.isFinite(Number(ev.agentId)) ? Number(ev.agentId) : ev.agentId;
+      this._eid = this._defaultEid;
+    } else {
+      return;
+    }
     this._at = Date.now();
     this.emit('change', this.get());
   }

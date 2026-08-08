@@ -97,6 +97,15 @@ test('ProtocolContext learns aid/eid from the observed frame stream (via RoundTr
   assert.ok(changed >= 1);
 });
 
+test('ProtocolContext can become ready from the MiniGame login frame', () => {
+  const tracker = new RoundTracker({ ackWindowMs: 60000 });
+  const ctx = new ProtocolContext({ roundTracker: tracker });
+  tracker.observe({ direction: 'send', raw: '[1,"MiniGame","","",{"agentId":"1","accessToken":"redacted","reconnect":false}]' });
+  assert.equal(ctx.get().ready, true);
+  assert.equal(ctx.get().aid, 1);
+  assert.equal(ctx.get().eid, 1);
+});
+
 // ---------------------------------------------------------------------------
 // UI wiring: aid/eid are no longer editable; Overview shows AID/EID + waiting.
 // ---------------------------------------------------------------------------
@@ -113,4 +122,12 @@ test('product.js sources aid/eid from protoCtx (never hardcoded field)', () => {
   const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
   assert.ok(/aid: protoCtx\.aid/.test(js) && /eid: protoCtx\.eid/.test(js), 'Auto/Manual use session context');
   assert.ok(/aid: protoCtx\.aid, eid: protoCtx\.eid/.test(js), 'b-Test uses session context');
+});
+
+test('auto run completion waits for the user instead of starting the next session', () => {
+  const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
+  const completedBlock = js.match(/if \(sequenceRunning && s && s\.state === 'COMPLETED'\) \{([\s\S]*?)\n    \}/);
+  assert.ok(completedBlock, 'completion handler exists');
+  assert.ok(/sequenceRunning = false/.test(completedBlock[1]), 'completion stops the sequence');
+  assert.ok(!/startCurrentRow/.test(completedBlock[1]), 'completion does not auto-start another session');
 });

@@ -829,8 +829,8 @@ renderActions();
   api.onAutotestUpdate && api.onAutotestUpdate(async (s) => {
     snap = s; if (!$('at-panel').hidden) render();
     if (sequenceRunning && s && s.state === 'COMPLETED') {
-      if (sequenceIndex + 1 < testRows().length) { sequenceIndex += 1; await startCurrentRow(); }
-      else { sequenceRunning = false; render(); }
+      sequenceRunning = false;
+      render();
     }
   });
 

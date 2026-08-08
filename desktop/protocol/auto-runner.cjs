@@ -165,7 +165,7 @@ class AutoRunner extends EventEmitter {
   _onFrame(ev) {
     if (!this._running || !ev || ev.direction !== 'recv') return;
     const cur = this._observer && this._observer.currentRound ? this._observer.currentRound() : null;
-    if (ev.cmd === CMD.ROUND_OPEN) this._onRoundOpen(cur ? cur.sid : ev.sid);
+    if (ev.cmd === CMD.ROUND_OPEN || ev.cmd === CMD.ROUND_SNAPSHOT) this._onRoundOpen(cur ? cur.sid : ev.sid);
     else if (ev.cmd === CMD.ODD) this._onOdd(cur);
     else if (ev.cmd === CMD.ROUND_END) this._onRoundEnd(ev.sid);
   }

@@ -15,6 +15,7 @@ const CMD = Object.freeze({
   ROUND_OPEN: 100005,  // server announces a new/open round (authoritative sid)
   ROUND_LOCK: 100006,  // server locks the round (flying)
   ROUND_END: 100007,   // server ends the round
+  ROUND_SNAPSHOT: 100008, // server round/player snapshot (also carries sid)
   ODD: 100009,         // server streams current odd
 });
 
@@ -27,6 +28,7 @@ const CMD_TYPE = Object.freeze({
   [CMD.ROUND_OPEN]: 'ROUND_OPEN',
   [CMD.ROUND_LOCK]: 'ROUND_LOCK',
   [CMD.ROUND_END]: 'ROUND_END',
+  [CMD.ROUND_SNAPSHOT]: 'ROUND_OPEN',
   [CMD.ODD]: 'ODD_UPDATE',
 });
 
@@ -43,7 +45,8 @@ const ROUND_STATE = Object.freeze({
 function classifyFrame(raw) {
   const base = { raw: raw == null ? '' : String(raw), json: null, cmd: null, type: 'UNKNOWN', known: false };
   let json;
-  try { json = JSON.parse(base.raw); } catch { return base; }
+  try { json = parseFrameJson(base.raw); } catch { return base; }
+  json = protocolPayload(json);
   if (!json || typeof json !== 'object' || Array.isArray(json)) return base;
   const cmd = Number.isFinite(json.cmd) ? json.cmd : (json.cmd != null ? Number(json.cmd) : null);
   const type = (cmd != null && CMD_TYPE[cmd]) ? CMD_TYPE[cmd] : 'UNKNOWN';
@@ -59,9 +62,25 @@ function classifyFrame(raw) {
     b: json.b != null ? json.b : undefined,
     aid: json.aid != null ? json.aid : undefined,
     eid: json.eid != null ? json.eid : undefined,
+    agentId: json.agentId != null ? json.agentId : undefined,
     wm: json.wm != null ? json.wm : undefined,
     iOE: json.iOE != null ? json.iOE : undefined,
   };
+}
+
+function parseFrameJson(raw) {
+  const text = String(raw || '').trim();
+  try { return JSON.parse(text); } catch { /* fall through */ }
+  const firstObject = text.search(/[\[{]/);
+  if (firstObject < 0) throw new Error('not json');
+  return JSON.parse(text.slice(firstObject));
+}
+
+function protocolPayload(json) {
+  if (!Array.isArray(json)) return json;
+  return json.find((item) => item && typeof item === 'object' && !Array.isArray(item) && item.cmd != null)
+    || json.find((item) => item && typeof item === 'object' && !Array.isArray(item) && item.agentId != null)
+    || null;
 }
 
 /**
@@ -130,6 +149,11 @@ class RoundTracker extends EventEmitter {
       case CMD.ROUND_OPEN: {
         if (cls.sid == null) break;
         this._openRound(cls.sid, at);
+        break;
+      }
+      case CMD.ROUND_SNAPSHOT: {
+        if (cls.sid == null) break;
+        if (!this._current || String(this._current.sid) !== String(cls.sid)) this._openRound(cls.sid, at);
         break;
       }
       case CMD.ROUND_LOCK: {

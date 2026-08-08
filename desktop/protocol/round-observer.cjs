@@ -10,7 +10,7 @@ const { CMD } = require('./aviator.cjs');
 // HARD BOUNDARY (§1/§33): this module imports NO send seam and exposes NO way to
 // send. It has no reference to wsReplay, ProtocolHarness, ReplayEngine or Fetch.
 // It consumes the classified server-frame stream that RoundTracker already emits
-// (cmd 100005/100006/100009/100007) and derives:
+// (cmd 100005/100008/100006/100009/100007) and derives:
 //   - round lifecycle (OPEN / LOCKED / RUNNING / ENDED)
 //   - bounded recent-odd samples + frame-interval timing
 //   - completed-round history (terminalReason ROUND_END / SUPERSEDED / DISCONNECTED)
@@ -18,7 +18,7 @@ const { CMD } = require('./aviator.cjs');
 // It never evaluates a target odd, strategy, or action condition (§11/§35).
 //
 // RoundTracker stays authoritative for SID/odd/state; SID comes only from server
-// cmd:100005, never previousSid+1 (§3). ODD comes only from server cmd:100009 (§4).
+// cmd:100005/100008, never previousSid+1 (§3). ODD comes only from server cmd:100009 (§4).
 // ---------------------------------------------------------------------------
 
 const STATUS = Object.freeze({ IDLE: 'IDLE', WAITING_ROUND: 'WAITING_ROUND', OPEN: 'OPEN', LOCKED: 'LOCKED', RUNNING: 'RUNNING', ENDED: 'ENDED' });
@@ -92,7 +92,10 @@ class RoundObserver extends EventEmitter {
     const mono = this._now();
     const wall = ev.at || Date.now();
     switch (ev.cmd) {
-      case CMD.ROUND_OPEN: if (ev.sid != null) this._open(ev.sid, ev.targetId, wall, mono); break;
+      case CMD.ROUND_OPEN:
+      case CMD.ROUND_SNAPSHOT:
+        if (ev.sid != null) this._open(ev.sid, ev.targetId, wall, mono);
+        break;
       case CMD.ROUND_LOCK: this._lock(ev.sid, wall, mono); break;
       case CMD.ODD: if (ev.odd != null) this._odd(ev.sid, ev.odd, wall, mono); break;
       case CMD.ROUND_END: this._end(ev.sid, ev.odd, wall, mono); break;

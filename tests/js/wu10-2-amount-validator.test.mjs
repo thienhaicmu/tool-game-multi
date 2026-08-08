@@ -217,6 +217,14 @@ test('start refuses a non-local endpoint', () => {
   assert.equal(v.start('T', { mode: 'single', amount: 7777, roundCount: 1 }).error.code, 'AUTO_TEST_TARGET_NOT_ALLOWED');
 });
 
+test('validator treats round snapshot 100008 as a round start', async () => {
+  const { v, harness, feed } = make();
+  v.start('T', { mode: 'single', amount: 7777, roundCount: 1 });
+  feed('["5",{"cmd":100008,"sid":2989872}]'); await flush();
+  assert.deepEqual(harness.sends.map((s) => s.b), [7777]);
+  assert.equal(v.history()[0].sid, 2989872);
+});
+
 // ---------------------------------------------------------------------------
 // summary observations (§22) — server-behavior, not auto-vulnerability.
 // ---------------------------------------------------------------------------

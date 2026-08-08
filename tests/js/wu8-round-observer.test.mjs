@@ -76,6 +76,14 @@ test('100005 -> sid + OPEN via the shared classifier', () => {
   assert.equal(observer.status(), STATUS.OPEN);
 });
 
+test('100008 snapshot -> sid + OPEN via the shared classifier', () => {
+  const { observer, feed } = makeObs();
+  feed('["5",{"cmd":100008,"sid":2989872}]');
+  assert.equal(observer.snapshot().currentSid, 2989872);
+  assert.equal(observer.currentRound().phase, PHASE.OPEN);
+  assert.equal(observer.status(), STATUS.OPEN);
+});
+
 // ---------------------------------------------------------------------------
 // §7/§27 — full round lifecycle.
 // ---------------------------------------------------------------------------

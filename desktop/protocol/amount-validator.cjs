@@ -159,7 +159,7 @@ class AmountValidator extends EventEmitter {
 
   _onFrame(ev) {
     if (!this._running || !ev || ev.direction !== 'recv') return;
-    if (ev.cmd !== CMD.ROUND_OPEN) return;               // amount test ignores odd/lock/end (§34)
+    if (ev.cmd !== CMD.ROUND_OPEN && ev.cmd !== CMD.ROUND_SNAPSHOT) return; // amount test ignores odd/lock/end (§34)
     const cur = this._tracker && this._tracker.currentRound ? this._tracker.currentRound() : null;
     this._onRoundOpen(cur ? cur.sid : ev.sid);
   }

@@ -12,6 +12,7 @@ test('classifier recognises the confirmed Aviator commands', () => {
   assert.equal(classifyFrame('{"cmd":100005,"iOE":true,"sid":2986908}').type, 'ROUND_OPEN');
   assert.equal(classifyFrame('{"cmd":100006,"sid":1}').type, 'ROUND_LOCK');
   assert.equal(classifyFrame('{"cmd":100007,"sid":1,"odd":1.87}').type, 'ROUND_END');
+  assert.equal(classifyFrame('[5,{"cmd":100008,"sid":1}]').type, 'ROUND_OPEN');
   assert.equal(classifyFrame('{"cmd":100009,"odd":1.55,"sid":1}').type, 'ODD_UPDATE');
   assert.equal(classifyFrame('{"cmd":100002,"b":5000,"sid":1,"aid":1,"eid":1}').type, 'BET');
   assert.equal(classifyFrame('{"cmd":100003,"sid":1,"aid":1,"eid":1}').type, 'CASHOUT');
@@ -41,6 +42,24 @@ test('classifier extracts only fields the protocol carries', () => {
   assert.equal(bet.odd, undefined, 'no invented odd on bet');
 });
 
+test('classifier unwraps Aviator plugin frames carried in arrays', () => {
+  const bet = classifyFrame('["6","MiniGame","aviatorPlugin",{"cmd":100002,"b":5000,"sid":2986797,"aid":1,"eid":1}]');
+  assert.equal(bet.type, 'BET');
+  assert.equal(bet.sid, 2986797);
+  assert.equal(bet.aid, 1);
+  assert.equal(bet.eid, 1);
+  const ack = classifyFrame('[5,{"eid":1,"b":5000,"wm":7750,"cmd":100003,"aid":1,"odd":1.55}]');
+  assert.equal(ack.type, 'CASHOUT');
+  assert.equal(ack.wm, 7750);
+  assert.equal(ack.odd, 1.55);
+});
+
+test('classifier surfaces login agentId from framed MiniGame arrays', () => {
+  const login = classifyFrame('42[1,"MiniGame","","",{"agentId":"1","accessToken":"redacted","reconnect":false}]');
+  assert.equal(login.type, 'UNKNOWN');
+  assert.equal(login.agentId, '1');
+});
+
 // ---------------------------------------------------------------------------
 // §4 / §26 — round state transitions come ONLY from server frames.
 // ---------------------------------------------------------------------------
@@ -60,6 +79,13 @@ test('round state machine: OPEN -> LOCKED -> RUNNING -> ENDED', () => {
   t.observe({ direction: 'recv', raw: '{"cmd":100007,"sid":2986908,"odd":1.87}' });
   assert.equal(t.currentRound().state, ROUND_STATE.ENDED);
   assert.equal(t.currentRound().lastOdd, 1.87);
+});
+
+test('round snapshot 100008 can establish the current Aviator round', () => {
+  const t = new RoundTracker();
+  t.observe({ direction: 'recv', raw: '[5,{"cmd":100008,"sid":2989861,"tB":182000}]' });
+  assert.equal(t.currentRound().sid, 2989861);
+  assert.equal(t.currentRound().state, ROUND_STATE.OPEN);
 });
 
 // ---------------------------------------------------------------------------

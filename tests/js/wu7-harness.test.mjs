@@ -97,9 +97,23 @@ test('valid current-round bet is sent and ACK-correlated', async () => {
   setTimeout(() => tracker.observe({ direction: 'recv', raw: '{"eid":1,"b":5000,"cmd":100002}' }), 20);
   const ex = await p;
   assert.equal(sends.length, 1);
-  assert.equal(JSON.parse(sends[0].payload).sid, 2986908);
+  const wire = JSON.parse(sends[0].payload);
+  assert.deepEqual(wire.slice(0, 3), ['6', 'MiniGame', 'aviatorPlugin']);
+  assert.equal(wire[3].sid, 2986908);
   assert.equal(ex.result, 'ACK');
   assert.equal(ex.responsePayload.b, 5000);
+});
+
+test('cashout is sent through the MiniGame aviatorPlugin envelope', async () => {
+  const { tracker, harness, sends } = setup();
+  openRound(tracker, 2986908);
+  const p = harness.execute({ targetId: 'T', command: 'cashout' });
+  setTimeout(() => tracker.observe({ direction: 'recv', raw: '[5,{"eid":1,"wm":7750,"cmd":100003,"aid":1,"odd":1.55}]' }), 20);
+  const ex = await p;
+  assert.equal(ex.result, 'ACK');
+  const wire = JSON.parse(sends[0].payload);
+  assert.deepEqual(wire.slice(0, 3), ['6', 'MiniGame', 'aviatorPlugin']);
+  assert.deepEqual(wire[3], { cmd: 100003, sid: 2986908, aid: 1, eid: 1 });
 });
 
 test('no observed game socket -> TEST_SESSION_UNAVAILABLE', async () => {
