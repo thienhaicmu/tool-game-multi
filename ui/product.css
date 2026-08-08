@@ -295,3 +295,52 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .at-env.on{color:var(--ok);background:var(--ok-bg)}
 .at-env.off{color:var(--err);background:var(--err-bg)}
 .cfg-err{color:var(--err);font-size:var(--t-cap);min-height:12px}
+
+/* ============================= WU11 FOCUSED PROTOCOL TESTER SHELL ============================= */
+:root{ --appbar-h:54px; --nav-w:188px; }
+body{ display:block; }                       /* override the legacy body grid */
+
+#appbar{ position:fixed; inset:0 0 auto 0; height:var(--appbar-h); display:flex; align-items:center; gap:12px; padding:0 16px; background:var(--surface); border-bottom:1px solid var(--line); z-index:60; }
+#appbar .brand{ display:flex; align-items:center; gap:6px; font-size:var(--t-lg); font-weight:650; }
+#appbar .glyph{ color:var(--accent); }
+.ab-url{ display:flex; gap:6px; align-items:center; flex:0 1 460px; }
+.ab-url #shell-url{ flex:1; min-width:180px; }
+.ab-url .primary{ background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+.ab-status{ display:inline-flex; align-items:center; gap:6px; font-size:var(--t-sm); color:var(--dim); }
+.ab-status .dot{ width:9px; height:9px; border-radius:50%; background:var(--faint); }
+.ab-status.on .dot{ background:var(--ok); }
+.ab-status.mid .dot{ background:var(--warn); }
+.ab-adv{ display:inline-flex; align-items:center; gap:5px; font-size:var(--t-sm); color:var(--dim); cursor:pointer; border:1px solid var(--line-strong); border-radius:var(--r2); padding:4px 9px; }
+.ab-adv input{ margin:0; }
+
+#shell{ position:fixed; inset:var(--appbar-h) 0 0 0; display:flex; }
+#shell-nav{ width:var(--nav-w); flex:0 0 var(--nav-w); border-right:1px solid var(--line); background:var(--panel); padding:12px 8px; display:flex; flex-direction:column; gap:4px; }
+#shell-nav .nav-item{ text-align:left; background:transparent; border:none; padding:10px 12px; border-radius:var(--r2); font-weight:600; font-size:var(--t-md); color:var(--dim); cursor:pointer; }
+#shell-nav .nav-item:hover{ background:var(--elevate); color:var(--text); }
+#shell-nav .nav-item.active{ background:var(--accent-weak); color:var(--accent); }
+#shell-main{ flex:1; position:relative; overflow:auto; }
+.shell-view{ padding:20px 22px; max-width:640px; }
+.shell-view[hidden]{ display:none; }
+
+/* Overview */
+.ov-detect{ display:grid; grid-template-columns:1fr 1fr; gap:2px 24px; margin-bottom:14px; }
+.ov-odd-wrap{ text-align:center; margin:8px 0 16px; }
+.ov-odd-label{ font-size:var(--t-cap); font-weight:700; letter-spacing:.06em; color:var(--faint); }
+.ov-odd{ font-family:var(--f-mono); font-size:64px; font-weight:800; line-height:1.05; color:var(--accent); }
+.ov-round{ display:grid; grid-template-columns:1fr 1fr; gap:2px 24px; margin-bottom:14px; }
+
+/* legacy debugger container — only shown in advanced mode */
+#legacy{ position:fixed; inset:var(--appbar-h) 0 0 0; display:grid; grid-template-rows:auto auto 1fr auto auto; background:var(--bg); }
+body[data-mode=product] #legacy{ display:none; }
+body[data-mode=advanced] #shell{ display:none; }
+body[data-mode=advanced] #shell-nav{ display:none; }
+
+/* Manual/Auto/b-Test panels dock into the main content region in product mode */
+body[data-mode=product] #proto-panel:not([hidden]),
+body[data-mode=product] #at-panel:not([hidden]),
+body[data-mode=product] #bv-panel:not([hidden]){
+  position:fixed; top:var(--appbar-h); left:var(--nav-w); right:0; bottom:0;
+  width:auto; height:auto; box-shadow:none; border-left:none; z-index:12;
+}
+body[data-mode=product] .proto-panel .proto-head .btn.icon{ display:none; }  /* no close ✕ when docked */
+/* In advanced mode the WU7-10 panels keep their original floating behavior. */

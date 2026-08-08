@@ -6,7 +6,62 @@
   <title>WebView Debugger</title>
   <link rel="stylesheet" href="product.css">
 </head>
-<body>
+<body data-mode="product">
+  <!-- WU11 focused Protocol Tester shell -->
+  <header id="appbar">
+    <div class="brand"><span class="glyph">◇</span><b>WebView&nbsp;Protocol&nbsp;Tester</b></div>
+    <div class="ab-url">
+      <input id="shell-url" placeholder="https://your.game" aria-label="Game URL">
+      <button id="shell-open" class="primary">Open Browser</button>
+    </div>
+    <span id="shell-status" class="ab-status"><span class="dot"></span><span id="shell-status-text">Disconnected</span></span>
+    <div class="spacer"></div>
+    <label id="shell-advanced-wrap" class="ab-adv" title="Show the full network debugger (capture / replay / intercept / timeline)">
+      <input type="checkbox" id="shell-advanced"> ⚙ Advanced Debug
+    </label>
+  </header>
+
+  <div id="shell">
+    <nav id="shell-nav" aria-label="Protocol test navigation">
+      <button class="nav-item active" data-view="overview">Overview</button>
+      <button class="nav-item" data-view="manual">Manual Test</button>
+      <button class="nav-item" data-view="auto">Auto Test</button>
+      <button class="nav-item" data-view="btest">b-Test</button>
+    </nav>
+    <main id="shell-main">
+      <section id="view-overview" class="shell-view">
+        <div id="ov-empty" class="proto-empty">
+          <div class="empty-ic">◴</div>
+          <div id="ov-empty-text">Open the game to begin protocol testing.</div>
+          <div class="empty-sub">Enter a URL above and click Open Browser.</div>
+        </div>
+        <div id="ov-body" hidden>
+          <div class="ov-detect">
+            <div class="proto-kv"><span>Browser</span><b id="ov-browser">—</b></div>
+            <div class="proto-kv"><span>Target</span><b id="ov-target">—</b></div>
+            <div class="proto-kv"><span>WebSocket</span><b id="ov-ws">—</b></div>
+            <div class="proto-kv"><span>Protocol</span><b id="ov-proto">—</b></div>
+          </div>
+          <div class="ov-odd-wrap">
+            <div class="ov-odd-label">CURRENT ODD</div>
+            <div id="ov-odd" class="ov-odd">—</div>
+          </div>
+          <div class="ov-round">
+            <div class="proto-kv"><span>SID</span><b id="ov-sid">—</b></div>
+            <div class="proto-kv"><span>Phase</span><b id="ov-phase">—</b></div>
+            <div class="proto-kv"><span>Max Odd</span><b id="ov-maxodd">—</b></div>
+            <div class="proto-kv"><span>Frames</span><b id="ov-frames">—</b></div>
+            <div class="proto-kv"><span>Round Age</span><b id="ov-age">—</b></div>
+            <div class="proto-kv"><span>Last update</span><b id="ov-last">—</b></div>
+          </div>
+          <div class="proto-state-title">RECENT ODD</div>
+          <div id="ov-recent" class="proto-sidhist"><span class="muted">none</span></div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="legacy">
   <header class="topbar">
     <div class="brand"><span class="glyph">◇</span><b>WebView&nbsp;Debugger</b></div>
     <span class="tb-sep"></span>
@@ -105,6 +160,7 @@
 
   <div class="v-gutter" data-vgutter="1" title="Drag to resize editor"></div>
   <footer id="editor" class="editor" style="height:var(--editor-h,240px)"><div class="empty"><div class="empty-ic">↺</div>Select a request to replay, or a paused request to intercept.</div></footer>
+  </div><!-- /#legacy -->
 
   <aside id="proto-panel" class="proto-panel" hidden aria-label="Protocol Test Harness">
     <div class="proto-head">
@@ -384,6 +440,7 @@
     </div>
   </aside>
 
+  <script src="app-shell.js"></script>
   <script src="protocol-form.js"></script>
   <script src="autotest-config.js"></script>
   <script src="amount-validation.js"></script>

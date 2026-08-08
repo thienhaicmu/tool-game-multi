@@ -608,16 +608,15 @@ renderActions();
   api.onProtocolExecution && api.onProtocolExecution((x) => pushExec(x));
 
   // ---- panel open/close ----
-  $('proto-toggle').onclick = async () => {
-    const p = $('proto-panel'); p.hidden = !p.hidden;
-    if (!p.hidden) {
-      await refreshEnv();
-      try { const st = await api.protocolRoundState(); round = st.current; sidHistory = (st.sidHistory || []).map((h) => h.sid); } catch { /* ignore */ }
-      try { const list = await api.protocolExecutions(); execs.length = 0; execById.clear(); for (const x of list.reverse()) pushExec(x); } catch { /* ignore */ }
-      renderContext(); renderFields();
-    }
-  };
+  async function openManual() {
+    await refreshEnv();
+    try { const st = await api.protocolRoundState(); round = st.current; sidHistory = (st.sidHistory || []).map((h) => h.sid); } catch { /* ignore */ }
+    try { const list = await api.protocolExecutions(); execs.length = 0; execById.clear(); for (const x of list.reverse()) pushExec(x); } catch { /* ignore */ }
+    renderContext(); renderFields();
+  }
+  $('proto-toggle').onclick = async () => { const p = $('proto-panel'); p.hidden = !p.hidden; if (!p.hidden) await openManual(); };
   $('proto-close').onclick = () => { $('proto-panel').hidden = true; };
+  $('proto-panel').addEventListener('shell:activate', openManual); // WU11 nav hook
 
   // Refresh env when the selected target changes (chain the existing handler).
   const origTargetsChange = $('targets').onchange;
@@ -825,11 +824,10 @@ renderActions();
   };
   $('at-stop').onclick = async () => { const r = await api.autotestStop(); if (r && !r.error) { snap = r; render(); } };
 
-  $('at-toggle').onclick = async () => {
-    const p = $('at-panel'); p.hidden = !p.hidden;
-    if (!p.hidden) { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } validateConfigUI(); render(); }
-  };
+  async function openAuto() { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } validateConfigUI(); render(); }
+  $('at-toggle').onclick = async () => { const p = $('at-panel'); p.hidden = !p.hidden; if (!p.hidden) await openAuto(); };
   $('at-close').onclick = () => { $('at-panel').hidden = true; };
+  $('at-panel').addEventListener('shell:activate', openAuto); // WU11 nav hook
 
   // Re-check the endpoint gate when the selected target changes.
   const prev = $('targets').onchange;
@@ -938,11 +936,107 @@ renderActions();
     snap = r; render();
   };
   $('bv-stop').onclick = async () => { const r = await api.bvalidateStop(); if (r && !r.error) { snap = r; render(); } };
-  $('bv-toggle').onclick = async () => {
-    const p = $('bv-panel'); p.hidden = !p.hidden;
-    if (!p.hidden) { await refreshEnv(); try { snap = await api.bvalidateSnapshot(); } catch { snap = null; } validate(); render(); }
-  };
+  async function openBtest() { await refreshEnv(); try { snap = await api.bvalidateSnapshot(); } catch { snap = null; } validate(); render(); }
+  $('bv-toggle').onclick = async () => { const p = $('bv-panel'); p.hidden = !p.hidden; if (!p.hidden) await openBtest(); };
   $('bv-close').onclick = () => { $('bv-panel').hidden = true; };
+  $('bv-panel').addEventListener('shell:activate', openBtest); // WU11 nav hook
   const prevCh = $('targets').onchange;
   $('targets').onchange = (e) => { if (prevCh) prevCh.call($('targets'), e); setTimeout(() => { if (!$('bv-panel').hidden) refreshEnv(); }, 80); };
+})();
+
+// ==================== WU11 FOCUSED PROTOCOL TESTER SHELL (presentation only) ====================
+// A simplified default workspace: URL -> Open Browser, left nav (Overview / Manual /
+// Auto / b-Test), and the full network debugger hidden behind Advanced Debug. It only
+// switches views and renders the Overview from the RoundObserver snapshot — no new
+// protocol state, no engine/IPC change. The WU7-10.2 panels are reused as-is.
+(function protocolShellUI() {
+  const Shell = window.AppShell; if (!Shell) return;
+  const state = { connected: false, targetName: '', obs: null, view: 'overview' };
+  const PANELS = ['proto-panel', 'at-panel', 'bv-panel', 'obs-panel', 'act-panel'];
+
+  // ---- mode (product | advanced), persisted; default product (§19) ----
+  function applyMode(mode) {
+    document.body.dataset.mode = mode;
+    const box = $('shell-advanced'); if (box) box.checked = Shell.isAdvanced(mode);
+    Shell.saveMode((k, v) => localStorage.setItem(k, v), mode);
+    if (!Shell.isAdvanced(mode)) setView(state.view); // ensure a shell view is shown
+  }
+  const initialMode = Shell.loadMode((k) => localStorage.getItem(k));
+
+  // ---- nav / views ----
+  function setView(view) {
+    state.view = view;
+    for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.classList.toggle('active', b.dataset.view === view);
+    for (const id of PANELS) { const el = $(id); if (el) el.hidden = true; }
+    const overview = $('view-overview');
+    if (view === 'overview') { overview.hidden = false; renderOverview(); return; }
+    overview.hidden = true;
+    const panelId = Shell.PANEL_FOR_VIEW[view];
+    const el = $(panelId);
+    if (el) { el.hidden = false; el.dispatchEvent(new CustomEvent('shell:activate')); }
+  }
+  for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.onclick = () => setView(b.dataset.view);
+
+  // ---- Advanced Debug toggle ----
+  const advBox = $('shell-advanced');
+  if (advBox) advBox.onchange = () => applyMode(advBox.checked ? 'advanced' : 'product');
+
+  // ---- Open Browser (reuse the existing launch path in the legacy topbar) ----
+  const openBtn = $('shell-open');
+  if (openBtn) openBtn.onclick = () => {
+    const u = $('shell-url').value.trim();
+    if (!u) return toast('Enter a URL');
+    $('url').value = u; setStatus('mid', 'Opening browser…');
+    $('launch').click();
+  };
+  const urlInput = $('shell-url');
+  if (urlInput) urlInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') openBtn.click(); });
+
+  // ---- connection status ----
+  function setStatus(cls, text) {
+    const s = $('shell-status'); if (s) s.className = 'ab-status ' + (cls || '');
+    const t = $('shell-status-text'); if (t) t.textContent = text;
+  }
+  api.onTargetsChanged && api.onTargetsChanged((list) => {
+    state.connected = !!(list && list.length);
+    if (state.connected) { const t = list[0]; state.targetName = t.title || t.url || t.cdpTargetId; setStatus('on', 'Connected'); }
+    else { state.targetName = ''; setStatus('', 'Disconnected'); }
+    if (state.view === 'overview') renderOverview();
+  });
+
+  // ---- Overview: protocol status + prominent ODD (from the observer snapshot) ----
+  api.onObserverUpdate && api.onObserverUpdate((s) => { state.obs = s; if (state.view === 'overview' && !$('view-overview').hidden) renderOverview(); });
+  const f2 = (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : Number(n).toFixed(2);
+
+  function renderOverview() {
+    const s = state.obs, cur = s && s.current;
+    const protocolSeen = !!(s && (s.status !== 'IDLE' || (s.history && s.history.length)));
+    const empty = $('ov-empty'), body = $('ov-body'), etext = $('ov-empty-text');
+    if (!state.connected) { empty.hidden = false; body.hidden = true; etext.textContent = 'Open the game to begin protocol testing.'; return; }
+    if (!protocolSeen) { empty.hidden = false; body.hidden = true; etext.textContent = 'Browser connected. Waiting for MiniGame / aviatorPlugin traffic…'; return; }
+    empty.hidden = true; body.hidden = false;
+    $('ov-browser').textContent = 'Connected';
+    $('ov-target').textContent = state.targetName || '—';
+    $('ov-ws').textContent = 'Aviator detected';
+    $('ov-proto').textContent = cur ? 'Ready · live round' : 'Ready · waiting for round';
+    $('ov-odd').textContent = cur && cur.currentOdd != null ? f2(cur.currentOdd) + 'x' : '—';
+    $('ov-sid').textContent = cur && cur.sid != null ? cur.sid : '—';
+    $('ov-phase').textContent = cur ? cur.phase : (s ? s.status : '—');
+    $('ov-maxodd').textContent = cur && cur.maxOdd != null ? f2(cur.maxOdd) + 'x' : '—';
+    $('ov-frames').textContent = cur && cur.oddFrameCount != null ? cur.oddFrameCount : '—';
+    $('ov-age').textContent = cur && cur.roundAgeMs != null ? (cur.roundAgeMs / 1000).toFixed(1) + 's' : '—';
+    $('ov-last').textContent = cur && cur.timeSinceLastOddMs != null ? Math.round(cur.timeSinceLastOddMs) + 'ms ago' : '—';
+    const recent = $('ov-recent'); const buf = (cur && cur.recentOdds) || [];
+    recent.innerHTML = buf.length ? buf.slice(-16).map((o, i, a) => `<span class="sid odd ${i === a.length - 1 ? 'trig' : ''}">${esc(f2(o.odd))}</span>`).join('') : '<span class="muted">none</span>';
+  }
+
+  // ---- boot ----
+  applyMode(initialMode);
+  setView('overview');
+  // Seed overview/status from current engine state if already connected.
+  (async () => {
+    try { const t = await api.listTargets(); if (t && t.length) { state.connected = true; state.targetName = t[0].title || t[0].url || t[0].cdpTargetId; setStatus('on', 'Connected'); } } catch { /* ignore */ }
+    try { state.obs = await api.observerSnapshot(); } catch { /* ignore */ }
+    if (state.view === 'overview') renderOverview();
+  })();
 })();
