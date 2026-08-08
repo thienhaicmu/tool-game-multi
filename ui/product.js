@@ -715,8 +715,24 @@ renderActions();
 // local/offline endpoints in the main process; this UI cannot override that gate.
 (function autoTestUI() {
   if (!api.autotestStart) return; // preload without WU10 — inert
-  let snap = null, env = { allowed: false, host: '' };
-  const numOr = (v, d) => { const n = Number(String(v).trim()); return Number.isFinite(n) ? n : d; };
+  const ATC = window.AutoTestConfig;
+  let snap = null, env = { allowed: false, host: '' }, configValid = true;
+
+  // Read the raw input fields and validate client-side (mirrors the backend
+  // contract) so Start can be gated and per-field errors shown BEFORE any IPC.
+  function rawFields() {
+    return { rounds: $('at-rounds').value, amount: $('at-amount').value, stopOdd: $('at-stopodd').value, aid: $('at-aid').value, eid: $('at-eid').value };
+  }
+  function validateConfigUI() {
+    const v = ATC ? ATC.validate(rawFields()) : { ok: true, errors: {}, config: null };
+    $('at-err-rounds').textContent = v.errors.rounds || '';
+    $('at-err-amount').textContent = v.errors.amount || '';
+    $('at-err-stopodd').textContent = v.errors.stopOdd || '';
+    $('at-cfg-err').textContent = v.errors.aid || v.errors.eid || '';
+    configValid = v.ok;
+    syncButtons();
+    return v;
+  }
 
   function setChip(status) {
     const chip = $('at-status-chip'); if (!chip) return;
@@ -737,8 +753,10 @@ renderActions();
   }
   function syncButtons() {
     const running = snap && snap.running;
-    $('at-start').disabled = running || !env.allowed;
+    // Start is disabled unless: not running, endpoint allowed, AND config valid (§6).
+    $('at-start').disabled = running || !env.allowed || !configValid;
     $('at-stop').disabled = !running;
+    // Lock config inputs while a run is in progress (§9).
     for (const id of ['at-rounds', 'at-amount', 'at-stopodd', 'at-aid', 'at-eid']) { const el = $(id); if (el) el.disabled = running; }
   }
 
@@ -754,6 +772,8 @@ renderActions();
     const target = snap.config ? snap.config.stopOdd : (snap.active ? snap.active.stopOdd : null);
     oddEl.className = 'at-odd' + (odd != null && target != null && odd >= target ? ' trig' : '');
     $('at-target').textContent = target != null ? Number(target).toFixed(2) + 'x' : '—';
+    // Show the running config's amount (snapshotted at Start, not live inputs §14).
+    $('at-live-amount').textContent = snap.config && snap.config.amount != null ? Number(snap.config.amount).toLocaleString() : '—';
     const active = snap.active;
     $('at-bet').textContent = active ? (active.betResult || (['BET_SENDING', 'WAITING_BET_ACK'].includes(snap.state) ? 'sending…' : '—')) : '—';
     $('at-cash').textContent = ['CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(snap.state) ? 'sending…' : (active && active.ackOdd != null ? 'ACK ' + active.ackOdd : 'waiting');
@@ -775,8 +795,8 @@ renderActions();
       const f2 = (n) => (n == null ? '—' : Number(n).toFixed(2));
       return `<div class="obs-round">`
         + `<div class="obs-round-head"><b>#${esc(r.index + 1)} · sid ${esc(r.sid)}</b><span class="obs-res ${resClass(r.result)}">${esc(r.result)}</span></div>`
-        + `<div class="obs-round-meta">target ${esc(f2(r.stopOdd))} · trigger ${esc(f2(r.triggerOdd))} · ack ${esc(f2(r.ackOdd))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
-        + `<div class="obs-round-meta">bet ${esc(r.betResult || '—')} · betLat ${esc(r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—')} · cashLat ${esc(r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—')}</div>`
+        + `<div class="obs-round-meta">bet ${esc(r.amount != null ? r.amount : '—')} · target ${esc(f2(r.stopOdd))} · trigger ${esc(f2(r.triggerOdd))} · ack ${esc(f2(r.ackOdd))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
+        + `<div class="obs-round-meta">${esc(r.betResult || '—')} · betLat ${esc(r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—')} · cashLat ${esc(r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—')}</div>`
         + `</div>`;
     }).join('');
   }
@@ -793,10 +813,13 @@ renderActions();
   api.onAutotestUpdate && api.onAutotestUpdate((s) => { snap = s; if (!$('at-panel').hidden) render(); });
 
   $('at-adv-toggle').onclick = () => { const el = $('at-adv'); el.hidden = !el.hidden; $('at-adv-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Advanced (aid / eid)'; };
+  // Live validation as the tester types (§6).
+  for (const id of ['at-rounds', 'at-amount', 'at-stopodd', 'at-aid', 'at-eid']) { const el = $(id); if (el) el.oninput = validateConfigUI; }
+
   $('at-start').onclick = async () => {
-    $('at-cfg-err').textContent = '';
-    const config = { roundCount: numOr($('at-rounds').value, 0), amount: numOr($('at-amount').value, 0), stopOdd: numOr($('at-stopodd').value, 0), aid: numOr($('at-aid').value, 1), eid: numOr($('at-eid').value, 1) };
-    const r = await api.autotestStart(config);
+    const v = validateConfigUI();
+    if (!v.ok) return; // per-field errors already shown; Start is disabled anyway
+    const r = await api.autotestStart(v.config);
     if (r && r.error) { $('at-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; return; }
     snap = r; render();
   };
@@ -804,7 +827,7 @@ renderActions();
 
   $('at-toggle').onclick = async () => {
     const p = $('at-panel'); p.hidden = !p.hidden;
-    if (!p.hidden) { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } render(); }
+    if (!p.hidden) { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } validateConfigUI(); render(); }
   };
   $('at-close').onclick = () => { $('at-panel').hidden = true; };
 

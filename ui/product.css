@@ -294,3 +294,4 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .proto-panel .danger:disabled{opacity:.5}
 .at-env.on{color:var(--ok);background:var(--ok-bg)}
 .at-env.off{color:var(--err);background:var(--err-bg)}
+.cfg-err{color:var(--err);font-size:var(--t-cap);min-height:12px}
