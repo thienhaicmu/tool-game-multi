@@ -20,6 +20,7 @@ const { RoundTracker } = require('./protocol/aviator.cjs');
 const { ProtocolHarness } = require('./protocol/harness.cjs');
 const { RoundObserver } = require('./protocol/round-observer.cjs');
 const { AutoRunner } = require('./protocol/auto-runner.cjs');
+const { AmountValidator } = require('./protocol/amount-validator.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
@@ -206,6 +207,17 @@ let autoDirty = false;
 autoRunner.on('update', () => {
   if (autoDirty) return; autoDirty = true;
   setTimeout(() => { autoDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('autotest-update', autoRunner.snapshot()); }, 100);
+});
+// WU10.2: separate bet-amount server-validation mode (bet-only; sends the EXACT
+// tester value; never clamps/snaps; hard-bound to local/test like the runner).
+const amountValidator = new AmountValidator({
+  roundTracker: aviator, harness,
+  getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+});
+let bvalDirty = false;
+amountValidator.on('update', () => {
+  if (bvalDirty) return; bvalDirty = true;
+  setTimeout(() => { bvalDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('bvalidate-update', amountValidator.snapshot()); }, 100);
 });
 // Persistent session store (cookies) — independent of launching Chrome, so a
 // login survives reconnects on Chrome / WebView / WebView2 / CEF alike.
@@ -447,3 +459,8 @@ ipcMain.handle('autotest-environment', (_event, targetId) => autoRunner.environm
 ipcMain.handle('autotest-start', (_event, config = {}) => { const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
 ipcMain.handle('autotest-stop', () => { const r = autoRunner.stop(); return r.error ? r : autoRunner.snapshot(); });
 ipcMain.handle('autotest-snapshot', () => autoRunner.snapshot());
+// WU10.2 — bet-amount server-validation IPC (bet-only; local/test gated).
+ipcMain.handle('bvalidate-environment', (_event, targetId) => amountValidator.environmentFor(String(targetId || selectedTargetId || '')));
+ipcMain.handle('bvalidate-start', (_event, config = {}) => { const r = amountValidator.start(String(selectedTargetId || ''), config || {}); return r.error ? r : amountValidator.snapshot(); });
+ipcMain.handle('bvalidate-stop', () => { const r = amountValidator.stop(); return r.error ? r : amountValidator.snapshot(); });
+ipcMain.handle('bvalidate-snapshot', () => amountValidator.snapshot());

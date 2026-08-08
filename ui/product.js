@@ -835,3 +835,114 @@ renderActions();
   const prev = $('targets').onchange;
   $('targets').onchange = (e) => { if (prev) prev.call($('targets'), e); setTimeout(() => { if (!$('at-panel').hidden) refreshEnv(); }, 80); };
 })();
+
+// ==================== WU10.2 BET AMOUNT SERVER VALIDATION (bet-only, local/test) ====================
+// Sends an EXACT tester-supplied `b` on each server round and reports what the server
+// does: ACCEPTED_EXACT / ACCEPTED_NORMALIZED / REJECTED / INCONCLUSIVE. No cashout,
+// no odd. UI does TYPE validation only — any numeric b is allowed on purpose.
+(function betValidationUI() {
+  if (!api.bvalidateStart || !window.AmountValidation) return;
+  const AV = window.AmountValidation;
+  let snap = null, env = { allowed: false, host: '' }, valid = true;
+
+  function setChip(status) {
+    const chip = $('bv-status-chip'); if (!chip) return;
+    const on = ['WAITING_ROUND', 'BET_SENDING', 'WAITING_BET_ACK'].includes(status);
+    chip.textContent = status === 'COMPLETED' ? 'DONE' : (on ? 'RUN' : (status || 'IDLE'));
+    chip.className = 'chip ' + (on ? 'on' : (status === 'COMPLETED' ? 'warn' : 'off'));
+  }
+  async function refreshEnv() {
+    try { env = await api.bvalidateEnvironment(); } catch { env = { allowed: false, host: '' }; }
+    const badge = $('bv-env');
+    badge.textContent = env.allowed ? `LOCAL OK · ${env.host || ''}` : 'NOT A LOCAL/TEST ENDPOINT';
+    badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
+    const gate = $('bv-gate');
+    gate.hidden = !!env.allowed;
+    if (!env.allowed) gate.textContent = `Bet amount validation is bound to local/offline test endpoints. "${env.host || '(unknown)'}" is not permitted — Start is disabled.`;
+    validate();
+  }
+
+  const mode = () => $('bv-mode').value;
+  function validate() {
+    let ok = true;
+    $('bv-err-amount').textContent = ''; $('bv-err-rounds').textContent = ''; $('bv-err-values').textContent = '';
+    if (mode() === 'single') {
+      const a = AV.parseAmount($('bv-amount').value); if (a.error) { $('bv-err-amount').textContent = a.error; ok = false; }
+      const r = Number($('bv-rounds').value); if (!Number.isInteger(r) || r < 1) { $('bv-err-rounds').textContent = 'Whole number >= 1'; ok = false; }
+    } else {
+      const p = AV.parseValues($('bv-values').value);
+      if (!p.values.length) { $('bv-err-values').textContent = 'Enter at least one value'; ok = false; }
+      else if (p.errors.length) { $('bv-err-values').textContent = 'Invalid: ' + p.errors.map((e) => e.input).join(', '); ok = false; }
+    }
+    valid = ok; syncButtons(); return ok;
+  }
+  function syncButtons() {
+    const running = snap && snap.running;
+    $('bv-start').disabled = running || !env.allowed || !valid;
+    $('bv-stop').disabled = !running;
+    for (const id of ['bv-mode', 'bv-amount', 'bv-rounds', 'bv-values', 'bv-expected', 'bv-aid', 'bv-eid', 'bv-uimin', 'bv-uimax']) { const el = $(id); if (el) el.disabled = running; }
+  }
+  function buildConfig() {
+    const common = { expected: $('bv-expected').value, aid: Number($('bv-aid').value), eid: Number($('bv-eid').value), uiMin: Number($('bv-uimin').value), uiMax: Number($('bv-uimax').value) };
+    if (mode() === 'single') return { mode: 'single', amount: AV.parseAmount($('bv-amount').value).value, roundCount: Number($('bv-rounds').value), ...common };
+    return { mode: 'list', values: AV.parseValues($('bv-values').value).values, ...common };
+  }
+
+  function obsClass(o) { return o === 'ACCEPTED_EXACT' ? 'COMPLETED' : o === 'ACCEPTED_NORMALIZED' ? 'ROUND_ENDED_BEFORE_TRIGGER' : o === 'REJECTED' ? 'ENDED' : 'OBSERVING'; }
+  function render() {
+    if (!snap) return;
+    setChip(snap.state);
+    $('bv-status').textContent = snap.state;
+    const p = snap.progress || {};
+    $('bv-progress').textContent = `${p.done ?? 0} / ${p.total ?? '—'}`;
+    const a = snap.active;
+    $('bv-sid').innerHTML = (a && a.sid != null ? esc(a.sid) : '—') + ' <span class="faint">auto · server supplied</span>';
+    $('bv-sending').textContent = a ? a.requestedB : '—';
+    $('bv-cat').textContent = a ? a.category : '—';
+    $('bv-observed').textContent = a && a.observed ? a.observed : (['BET_SENDING', 'WAITING_BET_ACK'].includes(snap.state) ? 'Waiting…' : '—');
+    $('bv-ackb').textContent = a && a.ackB != null ? a.ackB : '—';
+    const s = snap.summary || {};
+    $('bv-s-tested').textContent = s.tested ?? 0;
+    $('bv-s-acc').textContent = `${s.acceptedExact ?? 0} / ${s.acceptedNormalized ?? 0}`;
+    $('bv-s-rej').textContent = `${s.rejected ?? 0} / ${s.inconclusive ?? 0}`;
+    $('bv-s-below').textContent = (s.acceptedBelowMin && s.acceptedBelowMin.length) ? s.acceptedBelowMin.join(', ') : 'none';
+    $('bv-s-above').textContent = (s.acceptedAboveMax && s.acceptedAboveMax.length) ? s.acceptedAboveMax.join(', ') : 'none';
+    $('bv-s-nonpreset').textContent = (s.acceptedNonPreset && s.acceptedNonPreset.length) ? s.acceptedNonPreset.join(', ') : 'none';
+    renderHistory(snap.history || []);
+    syncButtons();
+  }
+  function renderHistory(rows) {
+    const el = $('bv-history'); if (!el) return;
+    if (!rows.length) { el.innerHTML = '<div class="muted">No cases run yet.</div>'; return; }
+    el.innerHTML = rows.slice().reverse().slice(0, 60).map((c) => {
+      const diff = c.diff != null && c.diff !== 0 ? ` (delta ${c.diff})` : '';
+      const verdict = c.verdict ? `<span class="ptx-verdict ${esc(c.verdict)}">${esc(c.verdict)}</span>` : '';
+      return `<div class="obs-round">`
+        + `<div class="obs-round-head"><b>#${esc(c.index + 1)} · sid ${esc(c.sid)}</b><span class="obs-res ${obsClass(c.observed)}">${esc(c.observed || '—')}</span>${verdict}</div>`
+        + `<div class="obs-round-meta">sent b ${esc(c.sentB)} · ack b ${esc(c.ackB != null ? c.ackB : '—')}${esc(diff)} · ${esc(c.category)}</div>`
+        + `</div>`;
+    }).join('');
+  }
+
+  api.onBvalidateUpdate && api.onBvalidateUpdate((s) => { snap = s; if (!$('bv-panel').hidden) render(); });
+
+  $('bv-mode').onchange = () => { const list = mode() === 'list'; $('bv-list-fields').hidden = !list; $('bv-single-fields').hidden = list; validate(); };
+  for (const id of ['bv-amount', 'bv-rounds', 'bv-values']) { const el = $(id); if (el) el.oninput = validate; }
+  $('bv-adv-toggle').onclick = () => { const el = $('bv-adv'); el.hidden = !el.hidden; $('bv-adv-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Advanced (aid / eid / UI limits)'; };
+  $('bv-gen').onclick = () => { $('bv-values').value = AV.generateAroundLimits(Number($('bv-uimin').value), Number($('bv-uimax').value)).join('\n'); validate(); };
+  $('bv-start').onclick = async () => {
+    if (!validate()) return;
+    $('bv-cfg-err').textContent = '';
+    const r = await api.bvalidateStart(buildConfig());
+    if (r && r.error) { $('bv-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; return; }
+    snap = r; render();
+  };
+  $('bv-stop').onclick = async () => { const r = await api.bvalidateStop(); if (r && !r.error) { snap = r; render(); } };
+  $('bv-toggle').onclick = async () => {
+    const p = $('bv-panel'); p.hidden = !p.hidden;
+    if (!p.hidden) { await refreshEnv(); try { snap = await api.bvalidateSnapshot(); } catch { snap = null; } validate(); render(); }
+  };
+  $('bv-close').onclick = () => { $('bv-panel').hidden = true; };
+  const prevCh = $('targets').onchange;
+  $('targets').onchange = (e) => { if (prevCh) prevCh.call($('targets'), e); setTimeout(() => { if (!$('bv-panel').hidden) refreshEnv(); }, 80); };
+})();

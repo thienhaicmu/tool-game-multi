@@ -53,6 +53,12 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   autotestStop: () => ipcRenderer.invoke('autotest-stop'),
   autotestSnapshot: () => ipcRenderer.invoke('autotest-snapshot'),
   onAutotestUpdate: callback => ipcRenderer.on('autotest-update', (_event, snap) => callback(snap)),
+  // WU10.2 — bet amount server validation
+  bvalidateEnvironment: targetId => ipcRenderer.invoke('bvalidate-environment', targetId),
+  bvalidateStart: config => ipcRenderer.invoke('bvalidate-start', config),
+  bvalidateStop: () => ipcRenderer.invoke('bvalidate-stop'),
+  bvalidateSnapshot: () => ipcRenderer.invoke('bvalidate-snapshot'),
+  onBvalidateUpdate: callback => ipcRenderer.on('bvalidate-update', (_event, snap) => callback(snap)),
   onTargetsChanged: callback => ipcRenderer.on('targets-changed', (_event, targets) => callback(targets)),
   onCdpError: callback => ipcRenderer.on('cdp-error', (_event, error) => callback(error)),
   onEvent: callback => {

@@ -54,6 +54,7 @@
       <button id="proto-toggle" class="btn" title="Protocol Test Harness (authorized QA/staging only)">🎯 Protocol <span id="proto-env-chip" class="chip off">OFF</span></button>
       <button id="obs-toggle" class="btn" title="Read-only multi-round observer (records evidence, sends nothing)">👁 Observer <span id="obs-status-chip" class="chip off">IDLE</span></button>
       <button id="at-toggle" class="btn" title="Automated offline round test runner (local/test endpoints only)">⚙ Auto Test <span id="at-status-chip" class="chip off">IDLE</span></button>
+      <button id="bv-toggle" class="btn" title="Bet amount server validation — sends an exact b per round (local/test only)">🔢 b-Test <span id="bv-status-chip" class="chip off">IDLE</span></button>
       <button id="clear" class="btn icon" title="Clear (Delete)">⌫</button>
       <button id="theme" class="btn icon" title="Toggle theme">☾</button>
     </div>
@@ -296,8 +297,96 @@
     </div>
   </aside>
 
+  <aside id="bv-panel" class="proto-panel" hidden aria-label="Bet Amount Server Validation">
+    <div class="proto-head">
+      <b>🔢 Bet Amount Validation</b>
+      <span id="bv-env" class="proto-env off" title="Sends an exact bet amount per round; local/offline test endpoints only">LOCAL ONLY</span>
+      <div class="spacer"></div>
+      <button id="bv-close" class="btn icon" title="Hide panel">✕</button>
+    </div>
+
+    <div id="bv-gate" class="proto-validation block" hidden></div>
+
+    <div class="proto-card at-live">
+      <div class="proto-kv"><span>Status</span><b id="bv-status">IDLE</b></div>
+      <div class="proto-kv"><span>Case</span><b id="bv-progress">— / —</b></div>
+      <div class="proto-kv"><span>SID</span><b id="bv-sid">— <span class="faint">auto · server supplied</span></b></div>
+      <div class="proto-kv"><span>Sending b</span><b id="bv-sending">—</b></div>
+      <div class="proto-kv"><span>Category</span><b id="bv-cat">—</b></div>
+      <div class="proto-kv"><span>Server</span><b id="bv-observed">—</b></div>
+      <div class="proto-kv"><span>ACK b</span><b id="bv-ackb">—</b></div>
+    </div>
+
+    <div class="proto-card" id="bv-config">
+      <div class="proto-state-title">BET AMOUNT SERVER VALIDATION</div>
+      <label class="pf-field">Mode
+        <select id="bv-mode"><option value="single">Single Value</option><option value="list">Value List</option></select>
+      </label>
+      <div id="bv-single-fields">
+        <label class="pf-field">Bet Amount
+          <input id="bv-amount" class="mono" value="7777">
+          <span class="hint">Sent EXACTLY as entered — not snapped to game presets, not clamped.</span>
+          <span id="bv-err-amount" class="cfg-err"></span>
+        </label>
+        <label class="pf-field">Number of Rounds
+          <input id="bv-rounds" class="mono" value="10">
+          <span id="bv-err-rounds" class="cfg-err"></span>
+        </label>
+      </div>
+      <div id="bv-list-fields" hidden>
+        <label class="pf-field">Test Values <span class="hint">(one per line — one distinct server round each)</span>
+          <textarea id="bv-values" class="mono" rows="7">4999
+5000
+5001
+7777
+12345
+50000
+50001</textarea>
+          <span id="bv-err-values" class="cfg-err"></span>
+        </label>
+        <button id="bv-gen" class="btn" type="button">Generate around UI limits</button>
+      </div>
+      <label class="pf-field">Expected
+        <select id="bv-expected"><option value="any">Any (observe only)</option><option value="accept">Accept</option><option value="reject">Reject</option></select>
+      </label>
+      <div class="faint" style="margin:2px 0 8px">Observed client UI ≈ 5,000–50,000. That's a client limit — this tests what the <b>server</b> accepts. SID is server-supplied.</div>
+      <button id="bv-adv-toggle" class="proto-collapse" type="button">▶ Advanced (aid / eid / UI limits)</button>
+      <div id="bv-adv" class="proto-advanced" hidden>
+        <div class="proto-row">
+          <label>aid <input id="bv-aid" class="mono" value="1"></label>
+          <label>eid <input id="bv-eid" class="mono" value="1"></label>
+        </div>
+        <div class="proto-row">
+          <label>UI Min <input id="bv-uimin" class="mono" value="5000"></label>
+          <label>UI Max <input id="bv-uimax" class="mono" value="50000"></label>
+        </div>
+      </div>
+      <div id="bv-cfg-err" class="errb"></div>
+      <div class="proto-row">
+        <button id="bv-start" class="primary">▶ Start Validation</button>
+        <button id="bv-stop" class="danger" disabled>■ Stop</button>
+      </div>
+    </div>
+
+    <div class="proto-card at-metrics">
+      <div class="proto-state-title">SUMMARY</div>
+      <div class="proto-kv"><span>Tested</span><b id="bv-s-tested">—</b></div>
+      <div class="proto-kv"><span>Accepted exact / normalized</span><b id="bv-s-acc">—</b></div>
+      <div class="proto-kv"><span>Rejected / inconclusive</span><b id="bv-s-rej">—</b></div>
+      <div class="proto-kv"><span>Accepted below min</span><b id="bv-s-below">—</b></div>
+      <div class="proto-kv"><span>Accepted above max</span><b id="bv-s-above">—</b></div>
+      <div class="proto-kv"><span>Accepted non-preset</span><b id="bv-s-nonpreset">—</b></div>
+    </div>
+
+    <div class="proto-hist">
+      <div class="proto-state-title">RESULTS <span class="faint">(append-only)</span></div>
+      <div id="bv-history" class="proto-execs"><div class="muted">No cases run yet.</div></div>
+    </div>
+  </aside>
+
   <script src="protocol-form.js"></script>
   <script src="autotest-config.js"></script>
+  <script src="amount-validation.js"></script>
   <script src="product.js"></script>
   <script src="panels.js"></script>
 </body>
