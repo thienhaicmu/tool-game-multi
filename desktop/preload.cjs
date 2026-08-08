@@ -41,6 +41,8 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   protocolExecute: opts => ipcRenderer.invoke('protocol-execute', opts),
   protocolExecutions: () => ipcRenderer.invoke('protocol-executions'),
   onAviatorRound: callback => ipcRenderer.on('aviator-round', (_event, round) => callback(round)),
+  protocolContext: () => ipcRenderer.invoke('protocol-context'),
+  onProtocolContext: callback => ipcRenderer.on('protocol-context', (_event, ctx) => callback(ctx)),
   onAviatorActionTrace: callback => ipcRenderer.on('aviator-actiontrace', (_event, trace) => callback(trace)),
   onProtocolExecution: callback => ipcRenderer.on('protocol-execution', (_event, ex) => callback(ex)),
   // WU8 — read-only Round/ODD observer

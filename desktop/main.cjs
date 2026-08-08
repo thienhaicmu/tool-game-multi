@@ -21,6 +21,8 @@ const { ProtocolHarness } = require('./protocol/harness.cjs');
 const { RoundObserver } = require('./protocol/round-observer.cjs');
 const { AutoRunner } = require('./protocol/auto-runner.cjs');
 const { AmountValidator } = require('./protocol/amount-validator.cjs');
+const { ProtocolContext } = require('./protocol/protocol-context.cjs');
+const { resolveBounds, DEFAULTS: WIN_DEFAULTS } = require('./window-state.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
@@ -86,8 +88,15 @@ function emit(event) {
   if (shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
 }
 
+function windowStatePath() { return path.join(app.getPath('userData'), 'window-state.json'); }
+function loadWindowState() { try { return JSON.parse(fs.readFileSync(windowStatePath(), 'utf8')); } catch { return null; } }
+function saveWindowState() { try { if (shell && !shell.isDestroyed() && !shell.isMinimized()) fs.writeFileSync(windowStatePath(), JSON.stringify(shell.getBounds()), 'utf8'); } catch { /* best effort */ } }
+
 function createWindow() {
-  shell = new BrowserWindow({ width: 1500, height: 950, minWidth: 1100, minHeight: 700, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
+  // Compact by default (Protocol Test tool, not an IDE); restore saved bounds if valid.
+  const bounds = resolveBounds(loadWindowState());
+  shell = new BrowserWindow({ ...bounds, minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
+  shell.on('close', saveWindowState);
   const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
   journal = new EventJournal(journalPath);
   importTimer = setInterval(importJournalNow, 10_000);
@@ -174,6 +183,10 @@ capture.on('request', req => {
   }
 });
 aviator.on('round', r => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-round', r); });
+// Session aid/eid — learned from observed frames, owned here (never hardcoded /
+// user-entered). Protocol testing stays disabled until this is ready.
+const protocolContext = new ProtocolContext({ roundTracker: aviator });
+protocolContext.on('change', c => { if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-context', c); });
 aviator.on('actiontrace', t => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-actiontrace', t); });
 // WU7: Protocol Test Harness — authorized QA sender bound to the selected target's
 // own live socket (via wsReplay.sendRaw). Gated by an explicit host allowlist.
@@ -337,7 +350,7 @@ async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = 
   });
   manager.on('target-added', broadcastTargets);
   manager.on('target-updated', broadcastTargets);
-  manager.on('target-removed', id => { intercept.onTargetDetached(id); observer.onDisconnect(id); if (selectedTargetId === id) selectedTargetId = null; broadcastTargets(); });
+  manager.on('target-removed', id => { intercept.onTargetDetached(id); observer.onDisconnect(id); if (selectedTargetId === id) { selectedTargetId = null; protocolContext.reset(); } broadcastTargets(); });
   manager.on('error', err => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) }); });
   try {
     await manager.start();
@@ -451,6 +464,7 @@ ipcMain.handle('protocol-template', (_event, command, overrides = {}) => { const
 ipcMain.handle('protocol-check-sid', (_event, sid) => harness.checkSid(sid));
 ipcMain.handle('protocol-execute', (_event, opts = {}) => harness.execute({ ...opts, targetId: opts.targetId || selectedTargetId || null }));
 ipcMain.handle('protocol-executions', () => harness.executions());
+ipcMain.handle('protocol-context', () => protocolContext.get());
 // WU8 — read-only observer IPC (snapshot + display-only config; never sends).
 ipcMain.handle('observer-snapshot', () => observer.snapshot());
 ipcMain.handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });

@@ -23,5 +23,13 @@
   }
   const isAdvanced = (mode) => mode === 'advanced';
 
-  return { VIEWS, PANEL_FOR_VIEW, STORAGE_KEY, loadMode, saveMode, isAdvanced };
+  // WU11.1 — the one Auto-Run CTA changes label/action by runner state.
+  function autoCta(state, running) {
+    if (running) return { action: 'stop', label: '■ STOP AUTO RUN', note: 'AUTO RUNNING', cls: 'danger' };
+    if (state === 'COMPLETED') return { action: 'start', label: '↻ RUN AGAIN', note: '✓ RUN COMPLETE', cls: 'primary' };
+    if (state === 'STOPPED') return { action: 'start', label: '▶ START NEW RUN', note: 'STOPPED', cls: 'primary' };
+    return { action: 'start', label: '▶ START AUTO RUN', note: '', cls: 'primary' };
+  }
+
+  return { VIEWS, PANEL_FOR_VIEW, STORAGE_KEY, loadMode, saveMode, isAdvanced, autoCta };
 });

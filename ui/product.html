@@ -36,11 +36,14 @@
           <div class="empty-sub">Enter a URL above and click Open Browser.</div>
         </div>
         <div id="ov-body" hidden>
+          <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Waiting for login context…</span></div>
           <div class="ov-detect">
             <div class="proto-kv"><span>Browser</span><b id="ov-browser">—</b></div>
             <div class="proto-kv"><span>Target</span><b id="ov-target">—</b></div>
             <div class="proto-kv"><span>WebSocket</span><b id="ov-ws">—</b></div>
             <div class="proto-kv"><span>Protocol</span><b id="ov-proto">—</b></div>
+            <div class="proto-kv"><span>AID</span><b id="ov-aid">—</b></div>
+            <div class="proto-kv"><span>EID</span><b id="ov-eid">—</b></div>
           </div>
           <div class="ov-odd-wrap">
             <div class="ov-odd-label">CURRENT ODD</div>
@@ -307,7 +310,7 @@
 
     <!-- Config (before start) -->
     <div class="proto-card" id="at-config">
-      <div class="proto-state-title">TEST CONFIG</div>
+      <div class="proto-state-title">AUTOMATED OFFLINE TEST</div>
       <label class="pf-field">Number of Rounds
         <input id="at-rounds" class="mono" value="10">
         <span class="hint">Number of server rounds to test (each may send 1 bet + 1 cashout).</span>
@@ -323,19 +326,11 @@
         <span class="hint">Cashout fires when the server odd first reaches this value.</span>
         <span id="at-err-stopodd" class="cfg-err"></span>
       </label>
-      <div class="faint" style="margin:2px 0 8px">SID is supplied automatically by the server — you don't enter it.</div>
-      <button id="at-adv-toggle" class="proto-collapse" type="button">▶ Advanced (aid / eid)</button>
-      <div id="at-adv" class="proto-advanced" hidden>
-        <div class="proto-row">
-          <label>aid <input id="at-aid" class="mono" value="1"></label>
-          <label>eid <input id="at-eid" class="mono" value="1"></label>
-        </div>
-      </div>
+      <div class="ctx-line">SID · AID · EID are supplied automatically by the server session — you don't enter them.</div>
       <div id="at-cfg-err" class="errb"></div>
-      <div class="proto-row">
-        <button id="at-start" class="primary">▶ Start Test</button>
-        <button id="at-stop" class="danger" disabled>■ Stop Test</button>
-      </div>
+      <div id="at-cta-note" class="cta-note"></div>
+      <button id="at-cta" class="cta primary">▶ START AUTO RUN</button>
+      <div id="at-cta-reason" class="cfg-err"></div>
     </div>
 
     <div class="proto-card at-metrics">
@@ -406,16 +401,13 @@
         <select id="bv-expected"><option value="any">Any (observe only)</option><option value="accept">Accept</option><option value="reject">Reject</option></select>
       </label>
       <div class="faint" style="margin:2px 0 8px">Observed client UI ≈ 5,000–50,000. That's a client limit — this tests what the <b>server</b> accepts. SID is server-supplied.</div>
-      <button id="bv-adv-toggle" class="proto-collapse" type="button">▶ Advanced (aid / eid / UI limits)</button>
+      <button id="bv-adv-toggle" class="proto-collapse" type="button">▶ Advanced (UI limits)</button>
       <div id="bv-adv" class="proto-advanced" hidden>
-        <div class="proto-row">
-          <label>aid <input id="bv-aid" class="mono" value="1"></label>
-          <label>eid <input id="bv-eid" class="mono" value="1"></label>
-        </div>
         <div class="proto-row">
           <label>UI Min <input id="bv-uimin" class="mono" value="5000"></label>
           <label>UI Max <input id="bv-uimax" class="mono" value="50000"></label>
         </div>
+        <div class="faint">aid / eid come from the server session.</div>
       </div>
       <div id="bv-cfg-err" class="errb"></div>
       <div class="proto-row">

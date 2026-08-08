@@ -3,6 +3,14 @@ const api = window.desktopCapture || {};
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// Session aid/eid — owned by the main process (ProtocolContext), never hardcoded /
+// user-entered. All Protocol Test panels read this and stay DISABLED until ready.
+let protoCtx = { aid: null, eid: null, ready: false };
+function protoCtxReady() { return !!(protoCtx && protoCtx.ready); }
+function broadcastProtoCtx() { document.dispatchEvent(new CustomEvent('protoctx-change')); }
+if (api.onProtocolContext) api.onProtocolContext((c) => { protoCtx = c || protoCtx; broadcastProtoCtx(); });
+if (api.protocolContext) api.protocolContext().then((c) => { if (c) { protoCtx = c; broadcastProtoCtx(); } }).catch(() => {});
+
 // ---- state ----
 const reqs = new Map();        // id -> { id, method, url, host, path, targetId, cdpRequestId, resourceType, status, duration }
 const order = [];              // capture order (append)
@@ -420,38 +428,41 @@ renderActions();
   let env = { allowed: false, name: null, host: '' };
   const execs = [];                 // newest-first execution records
   const execById = new Map();
-  let advOpen = false;
 
   const num = PF.toNum;
   const contextSid = () => (round && round.sid != null ? round.sid : null);
   const prevSid = () => (sidHistory.length >= 2 ? sidHistory[sidHistory.length - 2] : (contextSid() != null ? Number(contextSid()) - 1 : ''));
 
-  // ---- collect the current form state ----
+  // ---- collect the current form state (aid/eid from the session context) ----
   function collect() {
     const command = $('pf-command').value;
     const scenario = $('pf-scenario').value;
-    const advAid = $('pf-ov-aid-on') && $('pf-ov-aid-on').checked;
-    const advEid = $('pf-ov-eid-on') && $('pf-ov-eid-on').checked;
     return {
       command, scenario,
       amount: $('pf-b') ? $('pf-b').value : null,
       sid: contextSid(),
-      aid: advAid ? num($('pf-ov-aid').value) : 1,
-      eid: advEid ? num($('pf-ov-eid').value) : 1,
+      aid: protoCtx.aid,   // session aid — never user input
+      eid: protoCtx.eid,   // session eid — never user input
       staleSid: $('pf-stale-sid') ? num($('pf-stale-sid').value) : null,
       rawText: $('pf-raw') ? $('pf-raw').value : '',
     };
   }
   const ctx = () => ({ envAllowed: env.allowed, hasSid: contextSid() != null });
 
-  // ---- Protocol Context card (read-only) ----
+  // ---- Protocol Context card (read-only): SID/State/Odd + session aid/eid ----
   function renderContext() {
     $('pc-sid').textContent = contextSid() != null ? contextSid() : '—';
     $('pc-state').textContent = round && round.state ? round.state : '—';
     $('pc-odd').textContent = round && round.lastOdd != null ? round.lastOdd : '—';
+    $('pc-aid').innerHTML = protoCtxReady() ? esc(protoCtx.aid) + ' <span class="faint">session</span>' : '<span class="faint">—</span>';
+    $('pc-eid').innerHTML = protoCtxReady() ? esc(protoCtx.eid) + ' <span class="faint">session</span>' : '<span class="faint">—</span>';
+    // Gate the whole form on the login context first, then on a live round.
+    const empty = $('pf-empty');
+    if (!protoCtxReady()) { empty.hidden = false; $('pf-body').hidden = true; empty.querySelector('div:nth-child(2)') && (empty.children[1].textContent = 'Waiting for login context…'); return; }
     const noRound = contextSid() == null;
-    $('pf-empty').hidden = !noRound;
+    empty.hidden = !noRound;
     $('pf-body').hidden = noRound;
+    if (noRound) empty.children[1].textContent = 'Waiting for cmd:100005…';
   }
 
   function setEnvBadge() {
@@ -493,28 +504,12 @@ renderActions();
       }
     }
     $('pf-fields').innerHTML = parts.join('');
-    // Advanced (override AUTO fields aid/eid) — hidden for manual.
-    $('pf-adv-toggle').style.display = scenario === 'manual' ? 'none' : '';
-    renderAdvanced();
+    // aid/eid are session context (ProtocolContext), never editable here (§ context ownership).
+    const advToggle = $('pf-adv-toggle'); if (advToggle) advToggle.style.display = 'none';
+    const adv = $('pf-advanced'); if (adv) { adv.hidden = true; adv.innerHTML = ''; }
     // wire dynamic inputs
     for (const id of ['pf-b', 'pf-stale-sid', 'pf-raw']) { const el = $(id); if (el) el.oninput = recompute; }
     recompute();
-  }
-  function renderAdvanced() {
-    const el = $('pf-advanced'); if (!el) return;
-    el.hidden = !advOpen;
-    if (!advOpen) { el.innerHTML = ''; return; }
-    el.innerHTML = ovRow('aid', 1) + ovRow('eid', 1);
-    for (const f of ['aid', 'eid']) {
-      const on = $(`pf-ov-${f}-on`), inp = $(`pf-ov-${f}`);
-      on.onchange = () => { inp.disabled = !on.checked; recompute(); };
-      inp.oninput = recompute;
-    }
-  }
-  function ovRow(name, def) {
-    return `<div class="ov-row"><span class="ov-name">${name}</span>`
-      + `<label class="chk"><input type="checkbox" id="pf-ov-${name}-on"> override</label>`
-      + `<input type="text" id="pf-ov-${name}" class="mono" value="${def}" disabled></div>`;
   }
 
   // ---- recompute preview + summary + validation + send-enabled ----
@@ -522,7 +517,9 @@ renderActions();
     if (contextSid() == null && $('pf-scenario').value !== 'stale' && $('pf-scenario').value !== 'manual') { renderContext(); }
     const state = collect();
     const built = PF.buildPayload(state);
-    const v = PF.validate(state, ctx());
+    // Gate the whole form on the session context first (§ context ownership).
+    const v = protoCtxReady() ? PF.validate(state, ctx())
+      : { canSend: false, level: 'block', message: 'Waiting for login context…', negative: false, expect: null, allowMismatch: false };
 
     // Payload preview (read-only)
     const pre = $('pf-json');
@@ -596,8 +593,8 @@ renderActions();
   // ---- controls ----
   $('pf-command').onchange = renderFields;
   $('pf-scenario').onchange = renderFields;
-  $('pf-adv-toggle').onclick = () => { advOpen = !advOpen; $('pf-adv-toggle').textContent = (advOpen ? '▼' : '▶') + ' Advanced (override auto fields)'; renderAdvanced(); recompute(); };
   $('pf-payload-toggle').onclick = () => { const el = $('pf-json'); el.hidden = !el.hidden; $('pf-payload-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Auto payload'; };
+  document.addEventListener('protoctx-change', () => { renderContext(); recompute(); }); // session aid/eid arrived
 
   // ---- live streams ----
   api.onAviatorRound && api.onAviatorRound((r) => {
@@ -717,19 +714,17 @@ renderActions();
   const ATC = window.AutoTestConfig;
   let snap = null, env = { allowed: false, host: '' }, configValid = true;
 
-  // Read the raw input fields and validate client-side (mirrors the backend
-  // contract) so Start can be gated and per-field errors shown BEFORE any IPC.
+  // aid/eid come from the server session (ProtocolContext), NEVER user input.
   function rawFields() {
-    return { rounds: $('at-rounds').value, amount: $('at-amount').value, stopOdd: $('at-stopodd').value, aid: $('at-aid').value, eid: $('at-eid').value };
+    return { rounds: $('at-rounds').value, amount: $('at-amount').value, stopOdd: $('at-stopodd').value, aid: protoCtx.aid, eid: protoCtx.eid };
   }
   function validateConfigUI() {
     const v = ATC ? ATC.validate(rawFields()) : { ok: true, errors: {}, config: null };
     $('at-err-rounds').textContent = v.errors.rounds || '';
     $('at-err-amount').textContent = v.errors.amount || '';
     $('at-err-stopodd').textContent = v.errors.stopOdd || '';
-    $('at-cfg-err').textContent = v.errors.aid || v.errors.eid || '';
     configValid = v.ok;
-    syncButtons();
+    renderCta();
     return v;
   }
 
@@ -748,15 +743,28 @@ renderActions();
     const gate = $('at-gate');
     if (env.allowed) { gate.hidden = true; }
     else { gate.hidden = false; gate.textContent = `Automated runner is bound to local/offline test endpoints. "${env.host || '(unknown)'}" is not permitted — Start is disabled.`; }
-    syncButtons();
+    renderCta();
   }
-  function syncButtons() {
-    const running = snap && snap.running;
-    // Start is disabled unless: not running, endpoint allowed, AND config valid (§6).
-    $('at-start').disabled = running || !env.allowed || !configValid;
-    $('at-stop').disabled = !running;
-    // Lock config inputs while a run is in progress (§9).
-    for (const id of ['at-rounds', 'at-amount', 'at-stopodd', 'at-aid', 'at-eid']) { const el = $(id); if (el) el.disabled = running; }
+  // The single Auto-Run CTA: label/action by state (WU11.1), gated by context/env/config.
+  function renderCta() {
+    const running = !!(snap && snap.running);
+    const c = (window.AppShell ? window.AppShell.autoCta(snap ? snap.state : 'IDLE', running) : { action: 'start', label: '▶ START AUTO RUN', note: '', cls: 'primary' });
+    const cta = $('at-cta');
+    cta.textContent = c.label;
+    cta.className = 'cta ' + c.cls;
+    $('at-cta-note').textContent = c.note;
+    // Disable reason (§5) — context/attach/endpoint/config.
+    let reason = '';
+    if (!running) {
+      if (!protoCtxReady()) reason = 'Waiting for login context…';
+      else if (!env.allowed) reason = 'Target is not a local/offline test endpoint.';
+      else if (!configValid) reason = 'Fix the highlighted fields.';
+    }
+    cta.disabled = !running && reason !== '';
+    $('at-cta-reason').textContent = reason;
+    for (const id of ['at-rounds', 'at-amount', 'at-stopodd']) { const el = $(id); if (el) el.disabled = running; }
+    // Sidebar running indicator (§8).
+    const nav = document.querySelector('#shell-nav [data-view=auto]'); if (nav) nav.classList.toggle('running', running);
   }
 
   function render() {
@@ -783,7 +791,7 @@ renderActions();
     $('at-m-tts').textContent = m.avgTriggerToSendMs != null ? m.avgTriggerToSendMs + 'ms' : '—';
     $('at-m-cash').textContent = m.avgCashoutAckLatencyMs != null ? m.avgCashoutAckLatencyMs + 'ms' : '—';
     renderHistory(snap.history || []);
-    syncButtons();
+    renderCta();
   }
 
   function resClass(r) { return r === 'COMPLETED' ? 'COMPLETED' : r === 'ROUND_ENDED_BEFORE_THRESHOLD' ? 'ROUND_ENDED_BEFORE_TRIGGER' : 'ENDED'; }
@@ -811,18 +819,19 @@ renderActions();
   });
   api.onAutotestUpdate && api.onAutotestUpdate((s) => { snap = s; if (!$('at-panel').hidden) render(); });
 
-  $('at-adv-toggle').onclick = () => { const el = $('at-adv'); el.hidden = !el.hidden; $('at-adv-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Advanced (aid / eid)'; };
-  // Live validation as the tester types (§6).
-  for (const id of ['at-rounds', 'at-amount', 'at-stopodd', 'at-aid', 'at-eid']) { const el = $(id); if (el) el.oninput = validateConfigUI; }
+  // Live validation as the tester types (§6). aid/eid are not inputs anymore.
+  for (const id of ['at-rounds', 'at-amount', 'at-stopodd']) { const el = $(id); if (el) el.oninput = validateConfigUI; }
+  document.addEventListener('protoctx-change', () => { if (!$('at-panel').hidden) renderCta(); });
 
-  $('at-start').onclick = async () => {
+  async function startRun() {
     const v = validateConfigUI();
-    if (!v.ok) return; // per-field errors already shown; Start is disabled anyway
-    const r = await api.autotestStart(v.config);
+    if (!v.ok || !protoCtxReady()) return; // CTA is disabled anyway
+    const r = await api.autotestStart(v.config); // config carries session aid/eid
     if (r && r.error) { $('at-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; return; }
     snap = r; render();
-  };
-  $('at-stop').onclick = async () => { const r = await api.autotestStop(); if (r && !r.error) { snap = r; render(); } };
+  }
+  async function stopRun() { const r = await api.autotestStop(); if (r && !r.error) { snap = r; render(); } }
+  $('at-cta').onclick = () => { (snap && snap.running) ? stopRun() : startRun(); };
 
   async function openAuto() { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } validateConfigUI(); render(); }
   $('at-toggle').onclick = async () => { const p = $('at-panel'); p.hidden = !p.hidden; if (!p.hidden) await openAuto(); };
@@ -876,12 +885,21 @@ renderActions();
   }
   function syncButtons() {
     const running = snap && snap.running;
-    $('bv-start').disabled = running || !env.allowed || !valid;
+    // Disabled until the session context is ready + endpoint allowed + config valid.
+    let reason = '';
+    if (!running) {
+      if (!protoCtxReady()) reason = 'Waiting for login context…';
+      else if (!env.allowed) reason = 'Target is not a local/offline test endpoint.';
+      else if (!valid) reason = 'Fix the highlighted fields.';
+    }
+    $('bv-start').disabled = running || reason !== '';
+    $('bv-cfg-err').textContent = running ? '' : reason;
     $('bv-stop').disabled = !running;
-    for (const id of ['bv-mode', 'bv-amount', 'bv-rounds', 'bv-values', 'bv-expected', 'bv-aid', 'bv-eid', 'bv-uimin', 'bv-uimax']) { const el = $(id); if (el) el.disabled = running; }
+    for (const id of ['bv-mode', 'bv-amount', 'bv-rounds', 'bv-values', 'bv-expected', 'bv-uimin', 'bv-uimax']) { const el = $(id); if (el) el.disabled = running; }
   }
   function buildConfig() {
-    const common = { expected: $('bv-expected').value, aid: Number($('bv-aid').value), eid: Number($('bv-eid').value), uiMin: Number($('bv-uimin').value), uiMax: Number($('bv-uimax').value) };
+    // aid/eid come from the server session (ProtocolContext), never user input.
+    const common = { expected: $('bv-expected').value, aid: protoCtx.aid, eid: protoCtx.eid, uiMin: Number($('bv-uimin').value), uiMax: Number($('bv-uimax').value) };
     if (mode() === 'single') return { mode: 'single', amount: AV.parseAmount($('bv-amount').value).value, roundCount: Number($('bv-rounds').value), ...common };
     return { mode: 'list', values: AV.parseValues($('bv-values').value).values, ...common };
   }
@@ -926,12 +944,13 @@ renderActions();
 
   $('bv-mode').onchange = () => { const list = mode() === 'list'; $('bv-list-fields').hidden = !list; $('bv-single-fields').hidden = list; validate(); };
   for (const id of ['bv-amount', 'bv-rounds', 'bv-values']) { const el = $(id); if (el) el.oninput = validate; }
-  $('bv-adv-toggle').onclick = () => { const el = $('bv-adv'); el.hidden = !el.hidden; $('bv-adv-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Advanced (aid / eid / UI limits)'; };
+  $('bv-adv-toggle').onclick = () => { const el = $('bv-adv'); el.hidden = !el.hidden; $('bv-adv-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Advanced (UI limits)'; };
   $('bv-gen').onclick = () => { $('bv-values').value = AV.generateAroundLimits(Number($('bv-uimin').value), Number($('bv-uimax').value)).join('\n'); validate(); };
+  document.addEventListener('protoctx-change', () => { if (!$('bv-panel').hidden) syncButtons(); });
   $('bv-start').onclick = async () => {
-    if (!validate()) return;
+    if (!validate() || !protoCtxReady()) return;
     $('bv-cfg-err').textContent = '';
-    const r = await api.bvalidateStart(buildConfig());
+    const r = await api.bvalidateStart(buildConfig()); // config carries session aid/eid
     if (r && r.error) { $('bv-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; return; }
     snap = r; render();
   };
@@ -1006,6 +1025,7 @@ renderActions();
 
   // ---- Overview: protocol status + prominent ODD (from the observer snapshot) ----
   api.onObserverUpdate && api.onObserverUpdate((s) => { state.obs = s; if (state.view === 'overview' && !$('view-overview').hidden) renderOverview(); });
+  document.addEventListener('protoctx-change', () => { if (state.view === 'overview' && !$('view-overview').hidden) renderOverview(); });
   const f2 = (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : Number(n).toFixed(2);
 
   function renderOverview() {
@@ -1015,6 +1035,12 @@ renderActions();
     if (!state.connected) { empty.hidden = false; body.hidden = true; etext.textContent = 'Open the game to begin protocol testing.'; return; }
     if (!protocolSeen) { empty.hidden = false; body.hidden = true; etext.textContent = 'Browser connected. Waiting for MiniGame / aviatorPlugin traffic…'; return; }
     empty.hidden = true; body.hidden = false;
+    // Session context (aid/eid) banner — owned by ProtocolContext (§ context ownership).
+    const ctxEl = $('ov-ctx');
+    if (protoCtxReady()) { ctxEl.className = 'ctx-banner ready'; $('ov-ctx-text').innerHTML = `Protocol Context ready — AID <span class="mono">${esc(protoCtx.aid)}</span> · EID <span class="mono">${esc(protoCtx.eid)}</span>`; }
+    else { ctxEl.className = 'ctx-banner wait'; $('ov-ctx-text').textContent = 'Waiting for login context…'; }
+    $('ov-aid').textContent = protoCtxReady() ? protoCtx.aid : '—';
+    $('ov-eid').textContent = protoCtxReady() ? protoCtx.eid : '—';
     $('ov-browser').textContent = 'Connected';
     $('ov-target').textContent = state.targetName || '—';
     $('ov-ws').textContent = 'Aviator detected';
