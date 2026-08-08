@@ -4,6 +4,7 @@ const EventEmitter = require('node:events');
 const { randomUUID } = require('node:crypto');
 const { CODES } = require('../cdp/errors.cjs');
 const { classifyFrame, CMD } = require('./aviator.cjs');
+const { environmentGuardEnabled } = require('./environment-gate.cjs');
 
 // Test-environment safety gate (WU7 §3). Request control activates ONLY when the
 // target host matches an explicit QA/staging allowlist. Defaults are local-only;
@@ -61,6 +62,7 @@ class ProtocolHarness extends EventEmitter {
     this._send = deps.send || (async () => ({ ok: false, error: { code: CODES.TEST_SESSION_UNAVAILABLE, message: 'No send seam configured' } }));
     this._getTargetUrl = deps.getTargetUrl || (() => '');
     this._allowlist = normalizeAllowlist(deps.allowlist && deps.allowlist.length ? deps.allowlist : DEFAULT_ALLOWLIST);
+    this._environmentGuard = deps.environmentGuard == null ? environmentGuardEnabled() : deps.environmentGuard !== false;
     this._ackTimeoutMs = Number(deps.ackTimeoutMs || 8000);
     this._executions = [];      // append-only ProtocolTestExecution[]
     this._byId = new Map();
@@ -78,8 +80,9 @@ class ProtocolHarness extends EventEmitter {
     const url = String(this._getTargetUrl(targetId) || '');
     let host = '';
     try { host = url ? new URL(url).hostname.toLowerCase() : ''; } catch { host = ''; }
-    const allowed = hostAllowed(host, this._allowlist);
-    return { targetId: targetId != null ? String(targetId) : null, host, url, allowed, name: allowed ? host : null, label: allowed ? 'TEST CONTROL — ENABLED' : 'CONTROL_DISABLED_FOR_TARGET' };
+    const matched = hostAllowed(host, this._allowlist);
+    const allowed = !this._environmentGuard || matched;
+    return { targetId: targetId != null ? String(targetId) : null, host, url, allowed, matched, guardEnabled: this._environmentGuard, requiresConfirmation: !this._environmentGuard && !matched, name: allowed ? host : null, label: allowed ? (this._environmentGuard ? 'TEST CONTROL — ENABLED' : 'ENVIRONMENT GUARD OFF') : 'CONTROL_DISABLED_FOR_TARGET' };
   }
 
   // WU7 §6 — templates for confirmed commands only, seeded with the CURRENT

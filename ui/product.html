@@ -311,21 +311,9 @@
     <!-- Config (before start) -->
     <div class="proto-card" id="at-config">
       <div class="proto-state-title">AUTOMATED OFFLINE TEST</div>
-      <label class="pf-field">Number of Rounds
-        <input id="at-rounds" class="mono" value="10">
-        <span class="hint">Number of server rounds to test (each may send 1 bet + 1 cashout).</span>
-        <span id="at-err-rounds" class="cfg-err"></span>
-      </label>
-      <label class="pf-field">Bet Amount
-        <input id="at-amount" class="mono" value="5000">
-        <span class="hint">Applied to every bet in this run.</span>
-        <span id="at-err-amount" class="cfg-err"></span>
-      </label>
-      <label class="pf-field">Cashout at Odd
-        <input id="at-stopodd" class="mono" value="2.00">
-        <span class="hint">Cashout fires when the server odd first reaches this value.</span>
-        <span id="at-err-stopodd" class="cfg-err"></span>
-      </label>
+      <div class="at-sequence-head"><span>TEST SEQUENCE</span><button id="at-add-row" class="btn" type="button">＋ Add test</button></div>
+      <div id="at-test-rows" class="at-test-rows"></div>
+      <div class="hint">Các test chạy tuần tự: hoàn tất row trước mới chuyển sang row tiếp theo.</div>
       <div class="ctx-line">SID · AID · EID are supplied automatically by the server session — you don't enter them.</div>
       <div id="at-cfg-err" class="errb"></div>
       <div id="at-cta-note" class="cta-note"></div>

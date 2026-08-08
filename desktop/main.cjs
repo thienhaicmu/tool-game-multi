@@ -24,6 +24,7 @@ const { AmountValidator } = require('./protocol/amount-validator.cjs');
 const { ProtocolContext } = require('./protocol/protocol-context.cjs');
 const { resolveBounds, DEFAULTS: WIN_DEFAULTS } = require('./window-state.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
+const { environmentGuardEnabled } = require('./protocol/environment-gate.cjs');
 
 let shell;
 let chromeProcess;
@@ -37,6 +38,7 @@ let journal;
 let importStarted = false;
 let importInProgress = false;
 let importTimer;
+const protocolEnvironmentGuard = environmentGuardEnabled();
 
 function importJournalOnExit() {
   if (importStarted || !journal) return null;
@@ -195,6 +197,7 @@ const harness = new ProtocolHarness({
   send: (ctx, payload) => wsReplay.sendRaw(ctx, payload),
   getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
   allowlist: (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean),
+  environmentGuard: protocolEnvironmentGuard,
 });
 harness.on('execution', ex => {
   try { journal?.append(normalizeCaptureEvent({ kind: 'protocol-test', id: ex.id, targetId: ex.targetId, timestamp: ex.sentAt, exec: ex }, sessionId)); } catch { /* journal failure must not stop testing */ }
@@ -215,6 +218,7 @@ observer.on('update', () => {
 const autoRunner = new AutoRunner({
   roundTracker: aviator, observer, harness,
   getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+  environmentGuard: protocolEnvironmentGuard,
 });
 let autoDirty = false;
 autoRunner.on('update', () => {
@@ -226,6 +230,7 @@ autoRunner.on('update', () => {
 const amountValidator = new AmountValidator({
   roundTracker: aviator, harness,
   getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+  environmentGuard: protocolEnvironmentGuard,
 });
 let bvalDirty = false;
 amountValidator.on('update', () => {

@@ -3,6 +3,7 @@
 const EventEmitter = require('node:events');
 const { performance } = require('node:perf_hooks');
 const { CMD } = require('./aviator.cjs');
+const { environmentGuardEnabled } = require('./environment-gate.cjs');
 
 // ---------------------------------------------------------------------------
 // AutoRunner — WU10. Offline/local automated round test runner.
@@ -68,6 +69,7 @@ class AutoRunner extends EventEmitter {
     this._getTargetUrl = deps.getTargetUrl || (() => '');
     this._extraHosts = (deps.autoHosts && deps.autoHosts.length ? deps.autoHosts : String(process.env.OBSERVATORY_AUTOTEST_HOSTS || '').split(','))
       .map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
+    this._environmentGuard = deps.environmentGuard == null ? environmentGuardEnabled() : deps.environmentGuard !== false;
     this._now = deps.now || (() => performance.now());
 
     this._state = STATE.IDLE;
@@ -89,8 +91,9 @@ class AutoRunner extends EventEmitter {
     const url = String(this._getTargetUrl(targetId) || '');
     let host = '';
     try { host = url ? new URL(url).hostname.toLowerCase() : ''; } catch { host = ''; }
-    const allowed = autoHostAllowed(host, this._extraHosts);
-    return { host, url, allowed };
+    const matched = autoHostAllowed(host, this._extraHosts);
+    const allowed = !this._environmentGuard || matched;
+    return { host, url, allowed, matched, guardEnabled: this._environmentGuard, requiresConfirmation: !this._environmentGuard && !matched };
   }
 
   snapshot() {

@@ -712,20 +712,28 @@ renderActions();
 (function autoTestUI() {
   if (!api.autotestStart) return; // preload without WU10 — inert
   const ATC = window.AutoTestConfig;
-  let snap = null, env = { allowed: false, host: '' }, configValid = true;
+  let snap = null, env = { allowed: false, host: '' }, configValid = true, sequenceIndex = 0, sequenceRunning = false;
+
+  function testRows() { return [...document.querySelectorAll('#at-test-rows .at-test-row')]; }
+  function renumberRows() { testRows().forEach((row, i) => { row.dataset.index = String(i); row.querySelector('.at-row-number').textContent = String(i + 1); }); }
+  function addTestRow(values = {}) {
+    const row = document.createElement('div');
+    row.className = 'at-test-row';
+    row.innerHTML = `<span class="at-row-number"></span><label>Rounds<input class="mono at-rounds" value="${esc(values.rounds ?? 10)}"><span class="cfg-err at-row-error-rounds"></span></label><label>Bet amount<input class="mono at-amount" value="${esc(values.amount ?? 5000)}"><span class="cfg-err at-row-error-amount"></span></label><label>Stop odd<input class="mono at-stopodd" value="${esc(values.stopOdd ?? '2.00')}"><span class="cfg-err at-row-error-stopodd"></span></label><button class="btn icon at-row-remove" type="button" title="Remove test">×</button>`;
+    $('at-test-rows').appendChild(row);
+    row.querySelector('.at-row-remove').onclick = () => { if (testRows().length > 1 && !sequenceRunning) { row.remove(); renumberRows(); validateConfigUI(); } };
+    row.querySelectorAll('input').forEach((el) => { el.oninput = validateConfigUI; });
+    renumberRows();
+  }
 
   // aid/eid come from the server session (ProtocolContext), NEVER user input.
-  function rawFields() {
-    return { rounds: $('at-rounds').value, amount: $('at-amount').value, stopOdd: $('at-stopodd').value, aid: protoCtx.aid, eid: protoCtx.eid };
+  function rawFields(row = testRows()[sequenceIndex] || testRows()[0]) {
+    return { rounds: row.querySelector('.at-rounds').value, amount: row.querySelector('.at-amount').value, stopOdd: row.querySelector('.at-stopodd').value, aid: protoCtx.aid, eid: protoCtx.eid };
   }
   function validateConfigUI() {
-    const v = ATC ? ATC.validate(rawFields()) : { ok: true, errors: {}, config: null };
-    $('at-err-rounds').textContent = v.errors.rounds || '';
-    $('at-err-amount').textContent = v.errors.amount || '';
-    $('at-err-stopodd').textContent = v.errors.stopOdd || '';
-    configValid = v.ok;
+    configValid = testRows().every((row) => { const v = ATC ? ATC.validate(rawFields(row)) : { ok: true, errors: {} }; row.querySelector('.at-row-error-rounds').textContent = v.errors.rounds || ''; row.querySelector('.at-row-error-amount').textContent = v.errors.amount || ''; row.querySelector('.at-row-error-stopodd').textContent = v.errors.stopOdd || ''; return v.ok; });
     renderCta();
-    return v;
+    return configValid;
   }
 
   function setChip(status) {
@@ -762,7 +770,8 @@ renderActions();
     }
     cta.disabled = !running && reason !== '';
     $('at-cta-reason').textContent = reason;
-    for (const id of ['at-rounds', 'at-amount', 'at-stopodd']) { const el = $(id); if (el) el.disabled = running; }
+    testRows().forEach((row) => row.querySelectorAll('input,button').forEach((el) => { el.disabled = running || sequenceRunning; }));
+    testRows().forEach((row, i) => row.classList.toggle('active', sequenceRunning && i === sequenceIndex));
     // Sidebar running indicator (§8).
     const nav = document.querySelector('#shell-nav [data-view=auto]'); if (nav) nav.classList.toggle('running', running);
   }
@@ -817,20 +826,32 @@ renderActions();
     strip.innerHTML = buf.length ? buf.slice(-30).map((o, i, a) => `<span class="sid odd ${i === a.length - 1 ? 'trig' : ''}">${esc(Number(o.odd).toFixed(2))}</span>`).join('') : '<span class="muted">none</span>';
     if (snap && snap.running && cur) { snap.liveOdd = cur.currentOdd; snap.liveSid = cur.sid; render(); }
   });
-  api.onAutotestUpdate && api.onAutotestUpdate((s) => { snap = s; if (!$('at-panel').hidden) render(); });
+  api.onAutotestUpdate && api.onAutotestUpdate(async (s) => {
+    snap = s; if (!$('at-panel').hidden) render();
+    if (sequenceRunning && s && s.state === 'COMPLETED') {
+      if (sequenceIndex + 1 < testRows().length) { sequenceIndex += 1; await startCurrentRow(); }
+      else { sequenceRunning = false; render(); }
+    }
+  });
 
   // Live validation as the tester types (§6). aid/eid are not inputs anymore.
-  for (const id of ['at-rounds', 'at-amount', 'at-stopodd']) { const el = $(id); if (el) el.oninput = validateConfigUI; }
+  addTestRow();
+  $('at-add-row').onclick = () => { if (!sequenceRunning) { addTestRow(); validateConfigUI(); } };
   document.addEventListener('protoctx-change', () => { if (!$('at-panel').hidden) renderCta(); });
 
   async function startRun() {
-    const v = validateConfigUI();
-    if (!v.ok || !protoCtxReady()) return; // CTA is disabled anyway
-    const r = await api.autotestStart(v.config); // config carries session aid/eid
-    if (r && r.error) { $('at-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; return; }
+    if (!validateConfigUI() || !protoCtxReady()) return;
+    sequenceIndex = 0; sequenceRunning = true;
+    await startCurrentRow();
+  }
+  async function startCurrentRow() {
+    const v = ATC ? ATC.validate(rawFields()) : { ok: true, config: rawFields() };
+    if (!v.ok) { sequenceRunning = false; validateConfigUI(); return; }
+    const r = await api.autotestStart(v.config);
+    if (r && r.error) { sequenceRunning = false; $('at-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; renderCta(); return; }
     snap = r; render();
   }
-  async function stopRun() { const r = await api.autotestStop(); if (r && !r.error) { snap = r; render(); } }
+  async function stopRun() { sequenceRunning = false; const r = await api.autotestStop(); if (r && !r.error) { snap = r; render(); } }
   $('at-cta').onclick = () => { (snap && snap.running) ? stopRun() : startRun(); };
 
   async function openAuto() { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } validateConfigUI(); render(); }
@@ -985,6 +1006,7 @@ renderActions();
   // ---- nav / views ----
   function setView(view) {
     state.view = view;
+    document.body.dataset.view = view;
     for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.classList.toggle('active', b.dataset.view === view);
     for (const id of PANELS) { const el = $(id); if (el) el.hidden = true; }
     const overview = $('view-overview');
@@ -1058,7 +1080,9 @@ renderActions();
 
   // ---- boot ----
   applyMode(initialMode);
-  setView('overview');
+  // Product mode opens directly into the Auto Test workspace; the URL launcher
+  // remains available in the compact appbar above it.
+  setView('auto');
   // Seed overview/status from current engine state if already connected.
   (async () => {
     try { const t = await api.listTargets(); if (t && t.length) { state.connected = true; state.targetName = t[0].title || t[0].url || t[0].cdpTargetId; setStatus('on', 'Connected'); } } catch { /* ignore */ }
