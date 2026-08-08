@@ -348,7 +348,7 @@ $('connect').onclick = async () => { const r = await api.connect(parseHostPort($
 async function applyScope() { if ($('scope-all').checked) { await api.setScope([]); } else { let h = null; try { h = new URL($('url').value.trim()).hostname; } catch { /* none */ } await api.setScope(h ? [h] : []); } }
 $('scope-all').onchange = () => { applyScope(); toast($('scope-all').checked ? 'Bắt tất cả domain' : 'Chỉ bắt host game'); };
 applyScope();
-$('launch').onclick = async () => { const url = $('url').value.trim(); if (!url) return toast('Enter a URL'); await applyScope(); await api.openBrowser(url); $('chip-cap').textContent = 'Launching…'; };
+$('launch').onclick = async () => { const url = $('url').value.trim(); if (!url) return toast('Enter a URL'); await applyScope(); await api.openBrowser(url); $('chip-cap').textContent = 'Launching…'; document.dispatchEvent(new CustomEvent('instance-runtime-refresh')); };
 $('adb').onclick = async () => {
   const r = await api.adbListWebviews();
   if (!r || !r.ok) return toast((r && r.error && r.error.code) || 'adb unavailable');
@@ -991,7 +991,7 @@ renderActions();
 // protocol state, no engine/IPC change. The WU7-10.2 panels are reused as-is.
 (function protocolShellUI() {
   const Shell = window.AppShell; if (!Shell) return;
-  const state = { connected: false, targetName: '', obs: null, view: 'overview' };
+  const state = { connected: false, targetName: '', obs: null, view: 'overview', instanceInfo: null };
   const PANELS = ['proto-panel', 'at-panel', 'bv-panel', 'obs-panel', 'act-panel'];
 
   // ---- mode (product | advanced), persisted; default product (§19) ----
@@ -1038,6 +1038,20 @@ renderActions();
     const s = $('shell-status'); if (s) s.className = 'ab-status ' + (cls || '');
     const t = $('shell-status-text'); if (t) t.textContent = text;
   }
+  async function refreshInstanceInfo() {
+    if (!api.instanceInfo) return;
+    try { state.instanceInfo = await api.instanceInfo(); } catch { state.instanceInfo = null; }
+    renderInstanceInfo();
+    if (state.view === 'overview' && !$('view-overview').hidden) renderOverview();
+  }
+  function shortId(id) { return id ? String(id).slice(0, 8) : '—'; }
+  function renderInstanceInfo() {
+    const info = state.instanceInfo || {};
+    const runtime = info.runtime || {};
+    const inst = $('shell-instance'); if (inst) inst.textContent = 'Instance ' + shortId(info.instanceId);
+    const cdp = $('shell-cdp'); if (cdp) cdp.textContent = runtime.cdpPort ? 'CDP ' + runtime.cdpPort : 'CDP —';
+  }
+  document.addEventListener('instance-runtime-refresh', () => setTimeout(refreshInstanceInfo, 250));
   api.onTargetsChanged && api.onTargetsChanged((list) => {
     state.connected = !!(list && list.length);
     if (state.connected) { const t = list[0]; state.targetName = t.title || t.url || t.cdpTargetId; setStatus('on', 'Connected'); }
@@ -1063,6 +1077,10 @@ renderActions();
     else { ctxEl.className = 'ctx-banner wait'; $('ov-ctx-text').textContent = 'Waiting for login context…'; }
     $('ov-aid').textContent = protoCtxReady() ? protoCtx.aid : '—';
     $('ov-eid').textContent = protoCtxReady() ? protoCtx.eid : '—';
+    const info = state.instanceInfo || {}, runtime = info.runtime || {};
+    $('ov-instance').textContent = info.instanceId ? shortId(info.instanceId) : '—';
+    $('ov-profile').textContent = info.chromeProfile || '—';
+    $('ov-cdp').textContent = runtime.cdpPort || '—';
     $('ov-browser').textContent = 'Connected';
     $('ov-target').textContent = state.targetName || '—';
     $('ov-ws').textContent = 'Aviator detected';
@@ -1085,6 +1103,7 @@ renderActions();
   setView('auto');
   // Seed overview/status from current engine state if already connected.
   (async () => {
+    await refreshInstanceInfo();
     try { const t = await api.listTargets(); if (t && t.length) { state.connected = true; state.targetName = t[0].title || t[0].url || t[0].cdpTargetId; setStatus('on', 'Connected'); } } catch { /* ignore */ }
     try { state.obs = await api.observerSnapshot(); } catch { /* ignore */ }
     if (state.view === 'overview') renderOverview();

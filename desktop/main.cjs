@@ -25,9 +25,10 @@ const { ProtocolContext } = require('./protocol/protocol-context.cjs');
 const { resolveBounds, DEFAULTS: WIN_DEFAULTS } = require('./window-state.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 const { environmentGuardEnabled } = require('./protocol/environment-gate.cjs');
+const { InstanceManager } = require('./instance/instance-manager.cjs');
+const { ChromeLauncher } = require('./browser/chrome-launcher.cjs');
 
 let shell;
-let chromeProcess;
 let targetManager = null;
 let selectedTargetId = null;
 const capturedClients = new WeakSet();
@@ -39,6 +40,18 @@ let importStarted = false;
 let importInProgress = false;
 let importTimer;
 const protocolEnvironmentGuard = environmentGuardEnabled();
+const instanceManager = new InstanceManager({ baseUserDataPath: app.getPath('userData'), argv: process.argv, env: process.env });
+const instanceStart = instanceManager.start();
+if (!instanceStart.ok) {
+  throw new Error(instanceStart.error && instanceStart.error.message || 'Instance startup failed');
+}
+const appInstance = instanceStart;
+app.setPath('userData', appInstance.paths.appData);
+const chromeLauncher = new ChromeLauncher({
+  profilePath: appInstance.paths.chromeProfile,
+  env: process.env,
+  onRuntime: (patch) => appInstance.lock.update(patch),
+});
 
 function importJournalOnExit() {
   if (importStarted || !journal) return null;
@@ -46,7 +59,7 @@ function importJournalOnExit() {
   if (!database) return null;
   importStarted = true;
   const python = process.env.OBSERVATORY_PYTHON || 'python';
-  const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
+  const journalPath = path.join(appInstance.paths.sessions, sessionId + '.jsonl');
   return spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
 }
 
@@ -55,7 +68,7 @@ function importJournalNow() {
   if (!database || importInProgress || !journal) return;
   importInProgress = true;
   const python = process.env.OBSERVATORY_PYTHON || 'python';
-  const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
+  const journalPath = path.join(appInstance.paths.sessions, sessionId + '.jsonl');
   const child = spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
   child.once('close', () => { importInProgress = false; });
   child.once('error', () => { importInProgress = false; });
@@ -90,7 +103,7 @@ function emit(event) {
   if (shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
 }
 
-function windowStatePath() { return path.join(app.getPath('userData'), 'window-state.json'); }
+function windowStatePath() { return appInstance.paths.windowState; }
 function loadWindowState() { try { return JSON.parse(fs.readFileSync(windowStatePath(), 'utf8')); } catch { return null; } }
 function saveWindowState() { try { if (shell && !shell.isDestroyed() && !shell.isMinimized()) fs.writeFileSync(windowStatePath(), JSON.stringify(shell.getBounds()), 'utf8'); } catch { /* best effort */ } }
 
@@ -99,44 +112,20 @@ function createWindow() {
   const bounds = resolveBounds(loadWindowState());
   shell = new BrowserWindow({ ...bounds, minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
   shell.on('close', saveWindowState);
-  const journalPath = path.join(app.getPath('userData'), 'sessions', sessionId + '.jsonl');
+  const journalPath = path.join(appInstance.paths.sessions, sessionId + '.jsonl');
   journal = new EventJournal(journalPath);
   importTimer = setInterval(importJournalNow, 10_000);
-  cookieVault = new CookieVault(path.join(app.getPath('userData'), 'cookie-vault.json'));
+  cookieVault = new CookieVault(appInstance.paths.cookieVault);
   // Auto-save the session so a fresh login is captured for next time.
   const cookieTimer = setInterval(() => { if (selectedTargetId) saveCookiesFor(selectedTargetId).catch(() => {}); }, 12_000);
   if (cookieTimer.unref) cookieTimer.unref();
   shell.loadURL('app://ui/product.html');
 }
 
-// Persist the login session across relaunches. The profile dir already keeps
-// persistent cookies; this makes Chrome ALSO keep *session* cookies (the common
-// auth-cookie case, e.g. .AspNetCore.Cookies) by enabling "continue where you
-// left off", which stops Chrome from purging non-persistent cookies on startup.
-function ensureChromePersistentSession(profile) {
-  try {
-    const dir = path.join(profile, 'Default');
-    fs.mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, 'Preferences');
-    let prefs = {};
-    if (fs.existsSync(file)) { try { prefs = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { prefs = {}; } }
-    prefs.session = Object.assign({}, prefs.session, { restore_on_startup: 1 }); // 1 = continue where you left off
-    prefs.profile = Object.assign({}, prefs.profile, { exit_type: 'Normal', exited_cleanly: true });
-    fs.writeFileSync(file, JSON.stringify(prefs), 'utf8');
-  } catch { /* best effort — persistent cookies still work via the profile dir */ }
-}
-
-function openBrowserWindow(url) {
-  const candidates = [process.env.OBSERVATORY_CHROME, process.env.CHROME_PATH, path.join(process.env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe'), path.join(process.env['PROGRAMFILES(X86)'] || '', 'Google/Chrome/Application/chrome.exe')].filter(Boolean);
-  const executable = candidates.find(candidate => fs.existsSync(candidate));
-  if (!executable) return false;
-  const cdpPort = Number(process.env.OBSERVATORY_CDP_PORT || 9222);
-  if (chromeProcess && !chromeProcess.killed) { connectEndpointWithRetry({ port: cdpPort }); return true; }
-  const profile = process.env.OBSERVATORY_CHROME_PROFILE || path.join(app.getPath('userData'), 'chrome-profile');
-  ensureChromePersistentSession(profile);
-  chromeProcess = spawn(executable, [`--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', '--restore-last-session', '--new-window', url], { detached: true, windowsHide: false, stdio: 'ignore' });
-  chromeProcess.unref(); chromeProcess.once('exit', () => { chromeProcess = null; });
-  connectEndpointWithRetry({ port: cdpPort });
+async function openBrowserWindow(url) {
+  const launched = await chromeLauncher.open(url);
+  if (!launched.ok) return false;
+  connectEndpointWithRetry(launched.endpoint);
   return true;
 }
 
@@ -384,20 +373,29 @@ app.on('before-quit', event => {
   child.once('close', () => app.quit());
   child.once('error', () => app.quit());
 });
+app.on('will-quit', () => { try { appInstance.lock.release(); } catch { /* best effort */ } });
 ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
 ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
+ipcMain.handle('instance-info', () => ({
+  instanceId: appInstance.instanceId,
+  name: appInstance.registry && appInstance.registry.name,
+  root: appInstance.paths.root,
+  sessions: appInstance.paths.sessions,
+  chromeProfile: chromeLauncher.snapshot().chromeProfile,
+  runtime: chromeLauncher.snapshot(),
+}));
 ipcMain.handle('list-sessions', () => {
-  const dir = path.join(app.getPath('userData'), 'sessions');
+  const dir = appInstance.paths.sessions;
   try { return fs.readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => { const id = name.slice(0, -6); const file = path.join(dir, name); const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean); const events = lines.map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean); return { id, file: name, startedAt: events[0]?.timestamp || events[0]?.journaledAt || null, requestCount: events.filter(event => event.kind === 'request').length }; }); } catch { return []; }
 });
 ipcMain.handle('read-session', (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return [];
-  const file = path.join(app.getPath('userData'), 'sessions', String(id) + '.jsonl');
+  const file = path.join(appInstance.paths.sessions, String(id) + '.jsonl');
   try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); } catch { return []; }
 });
 ipcMain.handle('export-session', async (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Invalid session id' };
-  const source = path.join(app.getPath('userData'), 'sessions', String(id) + '.jsonl');
+  const source = path.join(appInstance.paths.sessions, String(id) + '.jsonl');
   if (!fs.existsSync(source)) return { ok: false, error: 'Session not found' };
   const choice = await dialog.showSaveDialog(shell, { defaultPath: `observatory-${id}.jsonl`, filters: [{ name: 'Session journal', extensions: ['jsonl'] }] });
   if (choice.canceled || !choice.filePath) return { ok: false, error: 'Export canceled' };

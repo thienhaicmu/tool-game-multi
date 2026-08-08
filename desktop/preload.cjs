@@ -20,6 +20,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   interceptAbort: id => ipcRenderer.invoke('intercept-abort', id),
   onInterceptChanged: callback => ipcRenderer.on('intercept-changed', (_event, paused) => callback(paused)),
   openBrowser: url => ipcRenderer.invoke('open-browser', url),
+  instanceInfo: () => ipcRenderer.invoke('instance-info'),
   listSessions: () => ipcRenderer.invoke('list-sessions'),
   readSession: sessionId => ipcRenderer.invoke('read-session', sessionId),
   exportSession: sessionId => ipcRenderer.invoke('export-session', sessionId),

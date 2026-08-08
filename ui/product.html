@@ -15,6 +15,8 @@
       <button id="shell-open" class="primary">Open Browser</button>
     </div>
     <span id="shell-status" class="ab-status"><span class="dot"></span><span id="shell-status-text">Disconnected</span></span>
+    <span id="shell-instance" class="ab-status" title="Isolated app/browser instance">Instance —</span>
+    <span id="shell-cdp" class="ab-status" title="This instance's browser debug port">CDP —</span>
     <div class="spacer"></div>
     <label id="shell-advanced-wrap" class="ab-adv" title="Show the full network debugger (capture / replay / intercept / timeline)">
       <input type="checkbox" id="shell-advanced"> ⚙ Advanced Debug
@@ -38,6 +40,9 @@
         <div id="ov-body" hidden>
           <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Waiting for login context…</span></div>
           <div class="ov-detect">
+            <div class="proto-kv"><span>Instance</span><b id="ov-instance">—</b></div>
+            <div class="proto-kv"><span>Chrome profile</span><b id="ov-profile">—</b></div>
+            <div class="proto-kv"><span>CDP port</span><b id="ov-cdp">—</b></div>
             <div class="proto-kv"><span>Browser</span><b id="ov-browser">—</b></div>
             <div class="proto-kv"><span>Target</span><b id="ov-target">—</b></div>
             <div class="proto-kv"><span>WebSocket</span><b id="ov-ws">—</b></div>
