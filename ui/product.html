@@ -112,47 +112,65 @@
       <button id="proto-close" class="btn icon" title="Hide panel">✕</button>
     </div>
 
-    <div class="proto-state">
-      <div class="proto-state-title">AVIATOR TEST STATE</div>
-      <div class="proto-kv"><span>Round</span><b id="ps-sid">—</b></div>
-      <div class="proto-kv"><span>State</span><b id="ps-state">—</b></div>
-      <div class="proto-kv"><span>Odd</span><b id="ps-odd">—</b></div>
-      <div class="proto-kv"><span>Updated</span><b id="ps-updated">—</b></div>
-      <div class="proto-sids">
-        <div class="proto-state-title">SID HISTORY <span class="faint">(diagnostic — no prediction)</span></div>
-        <div id="ps-sidhist" class="proto-sidhist"><span class="muted">none</span></div>
-      </div>
+    <!-- Empty state: no server round yet -->
+    <div id="pf-empty" class="proto-empty" hidden>
+      <div class="empty-ic">◴</div>
+      <div>Waiting for <span class="mono">cmd:100005</span>…</div>
+      <div class="empty-sub">The current round SID is published by the server. The test form appears once a round opens.</div>
     </div>
 
-    <div class="proto-form">
-      <div class="proto-row">
-        <label>Command
-          <select id="pf-command"><option value="bet">Bet</option><option value="cashout">Cashout</option></select>
-        </label>
-        <label>Amount (b)
-          <input id="pf-b" class="mono" value="5000">
-        </label>
-      </div>
-      <div class="proto-row">
-        <label>aid <input id="pf-aid" class="mono" value="1"></label>
-        <label>eid <input id="pf-eid" class="mono" value="1"></label>
-        <label>sid <input id="pf-sid" class="mono" value="" title="Bound to current server round"><span id="pf-sid-tag" class="sid-tag"></span></label>
+    <div id="pf-body">
+      <!-- 1) PROTOCOL CONTEXT — read-only, from the server -->
+      <div class="proto-card">
+        <div class="proto-state-title">PROTOCOL CONTEXT <span class="faint">(from server · read-only)</span></div>
+        <div class="proto-kv"><span>SID</span><b id="pc-sid">—</b></div>
+        <div class="proto-kv"><span>State</span><b id="pc-state">—</b></div>
+        <div class="proto-kv"><span>Odd</span><b id="pc-odd">—</b></div>
+        <div class="proto-kv"><span>aid</span><b id="pc-aid">1 <span class="faint">auto</span></b></div>
+        <div class="proto-kv"><span>eid</span><b id="pc-eid">1 <span class="faint">auto</span></b></div>
       </div>
 
-      <div class="proto-neg">
-        <div class="proto-state-title">NEGATIVE SECURITY TEST</div>
-        <label class="chk"><input type="checkbox" id="pf-neg-stale"> stale sid</label>
-        <label class="chk"><input type="checkbox" id="pf-neg-amount"> invalid amount</label>
-        <label class="chk"><input type="checkbox" id="pf-neg-dup"> duplicate request</label>
-        <div id="pf-neg-note" class="faint" hidden>Sends a mismatched/invalid request on purpose to verify server rejection.</div>
+      <!-- 2) TEST SCENARIO -->
+      <div class="proto-card">
+        <div class="proto-state-title">TEST SCENARIO</div>
+        <div class="proto-row">
+          <label>Command
+            <select id="pf-command"><option value="bet">Bet</option><option value="cashout">Cashout</option></select>
+          </label>
+          <label>Scenario
+            <select id="pf-scenario">
+              <option value="normal">Normal</option>
+              <option value="stale">Stale SID (negative)</option>
+              <option value="amount">Invalid Amount (negative)</option>
+              <option value="duplicate">Duplicate (negative)</option>
+              <option value="manual">Manual Payload</option>
+            </select>
+          </label>
+        </div>
+        <div id="pf-scenario-note" class="faint"></div>
       </div>
 
-      <div class="proto-row">
-        <button id="pf-preview" class="btn">Preview JSON</button>
-        <button id="pf-send" class="primary" title="Send through the page's own authorized socket">Send Test Request</button>
+      <!-- 3) REQUEST — only the fields this command/scenario actually needs -->
+      <div class="proto-card" id="pf-request-card">
+        <div class="proto-state-title">REQUEST</div>
+        <div id="pf-fields"></div>
+        <button id="pf-adv-toggle" class="proto-collapse" type="button">▶ Advanced (override auto fields)</button>
+        <div id="pf-advanced" class="proto-advanced" hidden></div>
       </div>
-      <pre id="pf-json" class="proto-json" hidden></pre>
-      <div id="pf-result"></div>
+
+      <!-- 4) PAYLOAD — always exists, collapsed by default, read-only -->
+      <div class="proto-card">
+        <button id="pf-payload-toggle" class="proto-collapse" type="button">▶ Auto payload</button>
+        <pre id="pf-json" class="proto-json" hidden></pre>
+      </div>
+
+      <!-- 5) SEND -->
+      <div class="proto-card">
+        <div id="pf-summary" class="proto-summary"></div>
+        <div id="pf-validation" class="proto-validation"></div>
+        <button id="pf-send" class="primary" title="Send through the page's own authorized socket">Send Request</button>
+        <div id="pf-result"></div>
+      </div>
     </div>
 
     <div class="proto-hist">
@@ -203,6 +221,7 @@
     </div>
   </aside>
 
+  <script src="protocol-form.js"></script>
   <script src="product.js"></script>
   <script src="panels.js"></script>
 </body>

@@ -408,20 +408,53 @@ document.addEventListener('keydown', (e) => {
 renderList();
 renderActions();
 
-// ============================ WU7 PROTOCOL TEST HARNESS ============================
-// Authorized QA sender for observed Aviator WS flows. OBSERVE -> BUILD -> MODIFY ->
-// SEND (authorized session) -> RECORD -> VERIFY. No prediction, no wagering automation.
+// ================= WU9 SMART PROTOCOL FORM (context-aware, manual send) =================
+// The tool understands the protocol and builds the request. The developer never has to
+// remember SID/aid/eid — those come from the Protocol Context (RoundTracker). Only the
+// fields a command actually needs are shown. Send remains manual + allowlist-gated (WU7).
 (function protocolHarnessUI() {
-  if (!api.protocolExecute) return; // preload without WU7 — stay inert
-  let round = null;                 // current server round {sid,state,lastOdd,updatedAt}
+  if (!api.protocolExecute || !window.ProtocolForm) return; // preload/module missing — inert
+  const PF = window.ProtocolForm;
+  let round = null;                 // current server round {sid,state,lastOdd}
+  let sidHistory = [];              // observed sids (for the stale-sid default)
   let env = { allowed: false, name: null, host: '' };
-  let sidHistoryCache = [];
   const execs = [];                 // newest-first execution records
   const execById = new Map();
+  let advOpen = false;
 
-  const numOrNull = (v) => { const s = String(v).trim(); if (s === '') return null; const n = Number(s); return Number.isFinite(n) ? n : s; };
+  const num = PF.toNum;
+  const contextSid = () => (round && round.sid != null ? round.sid : null);
+  const prevSid = () => (sidHistory.length >= 2 ? sidHistory[sidHistory.length - 2] : (contextSid() != null ? Number(contextSid()) - 1 : ''));
 
-  function setEnvChips() {
+  // ---- collect the current form state ----
+  function collect() {
+    const command = $('pf-command').value;
+    const scenario = $('pf-scenario').value;
+    const advAid = $('pf-ov-aid-on') && $('pf-ov-aid-on').checked;
+    const advEid = $('pf-ov-eid-on') && $('pf-ov-eid-on').checked;
+    return {
+      command, scenario,
+      amount: $('pf-b') ? $('pf-b').value : null,
+      sid: contextSid(),
+      aid: advAid ? num($('pf-ov-aid').value) : 1,
+      eid: advEid ? num($('pf-ov-eid').value) : 1,
+      staleSid: $('pf-stale-sid') ? num($('pf-stale-sid').value) : null,
+      rawText: $('pf-raw') ? $('pf-raw').value : '',
+    };
+  }
+  const ctx = () => ({ envAllowed: env.allowed, hasSid: contextSid() != null });
+
+  // ---- Protocol Context card (read-only) ----
+  function renderContext() {
+    $('pc-sid').textContent = contextSid() != null ? contextSid() : '—';
+    $('pc-state').textContent = round && round.state ? round.state : '—';
+    $('pc-odd').textContent = round && round.lastOdd != null ? round.lastOdd : '—';
+    const noRound = contextSid() == null;
+    $('pf-empty').hidden = !noRound;
+    $('pf-body').hidden = noRound;
+  }
+
+  function setEnvBadge() {
     const chip = $('proto-env-chip');
     if (chip) { chip.textContent = env.allowed ? 'ENABLED' : 'OFF'; chip.className = 'chip ' + (env.allowed ? 'on' : 'off'); }
     const badge = $('proto-env');
@@ -429,91 +462,117 @@ renderActions();
       badge.textContent = env.allowed ? `TEST CONTROL — ENABLED · ${env.name || env.host}` : `CONTROL DISABLED${env.host ? ' · ' + env.host : ''}`;
       badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
     }
-    const send = $('pf-send'); if (send) send.disabled = !env.allowed;
   }
-  async function refreshEnv() { try { env = await api.protocolEnvironment(); } catch { env = { allowed: false }; } setEnvChips(); }
+  async function refreshEnv() { try { env = await api.protocolEnvironment(); } catch { env = { allowed: false }; } setEnvBadge(); recompute(); }
 
-  function renderState() {
-    $('ps-sid').textContent = round && round.sid != null ? round.sid : '—';
-    $('ps-state').textContent = round ? round.state : '—';
-    $('ps-odd').textContent = round && round.lastOdd != null ? round.lastOdd : '—';
-    $('ps-updated').textContent = round && round.updatedAt ? fmtTime(round.updatedAt) : '—';
-    refreshSidField();
-  }
-  function renderSidHistory(list) {
-    const el = $('ps-sidhist'); if (!el) return;
-    if (!list || !list.length) { el.innerHTML = '<span class="muted">none</span>'; return; }
-    const cur = round && round.sid != null ? String(round.sid) : null;
-    el.innerHTML = list.slice(-12).map((h) => `<span class="sid ${cur === String(h.sid) ? 'cur' : ''}">${esc(h.sid)}${h.delta != null ? `<span class="d"> ${h.delta >= 0 ? '+' : ''}${h.delta}</span>` : ''}</span>`).join('');
-  }
-
-  // sid is bound to the CURRENT server round (never guessed). Stale-sid negative
-  // test intentionally fills the PREVIOUS observed sid to verify server rejection.
-  function refreshSidField() {
-    const input = $('pf-sid'); if (!input) return;
-    const stale = $('pf-neg-stale').checked;
-    if (stale) {
-      const prev = sidHistoryCache.length >= 2 ? sidHistoryCache[sidHistoryCache.length - 2].sid : (round && round.sid != null ? Number(round.sid) - 1 : '');
-      input.value = prev != null ? prev : '';
-    } else if (round && round.sid != null) {
-      input.value = round.sid;
-    }
-    tagSid();
-  }
-  async function tagSid() {
-    const tag = $('pf-sid-tag'); if (!tag) return;
-    const sid = numOrNull($('pf-sid').value);
-    let check; try { check = await api.protocolCheckSid(sid); } catch { check = null; }
-    if (!check) { tag.textContent = ''; return; }
-    if (check.match) { tag.textContent = '← server'; tag.className = 'sid-tag ok'; }
-    else { tag.textContent = `STALE (server ${check.current ?? '—'})`; tag.className = 'sid-tag stale'; }
-  }
-
-  function buildPayload() {
-    const command = $('pf-command').value;
-    const invalidAmount = $('pf-neg-amount').checked;
-    const payload = command === 'cashout'
-      ? { cmd: 100003, sid: numOrNull($('pf-sid').value), aid: numOrNull($('pf-aid').value), eid: numOrNull($('pf-eid').value) }
-      : { cmd: 100002, b: invalidAmount ? -1 : numOrNull($('pf-b').value), sid: numOrNull($('pf-sid').value), aid: numOrNull($('pf-aid').value), eid: numOrNull($('pf-eid').value) };
-    return { command, payload };
-  }
-  function negFlags() {
-    return { stale: $('pf-neg-stale').checked, amount: $('pf-neg-amount').checked, dup: $('pf-neg-dup').checked };
-  }
-
-  $('pf-command').onchange = () => { $('pf-b').closest('label').style.display = $('pf-command').value === 'cashout' ? 'none' : ''; renderPreview(); };
-  for (const id of ['pf-b', 'pf-aid', 'pf-eid']) $(id).oninput = renderPreview;
-  $('pf-sid').oninput = () => { tagSid(); renderPreview(); };
-  for (const id of ['pf-neg-stale', 'pf-neg-amount', 'pf-neg-dup']) $(id).onchange = () => {
-    const anyNeg = $('pf-neg-stale').checked || $('pf-neg-amount').checked || $('pf-neg-dup').checked;
-    $('pf-neg-note').hidden = !anyNeg;
-    refreshSidField(); renderPreview();
+  // ---- dynamic request fields for command + scenario ----
+  const SCENARIO_NOTE = {
+    normal: '', stale: 'Negative test — sends a stale round SID on purpose.',
+    amount: 'Negative test — sends an invalid amount on purpose.',
+    duplicate: 'Negative test — sends the same request twice.',
+    manual: 'Manual payload — raw JSON editor (developer mode).',
   };
-
-  function renderPreview() {
-    const { payload } = buildPayload();
-    const el = $('pf-json'); if (!el.hidden) el.textContent = JSON.stringify(payload, null, 2);
+  function renderFields() {
+    const command = $('pf-command').value;
+    const scenario = $('pf-scenario').value;
+    $('pf-scenario-note').textContent = SCENARIO_NOTE[scenario] || '';
+    const parts = [];
+    if (scenario === 'manual') {
+      const seed = PF.buildPayload({ command, scenario: 'normal', amount: '5000', sid: contextSid(), aid: 1, eid: 1 }).payload;
+      parts.push(`<label class="pf-field">Raw JSON<textarea id="pf-raw" class="mono" rows="6">${esc(JSON.stringify(seed, null, 2))}</textarea></label>`);
+    } else {
+      if (command === 'bet') {
+        const lbl = scenario === 'amount' ? 'Amount (invalid on purpose)' : 'Amount';
+        parts.push(`<label class="pf-field">${esc(lbl)}<input id="pf-b" class="mono" value="5000"><span class="hint">Only field you need — cmd/sid/aid/eid are auto.</span></label>`);
+      }
+      if (scenario === 'stale') {
+        parts.push(`<label class="pf-field">SID Override <span class="hint">(stale — server should reject)</span><input id="pf-stale-sid" class="mono" value="${esc(prevSid())}"></label>`);
+      }
+      if (command === 'cashout' && scenario !== 'stale') {
+        parts.push(`<div class="pf-none">No input needed — SID / aid / eid come from the Protocol Context.</div>`);
+      }
+    }
+    $('pf-fields').innerHTML = parts.join('');
+    // Advanced (override AUTO fields aid/eid) — hidden for manual.
+    $('pf-adv-toggle').style.display = scenario === 'manual' ? 'none' : '';
+    renderAdvanced();
+    // wire dynamic inputs
+    for (const id of ['pf-b', 'pf-stale-sid', 'pf-raw']) { const el = $(id); if (el) el.oninput = recompute; }
+    recompute();
   }
-  $('pf-preview').onclick = () => { const el = $('pf-json'); el.hidden = false; renderPreview(); };
+  function renderAdvanced() {
+    const el = $('pf-advanced'); if (!el) return;
+    el.hidden = !advOpen;
+    if (!advOpen) { el.innerHTML = ''; return; }
+    el.innerHTML = ovRow('aid', 1) + ovRow('eid', 1);
+    for (const f of ['aid', 'eid']) {
+      const on = $(`pf-ov-${f}-on`), inp = $(`pf-ov-${f}`);
+      on.onchange = () => { inp.disabled = !on.checked; recompute(); };
+      inp.oninput = recompute;
+    }
+  }
+  function ovRow(name, def) {
+    return `<div class="ov-row"><span class="ov-name">${name}</span>`
+      + `<label class="chk"><input type="checkbox" id="pf-ov-${name}-on"> override</label>`
+      + `<input type="text" id="pf-ov-${name}" class="mono" value="${def}" disabled></div>`;
+  }
 
+  // ---- recompute preview + summary + validation + send-enabled ----
+  function recompute() {
+    if (contextSid() == null && $('pf-scenario').value !== 'stale' && $('pf-scenario').value !== 'manual') { renderContext(); }
+    const state = collect();
+    const built = PF.buildPayload(state);
+    const v = PF.validate(state, ctx());
+
+    // Payload preview (read-only)
+    const pre = $('pf-json');
+    pre.textContent = built.parseError ? '// invalid JSON' : JSON.stringify(built.payload, null, 2);
+
+    // Command summary
+    const sum = $('pf-summary');
+    if (state.scenario === 'manual') sum.innerHTML = `<span class="s-k">Manual</span> ${esc(built.payload && built.payload.cmd != null ? 'cmd ' + built.payload.cmd : 'invalid JSON')}`;
+    else {
+      const p = built.payload || {};
+      const bits = [`<span class="s-k">${state.command === 'cashout' ? 'Cashout' : 'Bet'}</span>`];
+      if (state.command === 'bet') bits.push(`b <b>${esc(p.b)}</b>`);
+      bits.push(`round <b>${esc(p.sid)}</b>`, `aid <b>${esc(p.aid)}</b>`, `eid <b>${esc(p.eid)}</b>`);
+      sum.innerHTML = bits.join(' · ');
+    }
+
+    // Validation message
+    const val = $('pf-validation');
+    val.className = 'proto-validation ' + v.level;
+    val.textContent = v.message;
+
+    // Protocol lock: Send disabled unless validation allows AND a round exists.
+    const send = $('pf-send');
+    send.disabled = !v.canSend;
+    send.dataset.negative = v.negative ? '1' : '';
+    send.dataset.expect = v.expect || '';
+    send.dataset.allow = v.allowMismatch ? '1' : '';
+  }
+
+  // ---- send (manual; reuses WU7 harness, allowlist-gated) ----
   $('pf-send').onclick = async () => {
-    const btn = $('pf-send'); btn.disabled = true; btn.textContent = 'Sending…';
-    const { command, payload } = buildPayload();
-    const neg = negFlags();
-    const negative = neg.stale || neg.amount || neg.dup;
+    const btn = $('pf-send'); if (btn.disabled) return;
+    const state = collect();
+    const v = PF.validate(state, ctx());
+    if (!v.canSend) return;
+    const built = PF.buildPayload(state);
+    btn.disabled = true; btn.textContent = 'Sending…';
+    const base = { command: state.command, payload: built.payload, negative: v.negative, expect: v.expect, allowMismatch: v.allowMismatch };
     try {
-      if (neg.dup) {
-        // Duplicate/replay-protection test: first send is the baseline, the SECOND
-        // is expected to be rejected if the server enforces idempotency (§8).
-        await api.protocolExecute({ command, payload, source: 'NEGATIVE_TEST', expect: null, allowMismatch: neg.stale });
-        await api.protocolExecute({ command, payload, source: 'NEGATIVE_TEST', negative: true, expect: 'reject', allowMismatch: neg.stale });
+      if (state.scenario === 'duplicate') {
+        await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: null, negative: false });
+        await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: 'reject', negative: true });
       } else {
-        await api.protocolExecute({ command, payload, negative, expect: negative ? 'reject' : null, allowMismatch: neg.stale });
+        await api.protocolExecute(base);
       }
     } catch { toast('Send failed'); }
-    btn.disabled = !env.allowed; btn.textContent = 'Send Test Request';
+    btn.textContent = 'Send Request'; recompute();
   };
 
+  // ---- history ----
   function renderExecs() {
     const el = $('pf-executions'); if (!el) return;
     if (!execs.length) { el.innerHTML = '<div class="muted">No tests run yet.</div>'; return; }
@@ -534,8 +593,18 @@ renderActions();
     renderExecs();
   }
 
+  // ---- controls ----
+  $('pf-command').onchange = renderFields;
+  $('pf-scenario').onchange = renderFields;
+  $('pf-adv-toggle').onclick = () => { advOpen = !advOpen; $('pf-adv-toggle').textContent = (advOpen ? '▼' : '▶') + ' Advanced (override auto fields)'; renderAdvanced(); recompute(); };
+  $('pf-payload-toggle').onclick = () => { const el = $('pf-json'); el.hidden = !el.hidden; $('pf-payload-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Auto payload'; };
+
   // ---- live streams ----
-  api.onAviatorRound && api.onAviatorRound((r) => { round = r; if (r && r.sid != null && !sidHistoryCache.some((h) => String(h.sid) === String(r.sid))) sidHistoryCache.push({ sid: r.sid, delta: null }); renderState(); renderSidHistory(sidHistoryCache); });
+  api.onAviatorRound && api.onAviatorRound((r) => {
+    round = r;
+    if (r && r.sid != null && !sidHistory.some((s) => String(s) === String(r.sid))) sidHistory.push(r.sid);
+    renderContext(); recompute();
+  });
   api.onProtocolExecution && api.onProtocolExecution((x) => pushExec(x));
 
   // ---- panel open/close ----
@@ -543,8 +612,9 @@ renderActions();
     const p = $('proto-panel'); p.hidden = !p.hidden;
     if (!p.hidden) {
       await refreshEnv();
-      try { const st = await api.protocolRoundState(); round = st.current; sidHistoryCache = st.sidHistory || []; renderState(); renderSidHistory(sidHistoryCache); } catch { /* ignore */ }
+      try { const st = await api.protocolRoundState(); round = st.current; sidHistory = (st.sidHistory || []).map((h) => h.sid); } catch { /* ignore */ }
       try { const list = await api.protocolExecutions(); execs.length = 0; execById.clear(); for (const x of list.reverse()) pushExec(x); } catch { /* ignore */ }
+      renderContext(); renderFields();
     }
   };
   $('proto-close').onclick = () => { $('proto-panel').hidden = true; };
@@ -552,6 +622,8 @@ renderActions();
   // Refresh env when the selected target changes (chain the existing handler).
   const origTargetsChange = $('targets').onchange;
   $('targets').onchange = (e) => { if (origTargetsChange) origTargetsChange.call($('targets'), e); setTimeout(refreshEnv, 60); };
+
+  renderFields();
 })();
 
 // ============================ WU8 READ-ONLY ROUND OBSERVER ============================
