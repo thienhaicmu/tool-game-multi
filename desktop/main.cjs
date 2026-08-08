@@ -312,7 +312,7 @@ async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = 
   });
   manager.on('target-added', broadcastTargets);
   manager.on('target-updated', broadcastTargets);
-  manager.on('target-removed', id => { intercept.onTargetDetached(id); if (selectedTargetId === id) selectedTargetId = null; broadcastTargets(); });
+  manager.on('target-removed', id => { intercept.onTargetDetached(id); observer.onDisconnect(id); if (selectedTargetId === id) selectedTargetId = null; broadcastTargets(); });
   manager.on('error', err => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) }); });
   try {
     await manager.start();

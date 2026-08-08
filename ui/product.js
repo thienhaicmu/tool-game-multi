@@ -555,74 +555,84 @@ renderActions();
 })();
 
 // ============================ WU8 READ-ONLY ROUND OBSERVER ============================
-// Watches the server-driven round/odd stream and records per-round evidence. It never
+// Watches the server-driven round/odd stream and records per-round evidence. It NEVER
 // sends anything — RoundTracker owns sid/odd/state; this panel only reads and displays.
 (function roundObserverUI() {
   if (!api.observerSnapshot) return; // preload without WU8 — stay inert
   let snap = null;
+  let detailSid = null;
 
-  function fmtNum(n, d) { return (n == null || !Number.isFinite(Number(n))) ? '—' : (d != null ? Number(n).toFixed(d) : String(n)); }
+  const fmtNum = (n, d) => (n == null || !Number.isFinite(Number(n))) ? '—' : (d != null ? Number(n).toFixed(d) : String(n));
+  const ms = (n) => n == null ? '—' : Math.round(n) + 'ms';
+  const secs = (n) => n == null ? '—' : (n / 1000).toFixed(1) + 's';
+
+  function statusClassFor(s) { return (s === 'RUNNING' || s === 'OPEN' || s === 'LOCKED') ? 'on' : (s === 'ENDED' ? 'warn' : 'off'); }
 
   function render() {
     if (!snap) return;
-    const chip = $('obs-status-chip'); if (chip) { chip.textContent = snap.status; chip.className = 'chip ' + (snap.status === 'OBSERVING' ? 'on' : (snap.status === 'COMPLETED' ? 'warn' : 'off')); }
+    const chip = $('obs-status-chip'); if (chip) { chip.textContent = snap.status; chip.className = 'chip ' + statusClassFor(snap.status); }
     const cur = snap.current || {};
-    const active = snap.active || {};
-    $('obs-status').textContent = snap.status;
-    $('obs-sid').textContent = cur.sid != null ? cur.sid : '—';
-    $('obs-phase').textContent = active.phase || (cur.state || '—');
-    $('obs-odd').textContent = cur.lastOdd != null ? cur.lastOdd : (active.currentOdd != null ? active.currentOdd : '—');
-    $('obs-target').textContent = snap.config.targetOdd != null ? snap.config.targetOdd : '—';
     const m = snap.metrics || {};
-    $('obs-progress').textContent = m.target != null ? `${m.finished} / ${m.target}` : `${m.finished} observed`;
+    $('obs-status').textContent = snap.status;
+    $('obs-sid').textContent = snap.currentSid != null ? snap.currentSid : '—';
+    $('obs-phase').textContent = cur.phase || '—';
+    $('obs-odd').textContent = cur.currentOdd != null ? fmtNum(cur.currentOdd, 2) : '—';
+    $('obs-maxodd').textContent = cur.maxOdd != null ? fmtNum(cur.maxOdd, 2) : '—';
+    $('obs-frames').textContent = cur.oddFrameCount != null ? cur.oddFrameCount : '—';
+    $('obs-last').textContent = cur.timeSinceLastOddMs != null ? ms(cur.timeSinceLastOddMs) + ' ago' : '—';
+    $('obs-avgint').textContent = ms(cur.avgOddIntervalMs);
+    $('obs-observed').textContent = m.observedRounds != null ? m.observedRounds : '—';
 
-    // Odd stream of the active round with the trigger frame marked.
     const stream = $('obs-oddstream');
-    const buf = (active.oddBuffer || []);
-    if (!buf.length) stream.innerHTML = '<span class="muted">none</span>';
-    else stream.innerHTML = buf.slice(-40).map((o) => { const trig = active.triggerOdd != null && o.odd === active.triggerOdd; return `<span class="sid odd ${trig ? 'trig' : ''}">${esc(fmtNum(o.odd, 2))}${trig ? ' ◄' : ''}</span>`; }).join('');
+    const buf = (cur.recentOdds || []);
+    stream.innerHTML = buf.length ? buf.slice(-40).map((o, i, arr) => `<span class="sid odd ${i === arr.length - 1 ? 'trig' : ''}">${esc(fmtNum(o.odd, 2))}</span>`).join('') : '<span class="muted">none</span>';
 
-    $('obs-m-count').textContent = `${m.observed ?? 0} / ${m.completed ?? 0}`;
-    $('obs-m-early').textContent = m.endedBeforeTrigger ?? 0;
-    $('obs-m-bet').textContent = m.avgBetLatencyMs != null ? m.avgBetLatencyMs + 'ms' : '—';
-    $('obs-m-stop').textContent = m.avgCashoutLatencyMs != null ? m.avgCashoutLatencyMs + 'ms' : '—';
-    $('obs-m-trig').textContent = m.avgTriggerOdd != null ? m.avgTriggerOdd : '—';
-    $('obs-m-srv').textContent = m.avgServerOdd != null ? m.avgServerOdd : '—';
+    $('obs-m-count').textContent = `${m.observedRounds ?? 0} / ${m.completedRounds ?? 0}`;
+    $('obs-m-term').textContent = `${m.superseded ?? 0} / ${m.disconnected ?? 0}`;
+    $('obs-m-dur').textContent = secs(m.avgRoundDurationMs);
+    $('obs-m-minmax').textContent = `${secs(m.minRoundDurationMs)} / ${secs(m.maxRoundDurationMs)}`;
+    $('obs-m-frames').textContent = m.avgOddFrames != null ? m.avgOddFrames : '—';
+    $('obs-m-int').textContent = ms(m.avgOddIntervalMs);
 
-    renderHistory(snap.rounds || []);
+    renderHistory(snap.history || []);
+    renderDetail();
   }
+
+  function termClass(t) { return t === 'ROUND_END' ? 'COMPLETED' : t === 'SUPERSEDED' ? 'ROUND_ENDED_BEFORE_TRIGGER' : t === 'DISCONNECTED' ? 'ENDED' : 'OBSERVING'; }
 
   function renderHistory(rounds) {
     const el = $('obs-history'); if (!el) return;
     if (!rounds.length) { el.innerHTML = '<div class="muted">No rounds observed yet.</div>'; return; }
-    el.innerHTML = rounds.slice().reverse().slice(0, 40).map((r) => {
-      const bl = r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—';
-      const sl = r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—';
-      return `<div class="obs-round">`
-        + `<div class="obs-round-head"><b>#${esc(r.index + 1)} · sid ${esc(r.sid)}</b><span class="obs-res ${esc(r.result)}">${esc(r.result)}</span></div>`
-        + `<div class="obs-round-meta">trigger ${esc(fmtNum(r.triggerOdd, 2))} · ack ${esc(fmtNum(r.serverOdd, 2))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
-        + `<div class="obs-round-meta">bet ${esc(bl)} · cashout ${esc(sl)} · maxOdd ${esc(fmtNum(r.maxOdd, 2))}</div>`
+    el.innerHTML = rounds.slice().reverse().slice(0, 60).map((r) => {
+      return `<div class="obs-round" data-sid="${esc(r.sid)}">`
+        + `<div class="obs-round-head"><b>sid ${esc(r.sid)}</b><span class="obs-res ${termClass(r.terminalReason)}">${esc(r.terminalReason || '—')}</span></div>`
+        + `<div class="obs-round-meta">${esc(secs(r.durationMs))} · maxOdd ${esc(fmtNum(r.maxOdd, 2))} · end ${esc(fmtNum(r.endOdd, 2))} · ${esc(r.oddFrameCount)} frames · Δ ${esc(ms(r.avgOddIntervalMs))}</div>`
         + `</div>`;
     }).join('');
+    for (const row of el.querySelectorAll('[data-sid]')) row.onclick = () => { detailSid = (detailSid === row.dataset.sid) ? null : row.dataset.sid; renderDetail(); };
+  }
+
+  function renderDetail() {
+    const el = $('obs-detail'); if (!el) return;
+    if (detailSid == null) { el.hidden = true; return; }
+    const hist = (snap.history || []).find((r) => String(r.sid) === String(detailSid));
+    const cur = snap.current && String(snap.current.sid) === String(detailSid) ? snap.current : null;
+    const r = cur || hist;
+    if (!r) { el.hidden = true; return; }
+    const traces = (r.actionTraces || []).map((t) => `  ${t.type} cmd:${t.cmd}${t.ack ? ' → ACK' + (t.ack.odd != null ? ' odd=' + t.ack.odd : '') + (t.ack.wm != null ? ' wm=' + t.ack.wm : '') : ' (no ack)'}`).join('\n') || '  none';
+    const samples = (r.recentOdds || []).slice(-20).map((o) => `  ${fmtNum(o.odd, 2)}  Δ${o.deltaMsFromPrevious == null ? '—' : Math.round(o.deltaMsFromPrevious) + 'ms'}`).join('\n') || '  none';
+    el.hidden = false;
+    el.textContent = `SID ${r.sid}  [${r.terminalReason || r.phase}]\n`
+      + `OPEN    ${r.openedAt || '—'}\nLOCKED  ${r.lockedAt || '—'}\nRUNNING ${r.runningAt || '—'}\nENDED   ${r.endedAt || '—'}\n`
+      + `duration ${secs(r.durationMs)} · maxOdd ${fmtNum(r.maxOdd, 2)} · endOdd ${fmtNum(r.endOdd, 2)} · frames ${r.oddFrameCount}\n`
+      + `\nODD samples (last 20):\n${samples}\n\nActionTrace (read-only evidence):\n${traces}`;
   }
 
   api.onObserverUpdate && api.onObserverUpdate((s) => { snap = s; if (!$('obs-panel').hidden) render(); });
 
-  $('obs-apply').onclick = async () => {
-    const err = $('obs-cfg-err'); err.textContent = '';
-    const patch = { targetOdd: $('obs-cfg-target').value.trim(), observeRounds: $('obs-cfg-rounds').value.trim() };
-    const res = await api.observerConfig(patch);
-    if (res && res.error) { err.textContent = res.error.code + ': ' + (res.error.message || ''); return; }
-    snap = res; render();
-  };
-
   $('obs-toggle').onclick = async () => {
     const p = $('obs-panel'); p.hidden = !p.hidden;
-    if (!p.hidden) {
-      try { snap = await api.observerSnapshot(); } catch { snap = null; }
-      if (snap) { if (snap.config.targetOdd != null) $('obs-cfg-target').value = snap.config.targetOdd; if (snap.config.observeRounds != null) $('obs-cfg-rounds').value = snap.config.observeRounds; }
-      render();
-    }
+    if (!p.hidden) { try { snap = await api.observerSnapshot(); } catch { snap = null; } render(); }
   };
   $('obs-close').onclick = () => { $('obs-panel').hidden = true; };
 })();

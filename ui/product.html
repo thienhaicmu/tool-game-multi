@@ -164,7 +164,7 @@
   <aside id="obs-panel" class="proto-panel" hidden aria-label="Read-only Round Observer">
     <div class="proto-head">
       <b>👁 Round Observer</b>
-      <span class="proto-env on" title="This panel only observes and records — it never sends a request">READ-ONLY</span>
+      <span class="proto-env on" title="This panel only observes and records — it never sends a protocol request">READ-ONLY</span>
       <div class="spacer"></div>
       <button id="obs-close" class="btn icon" title="Hide panel">✕</button>
     </div>
@@ -175,39 +175,31 @@
       <div class="proto-kv"><span>SID</span><b id="obs-sid">—</b></div>
       <div class="proto-kv"><span>Phase</span><b id="obs-phase">—</b></div>
       <div class="proto-kv"><span>Current Odd</span><b id="obs-odd">—</b></div>
-      <div class="proto-kv"><span>Target Odd</span><b id="obs-target">—</b></div>
-      <div class="proto-kv"><span>Progress</span><b id="obs-progress">—</b></div>
+      <div class="proto-kv"><span>Max Odd</span><b id="obs-maxodd">—</b></div>
+      <div class="proto-kv"><span>Odd Frames</span><b id="obs-frames">—</b></div>
+      <div class="proto-kv"><span>Last Update</span><b id="obs-last">—</b></div>
+      <div class="proto-kv"><span>Avg Interval</span><b id="obs-avgint">—</b></div>
+      <div class="proto-kv"><span>Observed rounds</span><b id="obs-observed">—</b></div>
       <div class="proto-sids">
-        <div class="proto-state-title">ODD STREAM <span class="faint">(last 100, marker only)</span></div>
+        <div class="proto-state-title">ODD STREAM <span class="faint">(bounded recent samples)</span></div>
         <div id="obs-oddstream" class="proto-sidhist"><span class="muted">none</span></div>
       </div>
     </div>
 
-    <div class="proto-form">
-      <div class="proto-state-title">DISPLAY CONFIG <span class="faint">(marker only — no send)</span></div>
-      <div class="proto-row">
-        <label>Target Odd (marker) <input id="obs-cfg-target" class="mono" placeholder="e.g. 1.50"></label>
-        <label>Observe rounds <input id="obs-cfg-rounds" class="mono" placeholder="optional"></label>
-      </div>
-      <div class="proto-row">
-        <button id="obs-apply" class="btn">Apply</button>
-        <span id="obs-cfg-err" class="errb"></span>
-      </div>
-    </div>
-
     <div class="proto-state">
-      <div class="proto-state-title">METRICS</div>
+      <div class="proto-state-title">METRICS <span class="faint">(observational)</span></div>
       <div class="proto-kv"><span>Observed / Completed</span><b id="obs-m-count">—</b></div>
-      <div class="proto-kv"><span>Ended before target</span><b id="obs-m-early">—</b></div>
-      <div class="proto-kv"><span>Avg bet latency</span><b id="obs-m-bet">—</b></div>
-      <div class="proto-kv"><span>Avg cashout latency</span><b id="obs-m-stop">—</b></div>
-      <div class="proto-kv"><span>Avg trigger odd</span><b id="obs-m-trig">—</b></div>
-      <div class="proto-kv"><span>Avg server odd</span><b id="obs-m-srv">—</b></div>
+      <div class="proto-kv"><span>Superseded / Disconnected</span><b id="obs-m-term">—</b></div>
+      <div class="proto-kv"><span>Avg round duration</span><b id="obs-m-dur">—</b></div>
+      <div class="proto-kv"><span>Min / Max duration</span><b id="obs-m-minmax">—</b></div>
+      <div class="proto-kv"><span>Avg odd frames</span><b id="obs-m-frames">—</b></div>
+      <div class="proto-kv"><span>Avg odd interval</span><b id="obs-m-int">—</b></div>
     </div>
 
     <div class="proto-hist">
-      <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only)</span></div>
+      <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only · click a row for detail)</span></div>
       <div id="obs-history" class="proto-execs"><div class="muted">No rounds observed yet.</div></div>
+      <div id="obs-detail" class="proto-json" hidden></div>
     </div>
   </aside>
 

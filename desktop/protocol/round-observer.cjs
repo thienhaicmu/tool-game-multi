@@ -5,50 +5,37 @@ const { performance } = require('node:perf_hooks');
 const { CMD } = require('./aviator.cjs');
 
 // ---------------------------------------------------------------------------
-// RoundObserver — READ-ONLY multi-round evidence recorder.
+// RoundObserver — WU8. READ-ONLY protocol observability.
 //
-// It consumes the classified frame stream that RoundTracker already emits and
-// builds per-round observation records: SID, the live odd stream, when a bet /
-// cashout was SENT and ACKed (by whoever is actually playing — the game client
-// or a manual WU7 test), server-returned odd/wm, and monotonic latencies.
+// HARD BOUNDARY (§1/§33): this module imports NO send seam and exposes NO way to
+// send. It has no reference to wsReplay, ProtocolHarness, ReplayEngine or Fetch.
+// It consumes the classified server-frame stream that RoundTracker already emits
+// (cmd 100005/100006/100009/100007) and derives:
+//   - round lifecycle (OPEN / LOCKED / RUNNING / ENDED)
+//   - bounded recent-odd samples + frame-interval timing
+//   - completed-round history (terminalReason ROUND_END / SUPERSEDED / DISCONNECTED)
+//   - observational metrics
+// It never evaluates a target odd, strategy, or action condition (§11/§35).
 //
-// It NEVER sends anything. RoundTracker stays the sole owner of SID / odd / round
-// state; this observer only reads. The configurable `targetOdd` is a DISPLAY
-// marker only: the observer flags the first server odd frame that reaches it so a
-// QA engineer can *see* where a cashout would have been relevant — it does not,
-// and cannot, trigger a request.
+// RoundTracker stays authoritative for SID/odd/state; SID comes only from server
+// cmd:100005, never previousSid+1 (§3). ODD comes only from server cmd:100009 (§4).
 // ---------------------------------------------------------------------------
 
-// Per-round observed phase (mirrors the observed game state; not driven by us).
-const PHASE = Object.freeze({
-  OPEN: 'OPEN', BET_PENDING: 'BET_PENDING', BET_CONFIRMED: 'BET_CONFIRMED',
-  LOCKED: 'LOCKED', WATCHING_ODD: 'WATCHING_ODD', STOP_PENDING: 'STOP_PENDING',
-  STOP_CONFIRMED: 'STOP_CONFIRMED', ROUND_FINISHED: 'ROUND_FINISHED',
-});
-// Top-level observer status.
-const STATUS = Object.freeze({ IDLE: 'IDLE', WAITING_ROUND: 'WAITING_ROUND', OBSERVING: 'OBSERVING', COMPLETED: 'COMPLETED' });
-
-const RESULT = Object.freeze({
-  OBSERVING: 'OBSERVING', COMPLETED: 'COMPLETED',
-  ROUND_ENDED_BEFORE_TRIGGER: 'ROUND_ENDED_BEFORE_TRIGGER', ENDED: 'ENDED',
-});
+const STATUS = Object.freeze({ IDLE: 'IDLE', WAITING_ROUND: 'WAITING_ROUND', OPEN: 'OPEN', LOCKED: 'LOCKED', RUNNING: 'RUNNING', ENDED: 'ENDED' });
+const PHASE = Object.freeze({ OPEN: 'OPEN', LOCKED: 'LOCKED', RUNNING: 'RUNNING', ENDED: 'ENDED' });
+const TERMINAL = Object.freeze({ ROUND_END: 'ROUND_END', SUPERSEDED: 'SUPERSEDED', DISCONNECTED: 'DISCONNECTED' });
 
 function validateConfig(cfg = {}) {
-  const out = { targetOdd: null, observeRounds: null, oddBufferLimit: 100, historyLimit: 200 };
-  if (cfg.targetOdd !== undefined && cfg.targetOdd !== null && cfg.targetOdd !== '') {
-    const t = Number(cfg.targetOdd);
-    if (!Number.isFinite(t) || t <= 0) return { error: { code: 'INVALID_OBSERVER_CONFIG', message: 'targetOdd must be > 0' } };
-    out.targetOdd = t;
-  }
-  if (cfg.observeRounds !== undefined && cfg.observeRounds !== null && cfg.observeRounds !== '') {
-    const n = Number(cfg.observeRounds);
-    if (!Number.isInteger(n) || n <= 0) return { error: { code: 'INVALID_OBSERVER_CONFIG', message: 'observeRounds must be a positive integer' } };
-    out.observeRounds = n;
-  }
-  if (cfg.oddBufferLimit !== undefined) {
+  const out = { oddBufferLimit: 100, historyLimit: 200 };
+  if (cfg.oddBufferLimit !== undefined && cfg.oddBufferLimit !== null && cfg.oddBufferLimit !== '') {
     const n = Number(cfg.oddBufferLimit);
-    if (!Number.isInteger(n) || n <= 0 || n > 1000) return { error: { code: 'INVALID_OBSERVER_CONFIG', message: 'oddBufferLimit must be 1..1000' } };
+    if (!Number.isInteger(n) || n <= 0 || n > 1000) return { error: { code: 'INVALID_OBSERVER_CONFIG', message: 'oddBufferLimit must be an integer 1..1000' } };
     out.oddBufferLimit = n;
+  }
+  if (cfg.historyLimit !== undefined && cfg.historyLimit !== null && cfg.historyLimit !== '') {
+    const n = Number(cfg.historyLimit);
+    if (!Number.isInteger(n) || n <= 0 || n > 5000) return { error: { code: 'INVALID_OBSERVER_CONFIG', message: 'historyLimit must be an integer 1..5000' } };
+    out.historyLimit = n;
   }
   return { config: out };
 }
@@ -57,14 +44,15 @@ class RoundObserver extends EventEmitter {
   constructor(deps = {}) {
     super();
     const v = validateConfig(deps.config || {});
-    this._config = v.config || { targetOdd: null, observeRounds: null, oddBufferLimit: 100, historyLimit: 200 };
-    this._now = deps.now || (() => performance.now()); // monotonic ms (injectable for tests)
-    this._rounds = new Map();   // sid -> RoundExecution
-    this._order = [];           // sids in observation order
-    this._activeSid = null;
+    this._config = v.config || { oddBufferLimit: 100, historyLimit: 200 };
+    this._now = deps.now || (() => performance.now()); // monotonic ms (injectable)
+    this._tracker = deps.roundTracker || null;
+    this._current = null;    // active ObservedRound (non-terminal)
+    this._history = [];       // finalized ObservedRoundSummary[] (append-only)
     this._status = STATUS.IDLE;
     this._index = 0;
-    this._tracker = deps.roundTracker || null;
+    // Subscribe to the frame stream RoundTracker already emits. We do NOT parse WS
+    // or attach to CDP ourselves (§2/§23).
     if (this._tracker && this._tracker.on) this._tracker.on('frame', (ev) => this.ingest(ev));
   }
 
@@ -78,163 +66,185 @@ class RoundObserver extends EventEmitter {
   }
 
   status() { return this._status; }
-  rounds() { return this._order.map((sid) => publicRound(this._rounds.get(sid))); }
-  activeRound() { return this._activeSid != null ? publicRound(this._rounds.get(this._activeSid)) : null; }
+  currentRound() { return this._current ? this._publicRound(this._current, true) : null; }
+  history() { return this._history.map((r) => ({ ...r })); }
 
-  // Full read-only snapshot for the UI.
+  // Full read-only snapshot for the UI. Live metrics are computed against `now`.
   snapshot() {
-    const cur = this._tracker && this._tracker.currentRound ? this._tracker.currentRound() : null;
     return {
       readOnly: true,
       status: this._status,
       config: this.config(),
-      current: cur,                 // authoritative sid/odd/state from RoundTracker
-      active: this.activeRound(),
-      rounds: this.rounds(),
-      metrics: this.metrics(),
+      currentSid: this._current ? this._current.sid : null,
+      current: this.currentRound(),
+      history: this.history(),
+      metrics: this.globalMetrics(),
     };
   }
 
   /**
-   * ingest(frameEvent) — consume ONE classified frame event from RoundTracker.
-   * frameEvent: { cmd, type, sid, odd, b, aid, eid, wm, direction:'send'|'recv', at }
-   * Pure w.r.t. the network: it records evidence, it never emits a frame.
+   * ingest(ev) — consume ONE classified frame event from RoundTracker.
+   * Only server (recv) round frames drive state. Client/send frames are ignored
+   * here (RoundTracker owns ActionTrace); this keeps the observer read-only.
    */
   ingest(ev) {
-    if (!ev || ev.cmd == null) return;
+    if (!ev || ev.cmd == null || ev.direction !== 'recv') return;
     const mono = this._now();
     const wall = ev.at || Date.now();
     switch (ev.cmd) {
-      case CMD.ROUND_OPEN: if (ev.direction === 'recv' && ev.sid != null) this._openRound(ev.sid, wall, mono); break;
-      case CMD.ROUND_LOCK: if (ev.direction === 'recv') this._setPhase(ev.sid, PHASE.LOCKED); break;
-      case CMD.ODD: if (ev.direction === 'recv' && ev.odd != null) this._onOdd(ev.sid, ev.odd, wall, mono); break;
-      case CMD.ROUND_END: if (ev.direction === 'recv') this._endRound(ev.sid, wall, mono); break;
-      case CMD.BET: ev.direction === 'send' ? this._onBetSent(ev, wall, mono) : this._onBetAck(ev, wall, mono); break;
-      case CMD.CASHOUT: ev.direction === 'send' ? this._onCashoutSent(ev, wall, mono) : this._onCashoutAck(ev, wall, mono); break;
-      default: break;
+      case CMD.ROUND_OPEN: if (ev.sid != null) this._open(ev.sid, ev.targetId, wall, mono); break;
+      case CMD.ROUND_LOCK: this._lock(ev.sid, wall, mono); break;
+      case CMD.ODD: if (ev.odd != null) this._odd(ev.sid, ev.odd, wall, mono); break;
+      case CMD.ROUND_END: this._end(ev.sid, ev.odd, wall, mono); break;
+      default: return; // unknown/other server frames stay in normal capture; ignore here
     }
     this._emit();
   }
 
-  _openRound(sid, wall, mono) {
-    if (!this._rounds.has(sid)) {
-      const rec = {
-        index: this._index++, sid, phase: PHASE.OPEN,
-        startedAt: iso(wall), startedMono: mono, openedAt: iso(wall),
-        oddBuffer: [], currentOdd: null, maxOdd: null,
-        triggerOdd: null, triggerAt: null,
-        bet: null, cashout: null, serverOdd: null, wm: null,
-        betLatencyMs: null, cashoutLatencyMs: null,
-        finishedAt: null, result: RESULT.OBSERVING,
-      };
-      this._rounds.set(sid, rec);
-      this._order.push(sid);
-      if (this._order.length > this._config.historyLimit) { const old = this._order.shift(); this._rounds.delete(old); }
-    }
-    this._activeSid = sid;
-    this._status = STATUS.OBSERVING;
-    // A previously "COMPLETED" watch resumes observing if the server opens more rounds.
-    if (this._config.observeRounds != null && this._completedCount() >= this._config.observeRounds) this._status = STATUS.COMPLETED;
+  _belongsToCurrent(sid) { return this._current && (sid == null || String(sid) === String(this._current.sid)); }
+
+  _open(sid, targetId, wall, mono) {
+    // A new authoritative round arrived. If a previous round is still active with a
+    // different sid, finalize it as SUPERSEDED — never fabricate a 100007 (§8/§31).
+    if (this._current && String(this._current.sid) !== String(sid)) this._finalize(this._current, TERMINAL.SUPERSEDED, wall, mono);
+    if (this._current && String(this._current.sid) === String(sid)) return; // duplicate open
+    this._current = {
+      index: this._index++, sid, targetId: targetId != null ? String(targetId) : null,
+      phase: PHASE.OPEN, terminalReason: null,
+      openedAt: iso(wall), lockedAt: null, runningAt: null, endedAt: null,
+      openedMono: mono, endedMono: null, durationMs: null,
+      currentOdd: null, maxOdd: null, endOdd: null,
+      oddFrameCount: 0, recentOdds: [],
+      firstOddAt: null, lastOddAt: null, lastOddMono: null,
+      intervalSum: 0, intervalMin: null, intervalMax: null, intervalCount: 0,
+    };
+    this._status = STATUS.OPEN;
   }
 
-  _round(sid) {
-    // ACKs carry no sid — attribute them to the active round.
-    if (sid != null && this._rounds.has(sid)) return this._rounds.get(sid);
-    if (this._activeSid != null) return this._rounds.get(this._activeSid);
-    return null;
+  _lock(sid, wall) {
+    if (!this._belongsToCurrent(sid)) return;
+    this._current.phase = PHASE.LOCKED;
+    this._current.lockedAt = this._current.lockedAt || iso(wall);
+    this._status = STATUS.LOCKED;
   }
 
-  _setPhase(sid, phase) { const r = this._round(sid); if (r && r.result === RESULT.OBSERVING) r.phase = phase; }
-
-  _onOdd(sid, odd, wall, mono) {
-    const r = this._round(sid);
-    if (!r) return;
+  _odd(sid, odd, wall, mono) {
+    if (!this._belongsToCurrent(sid)) return; // odd for a different sid: ignored for control, still in capture (§8)
+    const r = this._current;
+    r.oddFrameCount++;
     r.currentOdd = odd;
     r.maxOdd = r.maxOdd == null ? odd : Math.max(r.maxOdd, odd);
-    r.oddBuffer.push({ odd, at: iso(wall) });
-    if (r.oddBuffer.length > this._config.oddBufferLimit) r.oddBuffer.shift();
-    if (r.phase === PHASE.OPEN || r.phase === PHASE.LOCKED || r.phase === PHASE.BET_CONFIRMED) r.phase = PHASE.WATCHING_ODD;
-    // Display marker ONLY: flag where the odd first reaches the configured target.
-    // This records an observation; it never issues a request.
-    if (this._config.targetOdd != null && r.triggerOdd == null && odd >= this._config.targetOdd) {
-      r.triggerOdd = odd; r.triggerAt = iso(wall);
+    if (r.firstOddAt == null) { r.firstOddAt = iso(wall); r.phase = PHASE.RUNNING; this._status = STATUS.RUNNING; }
+    // Frame-interval timing from monotonic clock.
+    let delta = null;
+    if (r.lastOddMono != null) {
+      delta = mono - r.lastOddMono;
+      r.intervalSum += delta; r.intervalCount++;
+      r.intervalMin = r.intervalMin == null ? delta : Math.min(r.intervalMin, delta);
+      r.intervalMax = r.intervalMax == null ? delta : Math.max(r.intervalMax, delta);
     }
+    r.lastOddAt = iso(wall); r.lastOddMono = mono;
+    r.recentOdds.push({ odd, sid: r.sid, receivedAt: iso(wall), monotonicAt: round1(mono), deltaMsFromPrevious: round1(delta) });
+    if (r.recentOdds.length > this._config.oddBufferLimit) r.recentOdds.shift();
+    if (r.phase === PHASE.OPEN || r.phase === PHASE.LOCKED) { r.phase = PHASE.RUNNING; this._status = STATUS.RUNNING; }
   }
 
-  _onBetSent(ev, wall, mono) {
-    const r = this._round(ev.sid); if (!r) return;
-    if (!r.bet) { r.bet = { b: ev.b, eid: ev.eid, aid: ev.aid, sentAt: iso(wall), sentMono: mono, ackAt: null }; r.phase = PHASE.BET_PENDING; }
-  }
-  _onBetAck(ev, wall, mono) {
-    const r = this._round(ev.sid); if (!r || !r.bet || r.bet.ackAt) return;
-    if (r.bet.eid != null && ev.eid != null && String(r.bet.eid) !== String(ev.eid)) return;
-    r.bet.ackAt = iso(wall); r.betLatencyMs = round1(mono - r.bet.sentMono); r.phase = PHASE.BET_CONFIRMED;
-  }
-  _onCashoutSent(ev, wall, mono) {
-    const r = this._round(ev.sid); if (!r) return;
-    if (!r.cashout) { r.cashout = { eid: ev.eid, aid: ev.aid, sentAt: iso(wall), sentMono: mono, ackAt: null }; r.phase = PHASE.STOP_PENDING; }
-  }
-  _onCashoutAck(ev, wall, mono) {
-    const r = this._round(ev.sid); if (!r || !r.cashout || r.cashout.ackAt) return;
-    if (r.cashout.eid != null && ev.eid != null && String(r.cashout.eid) !== String(ev.eid)) return;
-    r.cashout.ackAt = iso(wall); r.cashoutLatencyMs = round1(mono - r.cashout.sentMono);
-    r.serverOdd = ev.odd != null ? ev.odd : null; r.wm = ev.wm != null ? ev.wm : null;
-    r.phase = PHASE.STOP_CONFIRMED; r.result = RESULT.COMPLETED;
+  _end(sid, endOdd, wall, mono) {
+    if (!this._belongsToCurrent(sid)) return;
+    if (endOdd != null) this._current.endOdd = endOdd;
+    this._finalize(this._current, TERMINAL.ROUND_END, wall, mono);
+    this._status = STATUS.ENDED;
   }
 
-  _endRound(sid, wall, mono) {
-    const r = this._round(sid); if (!r) return;
-    r.phase = PHASE.ROUND_FINISHED; r.finishedAt = iso(wall);
-    if (r.result === RESULT.OBSERVING) {
-      if (r.cashout && r.cashout.ackAt) r.result = RESULT.COMPLETED;
-      else if (this._config.targetOdd != null && (r.maxOdd == null || r.maxOdd < this._config.targetOdd)) r.result = RESULT.ROUND_ENDED_BEFORE_TRIGGER;
-      else r.result = RESULT.ENDED;
-    }
-    if (this._activeSid === sid) { this._activeSid = null; this._status = STATUS.WAITING_ROUND; }
-    if (this._config.observeRounds != null && this._completedCount() >= this._config.observeRounds) this._status = STATUS.COMPLETED;
+  // Called by the host when the observed target's WS/context disconnects (§20/§32).
+  // Read-only: it invokes no send seam.
+  onDisconnect(targetId) {
+    if (!this._current) { this._status = STATUS.IDLE; this._emit(); return; }
+    if (targetId != null && this._current.targetId != null && String(targetId) !== String(this._current.targetId)) return; // unrelated target
+    this._finalize(this._current, TERMINAL.DISCONNECTED, Date.now(), this._now());
+    this._status = STATUS.IDLE;
+    this._emit();
   }
 
-  _completedCount() { let n = 0; for (const sid of this._order) if (this._rounds.get(sid).result !== RESULT.OBSERVING) n++; return n; }
+  _finalize(r, reason, wall, mono) {
+    r.terminalReason = reason;
+    if (reason === TERMINAL.ROUND_END) { r.phase = PHASE.ENDED; r.endedAt = iso(wall); }
+    if (r.endOdd == null) r.endOdd = r.currentOdd;
+    r.endedMono = mono;
+    r.durationMs = r.openedMono != null ? round1(mono - r.openedMono) : null;
+    this._history.push(this._summary(r));
+    if (this._history.length > this._config.historyLimit) this._history.shift();
+    if (this._current === r) this._current = null;
+    // After a non-terminal-supersede we immediately open the new round elsewhere;
+    // otherwise we are between rounds.
+    if (reason !== TERMINAL.SUPERSEDED) this._status = reason === TERMINAL.DISCONNECTED ? STATUS.IDLE : STATUS.WAITING_ROUND;
+  }
 
-  metrics() {
-    const rounds = this._order.map((sid) => this._rounds.get(sid));
-    const done = rounds.filter((r) => r.result !== RESULT.OBSERVING);
-    const completed = rounds.filter((r) => r.result === RESULT.COMPLETED);
-    const endedEarly = rounds.filter((r) => r.result === RESULT.ROUND_ENDED_BEFORE_TRIGGER);
+  _summary(r) {
     return {
-      observed: rounds.length,
-      finished: done.length,
-      completed: completed.length,
-      endedBeforeTrigger: endedEarly.length,
-      target: this._config.observeRounds,
-      avgBetLatencyMs: avg(rounds.map((r) => r.betLatencyMs)),
-      avgCashoutLatencyMs: avg(rounds.map((r) => r.cashoutLatencyMs)),
-      avgTriggerOdd: avg(rounds.map((r) => r.triggerOdd)),
-      avgServerOdd: avg(completed.map((r) => r.serverOdd)),
-      avgWm: avg(completed.map((r) => r.wm)),
+      index: r.index, sid: r.sid, phase: r.phase, terminalReason: r.terminalReason,
+      openedAt: r.openedAt, lockedAt: r.lockedAt, runningAt: r.firstOddAt, endedAt: r.endedAt,
+      durationMs: r.durationMs,
+      firstOdd: r.recentOdds.length ? r.recentOdds[0].odd : null,
+      maxOdd: r.maxOdd, endOdd: r.endOdd,
+      oddFrameCount: r.oddFrameCount,
+      avgOddIntervalMs: r.intervalCount ? round1(r.intervalSum / r.intervalCount) : null,
+      minOddIntervalMs: round1(r.intervalMin), maxOddIntervalMs: round1(r.intervalMax),
+    };
+  }
+
+  // Live view of a round; when `live`, add now-relative timing (§11).
+  _publicRound(r, live) {
+    const out = {
+      index: r.index, sid: r.sid, targetId: r.targetId, phase: r.phase, terminalReason: r.terminalReason,
+      openedAt: r.openedAt, lockedAt: r.lockedAt, runningAt: r.firstOddAt, endedAt: r.endedAt,
+      currentOdd: r.currentOdd, maxOdd: r.maxOdd, endOdd: r.endOdd,
+      oddFrameCount: r.oddFrameCount,
+      recentOdds: r.recentOdds.slice(),
+      firstOddAt: r.firstOddAt, lastOddAt: r.lastOddAt,
+      durationMs: r.durationMs,
+      avgOddIntervalMs: r.intervalCount ? round1(r.intervalSum / r.intervalCount) : null,
+      minOddIntervalMs: round1(r.intervalMin), maxOddIntervalMs: round1(r.intervalMax),
+      // ActionTrace evidence (§14/§15) is READ from RoundTracker — never generated.
+      actionTraces: this._tracesFor(r.sid),
+    };
+    if (live && r.terminalReason == null) {
+      const now = this._now();
+      out.roundAgeMs = r.openedMono != null ? round1(now - r.openedMono) : null;
+      out.timeSinceLastOddMs = r.lastOddMono != null ? round1(now - r.lastOddMono) : null;
+    }
+    return out;
+  }
+
+  // Read-only ActionTrace lookup: whatever the game client / manual WU7 test did,
+  // as already correlated by RoundTracker. Display evidence only.
+  _tracesFor(sid) {
+    if (!this._tracker || !this._tracker.actionTraces) return [];
+    return this._tracker.actionTraces().filter((t) => t.sid != null && String(t.sid) === String(sid));
+  }
+
+  globalMetrics() {
+    const h = this._history;
+    const durations = h.map((r) => r.durationMs).filter((x) => typeof x === 'number');
+    const completed = h.filter((r) => r.terminalReason === TERMINAL.ROUND_END);
+    return {
+      observedRounds: h.length + (this._current ? 1 : 0),
+      completedRounds: completed.length,
+      superseded: h.filter((r) => r.terminalReason === TERMINAL.SUPERSEDED).length,
+      disconnected: h.filter((r) => r.terminalReason === TERMINAL.DISCONNECTED).length,
+      avgRoundDurationMs: avg(durations),
+      minRoundDurationMs: durations.length ? round1(Math.min(...durations)) : null,
+      maxRoundDurationMs: durations.length ? round1(Math.max(...durations)) : null,
+      avgOddFrames: avg(h.map((r) => r.oddFrameCount)),
+      avgOddIntervalMs: avg(h.map((r) => r.avgOddIntervalMs)),
     };
   }
 
   _emit() { this.emit('update'); }
 }
 
-function publicRound(r) {
-  if (!r) return null;
-  return {
-    index: r.index, sid: r.sid, phase: r.phase, result: r.result,
-    startedAt: r.startedAt, openedAt: r.openedAt, finishedAt: r.finishedAt,
-    currentOdd: r.currentOdd, maxOdd: r.maxOdd,
-    triggerOdd: r.triggerOdd, triggerAt: r.triggerAt,
-    oddBuffer: r.oddBuffer.slice(),
-    bet: r.bet ? { ...r.bet } : null, cashout: r.cashout ? { ...r.cashout } : null,
-    serverOdd: r.serverOdd, wm: r.wm,
-    betLatencyMs: r.betLatencyMs, cashoutLatencyMs: r.cashoutLatencyMs,
-  };
-}
-
 function iso(wall) { try { return new Date(wall).toISOString(); } catch { return new Date().toISOString(); } }
-function round1(n) { return n == null ? null : Math.round(n * 10) / 10; }        // latency ms
-function round2(n) { return n == null ? null : Math.round(n * 100) / 100; }      // odds
-function avg(list) { const xs = list.filter((x) => typeof x === 'number' && Number.isFinite(x)); if (!xs.length) return null; return round2(xs.reduce((a, b) => a + b, 0) / xs.length); }
+function round1(n) { return (n == null || !Number.isFinite(n)) ? null : Math.round(n * 10) / 10; }
+function avg(list) { const xs = list.filter((x) => typeof x === 'number' && Number.isFinite(x)); if (!xs.length) return null; return round1(xs.reduce((a, b) => a + b, 0) / xs.length); }
 
-module.exports = { RoundObserver, validateConfig, PHASE, STATUS, RESULT };
+module.exports = { RoundObserver, validateConfig, STATUS, PHASE, TERMINAL };
