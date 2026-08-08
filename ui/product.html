@@ -53,6 +53,7 @@
       <button id="act-toggle" class="btn" title="User actions (clicks) captured in the target">👆 Actions <span id="act-count" class="count"></span></button>
       <button id="proto-toggle" class="btn" title="Protocol Test Harness (authorized QA/staging only)">🎯 Protocol <span id="proto-env-chip" class="chip off">OFF</span></button>
       <button id="obs-toggle" class="btn" title="Read-only multi-round observer (records evidence, sends nothing)">👁 Observer <span id="obs-status-chip" class="chip off">IDLE</span></button>
+      <button id="at-toggle" class="btn" title="Automated offline round test runner (local/test endpoints only)">⚙ Auto Test <span id="at-status-chip" class="chip off">IDLE</span></button>
       <button id="clear" class="btn icon" title="Clear (Delete)">⌫</button>
       <button id="theme" class="btn icon" title="Toggle theme">☾</button>
     </div>
@@ -218,6 +219,70 @@
       <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only · click a row for detail)</span></div>
       <div id="obs-history" class="proto-execs"><div class="muted">No rounds observed yet.</div></div>
       <div id="obs-detail" class="proto-json" hidden></div>
+    </div>
+  </aside>
+
+  <aside id="at-panel" class="proto-panel" hidden aria-label="Automated Offline Test Runner">
+    <div class="proto-head">
+      <b>⚙ Automated Offline Test</b>
+      <span id="at-env" class="proto-env off" title="The automated runner only runs against local/offline test endpoints">LOCAL ONLY</span>
+      <div class="spacer"></div>
+      <button id="at-close" class="btn icon" title="Hide panel">✕</button>
+    </div>
+
+    <div id="at-gate" class="proto-validation block" hidden></div>
+
+    <!-- Live state: current server odd is the prominent number -->
+    <div class="proto-card at-live">
+      <div class="proto-kv"><span>Status</span><b id="at-status">IDLE</b></div>
+      <div class="proto-kv"><span>Progress</span><b id="at-progress">— / —</b></div>
+      <div class="proto-kv"><span>SID</span><b id="at-sid">—</b></div>
+      <div class="at-odd-wrap">
+        <div class="at-odd-label">CURRENT ODD</div>
+        <div id="at-odd" class="at-odd">—</div>
+        <div class="at-odd-target">Stop at <b id="at-target">—</b></div>
+      </div>
+      <div id="at-oddstrip" class="proto-sidhist"><span class="muted">none</span></div>
+      <div class="proto-kv"><span>Bet</span><b id="at-bet">—</b></div>
+      <div class="proto-kv"><span>Cashout</span><b id="at-cash">—</b></div>
+    </div>
+
+    <!-- Config (before start) -->
+    <div class="proto-card" id="at-config">
+      <div class="proto-state-title">TEST CONFIG</div>
+      <div class="proto-row">
+        <label>Rounds <input id="at-rounds" class="mono" value="10"></label>
+        <label>Amount <input id="at-amount" class="mono" value="5000"></label>
+      </div>
+      <div class="proto-row">
+        <label>Stop at Odd <input id="at-stopodd" class="mono" value="2.00"></label>
+      </div>
+      <button id="at-adv-toggle" class="proto-collapse" type="button">▶ Advanced (aid / eid)</button>
+      <div id="at-adv" class="proto-advanced" hidden>
+        <div class="proto-row">
+          <label>aid <input id="at-aid" class="mono" value="1"></label>
+          <label>eid <input id="at-eid" class="mono" value="1"></label>
+        </div>
+      </div>
+      <div id="at-cfg-err" class="errb"></div>
+      <div class="proto-row">
+        <button id="at-start" class="primary">▶ Start Test</button>
+        <button id="at-stop" class="danger" disabled>■ Stop Test</button>
+      </div>
+    </div>
+
+    <div class="proto-card at-metrics">
+      <div class="proto-state-title">METRICS</div>
+      <div class="proto-kv"><span>Completed / Attempted</span><b id="at-m-count">—</b></div>
+      <div class="proto-kv"><span>Ended before threshold</span><b id="at-m-early">—</b></div>
+      <div class="proto-kv"><span>Avg bet ACK latency</span><b id="at-m-bet">—</b></div>
+      <div class="proto-kv"><span>Avg trigger→send</span><b id="at-m-tts">—</b></div>
+      <div class="proto-kv"><span>Avg cashout ACK latency</span><b id="at-m-cash">—</b></div>
+    </div>
+
+    <div class="proto-hist">
+      <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only)</span></div>
+      <div id="at-history" class="proto-execs"><div class="muted">No rounds run yet.</div></div>
     </div>
   </aside>
 

@@ -47,6 +47,12 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   observerSnapshot: () => ipcRenderer.invoke('observer-snapshot'),
   observerConfig: patch => ipcRenderer.invoke('observer-config', patch),
   onObserverUpdate: callback => ipcRenderer.on('observer-update', (_event, snap) => callback(snap)),
+  // WU10 — offline automated round test runner
+  autotestEnvironment: targetId => ipcRenderer.invoke('autotest-environment', targetId),
+  autotestStart: config => ipcRenderer.invoke('autotest-start', config),
+  autotestStop: () => ipcRenderer.invoke('autotest-stop'),
+  autotestSnapshot: () => ipcRenderer.invoke('autotest-snapshot'),
+  onAutotestUpdate: callback => ipcRenderer.on('autotest-update', (_event, snap) => callback(snap)),
   onTargetsChanged: callback => ipcRenderer.on('targets-changed', (_event, targets) => callback(targets)),
   onCdpError: callback => ipcRenderer.on('cdp-error', (_event, error) => callback(error)),
   onEvent: callback => {

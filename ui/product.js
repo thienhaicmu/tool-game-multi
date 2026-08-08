@@ -708,3 +708,107 @@ renderActions();
   };
   $('obs-close').onclick = () => { $('obs-panel').hidden = true; };
 })();
+
+// ==================== WU10 AUTOMATED OFFLINE TEST RUNNER (local/test only) ====================
+// Config -> Start. The runner takes SID/ODD only from the server (RoundTracker/Observer),
+// sends one bet + at most one threshold cashout per round, N rounds. HARD-BOUND to
+// local/offline endpoints in the main process; this UI cannot override that gate.
+(function autoTestUI() {
+  if (!api.autotestStart) return; // preload without WU10 — inert
+  let snap = null, env = { allowed: false, host: '' };
+  const numOr = (v, d) => { const n = Number(String(v).trim()); return Number.isFinite(n) ? n : d; };
+
+  function setChip(status) {
+    const chip = $('at-status-chip'); if (!chip) return;
+    const on = ['WAITING_ROUND', 'BET_SENDING', 'WAITING_BET_ACK', 'WATCHING_ODD', 'CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(status);
+    chip.textContent = status === 'COMPLETED' ? 'DONE' : (on ? 'RUN' : (status || 'IDLE'));
+    chip.className = 'chip ' + (on ? 'on' : (status === 'COMPLETED' ? 'warn' : 'off'));
+  }
+
+  async function refreshEnv() {
+    try { env = await api.autotestEnvironment(); } catch { env = { allowed: false, host: '' }; }
+    const badge = $('at-env');
+    badge.textContent = env.allowed ? `LOCAL OK · ${env.host || ''}` : 'NOT A LOCAL/TEST ENDPOINT';
+    badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
+    const gate = $('at-gate');
+    if (env.allowed) { gate.hidden = true; }
+    else { gate.hidden = false; gate.textContent = `Automated runner is bound to local/offline test endpoints. "${env.host || '(unknown)'}" is not permitted — Start is disabled.`; }
+    syncButtons();
+  }
+  function syncButtons() {
+    const running = snap && snap.running;
+    $('at-start').disabled = running || !env.allowed;
+    $('at-stop').disabled = !running;
+    for (const id of ['at-rounds', 'at-amount', 'at-stopodd', 'at-aid', 'at-eid']) { const el = $(id); if (el) el.disabled = running; }
+  }
+
+  function render() {
+    if (!snap) return;
+    setChip(snap.state);
+    $('at-status').textContent = snap.state;
+    const p = snap.progress || {};
+    $('at-progress').textContent = `${p.finished ?? 0} / ${p.target ?? '—'}`;
+    $('at-sid').textContent = snap.liveSid != null ? snap.liveSid : '—';
+    const odd = snap.liveOdd;
+    const oddEl = $('at-odd'); oddEl.textContent = odd != null ? Number(odd).toFixed(2) + 'x' : '—';
+    const target = snap.config ? snap.config.stopOdd : (snap.active ? snap.active.stopOdd : null);
+    oddEl.className = 'at-odd' + (odd != null && target != null && odd >= target ? ' trig' : '');
+    $('at-target').textContent = target != null ? Number(target).toFixed(2) + 'x' : '—';
+    const active = snap.active;
+    $('at-bet').textContent = active ? (active.betResult || (['BET_SENDING', 'WAITING_BET_ACK'].includes(snap.state) ? 'sending…' : '—')) : '—';
+    $('at-cash').textContent = ['CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(snap.state) ? 'sending…' : (active && active.ackOdd != null ? 'ACK ' + active.ackOdd : 'waiting');
+    const m = snap.metrics || {};
+    $('at-m-count').textContent = `${m.completed ?? 0} / ${m.attempted ?? 0}`;
+    $('at-m-early').textContent = m.endedBeforeThreshold ?? 0;
+    $('at-m-bet').textContent = m.avgBetAckLatencyMs != null ? m.avgBetAckLatencyMs + 'ms' : '—';
+    $('at-m-tts').textContent = m.avgTriggerToSendMs != null ? m.avgTriggerToSendMs + 'ms' : '—';
+    $('at-m-cash').textContent = m.avgCashoutAckLatencyMs != null ? m.avgCashoutAckLatencyMs + 'ms' : '—';
+    renderHistory(snap.history || []);
+    syncButtons();
+  }
+
+  function resClass(r) { return r === 'COMPLETED' ? 'COMPLETED' : r === 'ROUND_ENDED_BEFORE_THRESHOLD' ? 'ROUND_ENDED_BEFORE_TRIGGER' : 'ENDED'; }
+  function renderHistory(rounds) {
+    const el = $('at-history'); if (!el) return;
+    if (!rounds.length) { el.innerHTML = '<div class="muted">No rounds run yet.</div>'; return; }
+    el.innerHTML = rounds.slice().reverse().slice(0, 40).map((r) => {
+      const f2 = (n) => (n == null ? '—' : Number(n).toFixed(2));
+      return `<div class="obs-round">`
+        + `<div class="obs-round-head"><b>#${esc(r.index + 1)} · sid ${esc(r.sid)}</b><span class="obs-res ${resClass(r.result)}">${esc(r.result)}</span></div>`
+        + `<div class="obs-round-meta">target ${esc(f2(r.stopOdd))} · trigger ${esc(f2(r.triggerOdd))} · ack ${esc(f2(r.ackOdd))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
+        + `<div class="obs-round-meta">bet ${esc(r.betResult || '—')} · betLat ${esc(r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—')} · cashLat ${esc(r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—')}</div>`
+        + `</div>`;
+    }).join('');
+  }
+
+  // Live odd strip from the OBSERVER (the single source of truth, §24) — no second store.
+  api.onObserverUpdate && api.onObserverUpdate((s) => {
+    if ($('at-panel').hidden) return;
+    const cur = s && s.current;
+    const strip = $('at-oddstrip');
+    const buf = (cur && cur.recentOdds) || [];
+    strip.innerHTML = buf.length ? buf.slice(-30).map((o, i, a) => `<span class="sid odd ${i === a.length - 1 ? 'trig' : ''}">${esc(Number(o.odd).toFixed(2))}</span>`).join('') : '<span class="muted">none</span>';
+    if (snap && snap.running && cur) { snap.liveOdd = cur.currentOdd; snap.liveSid = cur.sid; render(); }
+  });
+  api.onAutotestUpdate && api.onAutotestUpdate((s) => { snap = s; if (!$('at-panel').hidden) render(); });
+
+  $('at-adv-toggle').onclick = () => { const el = $('at-adv'); el.hidden = !el.hidden; $('at-adv-toggle').textContent = (el.hidden ? '▶' : '▼') + ' Advanced (aid / eid)'; };
+  $('at-start').onclick = async () => {
+    $('at-cfg-err').textContent = '';
+    const config = { roundCount: numOr($('at-rounds').value, 0), amount: numOr($('at-amount').value, 0), stopOdd: numOr($('at-stopodd').value, 0), aid: numOr($('at-aid').value, 1), eid: numOr($('at-eid').value, 1) };
+    const r = await api.autotestStart(config);
+    if (r && r.error) { $('at-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; return; }
+    snap = r; render();
+  };
+  $('at-stop').onclick = async () => { const r = await api.autotestStop(); if (r && !r.error) { snap = r; render(); } };
+
+  $('at-toggle').onclick = async () => {
+    const p = $('at-panel'); p.hidden = !p.hidden;
+    if (!p.hidden) { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } render(); }
+  };
+  $('at-close').onclick = () => { $('at-panel').hidden = true; };
+
+  // Re-check the endpoint gate when the selected target changes.
+  const prev = $('targets').onchange;
+  $('targets').onchange = (e) => { if (prev) prev.call($('targets'), e); setTimeout(() => { if (!$('at-panel').hidden) refreshEnv(); }, 80); };
+})();

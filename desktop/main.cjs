@@ -19,6 +19,7 @@ const { Timeline } = require('./timeline.cjs');
 const { RoundTracker } = require('./protocol/aviator.cjs');
 const { ProtocolHarness } = require('./protocol/harness.cjs');
 const { RoundObserver } = require('./protocol/round-observer.cjs');
+const { AutoRunner } = require('./protocol/auto-runner.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 
 let shell;
@@ -193,6 +194,18 @@ let observerDirty = false;
 observer.on('update', () => {
   if (observerDirty) return; observerDirty = true;
   setTimeout(() => { observerDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('observer-update', observer.snapshot()); }, 120);
+});
+// WU10: offline automated round test runner. Event-driven over the frame stream;
+// reuses the observer (sid/odd owner) + harness (send + ack). HARD-BOUND to local/
+// test endpoints — start() refuses any non-allowlisted host and the UI can't override.
+const autoRunner = new AutoRunner({
+  roundTracker: aviator, observer, harness,
+  getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+});
+let autoDirty = false;
+autoRunner.on('update', () => {
+  if (autoDirty) return; autoDirty = true;
+  setTimeout(() => { autoDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('autotest-update', autoRunner.snapshot()); }, 100);
 });
 // Persistent session store (cookies) — independent of launching Chrome, so a
 // login survives reconnects on Chrome / WebView / WebView2 / CEF alike.
@@ -429,3 +442,8 @@ ipcMain.handle('protocol-executions', () => harness.executions());
 // WU8 — read-only observer IPC (snapshot + display-only config; never sends).
 ipcMain.handle('observer-snapshot', () => observer.snapshot());
 ipcMain.handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });
+// WU10 — automated runner IPC (hard-bound to local/test endpoints; start() gates).
+ipcMain.handle('autotest-environment', (_event, targetId) => autoRunner.environmentFor(String(targetId || selectedTargetId || '')));
+ipcMain.handle('autotest-start', (_event, config = {}) => { const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
+ipcMain.handle('autotest-stop', () => { const r = autoRunner.stop(); return r.error ? r : autoRunner.snapshot(); });
+ipcMain.handle('autotest-snapshot', () => autoRunner.snapshot());
