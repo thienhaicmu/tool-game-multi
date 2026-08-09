@@ -1,0 +1,43 @@
+{
+  "appId": "com.aviatorcontrolstudio.licensegenerator",
+  "productName": "WVPT License Generator",
+  "directories": {
+    "output": "tools/license-generator/release"
+  },
+  "files": [
+    "tools/license-generator/ui-main.cjs",
+    "tools/license-generator/ui-preload.cjs",
+    "tools/license-generator/ui.html",
+    "tools/license-generator/ui.css",
+    "tools/license-generator/ui.js",
+    "desktop/licensing/canonical-json.cjs",
+    "package.json"
+  ],
+  "extraResources": [
+    {
+      "from": "tools/license-generator/private",
+      "to": "private",
+      "filter": [
+        "*.pem"
+      ]
+    }
+  ],
+  "extraMetadata": {
+    "main": "tools/license-generator/ui-main.cjs"
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true
+  }
+}

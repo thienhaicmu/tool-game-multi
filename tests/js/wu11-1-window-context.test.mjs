@@ -115,6 +115,7 @@ test('aid/eid inputs removed from Auto Run/Amount Check; overview + waiting-for-
   assert.ok(!/id="bv-aid"/.test(html) && !/id="bv-eid"/.test(html), 'Amount Check has no aid/eid inputs');
   assert.ok(/id="at-cta"/.test(html), 'Auto Run CTA present');
   assert.ok(/id="ov-aid"/.test(html) && /id="ov-eid"/.test(html), 'Overview shows AID/EID');
+  assert.ok(/id="shell-license"/.test(html), 'Appbar shows license remaining days');
   assert.ok(/Waiting for login context/.test(readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8')), 'waiting-for-login gate');
 });
 

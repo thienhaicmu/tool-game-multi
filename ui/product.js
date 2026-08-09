@@ -11,6 +11,66 @@ function broadcastProtoCtx() { document.dispatchEvent(new CustomEvent('protoctx-
 if (api.onProtocolContext) api.onProtocolContext((c) => { protoCtx = c || protoCtx; broadcastProtoCtx(); });
 if (api.protocolContext) api.protocolContext().then((c) => { if (c) { protoCtx = c; broadcastProtoCtx(); } }).catch(() => {});
 
+let licenseState = { active: false, checking: true, machineId: null };
+function dateFromSeconds(seconds) { return seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : '—'; }
+function remainingDays(expiresAt) {
+  if (!expiresAt) return '—';
+  const days = Math.ceil((expiresAt * 1000 - Date.now()) / 86400000);
+  return days < 0 ? 'expired' : `${days} days`;
+}
+function licenseFriendly(status) {
+  const code = status && status.error && status.error.code;
+  if (!code) return '';
+  if (code === 'LICENSE_MISSING') return 'Enter your license key to unlock this device.';
+  if (code === 'LICENSE_EXPIRED') return `LICENSE EXPIRED\nExpired ${dateFromSeconds(status.error.expiredAt || (status.error.payload && status.error.payload.expiresAt))}\nContact your license provider to renew.`;
+  if (code === 'LICENSE_MACHINE_MISMATCH') return 'LICENSE DOES NOT MATCH THIS DEVICE';
+  if (code === 'LICENSE_BAD_SIGNATURE') return 'License signature is invalid. Check the key and try again.';
+  if (code === 'LICENSE_CLOCK_ROLLBACK') return 'System clock rollback detected. Correct the Windows clock or contact support.';
+  if (code === 'LICENSE_LAUNCH_LIMIT_REACHED') return `LICENSE LAUNCH LIMIT REACHED\nUsed ${status.error.usedLaunches || 0} / ${status.error.maxLaunches || 0} launches.\nContact your license provider to renew.`;
+  if (code === 'MACHINE_ID_UNAVAILABLE') return 'Machine ID is unavailable on this PC.';
+  if (code === 'LICENSE_WRONG_PRODUCT') return 'This license is for another product.';
+  return 'License is invalid.';
+}
+function renderLicenseStatus(status) {
+  licenseState = status || licenseState;
+  document.body.dataset.license = licenseState.active ? 'active' : 'locked';
+  const shellLicense = $('shell-license');
+  if (shellLicense) {
+    shellLicense.textContent = licenseState.active && licenseState.payload
+      ? `License ${remainingDays(licenseState.payload.expiresAt)} · Expires ${dateFromSeconds(licenseState.payload.expiresAt)}`
+      : 'License LOCKED';
+  }
+  const machine = $('activation-machine'); if (machine) machine.value = licenseState.machineId || 'MACHINE_ID_UNAVAILABLE';
+  const err = $('activation-error');
+  if (err) {
+    const msg = licenseFriendly(licenseState);
+    err.hidden = !msg || (licenseState.error && licenseState.error.code === 'LICENSE_MISSING');
+    err.textContent = msg;
+  }
+  const lm = $('activation-license-machine');
+  const licenseMachine = licenseState.error && licenseState.error.licenseMachineId;
+  if (lm) { lm.hidden = !licenseMachine; lm.textContent = licenseMachine ? `License Machine ID: ${licenseMachine}` : ''; }
+  if (licenseState.active && $('activation-license')) $('activation-license').value = '';
+  if (typeof renderOverview === 'function' && $('view-overview') && !$('view-overview').hidden) renderOverview();
+}
+async function refreshLicenseStatus() {
+  if (!api.licenseStatus) { document.body.dataset.license = 'active'; return; }
+  try { renderLicenseStatus(await api.licenseStatus()); }
+  catch { renderLicenseStatus({ active: false, error: { code: 'LICENSE_MISSING', message: 'License status unavailable' } }); }
+}
+(function activationUI() {
+  const copyBtn = $('activation-copy');
+  if (copyBtn) copyBtn.onclick = () => copy($('activation-machine').value, 'Machine ID');
+  const submit = $('activation-submit');
+  if (submit) submit.onclick = async () => {
+    submit.disabled = true; submit.textContent = 'VERIFYING...';
+    try { renderLicenseStatus(await api.activateLicense(($('activation-license').value || '').trim())); }
+    catch { renderLicenseStatus({ active: false, machineId: licenseState.machineId, error: { code: 'LICENSE_INVALID_FORMAT', message: 'Activation failed' } }); }
+    submit.disabled = false; submit.textContent = 'ACTIVATE';
+  };
+  refreshLicenseStatus();
+})();
+
 // ---- state ----
 const reqs = new Map();        // id -> { id, method, url, host, path, targetId, cdpRequestId, resourceType, status, duration }
 const order = [];              // capture order (append)
@@ -35,7 +95,15 @@ function toast(msg) {
   toastEl.textContent = msg; toastEl.classList.add('show');
   clearTimeout(toastTimer); toastTimer = setTimeout(() => toastEl.classList.remove('show'), 1600);
 }
-async function copy(text, label) { try { await navigator.clipboard.writeText(text); toast((label || 'Copied') + ' ✓'); } catch { toast('Copy failed'); } }
+async function copy(text, label) {
+  try {
+    if (api.copyText) await api.copyText(text);
+    else await navigator.clipboard.writeText(text);
+    toast((label || 'Copied') + ' ✓');
+  } catch {
+    toast('Copy failed');
+  }
+}
 
 // ---- capture stream ----
 api.onEvent && api.onEvent((ev) => {
@@ -1082,6 +1150,10 @@ renderActions();
     $('ov-profile').textContent = info.chromeProfile || '—';
     $('ov-cdp').textContent = runtime.cdpPort || '—';
     $('ov-browser').textContent = 'Connected';
+    $('ov-license').textContent = licenseState.active ? 'ACTIVE' : 'LOCKED';
+    $('ov-license-exp').textContent = licenseState.payload ? dateFromSeconds(licenseState.payload.expiresAt) : '—';
+    $('ov-license-rem').textContent = licenseState.payload ? remainingDays(licenseState.payload.expiresAt) : '—';
+    $('ov-license-launches').textContent = licenseState.launch ? (licenseState.launch.max ? `${licenseState.launch.used} / ${licenseState.launch.max}` : `${licenseState.launch.used} / Unlimited`) : '—';
     $('ov-target').textContent = state.targetName || '—';
     $('ov-ws').textContent = 'Aviator detected';
     $('ov-proto').textContent = cur ? 'Ready · live round' : 'Ready · waiting for round';

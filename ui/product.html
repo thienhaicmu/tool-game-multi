@@ -6,7 +6,25 @@
   <title>Aviator Control Studio</title>
   <link rel="stylesheet" href="product.css">
 </head>
-<body data-mode="product">
+<body data-mode="product" data-license="checking">
+  <section id="activation-screen" class="activation-screen">
+    <div class="activation-panel">
+      <div class="activation-title">ACTIVATE PRODUCT</div>
+      <div id="activation-error" class="activation-error" hidden></div>
+      <label>Machine ID
+        <div class="activation-copy-row">
+          <input id="activation-machine" class="mono" readonly value="Loading...">
+          <button id="activation-copy" class="btn" type="button">COPY MACHINE ID</button>
+        </div>
+      </label>
+      <div id="activation-help" class="activation-help">Send this Machine ID to your license provider.</div>
+      <div id="activation-license-machine" class="activation-help" hidden></div>
+      <label>License Key
+        <textarea id="activation-license" class="mono" rows="5" spellcheck="false"></textarea>
+      </label>
+      <button id="activation-submit" class="primary" type="button">ACTIVATE</button>
+    </div>
+  </section>
   <!-- Focused Aviator control shell -->
   <header id="appbar">
     <div class="brand"><span class="glyph">◇</span><b>Aviator&nbsp;Control&nbsp;Studio</b></div>
@@ -15,6 +33,7 @@
       <button id="shell-open" class="primary">Open Browser</button>
     </div>
     <span id="shell-status" class="ab-status"><span class="dot"></span><span id="shell-status-text">Disconnected</span></span>
+    <span id="shell-license" class="ab-status license" title="License remaining days">License —</span>
     <span id="shell-instance" class="ab-status" title="Isolated app/browser instance">Instance —</span>
     <span id="shell-cdp" class="ab-status" title="This instance's browser control port">CDP —</span>
     <div class="spacer"></div>
@@ -40,6 +59,10 @@
         <div id="ov-body" hidden>
           <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Waiting for login context…</span></div>
           <div class="ov-detect">
+            <div class="proto-kv"><span>License</span><b id="ov-license">—</b></div>
+            <div class="proto-kv"><span>Expires</span><b id="ov-license-exp">—</b></div>
+            <div class="proto-kv"><span>Remaining</span><b id="ov-license-rem">—</b></div>
+            <div class="proto-kv"><span>Launches</span><b id="ov-license-launches">—</b></div>
             <div class="proto-kv"><span>Instance</span><b id="ov-instance">—</b></div>
             <div class="proto-kv"><span>Chrome profile</span><b id="ov-profile">—</b></div>
             <div class="proto-kv"><span>CDP port</span><b id="ov-cdp">—</b></div>

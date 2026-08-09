@@ -6,6 +6,10 @@ __pycache__/
 .venv/
 dist/
 build/
+!build/
+build/*
+!build/aviator-icon.ico
+!build/aviator-icon.png
 *.db
 artifacts/
 .env
@@ -18,3 +22,5 @@ release2/
 release3/
 release4/
 release5/
+tools/license-generator/private/
+*.private.pem

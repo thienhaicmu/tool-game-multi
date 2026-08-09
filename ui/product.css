@@ -27,6 +27,23 @@
 *{box-sizing:border-box}
 html,body{margin:0;height:100vh;overflow:hidden;font-family:var(--f-ui);font-size:var(--t-md);line-height:1.45;color:var(--text);background:var(--bg)}
 body{display:grid;grid-template-rows:auto auto 1fr auto auto}
+body[data-license=checking] #appbar,
+body[data-license=checking] #shell,
+body[data-license=checking] #legacy,
+body[data-license=checking] .proto-panel,
+body[data-license=locked] #appbar,
+body[data-license=locked] #shell,
+body[data-license=locked] #legacy,
+body[data-license=locked] .proto-panel{display:none!important}
+body[data-license=active] #activation-screen{display:none!important}
+.activation-screen{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:9999}
+.activation-panel{width:min(560px,calc(100vw - 32px));display:grid;gap:14px;padding:22px;border:1px solid var(--line);border-radius:var(--r2);background:var(--panel);box-shadow:var(--shadow)}
+.activation-title{font-size:var(--t-lg);font-weight:800;letter-spacing:.08em;border-bottom:1px solid var(--line);padding-bottom:12px}
+.activation-panel label{display:grid;gap:7px;font-size:var(--t-sm);font-weight:700;color:var(--muted)}
+.activation-copy-row{display:grid;grid-template-columns:1fr auto;gap:8px}
+.activation-copy-row input,.activation-panel textarea{width:100%;box-sizing:border-box}
+.activation-help{font-size:var(--t-sm);color:var(--dim)}
+.activation-error{padding:10px;border-radius:var(--r2);border:1px solid #f0b8b8;background:#fff1f1;color:#9a2b2b;font-size:var(--t-sm);white-space:pre-wrap}
 button,input,select,textarea{font:inherit;color:var(--text)}
 .mono{font-family:var(--f-mono)}
 .muted,.faint{color:var(--faint)}
@@ -308,16 +325,18 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 :root{ --appbar-h:54px; --nav-w:188px; }
 body{ display:block; }                       /* override the legacy body grid */
 
-#appbar{ position:fixed; inset:0 0 auto 0; height:var(--appbar-h); display:flex; align-items:center; gap:12px; padding:0 16px; background:var(--surface); border-bottom:1px solid var(--line); z-index:60; }
+#appbar{ position:fixed; inset:0 0 auto 0; height:var(--appbar-h); display:flex; align-items:center; gap:14px; padding:0 18px; background:var(--surface); border-bottom:1px solid var(--line); z-index:60; }
 #appbar .brand{ display:flex; align-items:center; gap:6px; font-size:var(--t-lg); font-weight:650; }
 #appbar .glyph{ color:var(--accent); }
-.ab-url{ display:flex; gap:6px; align-items:center; flex:0 1 460px; }
-.ab-url #shell-url{ flex:1; min-width:180px; }
-.ab-url .primary{ background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; }
+.ab-url{ display:flex; gap:8px; align-items:center; flex:1 1 auto; min-width:260px; max-width:820px; }
+.ab-url #shell-url{ flex:1 1 auto; min-width:0; height:34px; }
+.ab-url .primary{ flex:0 0 auto; min-width:112px; height:34px; background:var(--accent); color:#fff; border-color:var(--accent); font-weight:600; white-space:nowrap; padding:0 14px; }
 .ab-status{ display:inline-flex; align-items:center; gap:6px; font-size:var(--t-sm); color:var(--dim); }
+#shell-instance,#shell-cdp{ display:none!important; }
 .ab-status .dot{ width:9px; height:9px; border-radius:50%; background:var(--faint); }
 .ab-status.on .dot{ background:var(--ok); }
 .ab-status.mid .dot{ background:var(--warn); }
+.ab-status.license{font-weight:700;color:var(--ok);background:var(--ok-bg);border:1px solid rgba(21,128,61,.18);border-radius:999px;padding:4px 9px;white-space:nowrap}
 .ab-adv{ display:inline-flex; align-items:center; gap:5px; font-size:var(--t-sm); color:var(--dim); cursor:pointer; border:1px solid var(--line-strong); border-radius:var(--r2); padding:4px 9px; }
 .ab-adv input{ margin:0; }
 
@@ -360,7 +379,7 @@ body[data-view=auto] #appbar{ display:flex; }
 body[data-view=auto] #appbar .brand,
 body[data-view=auto] #appbar #shell-status,
 body[data-view=auto] #appbar #shell-advanced-wrap{ display:none; }
-body[data-view=auto] #appbar .ab-url{ flex:1; }
+body[data-view=auto] #appbar .ab-url{ flex:1 1 auto; max-width:none; }
 body[data-view=auto] #at-panel:not([hidden]){ top:var(--appbar-h); left:0; right:0; bottom:0; width:auto; height:auto; }
 /* In advanced mode the WU7-10 panels keep their original floating behavior. */
 

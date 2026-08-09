@@ -11,7 +11,11 @@
     "dev": "electron .",
     "test": "node --test --test-concurrency=1 \"tests/js/**/*.test.mjs\"",
     "dist": "electron-builder --win nsis --x64",
-    "dist:dir": "electron-builder --win dir --x64"
+    "dist:dir": "electron-builder --win dir --x64",
+    "license:keypair": "node tools/license-generator/generate-keypair.mjs",
+    "license:generate": "node tools/license-generator/generate-license.mjs",
+    "license:generator": "electron tools/license-generator/ui-main.cjs",
+    "license:generator:dist": "electron-builder --config tools/license-generator/electron-builder.json --win nsis --x64"
   },
   "build": {
     "appId": "com.websecurityobservatory.desktop",
@@ -25,6 +29,7 @@
       "package.json"
     ],
     "win": {
+      "icon": "build/aviator-icon.ico",
       "target": [
         {
           "target": "nsis",

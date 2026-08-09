@@ -1,0 +1,31 @@
+:root{
+  --bg:#f6f7fb;--panel:#fff;--text:#172033;--muted:#647084;--line:#dbe1ea;--accent:#2563eb;--ok:#15803d;--err:#b42318;
+  --mono:ui-monospace,"Cascadia Code",Consolas,monospace;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:13px/1.45 system-ui,"Segoe UI",Arial,sans-serif}
+.shell{width:min(860px,calc(100vw - 32px));margin:22px auto;display:grid;gap:14px}
+header{display:flex;align-items:center;justify-content:space-between;padding:8px 0}
+h1{margin:0;font-size:22px}
+p{margin:4px 0 0;color:var(--muted)}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:16px;display:grid;gap:12px;box-shadow:0 1px 3px rgba(20,30,50,.05)}
+.panel-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.form label{display:grid;gap:7px;font-weight:700;color:var(--muted)}
+input,select,textarea,button{font:inherit}
+input,select,textarea{border:1px solid var(--line);border-radius:6px;padding:9px;background:#fff;color:var(--text);width:100%}
+textarea{resize:vertical}
+button{border:1px solid var(--line);border-radius:6px;background:#fff;padding:8px 12px;cursor:pointer;font-weight:700}
+button:hover{border-color:var(--accent)}
+button:disabled{opacity:.5;cursor:default}
+.primary{background:var(--accent);border-color:var(--accent);color:#fff;width:100%;padding:11px}
+.mono{font-family:var(--mono)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.stat{border:1px solid var(--line);border-radius:6px;padding:10px;display:grid;gap:4px}
+.stat span{color:var(--muted);font-size:12px}
+.stat b{font-family:var(--mono);word-break:break-all}
+.path,.hint{color:var(--muted);font-size:12px;word-break:break-all}
+.chip{font-weight:800;font-size:12px;border-radius:999px;padding:6px 10px;border:1px solid var(--line)}
+.chip.on{color:var(--ok);background:#ecfdf3;border-color:#b7e4c7}
+.chip.off{color:var(--err);background:#fff1f0;border-color:#ffccc7}
+.error{border:1px solid #ffccc7;background:#fff1f0;color:var(--err);border-radius:6px;padding:10px}
+@media (max-width:640px){.grid{grid-template-columns:1fr}header{align-items:flex-start;gap:10px;flex-direction:column}}
