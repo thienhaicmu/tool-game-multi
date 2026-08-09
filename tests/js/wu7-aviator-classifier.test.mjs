@@ -58,6 +58,7 @@ test('classifier surfaces login agentId from framed MiniGame arrays', () => {
   const login = classifyFrame('42[1,"MiniGame","","",{"agentId":"1","accessToken":"redacted","reconnect":false}]');
   assert.equal(login.type, 'UNKNOWN');
   assert.equal(login.agentId, '1');
+  assert.equal(login.wirePrefix, '42');
 });
 
 // ---------------------------------------------------------------------------
@@ -141,4 +142,11 @@ test('socket context is captured from known frames for the send seam', () => {
   assert.equal(ctx.targetId, 'T1');
   assert.equal(ctx.host, 'game.host');
   assert.equal(ctx.cdpSessionId, 'S1');
+});
+
+test('socket context remembers Socket.IO prefix from login frames', () => {
+  const t = new RoundTracker();
+  t.observe({ targetId: 'T1', cdpSessionId: 'S1', url: 'wss://game.host/socket.io', direction: 'send', raw: '42[1,"MiniGame","","",{"agentId":"1","accessToken":"redacted","reconnect":false}]' });
+  const ctx = t.socketContext('T1');
+  assert.equal(ctx.wirePrefix, '42');
 });

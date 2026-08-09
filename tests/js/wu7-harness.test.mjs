@@ -7,7 +7,7 @@ const { RoundTracker } = require('../../desktop/protocol/aviator.cjs');
 const { ProtocolHarness, hostAllowed, verdictFor } = require('../../desktop/protocol/harness.cjs');
 
 // Build a harness whose target resolves to `host`, with an observed live socket.
-function setup({ host = 'localhost', allowlist, ackTimeoutMs = 200, sends = [] } = {}) {
+function setup({ host = 'localhost', allowlist, ackTimeoutMs = 200, sends = [], environmentGuard } = {}) {
   const tracker = new RoundTracker({ ackWindowMs: 5000 });
   const harness = new ProtocolHarness({
     roundTracker: tracker,
@@ -15,12 +15,19 @@ function setup({ host = 'localhost', allowlist, ackTimeoutMs = 200, sends = [] }
     ackTimeoutMs,
     getTargetUrl: () => `https://${host}/game`,
     send: async (ctx, payload) => { sends.push({ ctx, payload }); return { ok: true }; },
+    environmentGuard,
   });
   return { tracker, harness, sends };
 }
 // Open a round and register the game socket for target T.
 function openRound(tracker, sid, targetId = 'T') {
   tracker.observe({ targetId, cdpSessionId: 'S', url: 'wss://game.host/ws', direction: 'recv', raw: `{"cmd":100005,"sid":${sid}}` });
+}
+
+function decodeWirePayload(payload) {
+  const text = String(payload || '').trim();
+  const firstJson = text.search(/[\[{]/);
+  return JSON.parse(firstJson > 0 ? text.slice(firstJson) : text);
 }
 
 // ---------------------------------------------------------------------------
@@ -35,14 +42,14 @@ test('hostAllowed: exact, *.suffix and keyword patterns', () => {
 });
 
 test('environmentFor gates on host; non-allowlisted -> CONTROL_DISABLED', () => {
-  const { harness } = setup({ host: 'production.game.com', allowlist: ['localhost', 'staging'] });
+  const { harness } = setup({ host: 'production.game.com', allowlist: ['localhost', 'staging'], environmentGuard: true });
   const env = harness.environmentFor('T');
   assert.equal(env.allowed, false);
   assert.equal(env.label, 'CONTROL_DISABLED_FOR_TARGET');
 });
 
 test('execute on a non-allowlisted target refuses to send', async () => {
-  const { harness, sends } = setup({ host: 'production.game.com', allowlist: ['localhost'] });
+  const { harness, sends } = setup({ host: 'production.game.com', allowlist: ['localhost'], environmentGuard: true });
   const ex = await harness.execute({ targetId: 'T', command: 'bet' });
   assert.equal(ex.result, 'ERROR');
   assert.equal(ex.error.code, 'CONTROL_DISABLED_FOR_TARGET');
@@ -97,7 +104,7 @@ test('valid current-round bet is sent and ACK-correlated', async () => {
   setTimeout(() => tracker.observe({ direction: 'recv', raw: '{"eid":1,"b":5000,"cmd":100002}' }), 20);
   const ex = await p;
   assert.equal(sends.length, 1);
-  const wire = JSON.parse(sends[0].payload);
+  const wire = decodeWirePayload(sends[0].payload);
   assert.deepEqual(wire.slice(0, 3), ['6', 'MiniGame', 'aviatorPlugin']);
   assert.equal(wire[3].sid, 2986908);
   assert.equal(ex.result, 'ACK');
@@ -111,7 +118,7 @@ test('cashout is sent through the MiniGame aviatorPlugin envelope', async () => 
   setTimeout(() => tracker.observe({ direction: 'recv', raw: '[5,{"eid":1,"wm":7750,"cmd":100003,"aid":1,"odd":1.55}]' }), 20);
   const ex = await p;
   assert.equal(ex.result, 'ACK');
-  const wire = JSON.parse(sends[0].payload);
+  const wire = decodeWirePayload(sends[0].payload);
   assert.deepEqual(wire.slice(0, 3), ['6', 'MiniGame', 'aviatorPlugin']);
   assert.deepEqual(wire[3], { cmd: 100003, sid: 2986908, aid: 1, eid: 1 });
 });
@@ -123,6 +130,28 @@ test('no observed game socket -> TEST_SESSION_UNAVAILABLE', async () => {
   const ex = await harness.execute({ targetId: 'T', payload: { cmd: 100002, b: 1, sid: 10, aid: 1, eid: 1 } });
   assert.equal(ex.result, 'ERROR');
   assert.equal(ex.error.code, 'TEST_SESSION_UNAVAILABLE');
+});
+
+test('prefixed Socket.IO frames send with the observed wire prefix', async () => {
+  const { tracker, harness, sends } = setup();
+  tracker.observe({ targetId: 'T', cdpSessionId: 'S', url: 'wss://game.host/socket.io', direction: 'recv', raw: '42[5,{"cmd":100005,"sid":2986908}]' });
+  const p = harness.execute({ targetId: 'T', command: 'bet' });
+  setTimeout(() => tracker.observe({ direction: 'recv', raw: '42[5,{"eid":1,"b":5000,"cmd":100002}]' }), 20);
+  const ex = await p;
+  assert.equal(ex.result, 'ACK');
+  assert.match(sends[0].payload, /^42\[/);
+  const wire = decodeWirePayload(sends[0].payload);
+  assert.deepEqual(wire.slice(0, 3), ['6', 'MiniGame', 'aviatorPlugin']);
+});
+
+test('execute falls back to any observed socket context when selected target has none', async () => {
+  const { tracker, harness, sends } = setup();
+  openRound(tracker, 2986908, 'SOCKET_TARGET');
+  const p = harness.execute({ targetId: 'SELECTED_TARGET', command: 'bet' });
+  setTimeout(() => tracker.observe({ direction: 'recv', raw: '{"eid":1,"b":5000,"cmd":100002}' }), 20);
+  const ex = await p;
+  assert.equal(ex.result, 'ACK');
+  assert.equal(sends[0].ctx.targetId, 'SOCKET_TARGET');
 });
 
 // ---------------------------------------------------------------------------

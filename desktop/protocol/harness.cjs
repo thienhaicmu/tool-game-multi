@@ -143,10 +143,12 @@ class ProtocolHarness extends EventEmitter {
       }
     }
 
+    const ctx = this._sendContext(targetId);
+
     // 4) Build the append-only record and emit it as pending.
     const rec = {
       id: 'ptx_' + randomUUID(), seq: this._seq++, targetId, source,
-      command, sid, eid, requestPayload: obj, requestJson: stableJson(obj), wireJson: wireJson(obj),
+      command, sid, eid, requestPayload: obj, requestJson: stableJson(obj), wireJson: wireJson(obj, ctx),
       environment: { host: env.host, name: env.name },
       negative, expect: opts.expect || (negative ? 'reject' : null),
       sentAt: new Date().toISOString(), sentMonotonic: Date.now(),
@@ -158,7 +160,6 @@ class ProtocolHarness extends EventEmitter {
     this.emit('execution', { ...rec });
 
     // 5) Send through the page's own authenticated socket (the safe seam).
-    const ctx = this._round && this._round.socketContext ? this._round.socketContext(targetId) : null;
     if (!ctx) return this._complete(rec, RESULT.ERROR, null, { code: CODES.TEST_SESSION_UNAVAILABLE, message: 'No live game WebSocket observed for this target yet — interact with the app so the socket sends at least one frame.' });
 
     let sendRes;
@@ -232,6 +233,13 @@ class ProtocolHarness extends EventEmitter {
       return;
     }
   }
+
+  _sendContext(targetId) {
+    if (!this._round) return null;
+    const direct = this._round.socketContext ? this._round.socketContext(targetId) : null;
+    if (direct) return direct;
+    return this._round.anySocketContext ? this._round.anySocketContext() : null;
+  }
 }
 
 function verdictFor(expect, result) {
@@ -253,9 +261,9 @@ function stableJson(obj) {
   try { return JSON.stringify(obj); } catch { return String(obj); }
 }
 
-function wireJson(obj) {
+function wireJson(obj, ctx = null) {
   const cmd = Number(obj && obj.cmd);
-  if (cmd === CMD.BET || cmd === CMD.CASHOUT) return stableJson(['6', 'MiniGame', 'aviatorPlugin', obj]);
+  if (cmd === CMD.BET || cmd === CMD.CASHOUT) return String(ctx && ctx.wirePrefix || '') + stableJson(['6', 'MiniGame', 'aviatorPlugin', obj]);
   return stableJson(obj);
 }
 

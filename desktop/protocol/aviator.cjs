@@ -44,6 +44,7 @@ const ROUND_STATE = Object.freeze({
  */
 function classifyFrame(raw) {
   const base = { raw: raw == null ? '' : String(raw), json: null, cmd: null, type: 'UNKNOWN', known: false };
+  const wirePrefix = wirePrefixFor(base.raw);
   let json;
   try { json = parseFrameJson(base.raw); } catch { return base; }
   json = protocolPayload(json);
@@ -53,6 +54,7 @@ function classifyFrame(raw) {
   return {
     raw: base.raw,
     json,
+    wirePrefix,
     cmd: Number.isFinite(cmd) ? cmd : null,
     type,
     known: type !== 'UNKNOWN',
@@ -66,6 +68,12 @@ function classifyFrame(raw) {
     wm: json.wm != null ? json.wm : undefined,
     iOE: json.iOE != null ? json.iOE : undefined,
   };
+}
+
+function wirePrefixFor(raw) {
+  const text = String(raw || '').trim();
+  const firstJson = text.search(/[\[{]/);
+  return firstJson > 0 ? text.slice(0, firstJson) : '';
 }
 
 function parseFrameJson(raw) {
@@ -130,10 +138,10 @@ class RoundTracker extends EventEmitter {
 
     // Remember where the game socket lives so a test can be sent through the
     // page's own authenticated connection (never a second socket).
-    if (frame.targetId != null && cls.known) {
+    if (frame.targetId != null && (cls.known || cls.agentId != null)) {
       let host = '';
       try { host = frame.url ? new URL(frame.url).host : ''; } catch { host = ''; }
-      this._socketByTarget.set(String(frame.targetId), { host, cdpSessionId: frame.cdpSessionId != null ? frame.cdpSessionId : null, at });
+      this._socketByTarget.set(String(frame.targetId), { host, cdpSessionId: frame.cdpSessionId != null ? frame.cdpSessionId : null, at, wirePrefix: cls.wirePrefix || '' });
     }
 
     if (direction === 'recv') this._applyServerFrame(cls, at);
