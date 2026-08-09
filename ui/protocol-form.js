@@ -62,22 +62,22 @@
     }
 
     if (state.scenario === 'stale') {
-      if (state.staleSid == null || String(state.staleSid).trim() === '') return { ...base, canSend: false, level: 'block', message: 'Enter a SID to send as a stale-round negative test.' };
+      if (state.staleSid == null || String(state.staleSid).trim() === '') return { ...base, canSend: false, level: 'block', message: 'Enter a SID to send as stale-round validation.' };
       return { ...base, level: 'warn', message: 'Manual SID enabled — sending a stale round on purpose. The server should reject it.', negative: true, expect: 'reject', allowMismatch: true };
     }
 
     if (!ctx.hasSid) return { ...base, canSend: false, level: 'block', message: 'Waiting for the current server round (cmd:100005).' };
 
     if (state.command === 'cashout') {
-      if (state.scenario === 'amount') return { ...base, canSend: false, level: 'info', message: 'Invalid-amount test applies to Bet only.' };
+      if (state.scenario === 'amount') return { ...base, canSend: false, level: 'info', message: 'Invalid-amount validation applies to Bet only.' };
       if (state.scenario === 'duplicate') return { ...base, level: 'warn', message: 'Sends the same cashout twice to check replay / idempotency protection.', negative: true, expect: 'reject' };
       return { ...base, level: 'info', message: 'SID comes from the current server round. No input needed.' };
     }
 
     // bet
     if (state.scenario === 'amount') {
-      if (state.amount == null || String(state.amount).trim() === '') return { ...base, canSend: false, level: 'block', message: 'Enter the (invalid) amount you want to test.' };
-      return { ...base, level: 'warn', message: 'Negative test: the server is expected to reject this amount.', negative: true, expect: 'reject' };
+      if (state.amount == null || String(state.amount).trim() === '') return { ...base, canSend: false, level: 'block', message: 'Enter the invalid amount you want to validate.' };
+      return { ...base, level: 'warn', message: 'Validation mode: the server is expected to reject this amount.', negative: true, expect: 'reject' };
     }
     const amt = toNum(state.amount);
     if (!(typeof amt === 'number' && amt > 0)) return { ...base, canSend: false, level: 'block', message: 'Amount must be greater than 0.' };
@@ -92,7 +92,7 @@
     if (scenario === 'stale') out.staleSid = true;
     if (command === 'bet') out.amount = true;                 // bet always needs an amount
     if (command === 'cashout') {
-      if (scenario === 'amount') out.note = 'Invalid-amount test applies to Bet only.';
+      if (scenario === 'amount') out.note = 'Invalid-amount validation applies to Bet only.';
       else if (scenario === 'duplicate') out.note = 'Sends the same cashout twice.';
       else if (scenario === 'normal') out.note = 'No input needed — SID/aid/eid come from context.';
     }

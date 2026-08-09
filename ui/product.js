@@ -4,7 +4,7 @@ const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // Session aid/eid — owned by the main process (ProtocolContext), never hardcoded /
-// user-entered. All Protocol Test panels read this and stay DISABLED until ready.
+// user-entered. All control panels read this and stay DISABLED until ready.
 let protoCtx = { aid: null, eid: null, ready: false };
 function protoCtxReady() { return !!(protoCtx && protoCtx.ready); }
 function broadcastProtoCtx() { document.dispatchEvent(new CustomEvent('protoctx-change')); }
@@ -478,10 +478,10 @@ renderActions();
 
   // ---- dynamic request fields for command + scenario ----
   const SCENARIO_NOTE = {
-    normal: '', stale: 'Negative test — sends a stale round SID on purpose.',
-    amount: 'Negative test — sends an invalid amount on purpose.',
-    duplicate: 'Negative test — sends the same request twice.',
-    manual: 'Manual payload — raw JSON editor (developer mode).',
+    normal: '', stale: 'Validation mode — sends a stale round SID on purpose.',
+    amount: 'Validation mode — sends an invalid amount on purpose.',
+    duplicate: 'Validation mode — sends the same request twice.',
+    manual: 'Manual payload — raw JSON editor.',
   };
   function renderFields() {
     const command = $('pf-command').value;
@@ -572,7 +572,7 @@ renderActions();
   // ---- history ----
   function renderExecs() {
     const el = $('pf-executions'); if (!el) return;
-    if (!execs.length) { el.innerHTML = '<div class="muted">No tests run yet.</div>'; return; }
+    if (!execs.length) { el.innerHTML = '<div class="muted">No actions sent yet.</div>'; return; }
     el.innerHTML = execs.slice(0, 40).map((x) => {
       const err = x.error ? `<div class="errb">${esc(x.error.code)}${x.error.message ? ' — ' + esc(x.error.message) : ''}</div>` : '';
       const resp = x.responsePayload ? ` · ack ${x.latencyMs != null ? x.latencyMs + 'ms' : ''}` : '';
@@ -750,7 +750,7 @@ renderActions();
     badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
     const gate = $('at-gate');
     if (env.allowed) { gate.hidden = true; }
-    else { gate.hidden = false; gate.textContent = `Automated runner is bound to local/offline test endpoints. "${env.host || '(unknown)'}" is not permitted — Start is disabled.`; }
+    else { gate.hidden = false; gate.textContent = `Automated runner is not enabled for "${env.host || '(unknown)'}" — Start is disabled.`; }
     renderCta();
   }
   // The single Auto-Run CTA: label/action by state (WU11.1), gated by context/env/config.
@@ -765,7 +765,7 @@ renderActions();
     let reason = '';
     if (!running) {
       if (!protoCtxReady()) reason = 'Waiting for login context…';
-      else if (!env.allowed) reason = 'Target is not a local/offline test endpoint.';
+      else if (!env.allowed) reason = 'Target is not enabled for automated runs.';
       else if (!configValid) reason = 'Fix the highlighted fields.';
     }
     cta.disabled = !running && reason !== '';
@@ -806,7 +806,7 @@ renderActions();
   function resClass(r) { return r === 'COMPLETED' ? 'COMPLETED' : r === 'ROUND_ENDED_BEFORE_THRESHOLD' ? 'ROUND_ENDED_BEFORE_TRIGGER' : 'ENDED'; }
   function renderHistory(rounds) {
     const el = $('at-history'); if (!el) return;
-    if (!rounds.length) { el.innerHTML = '<div class="muted">No rounds run yet.</div>'; return; }
+    if (!rounds.length) { el.innerHTML = '<div class="muted">No rounds completed yet.</div>'; return; }
     el.innerHTML = rounds.slice().reverse().slice(0, 40).map((r) => {
       const f2 = (n) => (n == null ? '—' : Number(n).toFixed(2));
       return `<div class="obs-round">`
@@ -886,7 +886,7 @@ renderActions();
     badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
     const gate = $('bv-gate');
     gate.hidden = !!env.allowed;
-    if (!env.allowed) gate.textContent = `Bet amount validation is bound to local/offline test endpoints. "${env.host || '(unknown)'}" is not permitted — Start is disabled.`;
+    if (!env.allowed) gate.textContent = `Amount check is not enabled for "${env.host || '(unknown)'}" — Start is disabled.`;
     validate();
   }
 
@@ -910,7 +910,7 @@ renderActions();
     let reason = '';
     if (!running) {
       if (!protoCtxReady()) reason = 'Waiting for login context…';
-      else if (!env.allowed) reason = 'Target is not a local/offline test endpoint.';
+      else if (!env.allowed) reason = 'Target is not enabled for amount checks.';
       else if (!valid) reason = 'Fix the highlighted fields.';
     }
     $('bv-start').disabled = running || reason !== '';
@@ -950,7 +950,7 @@ renderActions();
   }
   function renderHistory(rows) {
     const el = $('bv-history'); if (!el) return;
-    if (!rows.length) { el.innerHTML = '<div class="muted">No cases run yet.</div>'; return; }
+    if (!rows.length) { el.innerHTML = '<div class="muted">No cases checked yet.</div>'; return; }
     el.innerHTML = rows.slice().reverse().slice(0, 60).map((c) => {
       const diff = c.diff != null && c.diff !== 0 ? ` (delta ${c.diff})` : '';
       const verdict = c.verdict ? `<span class="ptx-verdict ${esc(c.verdict)}">${esc(c.verdict)}</span>` : '';
@@ -984,9 +984,9 @@ renderActions();
   $('targets').onchange = (e) => { if (prevCh) prevCh.call($('targets'), e); setTimeout(() => { if (!$('bv-panel').hidden) refreshEnv(); }, 80); };
 })();
 
-// ==================== WU11 FOCUSED PROTOCOL TESTER SHELL (presentation only) ====================
+// ==================== FOCUSED AVIATOR CONTROL SHELL (presentation only) ====================
 // A simplified default workspace: URL -> Open Browser, left nav (Overview / Manual /
-// Auto / b-Test), and the full network debugger hidden behind Advanced Debug. It only
+// Auto / Amount Check), and diagnostics hidden behind a toggle. It only
 // switches views and renders the Overview from the RoundObserver snapshot — no new
 // protocol state, no engine/IPC change. The WU7-10.2 panels are reused as-is.
 (function protocolShellUI() {
@@ -1018,7 +1018,7 @@ renderActions();
   }
   for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.onclick = () => setView(b.dataset.view);
 
-  // ---- Advanced Debug toggle ----
+  // ---- Diagnostics toggle ----
   const advBox = $('shell-advanced');
   if (advBox) advBox.onchange = () => applyMode(advBox.checked ? 'advanced' : 'product');
 
@@ -1068,7 +1068,7 @@ renderActions();
     const s = state.obs, cur = s && s.current;
     const protocolSeen = !!(s && (s.status !== 'IDLE' || (s.history && s.history.length)));
     const empty = $('ov-empty'), body = $('ov-body'), etext = $('ov-empty-text');
-    if (!state.connected) { empty.hidden = false; body.hidden = true; etext.textContent = 'Open the game to begin protocol testing.'; return; }
+    if (!state.connected) { empty.hidden = false; body.hidden = true; etext.textContent = 'Open the game to begin control.'; return; }
     if (!protocolSeen) { empty.hidden = false; body.hidden = true; etext.textContent = 'Browser connected. Waiting for MiniGame / aviatorPlugin traffic…'; return; }
     empty.hidden = true; body.hidden = false;
     // Session context (aid/eid) banner — owned by ProtocolContext (§ context ownership).
@@ -1098,7 +1098,7 @@ renderActions();
 
   // ---- boot ----
   applyMode(initialMode);
-  // Product mode opens directly into the Auto Test workspace; the URL launcher
+  // Product mode opens directly into the Auto Run workspace; the URL launcher
   // remains available in the compact appbar above it.
   setView('auto');
   // Seed overview/status from current engine state if already connected.

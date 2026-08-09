@@ -1,7 +1,7 @@
 'use strict';
 
 // WU11.1 — compact window defaults + saved-bounds restore. Presentation only.
-// This is a Protocol Test tool, not an IDE, so a fresh launch opens small.
+// This is a focused control tool, not an IDE, so a fresh launch opens small.
 const DEFAULTS = Object.freeze({ width: 960, height: 680, minWidth: 760, minHeight: 560 });
 const MAX_DIM = 10000;
 

@@ -4,7 +4,7 @@
 // TYPE validation only (§4): reject values that can't represent the numeric field
 // (empty / NaN / Infinity / non-numeric). It NEVER rejects on business range —
 // negatives, zero, below-min, above-max and extremes are all allowed on purpose,
-// because testing whether the SERVER enforces those is the whole point (§3/§27).
+// because checking whether the SERVER enforces those is the whole point.
 (function (root, factory) {
   const api = factory();
   if (typeof module !== 'undefined' && module.exports) module.exports = api;

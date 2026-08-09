@@ -1,4 +1,4 @@
-// WU11 — Focused Protocol Tester shell: pure presentation logic (mode + nav map).
+// Focused Aviator control shell: pure presentation logic (mode + nav map).
 // UI-only, no engine/IPC. Browser global (window.AppShell) + Node module for tests.
 // It only decides which view/mode is active; it never owns protocol state (that
 // stays in RoundObserver / AutoRunner / AmountValidator snapshots).
@@ -10,11 +10,11 @@
   'use strict';
 
   const VIEWS = ['overview', 'manual', 'auto', 'btest'];
-  // Which existing WU7-10.2 panel powers each test view (reused, not duplicated).
+  // Which existing panel powers each control view (reused, not duplicated).
   const PANEL_FOR_VIEW = { manual: 'proto-panel', auto: 'at-panel', btest: 'bv-panel' };
   const STORAGE_KEY = 'wvd-advanced';
 
-  // Default on a fresh install is Protocol Test mode (advanced OFF) (§19).
+  // Default on a fresh install is product control mode (advanced OFF).
   function loadMode(getItem) {
     try { return getItem(STORAGE_KEY) === '1' ? 'advanced' : 'product'; } catch { return 'product'; }
   }

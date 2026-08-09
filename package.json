@@ -2,8 +2,8 @@
   "name": "web-security-observatory-ui",
   "private": true,
   "version": "0.1.0",
-  "description": "Authorized-use webapp debugging and request replay workspace",
-  "author": "Web Security Observatory contributors",
+  "description": "Aviator round control and session automation workspace",
+  "author": "Aviator Control Studio contributors",
   "type": "module",
   "main": "desktop/main.cjs",
   "scripts": {
@@ -15,7 +15,7 @@
   },
   "build": {
     "appId": "com.websecurityobservatory.desktop",
-    "productName": "Web Security Observatory",
+    "productName": "Aviator Control Studio",
     "directories": {
       "output": "release"
     },

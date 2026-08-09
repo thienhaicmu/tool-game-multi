@@ -1,4 +1,4 @@
-// WU10.1 — Auto Test config reader/validator. UI-only, pure, testable. Loaded as a
+// Auto Run config reader/validator. UI-only, pure, testable. Loaded as a
 // browser global (window.AutoTestConfig) AND as a Node module for unit tests.
 //
 // It mirrors the AutoRunner backend contract EXACTLY (roundCount / amount / stopOdd,

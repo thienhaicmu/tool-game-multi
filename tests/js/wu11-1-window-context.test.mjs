@@ -109,10 +109,10 @@ test('ProtocolContext can become ready from the MiniGame login frame', () => {
 // ---------------------------------------------------------------------------
 // UI wiring: aid/eid are no longer editable; Overview shows AID/EID + waiting.
 // ---------------------------------------------------------------------------
-test('aid/eid inputs removed from Auto/b-Test; overview + waiting-for-login present', () => {
+test('aid/eid inputs removed from Auto Run/Amount Check; overview + waiting-for-login present', () => {
   const html = readFileSync(new URL('../../ui/product.html', import.meta.url), 'utf8');
-  assert.ok(!/id="at-aid"/.test(html) && !/id="at-eid"/.test(html), 'Auto Test has no aid/eid inputs');
-  assert.ok(!/id="bv-aid"/.test(html) && !/id="bv-eid"/.test(html), 'b-Test has no aid/eid inputs');
+  assert.ok(!/id="at-aid"/.test(html) && !/id="at-eid"/.test(html), 'Auto Run has no aid/eid inputs');
+  assert.ok(!/id="bv-aid"/.test(html) && !/id="bv-eid"/.test(html), 'Amount Check has no aid/eid inputs');
   assert.ok(/id="at-cta"/.test(html), 'Auto Run CTA present');
   assert.ok(/id="ov-aid"/.test(html) && /id="ov-eid"/.test(html), 'Overview shows AID/EID');
   assert.ok(/Waiting for login context/.test(readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8')), 'waiting-for-login gate');
@@ -121,7 +121,7 @@ test('aid/eid inputs removed from Auto/b-Test; overview + waiting-for-login pres
 test('product.js sources aid/eid from protoCtx (never hardcoded field)', () => {
   const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
   assert.ok(/aid: protoCtx\.aid/.test(js) && /eid: protoCtx\.eid/.test(js), 'Auto/Manual use session context');
-  assert.ok(/aid: protoCtx\.aid, eid: protoCtx\.eid/.test(js), 'b-Test uses session context');
+  assert.ok(/aid: protoCtx\.aid, eid: protoCtx\.eid/.test(js), 'Amount Check uses session context');
 });
 
 test('auto run completion waits for the user instead of starting the next session', () => {

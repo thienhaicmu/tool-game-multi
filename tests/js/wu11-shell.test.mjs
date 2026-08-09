@@ -11,7 +11,7 @@ const html = readFileSync(new URL('../../ui/product.html', import.meta.url), 'ut
 const idx = (s) => html.indexOf(s);
 
 // ---------------------------------------------------------------------------
-// §19 — default is Protocol Test mode (advanced OFF); toggle persists.
+// §19 — default is product control mode (advanced OFF); toggle persists.
 // ---------------------------------------------------------------------------
 test('mode defaults to product; loads/saves advanced flag', () => {
   const store = {};
@@ -39,15 +39,16 @@ test('default body opens in product mode', () => {
   assert.ok(/<body[^>]*data-mode="product"/.test(html));
 });
 
-test('appbar exposes URL + Open Browser + Advanced Debug toggle', () => {
+test('appbar exposes URL + Open Browser + Diagnostics toggle', () => {
   assert.ok(idx('id="shell-url"') >= 0, 'URL input');
   assert.ok(idx('id="shell-open"') >= 0, 'Open Browser button');
   assert.ok(/id="shell-open"[^>]*>\s*Open Browser/.test(html));
-  assert.ok(idx('id="shell-advanced"') >= 0, 'Advanced Debug toggle');
+  assert.ok(idx('id="shell-advanced"') >= 0, 'Diagnostics toggle');
+  assert.ok(idx('> ⚙ Diagnostics') >= 0, 'Diagnostics label');
 });
 
-test('left nav contains Overview / Manual Test / Auto Test / b-Test', () => {
-  for (const label of ['Overview', 'Manual Test', 'Auto Test', 'b-Test']) assert.ok(idx('>' + label + '<') >= 0, `nav has ${label}`);
+test('left nav contains Overview / Manual Control / Auto Run / Amount Check', () => {
+  for (const label of ['Overview', 'Manual Control', 'Auto Run', 'Amount Check']) assert.ok(idx('>' + label + '<') >= 0, `nav has ${label}`);
   for (const v of ['data-view="overview"', 'data-view="manual"', 'data-view="auto"', 'data-view="btest"']) assert.ok(idx(v) >= 0, v);
 });
 
@@ -62,7 +63,7 @@ test('generic debugger is wrapped in #legacy and kept (not deleted)', () => {
   for (const marker of ['class="topbar"', 'intercept-bar', 'class="grid"', 'id="editor"', 'id="host"', 'id="list"', 'id="detail-tabs"']) {
     assert.ok(idx(marker) > legacy, `${marker} is inside #legacy`);
   }
-  // Engine-facing controls still exist (kept for Advanced Debug).
+  // Engine-facing controls still exist (kept for Diagnostics).
   for (const marker of ['id="connect"', 'id="adb"', 'id="intc-toggle"']) assert.ok(idx(marker) >= 0, `${marker} retained`);
 });
 

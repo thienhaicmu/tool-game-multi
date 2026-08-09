@@ -3,38 +3,38 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>WebView Debugger</title>
+  <title>Aviator Control Studio</title>
   <link rel="stylesheet" href="product.css">
 </head>
 <body data-mode="product">
-  <!-- WU11 focused Protocol Tester shell -->
+  <!-- Focused Aviator control shell -->
   <header id="appbar">
-    <div class="brand"><span class="glyph">◇</span><b>WebView&nbsp;Protocol&nbsp;Tester</b></div>
+    <div class="brand"><span class="glyph">◇</span><b>Aviator&nbsp;Control&nbsp;Studio</b></div>
     <div class="ab-url">
       <input id="shell-url" placeholder="https://your.game" aria-label="Game URL">
       <button id="shell-open" class="primary">Open Browser</button>
     </div>
     <span id="shell-status" class="ab-status"><span class="dot"></span><span id="shell-status-text">Disconnected</span></span>
     <span id="shell-instance" class="ab-status" title="Isolated app/browser instance">Instance —</span>
-    <span id="shell-cdp" class="ab-status" title="This instance's browser debug port">CDP —</span>
+    <span id="shell-cdp" class="ab-status" title="This instance's browser control port">CDP —</span>
     <div class="spacer"></div>
-    <label id="shell-advanced-wrap" class="ab-adv" title="Show the full network debugger (capture / replay / intercept / timeline)">
-      <input type="checkbox" id="shell-advanced"> ⚙ Advanced Debug
+    <label id="shell-advanced-wrap" class="ab-adv" title="Show diagnostics tools (capture / replay / intercept / timeline)">
+      <input type="checkbox" id="shell-advanced"> ⚙ Diagnostics
     </label>
   </header>
 
   <div id="shell">
-    <nav id="shell-nav" aria-label="Protocol test navigation">
+    <nav id="shell-nav" aria-label="Aviator control navigation">
       <button class="nav-item active" data-view="overview">Overview</button>
-      <button class="nav-item" data-view="manual">Manual Test</button>
-      <button class="nav-item" data-view="auto">Auto Test</button>
-      <button class="nav-item" data-view="btest">b-Test</button>
+      <button class="nav-item" data-view="manual">Manual Control</button>
+      <button class="nav-item" data-view="auto">Auto Run</button>
+      <button class="nav-item" data-view="btest">Amount Check</button>
     </nav>
     <main id="shell-main">
       <section id="view-overview" class="shell-view">
         <div id="ov-empty" class="proto-empty">
           <div class="empty-ic">◴</div>
-          <div id="ov-empty-text">Open the game to begin protocol testing.</div>
+          <div id="ov-empty-text">Open the game to begin control.</div>
           <div class="empty-sub">Enter a URL above and click Open Browser.</div>
         </div>
         <div id="ov-body" hidden>
@@ -71,7 +71,7 @@
 
   <div id="legacy">
   <header class="topbar">
-    <div class="brand"><span class="glyph">◇</span><b>WebView&nbsp;Debugger</b></div>
+    <div class="brand"><span class="glyph">◇</span><b>Aviator&nbsp;Diagnostics</b></div>
     <span class="tb-sep"></span>
     <div class="group" role="group" aria-label="Connection">
       <input id="host" class="mono" value="127.0.0.1:9222" title="CDP endpoint host:port" aria-label="CDP endpoint">
@@ -82,7 +82,7 @@
     </div>
     <span class="tb-sep"></span>
     <div class="group" role="group" aria-label="Target">
-      <select id="targets" title="Debug target" aria-label="Debug target"><option value="">No targets</option></select>
+      <select id="targets" title="Browser target" aria-label="Browser target"><option value="">No targets</option></select>
     </div>
     <span class="tb-sep"></span>
     <div class="group" role="group" aria-label="Session">
@@ -114,10 +114,10 @@
     <span class="tb-sep"></span>
     <div class="group" role="group" aria-label="Utility">
       <button id="act-toggle" class="btn" title="User actions (clicks) captured in the target">👆 Actions <span id="act-count" class="count"></span></button>
-      <button id="proto-toggle" class="btn" title="Protocol Test Harness (authorized QA/staging only)">🎯 Protocol <span id="proto-env-chip" class="chip off">OFF</span></button>
+      <button id="proto-toggle" class="btn" title="Manual protocol control">🎯 Manual <span id="proto-env-chip" class="chip off">OFF</span></button>
       <button id="obs-toggle" class="btn" title="Read-only multi-round observer (records evidence, sends nothing)">👁 Observer <span id="obs-status-chip" class="chip off">IDLE</span></button>
-      <button id="at-toggle" class="btn" title="Automated offline round test runner (local/test endpoints only)">⚙ Auto Test <span id="at-status-chip" class="chip off">IDLE</span></button>
-      <button id="bv-toggle" class="btn" title="Bet amount server validation — sends an exact b per round (local/test only)">🔢 b-Test <span id="bv-status-chip" class="chip off">IDLE</span></button>
+      <button id="at-toggle" class="btn" title="Automated round runner">⚙ Auto Run <span id="at-status-chip" class="chip off">IDLE</span></button>
+      <button id="bv-toggle" class="btn" title="Bet amount server validation">🔢 Amount Check <span id="bv-status-chip" class="chip off">IDLE</span></button>
       <button id="clear" class="btn icon" title="Clear (Delete)">⌫</button>
       <button id="theme" class="btn icon" title="Toggle theme">☾</button>
     </div>
@@ -170,9 +170,9 @@
   <footer id="editor" class="editor" style="height:var(--editor-h,240px)"><div class="empty"><div class="empty-ic">↺</div>Select a request to replay, or a paused request to intercept.</div></footer>
   </div><!-- /#legacy -->
 
-  <aside id="proto-panel" class="proto-panel" hidden aria-label="Protocol Test Harness">
+  <aside id="proto-panel" class="proto-panel" hidden aria-label="Manual Protocol Control">
     <div class="proto-head">
-      <b>🎯 Protocol Test</b>
+      <b>🎯 Manual Control</b>
       <span id="proto-env" class="proto-env off">CONTROL DISABLED</span>
       <div class="spacer"></div>
       <button id="proto-close" class="btn icon" title="Hide panel">✕</button>
@@ -182,7 +182,7 @@
     <div id="pf-empty" class="proto-empty" hidden>
       <div class="empty-ic">◴</div>
       <div>Waiting for <span class="mono">cmd:100005</span>…</div>
-      <div class="empty-sub">The current round SID is published by the server. The test form appears once a round opens.</div>
+      <div class="empty-sub">The current round SID is published by the server. Controls appear once a round opens.</div>
     </div>
 
     <div id="pf-body">
@@ -196,9 +196,9 @@
         <div class="proto-kv"><span>eid</span><b id="pc-eid">1 <span class="faint">auto</span></b></div>
       </div>
 
-      <!-- 2) TEST SCENARIO -->
+      <!-- 2) CONTROL SCENARIO -->
       <div class="proto-card">
-        <div class="proto-state-title">TEST SCENARIO</div>
+        <div class="proto-state-title">CONTROL SCENARIO</div>
         <div class="proto-row">
           <label>Command
             <select id="pf-command"><option value="bet">Bet</option><option value="cashout">Cashout</option></select>
@@ -240,8 +240,8 @@
     </div>
 
     <div class="proto-hist">
-      <div class="proto-state-title">TEST HISTORY <span class="faint">(append-only)</span></div>
-      <div id="pf-executions" class="proto-execs"><div class="muted">No tests run yet.</div></div>
+      <div class="proto-state-title">ACTION HISTORY <span class="faint">(append-only)</span></div>
+      <div id="pf-executions" class="proto-execs"><div class="muted">No actions sent yet.</div></div>
     </div>
   </aside>
 
@@ -287,10 +287,10 @@
     </div>
   </aside>
 
-  <aside id="at-panel" class="proto-panel" hidden aria-label="Automated Offline Test Runner">
+  <aside id="at-panel" class="proto-panel" hidden aria-label="Automated Round Runner">
     <div class="proto-head">
-      <b>⚙ Automated Offline Test</b>
-      <span id="at-env" class="proto-env off" title="The automated runner only runs against local/offline test endpoints">LOCAL ONLY</span>
+      <b>⚙ Auto Run</b>
+      <span id="at-env" class="proto-env off" title="The automated runner is limited by the configured environment gate">LOCAL ONLY</span>
       <div class="spacer"></div>
       <button id="at-close" class="btn icon" title="Hide panel">✕</button>
     </div>
@@ -315,10 +315,10 @@
 
     <!-- Config (before start) -->
     <div class="proto-card" id="at-config">
-      <div class="proto-state-title">AUTOMATED OFFLINE TEST</div>
-      <div class="at-sequence-head"><span>TEST SEQUENCE</span><button id="at-add-row" class="btn" type="button">＋ Add test</button></div>
+      <div class="proto-state-title">AUTO RUN CONFIG</div>
+      <div class="at-sequence-head"><span>RUN SEQUENCE</span><button id="at-add-row" class="btn" type="button">＋ Add run</button></div>
       <div id="at-test-rows" class="at-test-rows"></div>
-      <div class="hint">Các test chạy tuần tự: hoàn tất row trước mới chuyển sang row tiếp theo.</div>
+      <div class="hint">Các lượt chạy tuần tự: hoàn tất dòng trước mới chuyển sang dòng tiếp theo.</div>
       <div class="ctx-line">SID · AID · EID are supplied automatically by the server session — you don't enter them.</div>
       <div id="at-cfg-err" class="errb"></div>
       <div id="at-cta-note" class="cta-note"></div>
@@ -337,14 +337,14 @@
 
     <div class="proto-hist">
       <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only)</span></div>
-      <div id="at-history" class="proto-execs"><div class="muted">No rounds run yet.</div></div>
+      <div id="at-history" class="proto-execs"><div class="muted">No rounds completed yet.</div></div>
     </div>
   </aside>
 
   <aside id="bv-panel" class="proto-panel" hidden aria-label="Bet Amount Server Validation">
     <div class="proto-head">
       <b>🔢 Bet Amount Validation</b>
-      <span id="bv-env" class="proto-env off" title="Sends an exact bet amount per round; local/offline test endpoints only">LOCAL ONLY</span>
+      <span id="bv-env" class="proto-env off" title="Sends an exact bet amount per round">LOCAL ONLY</span>
       <div class="spacer"></div>
       <button id="bv-close" class="btn icon" title="Hide panel">✕</button>
     </div>
@@ -378,7 +378,7 @@
         </label>
       </div>
       <div id="bv-list-fields" hidden>
-        <label class="pf-field">Test Values <span class="hint">(one per line — one distinct server round each)</span>
+        <label class="pf-field">Check Values <span class="hint">(one per line — one distinct server round each)</span>
           <textarea id="bv-values" class="mono" rows="7">4999
 5000
 5001
@@ -393,7 +393,7 @@
       <label class="pf-field">Expected
         <select id="bv-expected"><option value="any">Any (observe only)</option><option value="accept">Accept</option><option value="reject">Reject</option></select>
       </label>
-      <div class="faint" style="margin:2px 0 8px">Observed client UI ≈ 5,000–50,000. That's a client limit — this tests what the <b>server</b> accepts. SID is server-supplied.</div>
+      <div class="faint" style="margin:2px 0 8px">Observed client UI ≈ 5,000–50,000. That's a client limit — this checks what the <b>server</b> accepts. SID is server-supplied.</div>
       <button id="bv-adv-toggle" class="proto-collapse" type="button">▶ Advanced (UI limits)</button>
       <div id="bv-adv" class="proto-advanced" hidden>
         <div class="proto-row">
@@ -411,7 +411,7 @@
 
     <div class="proto-card at-metrics">
       <div class="proto-state-title">SUMMARY</div>
-      <div class="proto-kv"><span>Tested</span><b id="bv-s-tested">—</b></div>
+      <div class="proto-kv"><span>Checked</span><b id="bv-s-tested">—</b></div>
       <div class="proto-kv"><span>Accepted exact / normalized</span><b id="bv-s-acc">—</b></div>
       <div class="proto-kv"><span>Rejected / inconclusive</span><b id="bv-s-rej">—</b></div>
       <div class="proto-kv"><span>Accepted below min</span><b id="bv-s-below">—</b></div>
@@ -421,7 +421,7 @@
 
     <div class="proto-hist">
       <div class="proto-state-title">RESULTS <span class="faint">(append-only)</span></div>
-      <div id="bv-history" class="proto-execs"><div class="muted">No cases run yet.</div></div>
+      <div id="bv-history" class="proto-execs"><div class="muted">No cases checked yet.</div></div>
     </div>
   </aside>
 

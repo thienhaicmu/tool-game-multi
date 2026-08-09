@@ -1,5 +1,5 @@
 /* ============================================================= *
- *  WebView Debugger — design tokens + components (UI only)       *
+ *  Aviator Control Studio — design tokens + components (UI only) *
  * ============================================================= */
 :root{
   /* spacing */ --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
@@ -281,7 +281,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .proto-form .primary,.proto-card .primary{width:100%;background:var(--accent);color:#fff;border-color:var(--accent);font-weight:600;padding:8px}
 .proto-card .primary:disabled{background:var(--line-strong);border-color:var(--line-strong);color:var(--faint)}
 
-/* ---- WU10 automated offline test runner ---- */
+/* ---- automated round runner ---- */
 #at-status-chip{margin-left:4px}
 .at-live{text-align:left}
 .at-odd-wrap{margin:10px 0;text-align:center}
@@ -342,12 +342,12 @@ body{ display:block; }                       /* override the legacy body grid */
 body[data-mode=product] #legacy{ display:none; }
 body[data-mode=advanced] #shell{ display:none; }
 body[data-mode=advanced] #shell-nav{ display:none; }
-/* Auto Test is a focused workspace: hide the navigation rail and expand the
+/* Auto Run is a focused workspace: hide the navigation rail and expand the
    runner so the sequence table remains the primary task surface. */
 body[data-view=auto] #shell-nav{ display:none; }
 body[data-view=auto] #at-panel:not([hidden]){ left:0; width:auto; border-left:0; }
 
-/* Manual/Auto/b-Test panels dock into the main content region in product mode */
+/* Manual/Auto/Amount panels dock into the main content region in product mode */
 body[data-mode=product] #proto-panel:not([hidden]),
 body[data-mode=product] #at-panel:not([hidden]),
 body[data-mode=product] #bv-panel:not([hidden]){
@@ -355,7 +355,7 @@ body[data-mode=product] #bv-panel:not([hidden]){
   width:auto; height:auto; box-shadow:none; border-left:none; z-index:12;
 }
 body[data-mode=product] .proto-panel .proto-head .btn.icon{ display:none; }  /* no close ✕ when docked */
-/* Auto Test keeps only the target URL launcher; all other product navigation is hidden. */
+/* Auto Run keeps only the target URL launcher; all other product navigation is hidden. */
 body[data-view=auto] #appbar{ display:flex; }
 body[data-view=auto] #appbar .brand,
 body[data-view=auto] #appbar #shell-status,
