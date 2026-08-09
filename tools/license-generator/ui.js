@@ -1,22 +1,21 @@
 (function () {
   const api = window.licenseGenerator;
   const $ = (id) => document.getElementById(id);
+  const UTC_PLUS_7_OFFSET_SECONDS = 7 * 60 * 60;
 
-  function yyyyMmDd(date) {
-    return date.toISOString().slice(0, 10);
+  function yyyyMmDdFromSeconds(seconds) {
+    return new Date((Number(seconds) + UTC_PLUS_7_OFFSET_SECONDS) * 1000).toISOString().slice(0, 10);
   }
 
   function calcExpires() {
-    const issued = new Date();
-    $('issued').textContent = yyyyMmDd(issued);
+    $('issued').textContent = 'Trusted UTC+7';
     if ($('duration').value === 'custom') {
       $('custom-wrap').hidden = false;
       $('expires').textContent = $('custom-expiry').value || '—';
       return;
     }
     $('custom-wrap').hidden = true;
-    const expires = new Date(issued.getTime() + Number($('duration').value) * 86400000);
-    $('expires').textContent = yyyyMmDd(expires);
+    $('expires').textContent = 'Calculated on generate';
   }
 
   function selectedMaxLaunches() {
@@ -63,7 +62,8 @@
     $('license-machine').textContent = result.payload.machineId;
     $('license-launches').textContent = result.payload.maxLaunches ? String(result.payload.maxLaunches) : 'Unlimited';
     $('copy-license').disabled = false;
-    $('expires').textContent = yyyyMmDd(new Date(result.payload.expiresAt * 1000));
+    $('issued').textContent = yyyyMmDdFromSeconds(result.payload.issuedAt);
+    $('expires').textContent = yyyyMmDdFromSeconds(result.payload.expiresAt);
   }
 
   $('duration').onchange = calcExpires;

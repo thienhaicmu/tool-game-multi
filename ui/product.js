@@ -12,20 +12,26 @@ if (api.onProtocolContext) api.onProtocolContext((c) => { protoCtx = c || protoC
 if (api.protocolContext) api.protocolContext().then((c) => { if (c) { protoCtx = c; broadcastProtoCtx(); } }).catch(() => {});
 
 let licenseState = { active: false, checking: true, machineId: null };
-function dateFromSeconds(seconds) { return seconds ? new Date(seconds * 1000).toISOString().slice(0, 10) : '—'; }
-function remainingDays(expiresAt) {
-  if (!expiresAt) return '—';
-  const days = Math.ceil((expiresAt * 1000 - Date.now()) / 86400000);
+const UTC_PLUS_7_OFFSET_SECONDS = 7 * 60 * 60;
+function dateFromSecondsTrusted(seconds) {
+  return seconds ? new Date((Number(seconds) + UTC_PLUS_7_OFFSET_SECONDS) * 1000).toISOString().slice(0, 10) : '---';
+}
+function remainingDaysTrusted(expiresAt) {
+  if (!expiresAt) return '---';
+  const nowSeconds = Number(licenseState.nowSeconds || 0);
+  if (!nowSeconds) return 'checking';
+  const days = Math.ceil((Number(expiresAt) - nowSeconds) / 86400);
   return days < 0 ? 'expired' : `${days} days`;
 }
 function licenseFriendly(status) {
   const code = status && status.error && status.error.code;
   if (!code) return '';
   if (code === 'LICENSE_MISSING') return 'Enter your license key to unlock this device.';
-  if (code === 'LICENSE_EXPIRED') return `LICENSE EXPIRED\nExpired ${dateFromSeconds(status.error.expiredAt || (status.error.payload && status.error.payload.expiresAt))}\nContact your license provider to renew.`;
+  if (code === 'LICENSE_EXPIRED') return `LICENSE EXPIRED\nExpired ${dateFromSecondsTrusted(status.error.expiredAt || (status.error.payload && status.error.payload.expiresAt))}\nContact your license provider to renew.`;
   if (code === 'LICENSE_MACHINE_MISMATCH') return 'LICENSE DOES NOT MATCH THIS DEVICE';
   if (code === 'LICENSE_BAD_SIGNATURE') return 'License signature is invalid. Check the key and try again.';
-  if (code === 'LICENSE_CLOCK_ROLLBACK') return 'System clock rollback detected. Correct the Windows clock or contact support.';
+  if (code === 'LICENSE_CLOCK_ROLLBACK') return 'Trusted time rollback detected. Contact support.';
+  if (code === 'TRUSTED_TIME_UNAVAILABLE') return 'Cannot verify trusted UTC+7 time. Check internet connection and try again.';
   if (code === 'LICENSE_LAUNCH_LIMIT_REACHED') return `LICENSE LAUNCH LIMIT REACHED\nUsed ${status.error.usedLaunches || 0} / ${status.error.maxLaunches || 0} launches.\nContact your license provider to renew.`;
   if (code === 'MACHINE_ID_UNAVAILABLE') return 'Machine ID is unavailable on this PC.';
   if (code === 'LICENSE_WRONG_PRODUCT') return 'This license is for another product.';
@@ -34,10 +40,13 @@ function licenseFriendly(status) {
 function renderLicenseStatus(status) {
   licenseState = status || licenseState;
   document.body.dataset.license = licenseState.active ? 'active' : 'locked';
+  const hasStoredLicense = Boolean(licenseState.hasStoredLicense);
   const shellLicense = $('shell-license');
   if (shellLicense) {
-    shellLicense.textContent = licenseState.active && licenseState.payload
-      ? `License ${remainingDays(licenseState.payload.expiresAt)} · Expires ${dateFromSeconds(licenseState.payload.expiresAt)}`
+    shellLicense.textContent = licenseState.checking
+      ? 'License checking...'
+      : licenseState.active && licenseState.payload
+      ? `License ${remainingDaysTrusted(licenseState.payload.expiresAt)} · Expires ${dateFromSecondsTrusted(licenseState.payload.expiresAt)}`
       : 'License LOCKED';
   }
   const machine = $('activation-machine'); if (machine) machine.value = licenseState.machineId || 'MACHINE_ID_UNAVAILABLE';
@@ -47,6 +56,16 @@ function renderLicenseStatus(status) {
     err.hidden = !msg || (licenseState.error && licenseState.error.code === 'LICENSE_MISSING');
     err.textContent = msg;
   }
+  const licenseInput = $('activation-license');
+  const licenseLabel = licenseInput && licenseInput.closest ? licenseInput.closest('label') : null;
+  const submit = $('activation-submit');
+  const storedNeedsNewKey = licenseState.error && ['LICENSE_EXPIRED', 'LICENSE_MACHINE_MISMATCH', 'LICENSE_BAD_SIGNATURE', 'LICENSE_WRONG_PRODUCT', 'LICENSE_LAUNCH_LIMIT_REACHED'].includes(licenseState.error.code);
+  const hideKeyEntry = hasStoredLicense && !licenseState.active && !storedNeedsNewKey;
+  if (licenseLabel) licenseLabel.hidden = hideKeyEntry;
+  if (submit) submit.hidden = hideKeyEntry;
+  const help = $('activation-help');
+  if (help && hideKeyEntry) help.textContent = licenseState.checking ? 'Stored license found. Verifying...' : 'Stored license found, but it cannot be verified right now.';
+  else if (help) help.textContent = 'Send this Machine ID to your license provider.';
   const lm = $('activation-license-machine');
   const licenseMachine = licenseState.error && licenseState.error.licenseMachineId;
   if (lm) { lm.hidden = !licenseMachine; lm.textContent = licenseMachine ? `License Machine ID: ${licenseMachine}` : ''; }
@@ -69,6 +88,8 @@ async function refreshLicenseStatus() {
     submit.disabled = false; submit.textContent = 'ACTIVATE';
   };
   refreshLicenseStatus();
+  setInterval(refreshLicenseStatus, 60_000);
+  if (api.onLicenseChanged) api.onLicenseChanged(renderLicenseStatus);
 })();
 
 // ---- state ----
@@ -628,10 +649,10 @@ renderActions();
     const base = { command: state.command, payload: built.payload, negative: v.negative, expect: v.expect, allowMismatch: v.allowMismatch };
     try {
       if (state.scenario === 'duplicate') {
-        await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: null, negative: false });
-        await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: 'reject', negative: true });
+        showSendResult(await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: null, negative: false }), { ...base, source: 'NEGATIVE_TEST' });
+        showSendResult(await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: 'reject', negative: true }), { ...base, source: 'NEGATIVE_TEST' });
       } else {
-        await api.protocolExecute(base);
+        showSendResult(await api.protocolExecute(base), base);
       }
     } catch { toast('Send failed'); }
     btn.textContent = 'Send Request'; recompute();
@@ -656,6 +677,20 @@ renderActions();
     if (execById.has(x.id)) { const i = execs.findIndex((e) => e.id === x.id); if (i >= 0) execs[i] = x; execById.set(x.id, x); }
     else { execs.unshift(x); execById.set(x.id, x); if (execs.length > 200) { const old = execs.pop(); execById.delete(old.id); } }
     renderExecs();
+  }
+  function showSendResult(result, base) {
+    if (!result || !result.error) return;
+    pushExec({
+      id: 'uierr_' + Date.now(),
+      result: 'ERROR',
+      verdict: 'INCONCLUSIVE',
+      source: base && base.source || 'MANUAL',
+      command: base && base.payload ? base.payload.cmd : null,
+      sid: base && base.payload ? base.payload.sid : null,
+      error: result.error,
+      warnings: [],
+    });
+    toast(result.error.code || 'Send failed');
   }
 
   // ---- controls ----
@@ -1151,8 +1186,8 @@ renderActions();
     $('ov-cdp').textContent = runtime.cdpPort || '—';
     $('ov-browser').textContent = 'Connected';
     $('ov-license').textContent = licenseState.active ? 'ACTIVE' : 'LOCKED';
-    $('ov-license-exp').textContent = licenseState.payload ? dateFromSeconds(licenseState.payload.expiresAt) : '—';
-    $('ov-license-rem').textContent = licenseState.payload ? remainingDays(licenseState.payload.expiresAt) : '—';
+    $('ov-license-exp').textContent = licenseState.payload ? dateFromSecondsTrusted(licenseState.payload.expiresAt) : '—';
+    $('ov-license-rem').textContent = licenseState.payload ? remainingDaysTrusted(licenseState.payload.expiresAt) : '—';
     $('ov-license-launches').textContent = licenseState.launch ? (licenseState.launch.max ? `${licenseState.launch.used} / ${licenseState.launch.max}` : `${licenseState.launch.used} / Unlimited`) : '—';
     $('ov-target').textContent = state.targetName || '—';
     $('ov-ws').textContent = 'Aviator detected';

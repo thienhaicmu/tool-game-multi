@@ -5,6 +5,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
+const { TrustedTimeProvider, utcPlus7Date } = require('../../desktop/licensing/trusted-time.cjs');
 
 function arg(name, fallback = null) {
   const idx = process.argv.indexOf(name);
@@ -37,13 +38,22 @@ function readPrivateKey() {
 
 function utcDateSeconds(dateText) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dateText)) throw new Error('Custom expiry must be YYYY-MM-DD');
-  const ms = Date.parse(`${dateText}T00:00:00.000Z`);
+  const ms = Date.parse(`${dateText}T00:00:00.000+07:00`);
   if (!Number.isFinite(ms)) throw new Error('Invalid expiry date');
   return Math.floor(ms / 1000);
 }
 
-function buildPayload({ machineId, durationDays, expires }) {
-  const issuedAt = Math.floor(Date.now() / 1000);
+async function trustedIssuedAt() {
+  if (process.env.WVPT_TRUSTED_TIME_MS && Number.isFinite(Number(process.env.WVPT_TRUSTED_TIME_MS))) {
+    return Math.floor(Number(process.env.WVPT_TRUSTED_TIME_MS) / 1000);
+  }
+  const result = await new TrustedTimeProvider().now();
+  if (!result.ok) throw new Error('Cannot verify trusted UTC+7 time. Check internet connection and try again.');
+  return Math.floor(result.nowMs / 1000);
+}
+
+async function buildPayload({ machineId, durationDays, expires }) {
+  const issuedAt = await trustedIssuedAt();
   const expiresAt = expires ? utcDateSeconds(expires) : issuedAt + Number(durationDays) * 24 * 60 * 60;
   if (!machineId) throw new Error('Machine ID is required');
   if (!/^WVPT-PC-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(machineId)) throw new Error('Machine ID format is invalid');
@@ -74,13 +84,13 @@ try {
   const expires = arg('--expires', null);
   const durationDays = Number(arg('--duration', '30'));
   if (!expires && ![1, 3, 7, 30, 60, 90, 180, 365].includes(durationDays)) throw new Error('Duration must be one of 1, 3, 7, 30, 60, 90, 180, 365 days, or use --expires YYYY-MM-DD');
-  const payload = buildPayload({ machineId, durationDays, expires });
+  const payload = await buildPayload({ machineId, durationDays, expires });
   const license = createSignedLicense(payload, readPrivateKey());
   console.log('WVPT LICENSE GENERATOR');
   console.log('----------------------');
   console.log('Machine ID:', payload.machineId);
-  console.log('Issued:', new Date(payload.issuedAt * 1000).toISOString().slice(0, 10));
-  console.log('Expires:', new Date(payload.expiresAt * 1000).toISOString().slice(0, 10));
+  console.log('Issued UTC+7:', utcPlus7Date(payload.issuedAt));
+  console.log('Expires UTC+7:', utcPlus7Date(payload.expiresAt));
   console.log('License ID:', payload.licenseId);
   console.log('');
   console.log(license);

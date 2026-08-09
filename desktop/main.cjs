@@ -42,7 +42,8 @@ let importStarted = false;
 let importInProgress = false;
 let importTimer;
 const protocolEnvironmentGuard = environmentGuardEnabled();
-const instanceManager = new InstanceManager({ baseUserDataPath: app.getPath('userData'), argv: process.argv, env: process.env });
+const baseUserDataPath = app.getPath('userData');
+const instanceManager = new InstanceManager({ baseUserDataPath, argv: process.argv, env: process.env });
 const instanceStart = instanceManager.start();
 if (!instanceStart.ok) {
   throw new Error(instanceStart.error && instanceStart.error.message || 'Instance startup failed');
@@ -109,11 +110,36 @@ function windowStatePath() { return appInstance.paths.windowState; }
 function loadWindowState() { try { return JSON.parse(fs.readFileSync(windowStatePath(), 'utf8')); } catch { return null; } }
 function saveWindowState() { try { if (shell && !shell.isDestroyed() && !shell.isMinimized()) fs.writeFileSync(windowStatePath(), JSON.stringify(shell.getBounds()), 'utf8'); } catch { /* best effort */ } }
 
+function migrateLegacyInstanceLicense() {
+  const licensePath = path.join(baseUserDataPath, 'license.dat');
+  if (fs.existsSync(licensePath)) return;
+  const roots = path.join(baseUserDataPath, 'instances');
+  let candidates = [];
+  try {
+    candidates = fs.readdirSync(roots, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory())
+      .map((entry) => path.join(roots, entry.name, 'app', 'license.dat'))
+      .filter((file) => fs.existsSync(file))
+      .map((file) => ({ file, mtimeMs: fs.statSync(file).mtimeMs }))
+      .sort((a, b) => b.mtimeMs - a.mtimeMs);
+  } catch { candidates = []; }
+  if (!candidates.length) return;
+  try {
+    fs.copyFileSync(candidates[0].file, licensePath);
+    const statePath = path.join(path.dirname(candidates[0].file), 'license-state.dat');
+    if (fs.existsSync(statePath)) fs.copyFileSync(statePath, path.join(baseUserDataPath, 'license-state.dat'));
+  } catch { /* best-effort migration; activation screen remains available */ }
+}
+
 function createWindow() {
   // Compact by default (Protocol Test tool, not an IDE); restore saved bounds if valid.
   if (!licenseGuard) {
-    licenseGuard = new LicenseGuard({ userDataPath: app.getPath('userData'), safeStorage });
+    migrateLegacyInstanceLicense();
+    licenseGuard = new LicenseGuard({ userDataPath: baseUserDataPath, safeStorage });
     licenseGuard.initialize();
+    licenseGuard.initializeAsync().then((status) => {
+      if (shell && !shell.isDestroyed()) shell.webContents.send('license-changed', status);
+    }).catch(() => {});
   }
   const bounds = resolveBounds(loadWindowState());
   shell = new BrowserWindow({ ...bounds, minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
@@ -135,13 +161,15 @@ async function openBrowserWindow(url) {
   return true;
 }
 
-function licenseStatus() {
-  return licenseGuard ? licenseGuard.status() : { active: false, checking: false, error: { code: 'LICENSE_MISSING', message: 'License guard is not ready' } };
+async function licenseStatus() {
+  if (!licenseGuard) return { active: false, checking: false, error: { code: 'LICENSE_MISSING', message: 'License guard is not ready' } };
+  const status = licenseGuard.status();
+  if (status.active) return licenseGuard.refreshAsync({ consumeLaunch: false });
+  if (status.checking || (!status.active && status.error && status.error.code === 'TRUSTED_TIME_UNAVAILABLE')) {
+    return licenseGuard.refreshAsync();
+  }
+  return status;
 }
-function requireLicense() {
-  return licenseGuard ? licenseGuard.requireActive() : { error: { code: 'LICENSE_MISSING', message: 'License guard is not ready' } };
-}
-
 // Newly launched Chrome needs ~1s before its CDP endpoint answers; retry connect.
 async function connectEndpointWithRetry(endpoint, attempt = 0) {
   const result = await connectEndpoint(endpoint);
@@ -196,7 +224,7 @@ aviator.on('actiontrace', t => { if (shell && !shell.isDestroyed()) shell.webCon
 // own live socket (via wsReplay.sendRaw). Gated by an explicit host allowlist.
 const harness = new ProtocolHarness({
   roundTracker: aviator,
-  send: (ctx, payload) => wsReplay.sendRaw(ctx, payload),
+  send: (ctx, payload) => wsReplay.sendProtocol(ctx, payload),
   getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
   allowlist: (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean),
   environmentGuard: protocolEnvironmentGuard,
@@ -389,9 +417,9 @@ app.on('before-quit', event => {
 app.on('will-quit', () => { try { appInstance.lock.release(); } catch { /* best effort */ } });
 ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
 ipcMain.handle('license-status', () => licenseStatus());
-ipcMain.handle('license-activate', (_event, license) => licenseGuard ? licenseGuard.activate(String(license || '')) : licenseStatus());
+ipcMain.handle('license-activate', (_event, license) => licenseGuard ? licenseGuard.activateAsync(String(license || '')) : licenseStatus());
 ipcMain.handle('copy-text', (_event, text) => { clipboard.writeText(String(text || '')); return true; });
-ipcMain.handle('open-browser', (_event, url) => requireLicense() || openBrowserWindow(String(url)));
+ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
 ipcMain.handle('instance-info', () => ({
   instanceId: appInstance.instanceId,
   name: appInstance.registry && appInstance.registry.name,
@@ -438,23 +466,23 @@ ipcMain.handle('analyze-session', async (_event, id) => {
 // runs it in the request's OWN target (WEBVIEW_CONTEXT) or via HTTP_DIRECT.
 ipcMain.handle('replay-create-draft', (_event, capturedRequestId, options = {}) => replay.createDraft(String(capturedRequestId), options));
 ipcMain.handle('replay-update-draft', (_event, draftId, patch = {}) => replay.updateDraft(String(draftId), patch));
-ipcMain.handle('replay-execute', (_event, draftId) => requireLicense() || replay.execute(String(draftId)));
+ipcMain.handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
 ipcMain.handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
-ipcMain.handle('ws-send', (_event, capturedId, payload) => requireLicense() || wsReplay.send(String(capturedId), payload == null ? '' : String(payload)));
+ipcMain.handle('ws-send', (_event, capturedId, payload) => wsReplay.send(String(capturedId), payload == null ? '' : String(payload)));
 ipcMain.handle('timeline-build', (_event, capturedRequestId) => timeline.build(String(capturedRequestId)));
 ipcMain.handle('cookies-save', (_event, targetId) => saveCookiesFor(String(targetId || selectedTargetId || '')));
 ipcMain.handle('cookies-restore', (_event, targetId, reload) => restoreCookiesFor(String(targetId || selectedTargetId || ''), !!reload));
 // WU4 intercept IPC. Default scope is the selected target only.
-ipcMain.handle('intercept-enable', (_event, rule = {}, targetId) => requireLicense() || intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
+ipcMain.handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
 ipcMain.handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || selectedTargetId || '')));
 ipcMain.handle('intercept-list', () => intercept.listPaused());
 ipcMain.handle('intercept-update-draft', (_event, id, patch = {}) => intercept.updateDraft(String(id), patch));
-ipcMain.handle('intercept-continue', (_event, id) => requireLicense() || intercept.continue(String(id)));
-ipcMain.handle('intercept-continue-modified', (_event, id, patch) => requireLicense() || intercept.continueModified(String(id), patch));
-ipcMain.handle('intercept-abort', (_event, id) => requireLicense() || intercept.abort(String(id)));
+ipcMain.handle('intercept-continue', (_event, id) => intercept.continue(String(id)));
+ipcMain.handle('intercept-continue-modified', (_event, id, patch) => intercept.continueModified(String(id), patch));
+ipcMain.handle('intercept-abort', (_event, id) => intercept.abort(String(id)));
 ipcMain.handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
 ipcMain.handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
-ipcMain.handle('cdp-connect', (_event, endpoint = {}) => requireLicense() || connectEndpoint(endpoint));
+ipcMain.handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
 ipcMain.handle('list-targets', () => targetManager ? targetManager.listTargets() : []);
 ipcMain.handle('select-target', (_event, id) => {
   if (!targetManager) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Not connected to a CDP endpoint' } };
@@ -468,7 +496,6 @@ ipcMain.handle('adb-list-webviews', async () => {
   catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
 });
 ipcMain.handle('adb-forward-webview', async (_event, socket, localPort = 9223) => {
-  const locked = requireLicense(); if (locked) return locked;
   try {
     const endpoint = await androidBridge.forwardSocket(process.env.OBSERVATORY_ADB || 'adb', localPort, String(socket));
     return await connectEndpoint(endpoint);
@@ -482,7 +509,7 @@ ipcMain.handle('protocol-allowlist', () => harness.allowlist());
 ipcMain.handle('protocol-round-state', () => ({ current: aviator.currentRound(), sidHistory: aviator.sidHistory(), roundHistory: aviator.roundHistory(), actionTraces: aviator.actionTraces() }));
 ipcMain.handle('protocol-template', (_event, command, overrides = {}) => { const payload = harness.buildTemplate(String(command), overrides || {}); return { payload, sidCheck: harness.checkSid(payload ? payload.sid : null) }; });
 ipcMain.handle('protocol-check-sid', (_event, sid) => harness.checkSid(sid));
-ipcMain.handle('protocol-execute', (_event, opts = {}) => requireLicense() || harness.execute({ ...opts, targetId: opts.targetId || selectedTargetId || null }));
+ipcMain.handle('protocol-execute', (_event, opts = {}) => harness.execute({ ...opts, targetId: opts.targetId || selectedTargetId || null }));
 ipcMain.handle('protocol-executions', () => harness.executions());
 ipcMain.handle('protocol-context', () => protocolContext.get());
 // WU8 — read-only observer IPC (snapshot + display-only config; never sends).
@@ -490,11 +517,11 @@ ipcMain.handle('observer-snapshot', () => observer.snapshot());
 ipcMain.handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });
 // WU10 — automated runner IPC (hard-bound to local/test endpoints; start() gates).
 ipcMain.handle('autotest-environment', (_event, targetId) => autoRunner.environmentFor(String(targetId || selectedTargetId || '')));
-ipcMain.handle('autotest-start', (_event, config = {}) => { const locked = requireLicense(); if (locked) return locked; const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
+ipcMain.handle('autotest-start', (_event, config = {}) => { const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
 ipcMain.handle('autotest-stop', () => { const r = autoRunner.stop(); return r.error ? r : autoRunner.snapshot(); });
 ipcMain.handle('autotest-snapshot', () => autoRunner.snapshot());
 // WU10.2 — bet-amount server-validation IPC (bet-only; local/test gated).
 ipcMain.handle('bvalidate-environment', (_event, targetId) => amountValidator.environmentFor(String(targetId || selectedTargetId || '')));
-ipcMain.handle('bvalidate-start', (_event, config = {}) => { const locked = requireLicense(); if (locked) return locked; const r = amountValidator.start(String(selectedTargetId || ''), config || {}); return r.error ? r : amountValidator.snapshot(); });
+ipcMain.handle('bvalidate-start', (_event, config = {}) => { const r = amountValidator.start(String(selectedTargetId || ''), config || {}); return r.error ? r : amountValidator.snapshot(); });
 ipcMain.handle('bvalidate-stop', () => { const r = amountValidator.stop(); return r.error ? r : amountValidator.snapshot(); });
 ipcMain.handle('bvalidate-snapshot', () => amountValidator.snapshot());

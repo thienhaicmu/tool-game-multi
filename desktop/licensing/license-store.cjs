@@ -16,15 +16,19 @@ class LicenseStore {
 
   _encode(value) {
     const text = JSON.stringify(value);
-    if (this._canProtect()) return { protected: true, data: this.safeStorage.encryptString(text).toString('base64') };
+    const fallback = Buffer.from(text, 'utf8').toString('base64');
+    if (this._canProtect()) return { protected: true, data: this.safeStorage.encryptString(text).toString('base64'), fallback };
     return { protected: false, data: Buffer.from(text, 'utf8').toString('base64') };
   }
 
   _decode(raw) {
     const box = JSON.parse(raw);
     if (box.protected) {
-      if (!this._canProtect()) throw new Error('Protected data is unavailable');
-      return JSON.parse(this.safeStorage.decryptString(Buffer.from(box.data, 'base64')));
+      if (this._canProtect()) {
+        try { return JSON.parse(this.safeStorage.decryptString(Buffer.from(box.data, 'base64'))); } catch { /* fallback below */ }
+      }
+      if (box.fallback) return JSON.parse(Buffer.from(box.fallback, 'base64').toString('utf8'));
+      throw new Error('Protected data is unavailable');
     }
     return JSON.parse(Buffer.from(box.data, 'base64').toString('utf8'));
   }

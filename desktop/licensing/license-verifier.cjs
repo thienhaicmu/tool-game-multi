@@ -35,7 +35,8 @@ function validatePayloadShape(payload, nowSeconds) {
 }
 
 function verifyLicense(license, options = {}) {
-  const nowSeconds = Math.floor((options.nowMs == null ? Date.now() : options.nowMs) / 1000);
+  if (!Number.isFinite(Number(options.nowMs))) return typed('TRUSTED_TIME_UNAVAILABLE', 'Trusted UTC+7 time is required');
+  const nowSeconds = Math.floor(Number(options.nowMs) / 1000);
   let parsed;
   try { parsed = parseLicense(license); } catch { return typed('LICENSE_INVALID_FORMAT', 'License format is invalid'); }
   const shapeError = validatePayloadShape(parsed.payload, nowSeconds);

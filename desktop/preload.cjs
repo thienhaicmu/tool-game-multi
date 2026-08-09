@@ -23,6 +23,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   copyText: text => ipcRenderer.invoke('copy-text', text),
   licenseStatus: () => ipcRenderer.invoke('license-status'),
   activateLicense: license => ipcRenderer.invoke('license-activate', license),
+  onLicenseChanged: callback => ipcRenderer.on('license-changed', (_event, status) => callback(status)),
   instanceInfo: () => ipcRenderer.invoke('instance-info'),
   listSessions: () => ipcRenderer.invoke('list-sessions'),
   readSession: sessionId => ipcRenderer.invoke('read-session', sessionId),

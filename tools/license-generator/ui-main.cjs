@@ -5,9 +5,11 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { randomBytes, sign } = require('node:crypto');
 const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
+const { TrustedTimeProvider } = require('../../desktop/licensing/trusted-time.cjs');
 
 let win;
 let privateKeyPath = process.env.WVPT_PRIVATE_KEY_PATH || defaultPrivateKeyPath();
+const trustedTime = new TrustedTimeProvider();
 
 function defaultPrivateKeyPath() {
   if (app && app.isPackaged) return path.join(process.resourcesPath, 'private', 'wvpt-ed25519-private.pem');
@@ -23,7 +25,7 @@ function readPrivateKey() {
 
 function utcDateSeconds(dateText) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateText || ''))) throw new Error('Custom expiry must be YYYY-MM-DD');
-  const ms = Date.parse(`${dateText}T00:00:00.000Z`);
+  const ms = Date.parse(`${dateText}T00:00:00.000+07:00`);
   if (!Number.isFinite(ms)) throw new Error('Invalid expiry date');
   return Math.floor(ms / 1000);
 }
@@ -36,8 +38,17 @@ function normalizeMachineId(input) {
   return machineId;
 }
 
-function buildPayload(input) {
-  const issuedAt = Math.floor(Date.now() / 1000);
+async function trustedIssuedAt() {
+  if (process.env.WVPT_TRUSTED_TIME_MS && Number.isFinite(Number(process.env.WVPT_TRUSTED_TIME_MS))) {
+    return Math.floor(Number(process.env.WVPT_TRUSTED_TIME_MS) / 1000);
+  }
+  const result = await trustedTime.now();
+  if (!result.ok) throw new Error('Cannot verify trusted UTC+7 time. Check internet connection and try again.');
+  return Math.floor(result.nowMs / 1000);
+}
+
+async function buildPayload(input) {
+  const issuedAt = await trustedIssuedAt();
   const mode = input.mode === 'custom' ? 'custom' : 'duration';
   const expiresAt = mode === 'custom'
     ? utcDateSeconds(input.expires)
@@ -95,9 +106,9 @@ ipcMain.handle('choose-private-key', async () => {
   return { privateKeyPath, exists: !!(privateKeyPath && fs.existsSync(privateKeyPath)) };
 });
 
-ipcMain.handle('generate-license', (_event, input) => {
+ipcMain.handle('generate-license', async (_event, input) => {
   try {
-    const payload = buildPayload(input || {});
+    const payload = await buildPayload(input || {});
     return { ok: true, payload, license: createLicense(payload) };
   } catch (error) {
     return { ok: false, error: { code: 'LICENSE_GENERATE_FAILED', message: String(error && error.message || error) } };

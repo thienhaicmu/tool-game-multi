@@ -6,14 +6,16 @@ const { getMachineId } = require('./machine-id.cjs');
 const { verifyLicense } = require('./license-verifier.cjs');
 const { LicenseStore } = require('./license-store.cjs');
 const { DEFAULT_TOLERANCE_SECONDS, nextTrustedSeenAt } = require('./clock-guard.cjs');
+const { TrustedTimeProvider } = require('./trusted-time.cjs');
 
 function errorResult(code, message, extra = {}) {
   return { active: false, error: { code, message, ...extra } };
 }
 
 class LicenseGuard {
-  constructor({ userDataPath, safeStorage = null, machineIdProvider = getMachineId, nowMs = () => Date.now(), store = null, publicKeyPem = null } = {}) {
+  constructor({ userDataPath, safeStorage = null, machineIdProvider = getMachineId, nowMs = null, trustedTimeProvider = null, store = null, publicKeyPem = null } = {}) {
     this._nowMs = nowMs;
+    this._trustedTimeProvider = trustedTimeProvider || (nowMs ? null : new TrustedTimeProvider());
     this._machineIdProvider = machineIdProvider;
     this._publicKeyPem = publicKeyPem;
     this._machine = null;
@@ -31,7 +33,20 @@ class LicenseGuard {
       this._status = errorResult('MACHINE_ID_UNAVAILABLE', 'Machine ID is unavailable');
       return this.status();
     }
+    if (this._trustedTimeProvider) {
+      this._status = { active: false, checking: true, machineId: this.machineId() };
+      return this.status();
+    }
     return this.refresh({ consumeLaunch: true });
+  }
+
+  async initializeAsync() {
+    this._machine = this._machineIdProvider();
+    if (!this._machine || !this._machine.ok) {
+      this._status = errorResult('MACHINE_ID_UNAVAILABLE', 'Machine ID is unavailable');
+      return this.status();
+    }
+    return this.refreshAsync({ consumeLaunch: true });
   }
 
   refresh(options = {}) {
@@ -42,7 +57,31 @@ class LicenseGuard {
       this._status = errorResult('LICENSE_MISSING', 'License is missing', { machineId });
       return this.status();
     }
-    this._status = this._verify(license, options);
+    const nowResult = this._trustedNowSync();
+    if (!nowResult.ok) {
+      this._status = errorResult(nowResult.error.code, nowResult.error.message, { machineId });
+      return this.status();
+    }
+    this._status = this._verify(license, options, nowResult);
+    if (this._status.active) this._store.saveLicense(license);
+    return this.status();
+  }
+
+  async refreshAsync(options = {}) {
+    const machineId = this.machineId();
+    if (!machineId) return this.status();
+    const license = this._store.loadLicense();
+    if (!license) {
+      this._status = errorResult('LICENSE_MISSING', 'License is missing', { machineId });
+      return this.status();
+    }
+    const nowResult = await this._trustedNow();
+    if (!nowResult.ok) {
+      this._status = errorResult(nowResult.error.code, nowResult.error.message, { machineId, attempts: nowResult.error.attempts || [] });
+      return this.status();
+    }
+    this._status = this._verify(license, options, nowResult);
+    if (this._status.active) this._store.saveLicense(license);
     return this.status();
   }
 
@@ -50,11 +89,25 @@ class LicenseGuard {
     return crypto.createHash('sha256').update(String(license || ''), 'utf8').digest('hex');
   }
 
-  _verify(license, options = {}) {
+  _trustedNowSync() {
+    if (this._nowMs) return { ok: true, nowMs: this._nowMs(), source: 'injected' };
+    const cachedNowMs = this._trustedTimeProvider && this._trustedTimeProvider.cachedNowMs();
+    if (cachedNowMs != null) return { ok: true, nowMs: cachedNowMs, source: 'trusted-cache' };
+    return { ok: false, error: { code: 'TRUSTED_TIME_UNAVAILABLE', message: 'Trusted UTC+7 time is not ready' } };
+  }
+
+  async _trustedNow() {
+    if (this._nowMs) return { ok: true, nowMs: this._nowMs(), source: 'injected' };
+    if (!this._trustedTimeProvider) return { ok: false, error: { code: 'TRUSTED_TIME_UNAVAILABLE', message: 'Trusted UTC+7 time provider is unavailable' } };
+    return this._trustedTimeProvider.now();
+  }
+
+  _verify(license, options = {}, nowResult = null) {
     const machineId = this.machineId();
-    const nowSeconds = Math.floor(this._nowMs() / 1000);
+    const nowMs = nowResult && Number.isFinite(nowResult.nowMs) ? nowResult.nowMs : this._nowMs();
+    const nowSeconds = Math.floor(nowMs / 1000);
     const state = this._store.loadState();
-    const result = verifyLicense(license, { machineId, nowMs: this._nowMs(), lastTrustedSeenAt: state.lastTrustedSeenAt || 0, rollbackToleranceSeconds: DEFAULT_TOLERANCE_SECONDS, publicKeyPem: this._publicKeyPem || undefined });
+    const result = verifyLicense(license, { machineId, nowMs, lastTrustedSeenAt: state.lastTrustedSeenAt || 0, rollbackToleranceSeconds: DEFAULT_TOLERANCE_SECONDS, publicKeyPem: this._publicKeyPem || undefined });
     if (!result.ok) return { ...result, machineId };
     const fingerprint = this._licenseFingerprint(license);
     const launchState = state.launch || {};
@@ -68,13 +121,18 @@ class LicenseGuard {
     }
     const nextSeen = nextTrustedSeenAt(nowSeconds, state.lastTrustedSeenAt);
     this._store.saveState({ ...state, lastTrustedSeenAt: nextSeen, launch: { fingerprint, used: usedLaunches, max: maxLaunches, licenseId: result.payload.licenseId } });
-    return { active: true, machineId, payload: result.payload, license, launch: { used: usedLaunches, max: maxLaunches } };
+    return { active: true, machineId, payload: result.payload, license, launch: { used: usedLaunches, max: maxLaunches }, nowSeconds, timeSource: nowResult && nowResult.source || 'injected' };
   }
 
   activate(license) {
     const machineId = this.machineId();
     if (!machineId) return this.status();
-    const result = this._verify(String(license || '').trim(), { consumeLaunch: false });
+    const nowResult = this._trustedNowSync();
+    if (!nowResult.ok) {
+      this._status = errorResult(nowResult.error.code, nowResult.error.message, { machineId });
+      return this.status();
+    }
+    const result = this._verify(String(license || '').trim(), { consumeLaunch: false }, nowResult);
     if (!result.active) {
       this._status = result;
       return this.status();
@@ -84,10 +142,22 @@ class LicenseGuard {
     return this.status();
   }
 
-  requireActive() {
-    if (this._status && this._status.active) return null;
-    const status = this.status();
-    return { error: { code: status.error && status.error.code || 'LICENSE_MISSING', message: status.error && status.error.message || 'License is not active' } };
+  async activateAsync(license) {
+    const machineId = this.machineId();
+    if (!machineId) return this.status();
+    const nowResult = await this._trustedNow();
+    if (!nowResult.ok) {
+      this._status = errorResult(nowResult.error.code, nowResult.error.message, { machineId, attempts: nowResult.error.attempts || [] });
+      return this.status();
+    }
+    const result = this._verify(String(license || '').trim(), { consumeLaunch: false }, nowResult);
+    if (!result.active) {
+      this._status = result;
+      return this.status();
+    }
+    this._store.saveLicense(String(license || '').trim());
+    this._status = result;
+    return this.status();
   }
 
   machineId() {
@@ -95,7 +165,7 @@ class LicenseGuard {
   }
 
   status() {
-    return { ...this._status, checking: false, machineId: this.machineId() };
+    return { ...this._status, checking: Boolean(this._status && this._status.checking), machineId: this.machineId(), hasStoredLicense: Boolean(this._store.loadLicense()) };
   }
 }
 

@@ -13,6 +13,7 @@ const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-
 const { verifyLicense, parseLicense } = require('../../desktop/licensing/license-verifier.cjs');
 const { LicenseGuard } = require('../../desktop/licensing/license-guard.cjs');
 const { LicenseStore } = require('../../desktop/licensing/license-store.cjs');
+const { TrustedTimeProvider, utcPlus7Date } = require('../../desktop/licensing/trusted-time.cjs');
 
 const keypair = generateKeyPairSync('ed25519');
 const privateKeyPem = keypair.privateKey.export({ type: 'pkcs8', format: 'pem' });
@@ -40,6 +41,14 @@ function tempStore() {
   return new LicenseStore({ licensePath: join(dir, 'license.dat'), statePath: join(dir, 'license-state.dat') });
 }
 
+function fakeSafeStorage() {
+  return {
+    isEncryptionAvailable: () => true,
+    encryptString: (text) => Buffer.from(`enc:${text}`, 'utf8'),
+    decryptString: (buf) => String(buf).replace(/^enc:/, ''),
+  };
+}
+
 test('machine id is stable and deterministic across restarts', () => {
   const parts = { machineGuid: ' abc ', uuid: ' 1234-ABCD ', volume: ' aa bb ' };
   const a = buildMachineId(parts);
@@ -62,6 +71,12 @@ test('valid signed license verifies on matching machine', () => {
   const result = verifyLicense(license, { machineId: MACHINE_A, publicKeyPem, nowMs: 1789000000000 });
   assert.equal(result.ok, true);
   assert.deepEqual(result.payload, payload);
+});
+
+test('verifier requires trusted time from caller and never falls back to local clock', () => {
+  const { license } = licenseFor();
+  const result = verifyLicense(license, { machineId: MACHINE_A, publicKeyPem });
+  assert.equal(result.error.code, 'TRUSTED_TIME_UNAVAILABLE');
 });
 
 test('key sharing to another machine is locked with LICENSE_MACHINE_MISMATCH', () => {
@@ -104,14 +119,14 @@ test('random license returns LICENSE_INVALID_FORMAT without crashing', () => {
 test('generator round trip signs custom expiry exactly', () => {
   const proc = spawnSync(process.execPath, ['tools/license-generator/generate-license.mjs', '--machine-id', MACHINE_A, '--expires', '2099-12-31'], {
     cwd: process.cwd(),
-    env: { ...process.env, WVPT_PRIVATE_KEY: privateKeyPem },
+    env: { ...process.env, WVPT_PRIVATE_KEY: privateKeyPem, WVPT_TRUSTED_TIME_MS: '1789000000000' },
     encoding: 'utf8',
   });
   assert.equal(proc.status, 0, proc.stderr);
   const license = proc.stdout.trim().split(/\r?\n/).at(-1);
   const result = verifyLicense(license, { machineId: MACHINE_A, publicKeyPem, nowMs: 1789000000000 });
   assert.equal(result.ok, true);
-  assert.equal(result.payload.expiresAt, Date.parse('2099-12-31T00:00:00.000Z') / 1000);
+  assert.equal(result.payload.expiresAt, Date.parse('2099-12-31T00:00:00.000+07:00') / 1000);
 });
 
 test('clock rollback is detected from protected last-seen state', () => {
@@ -124,6 +139,58 @@ test('clock rollback is detected from protected last-seen state', () => {
   const guardB = new LicenseGuard({ store, machineIdProvider, publicKeyPem, nowMs: () => Date.parse('2026-08-01T00:00:00Z') });
   const status = guardB.initialize();
   assert.equal(status.error.code, 'LICENSE_CLOCK_ROLLBACK');
+});
+
+test('license store can read saved license when safeStorage is unavailable later', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'wvpt-license-fallback-'));
+  const licensePath = join(dir, 'license.dat');
+  const statePath = join(dir, 'license-state.dat');
+  const protectedStore = new LicenseStore({ licensePath, statePath, safeStorage: fakeSafeStorage() });
+  protectedStore.saveLicense('WVPT1.example.signature');
+  const portableStore = new LicenseStore({ licensePath, statePath, safeStorage: null });
+  assert.equal(portableStore.loadLicense(), 'WVPT1.example.signature');
+});
+
+test('trusted time provider uses HTTPS Date header and formats UTC+7 dates', async () => {
+  const provider = new TrustedTimeProvider({
+    urls: ['https://time.test'],
+    fetchDateHeader: async () => ({ ok: true, nowMs: Date.parse('2026-08-09T17:30:00Z'), source: 'https://time.test' }),
+  });
+  const first = await provider.now();
+  assert.equal(first.ok, true);
+  assert.equal(first.source, 'https://time.test');
+  assert.equal(utcPlus7Date(Date.parse('2026-08-09T17:30:00Z') / 1000), '2026-08-10');
+  assert.ok(provider.cachedNowMs() >= first.nowMs);
+});
+
+test('async license guard verifies expiry against trusted time instead of local clock', async () => {
+  const store = tempStore();
+  const machineIdProvider = () => ({ ok: true, machineId: MACHINE_A });
+  const expiredByTrustedTime = licenseFor({ issuedAt: 1700000000, expiresAt: 1787000000 }).license;
+  const provider = new TrustedTimeProvider({
+    urls: ['https://time.test'],
+    fetchDateHeader: async () => ({ ok: true, nowMs: 1789000000000, source: 'https://time.test' }),
+  });
+  const guard = new LicenseGuard({ store, machineIdProvider, publicKeyPem, trustedTimeProvider: provider });
+  assert.equal(guard.initialize().checking, true);
+  await guard.initializeAsync();
+  const status = await guard.activateAsync(expiredByTrustedTime);
+  assert.equal(status.error.code, 'LICENSE_EXPIRED');
+});
+
+test('async license guard fails closed when trusted UTC+7 time is unavailable', async () => {
+  const store = tempStore();
+  const machineIdProvider = () => ({ ok: true, machineId: MACHINE_A });
+  const validLicense = licenseFor({ issuedAt: 1700000000, expiresAt: 1800000000 }).license;
+  const provider = new TrustedTimeProvider({
+    urls: ['https://time.test'],
+    fetchDateHeader: async () => ({ ok: false, error: 'offline', source: 'https://time.test' }),
+  });
+  const guard = new LicenseGuard({ store, machineIdProvider, publicKeyPem, trustedTimeProvider: provider });
+  guard.initialize();
+  const status = await guard.activateAsync(validLicense);
+  assert.equal(status.error.code, 'TRUSTED_TIME_UNAVAILABLE');
+  assert.equal(store.loadLicense(), null);
 });
 
 test('renewal replaces an expired license with a valid license for the same machine', () => {
@@ -174,13 +241,33 @@ test('renewal with a new license resets launch quota for the new license fingerp
   assert.equal(new LicenseGuard({ store, machineIdProvider, publicKeyPem, nowMs: () => 1789000004000 }).initialize().launch.used, 1);
 });
 
-test('main-process product engine IPC handlers require active license', () => {
+test('license lock is app-level, not a per-feature IPC gate', () => {
   const main = readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
+  const css = readFileSync(new URL('../../ui/product.css', import.meta.url), 'utf8');
+  assert.ok(/body\[data-license=locked\][\s\S]*#shell/.test(css), 'locked license hides the app shell');
   for (const channel of ['open-browser', 'protocol-execute', 'autotest-start', 'bvalidate-start', 'replay-execute', 'ws-send', 'intercept-enable', 'cdp-connect']) {
     const idx = main.indexOf(`ipcMain.handle('${channel}'`);
     assert.ok(idx >= 0, `${channel} exists`);
-    assert.ok(main.slice(idx, idx + 260).includes('requireLicense()'), `${channel} is guarded`);
+    assert.ok(!main.slice(idx, idx + 320).includes('requireLicense'), `${channel} is not feature-locked`);
   }
+});
+
+test('main process stores license outside ephemeral instance appData', () => {
+  const main = readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
+  assert.ok(main.includes("const baseUserDataPath = app.getPath('userData');"), 'captures stable app userData before instance override');
+  assert.ok(main.includes('new InstanceManager({ baseUserDataPath'), 'instances still use the shared app root');
+  assert.ok(main.includes('new LicenseGuard({ userDataPath: baseUserDataPath'), 'license store is shared across app restarts');
+  assert.ok(main.includes('function migrateLegacyInstanceLicense()'), 'old per-instance activations are migrated');
+  assert.ok(main.includes("path.join(baseUserDataPath, 'instances')"), 'migration scans legacy instance appData folders');
+  assert.ok(main.includes("app.setPath('userData', appInstance.paths.appData)"), 'runtime instance data remains isolated');
+});
+
+test('protocol websocket send falls back when captured host does not exactly match runtime socket url', () => {
+  const src = readFileSync(new URL('../../desktop/cdp/ws-replay.cjs', import.meta.url), 'utf8');
+  const main = readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
+  assert.ok(main.includes('wsReplay.sendProtocol(ctx, payload)'), 'protocol harness uses the reliable send path');
+  assert.ok(src.includes("window.__wsoSendFrame('',"), 'protocol send retries any open websocket in the bound frame/session');
+  assert.ok(src.includes('window.__wsoSocketCount'), 'hook exposes socket diagnostics');
 });
 
 test('package audit excludes generator and private signing material from customer app', () => {

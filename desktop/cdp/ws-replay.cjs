@@ -42,6 +42,18 @@ const WS_HOOK = `(() => {
       } catch(e){}
       return false;
     };
+    window.__wsoSocketCount = function(urlPart){
+      let n = 0;
+      try {
+        for (let i = socks.length - 1; i >= 0; i--){
+          const ws = socks[i];
+          if (!ws || ws.readyState !== 1) continue;
+          if (urlPart && String(ws.url || '').indexOf(urlPart) === -1) continue;
+          n++;
+        }
+      } catch(e){}
+      return n;
+    };
   } catch(e){}
 })();`;
 
@@ -88,12 +100,35 @@ class WsReplay {
     if (!ctx || !ctx.targetId) return { ok: false, error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for send' } };
     const client = this._resolveClient(ctx.targetId);
     if (!client) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'Kết nối tới target đã mất' } };
+    await this.injectSession(client, ctx.cdpSessionId || undefined);
     const urlPart = String(ctx.host || '');
-    const expr = `window.__wsoSendFrame && window.__wsoSendFrame(${JSON.stringify(urlPart)}, ${JSON.stringify(String(payload))})`;
+    const data = JSON.stringify(String(payload));
+    const expr = `window.__wsoSendFrame && (window.__wsoSendFrame(${JSON.stringify(urlPart)}, ${data}) || window.__wsoSendFrame('', ${data}))`;
     try {
       const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, ctx.cdpSessionId || undefined);
       if (res && res.result && res.result.value === true) return { ok: true };
       return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: 'Không tìm thấy WebSocket đang mở khớp trang. Hãy tương tác với app để socket gửi ≥1 frame rồi thử lại.' } };
+    } catch (e) {
+      return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: String(e && e.message || e) } };
+    }
+  }
+
+  async sendProtocol(ctx, payload) {
+    if (!ctx || !ctx.targetId) return { ok: false, error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for send' } };
+    const client = this._resolveClient(ctx.targetId);
+    if (!client) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'Target connection is gone' } };
+    const sessionId = ctx.cdpSessionId || undefined;
+    await this.injectSession(client, sessionId);
+    const urlPart = String(ctx.host || '');
+    const data = JSON.stringify(String(payload));
+    const expr = `window.__wsoSendFrame && (window.__wsoSendFrame(${JSON.stringify(urlPart)}, ${data}) || window.__wsoSendFrame('', ${data}))`;
+    try {
+      const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, sessionId);
+      if (res && res.result && res.result.value === true) return { ok: true };
+      const countExpr = `window.__wsoSocketCount ? {matched: window.__wsoSocketCount(${JSON.stringify(urlPart)}), open: window.__wsoSocketCount('')} : {matched: 0, open: 0}`;
+      const countRes = await client.Runtime.evaluate({ expression: countExpr, returnByValue: true }, sessionId).catch(() => null);
+      const counts = countRes && countRes.result && countRes.result.value || { matched: 0, open: 0 };
+      return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: counts.open > 0 ? 'Cannot send through the tracked open WebSocket. Reload the game and try again.' : 'No tracked open WebSocket in this frame. Reload the game after opening the browser from the tool, log in again, then try bet/cashout.', context: { socketHost: urlPart, openSockets: counts.open || 0, matchedSockets: counts.matched || 0 } } };
     } catch (e) {
       return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: String(e && e.message || e) } };
     }
