@@ -102,7 +102,7 @@ class AutoRunner extends EventEmitter {
     return {
       running: this._running, state: this._state, config: this._config,
       environment: { host: env.host, allowed: env.allowed },
-      progress: { attempted: this._attempted, finished: this._history.length, target: this._config ? this._config.roundCount : null },
+      progress: { attempted: this._attempted, finished: this._attempted, target: this._config ? this._config.roundCount : null },
       active: this._active ? publicRound(this._active) : null,
       liveOdd: cur ? cur.currentOdd : null,
       liveSid: cur ? cur.sid : null,
@@ -264,12 +264,17 @@ class AutoRunner extends EventEmitter {
     round.finishedAtMono = this._now();
     this._history.push(publicRound(round));
     if (this._active === round) this._active = null;
-    this._afterRound();
+    this._afterRound(result);
     this._emit();
   }
 
-  _afterRound() {
+  _afterRound(result) {
     if (!this._running) { this._state = STATE.STOPPED; return; }
+    if (result === RESULT.COMPLETED) {
+      this._attempted = 0;
+      this._state = STATE.WAITING_ROUND;
+      return;
+    }
     if (this._attempted >= this._config.roundCount) { this._running = false; this._state = STATE.COMPLETED; return; }
     this._state = STATE.WAITING_ROUND;          // wait for the next server 100005 (§19)
   }

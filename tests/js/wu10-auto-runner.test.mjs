@@ -26,7 +26,7 @@ function make({ host = 'http://localhost:8080/game', exec } = {}) {
     },
   };
   const clock = { t: 0 };
-  const runner = new AutoRunner({ roundTracker: tracker, observer, harness, getTargetUrl: () => host, now: () => clock.t });
+  const runner = new AutoRunner({ roundTracker: tracker, observer, harness, getTargetUrl: () => host, now: () => clock.t, environmentGuard: true });
   const feed = (raw, direction = 'recv') => tracker.observe({ raw, direction, targetId: 'T', url: 'wss://game.local/ws' });
   const betCount = () => sends.filter((s) => s.command === 'bet').length;
   const cashCount = () => sends.filter((s) => s.command === 'cashout').length;
@@ -157,23 +157,30 @@ test('triggerOdd and server ackOdd are recorded separately', async () => {
 });
 
 // ---------------------------------------------------------------------------
-// §20/§36 — multi-round: exactly N bets/cashouts on the exact server sids.
+// §20/§36 — multi-round: exact server sids; threshold cashout resets the cycle.
 // ---------------------------------------------------------------------------
-test('multi-round: 3 rounds => 3 bets, 3 cashouts, exact sids, COMPLETED', async () => {
+test('threshold cashout resets progress to the next cycle instead of continuing the old count', async () => {
   const { runner, feed, sends, betCount, cashCount } = make();
   runner.start('T', { roundCount: 3, amount: 5000, stopOdd: 2.0 });
   for (const sid of [100, 107, 130]) { await playQualifying(feed, sid, [2.5]); feed(`{"cmd":100007,"sid":${sid}}`); await flush(); }
   assert.equal(betCount(), 3);
   assert.equal(cashCount(), 3);
   assert.deepEqual(sends.filter((s) => s.command === 'bet').map((s) => s.sidAtSend), [100, 107, 130]);
-  assert.equal(runner.state(), STATE.COMPLETED);
-  assert.equal(runner.isRunning(), false);
+  assert.equal(runner.state(), STATE.WAITING_ROUND);
+  assert.equal(runner.isRunning(), true);
+  assert.deepEqual(runner.history().map((r) => r.index), [0, 0, 0]);
+  assert.deepEqual(runner.snapshot().progress, { attempted: 0, finished: 0, target: 3 });
+  feed('{"cmd":100005,"sid":130}'); await flush();
+  assert.equal(betCount(), 3, 'reset does not re-bet duplicate open/snapshot for the same sid');
+  feed('{"cmd":100005,"sid":180}'); await flush();
+  assert.equal(runner.snapshot().active.index, 0, 'next round starts as 1 / roundCount');
 });
 
-test('does not start more than roundCount rounds', async () => {
+test('does not start more than roundCount rounds when no threshold reset happens', async () => {
   const { runner, feed, betCount } = make();
   runner.start('T', { roundCount: 1, amount: 5000, stopOdd: 2.0 });
-  await playQualifying(feed, 100, [2.5]);
+  feed('{"cmd":100005,"sid":100}'); await flush();
+  feed('{"cmd":100009,"sid":100,"odd":1.5}');
   feed('{"cmd":100007,"sid":100}'); await flush();
   feed('{"cmd":100005,"sid":107}'); await flush(); // extra server round after target reached
   assert.equal(betCount(), 1, 'no bet for the 2nd round beyond roundCount');

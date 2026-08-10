@@ -65,7 +65,7 @@ function make() {
   const observer = new RoundObserver({ roundTracker: tracker });
   const sends = [];
   const harness = { execute: async (opts) => { sends.push({ command: opts.command, overrides: opts.overrides }); return opts.command === 'cashout' ? { result: 'ACK', responsePayload: { odd: 2.05, wm: 7750 } } : { result: 'ACK' }; } };
-  const runner = new AutoRunner({ roundTracker: tracker, observer, harness, getTargetUrl: () => 'http://localhost:8080/game', now: () => 0 });
+  const runner = new AutoRunner({ roundTracker: tracker, observer, harness, getTargetUrl: () => 'http://localhost:8080/game', now: () => 0, environmentGuard: true });
   const feed = (raw) => tracker.observe({ raw, direction: 'recv', targetId: 'T', url: 'wss://game.local/ws' });
   const bets = () => sends.filter((s) => s.command === 'bet');
   return { runner, feed, sends, bets };
@@ -81,13 +81,14 @@ test('amount propagation: every bet carries the configured amount (7777)', async
   assert.ok(bets().every((b) => b.overrides.b === 7777), 'no default 5000 leaks through');
 });
 
-// §16 — N-round execution with the configured amount + exact sids.
-test('N-round: 3 bets b=5000 on sids 100/107/130 then COMPLETED', async () => {
+// §16 — threshold resets the count, while config still reaches every bet.
+test('threshold reset keeps configured amount on exact sids', async () => {
   const { runner, feed, bets } = make();
   runner.start('T', { roundCount: 3, amount: 5000, stopOdd: 2 });
   for (const sid of [100, 107, 130]) await qualify(feed, sid);
   assert.deepEqual(bets().map((b) => b.overrides.b), [5000, 5000, 5000]);
-  assert.equal(runner.state(), 'COMPLETED');
+  assert.equal(runner.state(), 'WAITING_ROUND');
+  assert.deepEqual(runner.snapshot().progress, { attempted: 0, finished: 0, target: 3 });
 });
 
 // §18 — a new run uses ONLY the new configuration (no stale amount/threshold).
@@ -95,7 +96,7 @@ test('new run uses only the new config', async () => {
   const { runner, feed, bets } = make();
   runner.start('T', { roundCount: 1, amount: 5000, stopOdd: 2 });
   await qualify(feed, 100);
-  assert.equal(runner.state(), 'COMPLETED');
+  runner.stop();
   runner.start('T', { roundCount: 1, amount: 10000, stopOdd: 1.5 });
   await qualify(feed, 200);
   const last = bets().at(-1);
