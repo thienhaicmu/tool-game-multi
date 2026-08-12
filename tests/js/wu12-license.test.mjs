@@ -241,15 +241,26 @@ test('renewal with a new license resets launch quota for the new license fingerp
   assert.equal(new LicenseGuard({ store, machineIdProvider, publicKeyPem, nowMs: () => 1789000004000 }).initialize().launch.used, 1);
 });
 
-test('license lock is app-level, not a per-feature IPC gate', () => {
+test('capability IPC is gated in the main process, backing the CSS lock', () => {
   const main = readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
   const css = readFileSync(new URL('../../ui/product.css', import.meta.url), 'utf8');
+  // Defense in depth: the renderer still hides locked UI...
   assert.ok(/body\[data-license=locked\][\s\S]*#shell/.test(css), 'locked license hides the app shell');
+  // ...but the real gate lives in main: a handle() wrapper that fails closed when
+  // the license is not active, so flipping the renderer flag cannot unlock features.
+  assert.ok(/function handle\(channel, fn\)/.test(main), 'main defines a license-gating handle() wrapper');
+  assert.ok(main.includes("code: 'LICENSE_REQUIRED'"), 'gated calls are refused with LICENSE_REQUIRED');
+  assert.ok(/if \(!licenseActive\(\)\) return/.test(main), 'gate denies when the license is not active');
+  // Every capability channel must be registered through the gate, never raw.
   for (const channel of ['open-browser', 'protocol-execute', 'autotest-start', 'bvalidate-start', 'replay-execute', 'ws-send', 'intercept-enable', 'cdp-connect']) {
-    const idx = main.indexOf(`ipcMain.handle('${channel}'`);
-    assert.ok(idx >= 0, `${channel} exists`);
-    assert.ok(!main.slice(idx, idx + 320).includes('requireLicense'), `${channel} is not feature-locked`);
+    assert.ok(main.includes(`handle('${channel}'`), `${channel} is registered`);
+    assert.ok(!main.includes(`ipcMain.handle('${channel}'`), `${channel} is not registered raw (must go through the gate)`);
   }
+  // Only the activation-screen channels stay open while locked.
+  const openLine = main.match(/const LICENSE_OPEN_CHANNELS = new Set\(\[([^\]]*)\]\)/);
+  assert.ok(openLine, 'an explicit open-channel allowlist exists');
+  for (const channel of ['license-status', 'license-activate']) assert.ok(openLine[1].includes(`'${channel}'`), `${channel} stays open`);
+  for (const channel of ['cdp-connect', 'protocol-execute', 'autotest-start']) assert.ok(!openLine[1].includes(`'${channel}'`), `${channel} is not exempt`);
 });
 
 test('main process stores license outside ephemeral instance appData', () => {
@@ -272,8 +283,22 @@ test('protocol websocket send falls back when captured host does not exactly mat
 
 test('package audit excludes generator and private signing material from customer app', () => {
   const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'));
-  assert.deepEqual(pkg.build.files, ['desktop/**/*', 'ui/**/*', 'package.json']);
+  assert.deepEqual(pkg.build.files, [
+    'desktop/**/*',
+    '!desktop/protocol/aviator.cjs',
+    '!desktop/protocol/harness.cjs',
+    '!desktop/protocol/auto-runner.cjs',
+    '!desktop/protocol/amount-validator.cjs',
+    '!desktop/protocol/round-observer.cjs',
+    '!desktop/protocol/protocol-context.cjs',
+    'ui/**/*',
+    'package.json',
+  ]);
   assert.ok(!JSON.stringify(pkg.build.files).includes('tools/license-generator'));
+  // Tier 2: the crown-jewel protocol plaintext is excluded; only sealed .enc ships.
+  for (const name of ['aviator', 'harness', 'auto-runner', 'amount-validator', 'round-observer', 'protocol-context']) {
+    assert.ok(pkg.build.files.includes(`!desktop/protocol/${name}.cjs`), `${name}.cjs plaintext is excluded from the package`);
+  }
   const roots = ['desktop', 'ui'];
   const files = [];
   function walk(dir) {

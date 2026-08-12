@@ -164,6 +164,11 @@ class LicenseGuard {
     return this._machine && this._machine.ok ? this._machine.machineId : null;
   }
 
+  // Tier 2: the raw stored license string, used to derive the sealed-module key.
+  storedLicense() {
+    return this._store.loadLicense();
+  }
+
   status() {
     return { ...this._status, checking: Boolean(this._status && this._status.checking), machineId: this.machineId(), hasStoredLicense: Boolean(this._store.loadLicense()) };
   }

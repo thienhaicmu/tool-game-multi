@@ -16,18 +16,17 @@ const { InterceptEngine } = require('./cdp/intercept.cjs');
 const { CookieVault, hostMatches } = require('./cookie-vault.cjs');
 const { ReplayEngine } = require('./replay/replay-engine.cjs');
 const { Timeline } = require('./timeline.cjs');
-const { RoundTracker } = require('./protocol/aviator.cjs');
-const { ProtocolHarness } = require('./protocol/harness.cjs');
-const { RoundObserver } = require('./protocol/round-observer.cjs');
-const { AutoRunner } = require('./protocol/auto-runner.cjs');
-const { AmountValidator } = require('./protocol/amount-validator.cjs');
-const { ProtocolContext } = require('./protocol/protocol-context.cjs');
+// Tier 2: the crown-jewel protocol modules (aviator/harness/observer/runners) are
+// sealed ciphertext and are required lazily inside initProtocolSubsystem(), only
+// after a valid license unlocks the seal key. Do NOT require them here.
 const { resolveBounds, DEFAULTS: WIN_DEFAULTS } = require('./window-state.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 const { environmentGuardEnabled } = require('./protocol/environment-gate.cjs');
 const { InstanceManager } = require('./instance/instance-manager.cjs');
 const { ChromeLauncher } = require('./browser/chrome-launcher.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
+const { deriveFeatureKey } = require('./licensing/feature-key.cjs');
+const { install: installSealedLoader, SEALED_BASENAMES } = require('./protocol/sealed-loader.cjs');
 
 let shell;
 let targetManager = null;
@@ -38,6 +37,11 @@ let capturePaused = false;
 let sessionId = randomUUID();
 let journal;
 let licenseGuard;
+// Tier 2: populated by initProtocolSubsystem() once a valid license unlocks the
+// sealed protocol modules. Every IPC that touches these is Tier-1 gated, so they are
+// never referenced before initialization.
+let aviator, harness, protocolContext, observer, autoRunner, amountValidator;
+let protocolSubsystemReady = false;
 let importStarted = false;
 let importInProgress = false;
 let importTimer;
@@ -136,8 +140,9 @@ function createWindow() {
   if (!licenseGuard) {
     migrateLegacyInstanceLicense();
     licenseGuard = new LicenseGuard({ userDataPath: baseUserDataPath, safeStorage });
-    licenseGuard.initialize();
+    ensureProtocolSubsystem(licenseGuard.initialize());
     licenseGuard.initializeAsync().then((status) => {
+      ensureProtocolSubsystem(status);
       if (shell && !shell.isDestroyed()) shell.webContents.send('license-changed', status);
     }).catch(() => {});
   }
@@ -161,14 +166,23 @@ async function openBrowserWindow(url) {
   return true;
 }
 
+// Unlock the sealed protocol subsystem the moment a license verifies active. Safe to
+// call with any status (no-op unless active) and idempotent. Failure to unlock is
+// surfaced but must not crash the license flow.
+function ensureProtocolSubsystem(status) {
+  try { if (status && status.active) initProtocolSubsystem(); }
+  catch (err) { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', { code: 'FEATURE_UNLOCK_FAILED', message: String((err && err.message) || err) }); }
+  return status;
+}
+
 async function licenseStatus() {
   if (!licenseGuard) return { active: false, checking: false, error: { code: 'LICENSE_MISSING', message: 'License guard is not ready' } };
-  const status = licenseGuard.status();
-  if (status.active) return licenseGuard.refreshAsync({ consumeLaunch: false });
-  if (status.checking || (!status.active && status.error && status.error.code === 'TRUSTED_TIME_UNAVAILABLE')) {
-    return licenseGuard.refreshAsync();
+  let status = licenseGuard.status();
+  if (status.active) status = await licenseGuard.refreshAsync({ consumeLaunch: false });
+  else if (status.checking || (!status.active && status.error && status.error.code === 'TRUSTED_TIME_UNAVAILABLE')) {
+    status = await licenseGuard.refreshAsync();
   }
-  return status;
+  return ensureProtocolSubsystem(status);
 }
 // Newly launched Chrome needs ~1s before its CDP endpoint answers; retry connect.
 async function connectEndpointWithRetry(endpoint, attempt = 0) {
@@ -205,68 +219,89 @@ const replay = new ReplayEngine({
 });
 // WU5: read-only aggregation of capture + replay + intercept evidence.
 const timeline = new Timeline({ capture, replay, intercept });
-// WU7: Aviator protocol observer — classifies WS frames, tracks the authoritative
-// CurrentRound (sid from server cmd:100005 ONLY, never arithmetic), SID history and
-// send->ack ActionTraces. Fed from captured WebSocket data frames.
-const aviator = new RoundTracker();
-capture.on('request', req => {
-  if (req && req.isWebSocket && req.wsDirection) {
-    aviator.observe({ targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url, direction: req.wsDirection, raw: req.body && req.body.raw });
-  }
-});
-aviator.on('round', r => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-round', r); });
-// Session aid/eid — learned from observed frames, owned here (never hardcoded /
-// user-entered). Protocol testing stays disabled until this is ready.
-const protocolContext = new ProtocolContext({ roundTracker: aviator });
-protocolContext.on('change', c => { if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-context', c); });
-aviator.on('actiontrace', t => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-actiontrace', t); });
-// WU7: Protocol Test Harness — authorized QA sender bound to the selected target's
-// own live socket (via wsReplay.sendRaw). Gated by an explicit host allowlist.
-const harness = new ProtocolHarness({
-  roundTracker: aviator,
-  send: (ctx, payload) => wsReplay.sendProtocol(ctx, payload),
-  getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
-  allowlist: (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean),
-  environmentGuard: protocolEnvironmentGuard,
-});
-harness.on('execution', ex => {
-  try { journal?.append(normalizeCaptureEvent({ kind: 'protocol-test', id: ex.id, targetId: ex.targetId, timestamp: ex.sentAt, exec: ex }, sessionId)); } catch { /* journal failure must not stop testing */ }
-  if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-execution', ex);
-});
-// WU8: READ-ONLY multi-round observer. Consumes the RoundTracker frame stream and
-// records per-round evidence (sid, odd stream, bet/cashout timing, server odd/wm,
-// latencies). It never sends — RoundTracker stays the sole owner of sid/odd/state.
-const observer = new RoundObserver({ roundTracker: aviator });
-let observerDirty = false;
-observer.on('update', () => {
-  if (observerDirty) return; observerDirty = true;
-  setTimeout(() => { observerDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('observer-update', observer.snapshot()); }, 120);
-});
-// WU10: offline automated round test runner. Event-driven over the frame stream;
-// reuses the observer (sid/odd owner) + harness (send + ack). HARD-BOUND to local/
-// test endpoints — start() refuses any non-allowlisted host and the UI can't override.
-const autoRunner = new AutoRunner({
-  roundTracker: aviator, observer, harness,
-  getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
-  environmentGuard: protocolEnvironmentGuard,
-});
-let autoDirty = false;
-autoRunner.on('update', () => {
-  if (autoDirty) return; autoDirty = true;
-  setTimeout(() => { autoDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('autotest-update', autoRunner.snapshot()); }, 100);
-});
-// WU10.2: separate bet-amount server-validation mode (bet-only; sends the EXACT
-// tester value; never clamps/snaps; hard-bound to local/test like the runner).
-const amountValidator = new AmountValidator({
-  roundTracker: aviator, harness,
-  getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
-  environmentGuard: protocolEnvironmentGuard,
-});
-let bvalDirty = false;
-amountValidator.on('update', () => {
-  if (bvalDirty) return; bvalDirty = true;
-  setTimeout(() => { bvalDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('bvalidate-update', amountValidator.snapshot()); }, 100);
-});
+// WU7+: the Aviator protocol subsystem (RoundTracker, harness, observer, runners) is
+// the crown-jewel logic. Its modules ship as sealed ciphertext and are only decrypted
+// and wired up here — AFTER a genuine, machine-matched license unlocks the seal key.
+// Building it lazily means the code does not exist in a runnable form until a valid
+// license is present, so flipping the renderer flag or patching the Tier-1 gate is not
+// enough to get the features. Idempotent; safe to call on every license change.
+function initProtocolSubsystem() {
+  if (protocolSubsystemReady) return true;
+  const license = licenseGuard && licenseGuard.storedLicense ? licenseGuard.storedLicense() : null;
+  const key = deriveFeatureKey({ license, machineId: licenseGuard ? licenseGuard.machineId() : null });
+  installSealedLoader({ key, files: SEALED_BASENAMES.map((name) => path.join(__dirname, 'protocol', `${name}.cjs`)) });
+  const { RoundTracker } = require('./protocol/aviator.cjs');
+  const { ProtocolHarness } = require('./protocol/harness.cjs');
+  const { RoundObserver } = require('./protocol/round-observer.cjs');
+  const { AutoRunner } = require('./protocol/auto-runner.cjs');
+  const { AmountValidator } = require('./protocol/amount-validator.cjs');
+  const { ProtocolContext } = require('./protocol/protocol-context.cjs');
+
+  // WU7: Aviator protocol observer — classifies WS frames, tracks the authoritative
+  // CurrentRound (sid from server cmd:100005 ONLY, never arithmetic), SID history and
+  // send->ack ActionTraces. Fed from captured WebSocket data frames.
+  aviator = new RoundTracker();
+  capture.on('request', req => {
+    if (req && req.isWebSocket && req.wsDirection) {
+      aviator.observe({ targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url, direction: req.wsDirection, raw: req.body && req.body.raw });
+    }
+  });
+  aviator.on('round', r => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-round', r); });
+  // Session aid/eid — learned from observed frames, owned here (never hardcoded /
+  // user-entered). Protocol testing stays disabled until this is ready.
+  protocolContext = new ProtocolContext({ roundTracker: aviator });
+  protocolContext.on('change', c => { if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-context', c); });
+  aviator.on('actiontrace', t => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-actiontrace', t); });
+  // WU7: Protocol Test Harness — authorized QA sender bound to the selected target's
+  // own live socket (via wsReplay.sendRaw). Gated by an explicit host allowlist.
+  harness = new ProtocolHarness({
+    roundTracker: aviator,
+    send: (ctx, payload) => wsReplay.sendProtocol(ctx, payload),
+    getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+    allowlist: (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean),
+    environmentGuard: protocolEnvironmentGuard,
+  });
+  harness.on('execution', ex => {
+    try { journal?.append(normalizeCaptureEvent({ kind: 'protocol-test', id: ex.id, targetId: ex.targetId, timestamp: ex.sentAt, exec: ex }, sessionId)); } catch { /* journal failure must not stop testing */ }
+    if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-execution', ex);
+  });
+  // WU8: READ-ONLY multi-round observer. Consumes the RoundTracker frame stream and
+  // records per-round evidence (sid, odd stream, bet/cashout timing, server odd/wm,
+  // latencies). It never sends — RoundTracker stays the sole owner of sid/odd/state.
+  observer = new RoundObserver({ roundTracker: aviator });
+  let observerDirty = false;
+  observer.on('update', () => {
+    if (observerDirty) return; observerDirty = true;
+    setTimeout(() => { observerDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('observer-update', observer.snapshot()); }, 120);
+  });
+  // WU10: offline automated round test runner. Event-driven over the frame stream;
+  // reuses the observer (sid/odd owner) + harness (send + ack). HARD-BOUND to local/
+  // test endpoints — start() refuses any non-allowlisted host and the UI can't override.
+  autoRunner = new AutoRunner({
+    roundTracker: aviator, observer, harness,
+    getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+    environmentGuard: protocolEnvironmentGuard,
+  });
+  let autoDirty = false;
+  autoRunner.on('update', () => {
+    if (autoDirty) return; autoDirty = true;
+    setTimeout(() => { autoDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('autotest-update', autoRunner.snapshot()); }, 100);
+  });
+  // WU10.2: separate bet-amount server-validation mode (bet-only; sends the EXACT
+  // tester value; never clamps/snaps; hard-bound to local/test like the runner).
+  amountValidator = new AmountValidator({
+    roundTracker: aviator, harness,
+    getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+    environmentGuard: protocolEnvironmentGuard,
+  });
+  let bvalDirty = false;
+  amountValidator.on('update', () => {
+    if (bvalDirty) return; bvalDirty = true;
+    setTimeout(() => { bvalDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('bvalidate-update', amountValidator.snapshot()); }, 100);
+  });
+  protocolSubsystemReady = true;
+  return true;
+}
 // Persistent session store (cookies) — independent of launching Chrome, so a
 // login survives reconnects on Chrome / WebView / WebView2 / CEF alike.
 let cookieVault;
@@ -397,6 +432,23 @@ async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = 
   }
 }
 
+// Tier 1 license enforcement — the real gate. The renderer only *hides* locked UI
+// via CSS, which is trivially bypassable (DevTools can flip the flag). So every
+// capability IPC is denied here in the main process unless a verified-active
+// license is present. Only the channels needed by the activation screen itself
+// (status, activate, copy Machine ID, instance metadata) stay open. Fail closed:
+// while the license is still "checking" or has lapsed, status().active is false
+// and every gated call is refused.
+const LICENSE_OPEN_CHANNELS = new Set(['license-status', 'license-activate', 'copy-text', 'instance-info']);
+function licenseActive() { const s = licenseGuard && licenseGuard.status(); return Boolean(s && s.active); }
+function handle(channel, fn) {
+  if (LICENSE_OPEN_CHANNELS.has(channel)) { ipcMain.handle(channel, fn); return; }
+  ipcMain.handle(channel, async (event, ...args) => {
+    if (!licenseActive()) return { ok: false, error: { code: 'LICENSE_REQUIRED', message: 'A valid license is required to use this feature.' } };
+    return fn(event, ...args);
+  });
+}
+
 app.whenReady().then(() => {
   protocol.registerFileProtocol('app', (request, callback) => {
     const pathname = new URL(request.url).pathname.replace(/^\/+/, '');
@@ -415,12 +467,15 @@ app.on('before-quit', event => {
   child.once('error', () => app.quit());
 });
 app.on('will-quit', () => { try { appInstance.lock.release(); } catch { /* best effort */ } });
-ipcMain.handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
-ipcMain.handle('license-status', () => licenseStatus());
-ipcMain.handle('license-activate', (_event, license) => licenseGuard ? licenseGuard.activateAsync(String(license || '')) : licenseStatus());
-ipcMain.handle('copy-text', (_event, text) => { clipboard.writeText(String(text || '')); return true; });
-ipcMain.handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
-ipcMain.handle('instance-info', () => ({
+handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
+handle('license-status', () => licenseStatus());
+handle('license-activate', async (_event, license) => {
+  if (!licenseGuard) return licenseStatus();
+  return ensureProtocolSubsystem(await licenseGuard.activateAsync(String(license || '')));
+});
+handle('copy-text', (_event, text) => { clipboard.writeText(String(text || '')); return true; });
+handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
+handle('instance-info', () => ({
   instanceId: appInstance.instanceId,
   name: appInstance.registry && appInstance.registry.name,
   root: appInstance.paths.root,
@@ -428,16 +483,16 @@ ipcMain.handle('instance-info', () => ({
   chromeProfile: chromeLauncher.snapshot().chromeProfile,
   runtime: chromeLauncher.snapshot(),
 }));
-ipcMain.handle('list-sessions', () => {
+handle('list-sessions', () => {
   const dir = appInstance.paths.sessions;
   try { return fs.readdirSync(dir).filter(name => name.endsWith('.jsonl')).map(name => { const id = name.slice(0, -6); const file = path.join(dir, name); const lines = fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean); const events = lines.map(line => { try { return JSON.parse(line); } catch { return null; } }).filter(Boolean); return { id, file: name, startedAt: events[0]?.timestamp || events[0]?.journaledAt || null, requestCount: events.filter(event => event.kind === 'request').length }; }); } catch { return []; }
 });
-ipcMain.handle('read-session', (_event, id) => {
+handle('read-session', (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return [];
   const file = path.join(appInstance.paths.sessions, String(id) + '.jsonl');
   try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); } catch { return []; }
 });
-ipcMain.handle('export-session', async (_event, id) => {
+handle('export-session', async (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Invalid session id' };
   const source = path.join(appInstance.paths.sessions, String(id) + '.jsonl');
   if (!fs.existsSync(source)) return { ok: false, error: 'Session not found' };
@@ -445,7 +500,7 @@ ipcMain.handle('export-session', async (_event, id) => {
   if (choice.canceled || !choice.filePath) return { ok: false, error: 'Export canceled' };
   fs.copyFileSync(source, choice.filePath); return { ok: true, path: choice.filePath };
 });
-ipcMain.handle('export-session-report', async (_event, id, format = 'html') => {
+handle('export-session-report', async (_event, id, format = 'html') => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Invalid session id' };
   const database = process.env.OBSERVATORY_DATABASE;
   if (!database) return { ok: false, error: 'OBSERVATORY_DATABASE is not configured' };
@@ -456,7 +511,7 @@ ipcMain.handle('export-session-report', async (_event, id, format = 'html') => {
   const args = format === 'har' ? ['-m', 'websec_observer.cli.main', 'export', database, id, '--format', 'har'] : ['-m', 'websec_observer.cli.main', 'report', database, id, '--format', format, '--output', choice.filePath];
   return await new Promise(resolve => { execFile(python, args, { cwd: path.join(__dirname, '..'), windowsHide: true }, (error, stdout, stderr) => { if (error) resolve({ ok: false, error: String(stderr || error.message) }); else if (format === 'har') { fs.writeFileSync(choice.filePath, stdout, 'utf8'); resolve({ ok: true, path: choice.filePath }); } else resolve({ ok: true, path: choice.filePath }); }); });
 });
-ipcMain.handle('analyze-session', async (_event, id) => {
+handle('analyze-session', async (_event, id) => {
   const database = process.env.OBSERVATORY_DATABASE;
   if (!database || !/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Analysis requires database and valid session id' };
   const python = process.env.OBSERVATORY_PYTHON || 'python';
@@ -464,64 +519,64 @@ ipcMain.handle('analyze-session', async (_event, id) => {
 });
 // WU3: replay lifecycle. Draft duplicates an immutable CapturedRequest; execute
 // runs it in the request's OWN target (WEBVIEW_CONTEXT) or via HTTP_DIRECT.
-ipcMain.handle('replay-create-draft', (_event, capturedRequestId, options = {}) => replay.createDraft(String(capturedRequestId), options));
-ipcMain.handle('replay-update-draft', (_event, draftId, patch = {}) => replay.updateDraft(String(draftId), patch));
-ipcMain.handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
-ipcMain.handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
-ipcMain.handle('ws-send', (_event, capturedId, payload) => wsReplay.send(String(capturedId), payload == null ? '' : String(payload)));
-ipcMain.handle('timeline-build', (_event, capturedRequestId) => timeline.build(String(capturedRequestId)));
-ipcMain.handle('cookies-save', (_event, targetId) => saveCookiesFor(String(targetId || selectedTargetId || '')));
-ipcMain.handle('cookies-restore', (_event, targetId, reload) => restoreCookiesFor(String(targetId || selectedTargetId || ''), !!reload));
+handle('replay-create-draft', (_event, capturedRequestId, options = {}) => replay.createDraft(String(capturedRequestId), options));
+handle('replay-update-draft', (_event, draftId, patch = {}) => replay.updateDraft(String(draftId), patch));
+handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
+handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
+handle('ws-send', (_event, capturedId, payload) => wsReplay.send(String(capturedId), payload == null ? '' : String(payload)));
+handle('timeline-build', (_event, capturedRequestId) => timeline.build(String(capturedRequestId)));
+handle('cookies-save', (_event, targetId) => saveCookiesFor(String(targetId || selectedTargetId || '')));
+handle('cookies-restore', (_event, targetId, reload) => restoreCookiesFor(String(targetId || selectedTargetId || ''), !!reload));
 // WU4 intercept IPC. Default scope is the selected target only.
-ipcMain.handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
-ipcMain.handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || selectedTargetId || '')));
-ipcMain.handle('intercept-list', () => intercept.listPaused());
-ipcMain.handle('intercept-update-draft', (_event, id, patch = {}) => intercept.updateDraft(String(id), patch));
-ipcMain.handle('intercept-continue', (_event, id) => intercept.continue(String(id)));
-ipcMain.handle('intercept-continue-modified', (_event, id, patch) => intercept.continueModified(String(id), patch));
-ipcMain.handle('intercept-abort', (_event, id) => intercept.abort(String(id)));
-ipcMain.handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
-ipcMain.handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
-ipcMain.handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
-ipcMain.handle('list-targets', () => targetManager ? targetManager.listTargets() : []);
-ipcMain.handle('select-target', (_event, id) => {
+handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
+handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || selectedTargetId || '')));
+handle('intercept-list', () => intercept.listPaused());
+handle('intercept-update-draft', (_event, id, patch = {}) => intercept.updateDraft(String(id), patch));
+handle('intercept-continue', (_event, id) => intercept.continue(String(id)));
+handle('intercept-continue-modified', (_event, id, patch) => intercept.continueModified(String(id), patch));
+handle('intercept-abort', (_event, id) => intercept.abort(String(id)));
+handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
+handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
+handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
+handle('list-targets', () => targetManager ? targetManager.listTargets() : []);
+handle('select-target', (_event, id) => {
   if (!targetManager) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Not connected to a CDP endpoint' } };
   const session = targetManager.getSession(id);
   if (!session) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Target is no longer available' } };
   selectedTargetId = String(id);
   return { ok: true, selectedTargetId };
 });
-ipcMain.handle('adb-list-webviews', async () => {
+handle('adb-list-webviews', async () => {
   try { return { ok: true, sockets: await androidBridge.listWebviewSockets(process.env.OBSERVATORY_ADB || 'adb') }; }
   catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
 });
-ipcMain.handle('adb-forward-webview', async (_event, socket, localPort = 9223) => {
+handle('adb-forward-webview', async (_event, socket, localPort = 9223) => {
   try {
     const endpoint = await androidBridge.forwardSocket(process.env.OBSERVATORY_ADB || 'adb', localPort, String(socket));
     return await connectEndpoint(endpoint);
   } catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
 });
-ipcMain.handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
+handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 // WU7 — Protocol Test Harness IPC. Every send is target-bound and gated by the
 // environment allowlist; sid is read from the observed server round, never guessed.
-ipcMain.handle('protocol-environment', (_event, targetId) => harness.environmentFor(String(targetId || selectedTargetId || '')));
-ipcMain.handle('protocol-allowlist', () => harness.allowlist());
-ipcMain.handle('protocol-round-state', () => ({ current: aviator.currentRound(), sidHistory: aviator.sidHistory(), roundHistory: aviator.roundHistory(), actionTraces: aviator.actionTraces() }));
-ipcMain.handle('protocol-template', (_event, command, overrides = {}) => { const payload = harness.buildTemplate(String(command), overrides || {}); return { payload, sidCheck: harness.checkSid(payload ? payload.sid : null) }; });
-ipcMain.handle('protocol-check-sid', (_event, sid) => harness.checkSid(sid));
-ipcMain.handle('protocol-execute', (_event, opts = {}) => harness.execute({ ...opts, targetId: opts.targetId || selectedTargetId || null }));
-ipcMain.handle('protocol-executions', () => harness.executions());
-ipcMain.handle('protocol-context', () => protocolContext.get());
+handle('protocol-environment', (_event, targetId) => harness.environmentFor(String(targetId || selectedTargetId || '')));
+handle('protocol-allowlist', () => harness.allowlist());
+handle('protocol-round-state', () => ({ current: aviator.currentRound(), sidHistory: aviator.sidHistory(), roundHistory: aviator.roundHistory(), actionTraces: aviator.actionTraces() }));
+handle('protocol-template', (_event, command, overrides = {}) => { const payload = harness.buildTemplate(String(command), overrides || {}); return { payload, sidCheck: harness.checkSid(payload ? payload.sid : null) }; });
+handle('protocol-check-sid', (_event, sid) => harness.checkSid(sid));
+handle('protocol-execute', (_event, opts = {}) => harness.execute({ ...opts, targetId: opts.targetId || selectedTargetId || null }));
+handle('protocol-executions', () => harness.executions());
+handle('protocol-context', () => protocolContext.get());
 // WU8 — read-only observer IPC (snapshot + display-only config; never sends).
-ipcMain.handle('observer-snapshot', () => observer.snapshot());
-ipcMain.handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });
+handle('observer-snapshot', () => observer.snapshot());
+handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });
 // WU10 — automated runner IPC (hard-bound to local/test endpoints; start() gates).
-ipcMain.handle('autotest-environment', (_event, targetId) => autoRunner.environmentFor(String(targetId || selectedTargetId || '')));
-ipcMain.handle('autotest-start', (_event, config = {}) => { const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
-ipcMain.handle('autotest-stop', () => { const r = autoRunner.stop(); return r.error ? r : autoRunner.snapshot(); });
-ipcMain.handle('autotest-snapshot', () => autoRunner.snapshot());
+handle('autotest-environment', (_event, targetId) => autoRunner.environmentFor(String(targetId || selectedTargetId || '')));
+handle('autotest-start', (_event, config = {}) => { const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
+handle('autotest-stop', () => { const r = autoRunner.stop(); return r.error ? r : autoRunner.snapshot(); });
+handle('autotest-snapshot', () => autoRunner.snapshot());
 // WU10.2 — bet-amount server-validation IPC (bet-only; local/test gated).
-ipcMain.handle('bvalidate-environment', (_event, targetId) => amountValidator.environmentFor(String(targetId || selectedTargetId || '')));
-ipcMain.handle('bvalidate-start', (_event, config = {}) => { const r = amountValidator.start(String(selectedTargetId || ''), config || {}); return r.error ? r : amountValidator.snapshot(); });
-ipcMain.handle('bvalidate-stop', () => { const r = amountValidator.stop(); return r.error ? r : amountValidator.snapshot(); });
-ipcMain.handle('bvalidate-snapshot', () => amountValidator.snapshot());
+handle('bvalidate-environment', (_event, targetId) => amountValidator.environmentFor(String(targetId || selectedTargetId || '')));
+handle('bvalidate-start', (_event, config = {}) => { const r = amountValidator.start(String(selectedTargetId || ''), config || {}); return r.error ? r : amountValidator.snapshot(); });
+handle('bvalidate-stop', () => { const r = amountValidator.stop(); return r.error ? r : amountValidator.snapshot(); });
+handle('bvalidate-snapshot', () => amountValidator.snapshot());

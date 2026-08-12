@@ -105,6 +105,6 @@ test('main process is wired to instance-owned storage and browser runtime', () =
   assert.ok(/appInstance\.paths\.cookieVault/.test(main));
   assert.ok(/appInstance\.paths\.windowState/.test(main));
   assert.ok(/new ChromeLauncher/.test(main));
-  assert.ok(/ipcMain\.handle\('instance-info'/.test(main));
+  assert.ok(/handle\('instance-info'/.test(main));
   assert.ok(!/requestSingleInstanceLock/.test(main), 'global single-instance lock is not used');
 });

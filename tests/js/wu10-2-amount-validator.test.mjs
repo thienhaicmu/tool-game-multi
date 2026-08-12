@@ -30,10 +30,10 @@ function fakeHarness(scripted) {
     },
   };
 }
-function make(scripted, host = 'http://localhost:8080/game') {
+function make(scripted, host = 'http://localhost:8080/game', extra = {}) {
   const tracker = new RoundTracker({ ackWindowMs: 60000 });
   const harness = fakeHarness(scripted);
-  const v = new AmountValidator({ roundTracker: tracker, harness, getTargetUrl: () => host, now: () => 0 });
+  const v = new AmountValidator({ roundTracker: tracker, harness, getTargetUrl: () => host, now: () => 0, ...extra });
   const feed = (raw) => tracker.observe({ raw, direction: 'recv', targetId: 'T', url: 'wss://g.local/ws' });
   return { tracker, harness, v, feed };
 }
@@ -212,8 +212,10 @@ test('verdictFor: any=>null, accept/reject => PASS/FAIL', () => {
 // ---------------------------------------------------------------------------
 // §9 (gate) — hard local/test endpoint binding.
 // ---------------------------------------------------------------------------
-test('start refuses a non-local endpoint', () => {
-  const { v } = make(null, 'https://casino.example.com/game');
+test('start refuses a non-local endpoint when the env guard is enabled', () => {
+  // The guard is opt-in (disabled by default for real endpoints); the §9 gate test
+  // enables it explicitly to verify the local/test binding it is meant to enforce.
+  const { v } = make(null, 'https://casino.example.com/game', { environmentGuard: true });
   assert.equal(v.start('T', { mode: 'single', amount: 7777, roundCount: 1 }).error.code, 'AUTO_TEST_TARGET_NOT_ALLOWED');
 });
 
