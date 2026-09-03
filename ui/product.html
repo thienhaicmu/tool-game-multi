@@ -322,7 +322,7 @@
 
     <!-- Live state: current server odd is the prominent number -->
     <div class="proto-card at-live">
-      <div class="proto-kv"><span>Status</span><b id="at-status">IDLE</b></div>
+      <div class="proto-kv"><span>Status</span><b id="at-status" class="at-status">IDLE</b></div>
       <div class="proto-kv"><span>Progress</span><b id="at-progress">— / —</b></div>
       <div class="proto-kv"><span>SID</span><b id="at-sid">—</b></div>
       <div class="at-odd-wrap">
@@ -357,10 +357,13 @@
         <button id="at-day-all" class="btn" type="button">All</button>
         <span id="at-day-summary" class="faint"></span>
       </div>
+      <div class="proto-kv"><span>Thắng / Thua (ván)</span><b id="at-m-winloss">—</b></div>
+      <div class="proto-kv"><span>Tổng thắng</span><b id="at-m-winsum">—</b></div>
+      <div class="proto-kv"><span>Tổng thua</span><b id="at-m-losesum">—</b></div>
+      <div class="proto-kv"><span>Lãi/Lỗ ròng</span><b id="at-m-net">—</b></div>
       <div class="proto-kv"><span>Completed / Finished</span><b id="at-m-count">—</b></div>
-      <div class="proto-kv"><span>Successful stops</span><b id="at-m-stops">—</b></div>
-      <div class="proto-kv"><span>Last stop odd</span><b id="at-m-last-stop">—</b></div>
-      <div class="proto-kv"><span>Ended before threshold</span><b id="at-m-early">—</b></div>
+      <div class="proto-kv"><span>Last win odd</span><b id="at-m-last-stop">—</b></div>
+      <div class="proto-kv"><span>Đang chờ / không rõ</span><b id="at-m-pending">—</b></div>
       <div class="proto-kv"><span>Avg bet ACK latency</span><b id="at-m-bet">—</b></div>
       <div class="proto-kv"><span>Avg trigger→send</span><b id="at-m-tts">—</b></div>
       <div class="proto-kv"><span>Avg cashout ACK latency</span><b id="at-m-cash">—</b></div>

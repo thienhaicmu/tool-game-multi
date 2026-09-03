@@ -270,6 +270,23 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .obs-res.AUTO_STOPPED{color:var(--err);background:var(--err-bg)}
 .obs-res.ENDED{color:var(--dim);background:var(--panel);border:1px solid var(--line)}
 .obs-res.OBSERVING{color:var(--info);background:var(--info-bg)}
+/* Auto Run run-level status + P/L numbers */
+.at-status.st-run{color:var(--info)}
+.at-status.st-win{color:var(--ok)}
+.at-status.st-user{color:var(--info)}
+.at-status.st-auto{color:var(--warn)}
+.at-status.st-err{color:var(--err)}
+.pnl-pos{color:var(--ok)}
+.pnl-neg{color:var(--err)}
+/* Auto Run result strip — one coloured cell per round, in play order */
+.at-res-strip{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:4px}
+.at-res-cell{display:inline-flex;flex-direction:column;align-items:center;gap:1px;font-family:var(--f-mono);font-weight:700;line-height:1.15;padding:3px 7px;border-radius:var(--r2);border:1px solid transparent;cursor:default}
+.at-res-cell .odd{font-size:var(--t-cap)}
+.at-res-cell .pnl{font-size:10px;opacity:.9}
+.at-res-cell.win{color:var(--ok);background:var(--ok-bg);border-color:var(--ok)}
+.at-res-cell.loss{color:var(--err);background:var(--err-bg);border-color:var(--err)}
+.at-res-cell.stopped{color:var(--info);background:var(--info-bg)}
+.at-res-cell.pending{color:var(--dim);background:var(--panel);border-color:var(--line)}
 .proto-sidhist .odd.trig{border-color:var(--warn);color:var(--warn);font-weight:700}
 
 /* ---- WU9 smart protocol form ---- */

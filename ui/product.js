@@ -849,20 +849,43 @@ renderActions();
     return m ? `${m[3]}/${m[2]}/${m[1]}` : day;
   }
   function stopOddFor(r) { return r ? (r.ackOdd ?? r.triggerOdd ?? null) : null; }
+  // Net profit of a single WON round: prefer the server's win money (wm), else amount×odd.
+  function winProfit(r) {
+    const amt = Number(r.amount) || 0;
+    if (r.wm != null && Number.isFinite(Number(r.wm))) return Number(r.wm) - amt;
+    const odd = r.ackOdd ?? r.triggerOdd;
+    return odd != null && Number.isFinite(Number(odd)) ? amt * (Number(odd) - 1) : 0;
+  }
   function metricsForRounds(rows) {
     const completed = rows.filter((r) => r.result === 'COMPLETED');
+    const lost = rows.filter((r) => r.result === 'ROUND_ENDED_BEFORE_THRESHOLD');
+    // Everything else (nhấn dừng, timeout, reject, error, inconclusive) — outcome unknown, kept out of P/L.
+    const pending = rows.filter((r) => r.result !== 'COMPLETED' && r.result !== 'ROUND_ENDED_BEFORE_THRESHOLD');
     const lastCompleted = completed.length ? completed[completed.length - 1] : null;
     const avg = (xs) => { const ys = xs.filter((x) => typeof x === 'number' && Number.isFinite(x)); return ys.length ? Math.round((ys.reduce((a, b) => a + b, 0) / ys.length) * 100) / 100 : null; };
+    const totalWin = completed.reduce((s, r) => s + winProfit(r), 0);
+    const totalLose = lost.reduce((s, r) => s + (Number(r.amount) || 0), 0);
     return {
       finished: rows.length,
       completed: completed.length,
-      successfulStops: completed.length,
+      wins: completed.length,
+      losses: lost.length,
+      pending: pending.length,
+      totalWin,
+      totalLose,
+      netPnl: totalWin - totalLose,
       lastSuccessfulStopOdd: stopOddFor(lastCompleted),
-      endedBeforeThreshold: rows.filter((r) => r.result === 'ROUND_ENDED_BEFORE_THRESHOLD').length,
+      endedBeforeThreshold: lost.length,
       avgBetAckLatencyMs: avg(rows.map((r) => r.betLatencyMs)),
       avgTriggerToSendMs: avg(rows.map((r) => r.triggerToSendMs)),
       avgCashoutAckLatencyMs: avg(rows.map((r) => r.cashoutLatencyMs)),
     };
+  }
+  // Human-friendly, signed money — e.g. +7.750, −3.780, 0.
+  function money(n) {
+    const v = Math.round(Number(n) || 0);
+    const sign = v > 0 ? '+' : v < 0 ? '−' : '';
+    return sign + Math.abs(v).toLocaleString();
   }
   function visibleRounds() {
     const rows = (snap && snap.history) || [];
@@ -872,6 +895,39 @@ renderActions();
     const input = $('at-day-filter'); if (input) input.value = selectedDay || '';
     const summary = $('at-day-summary'); if (summary) summary.textContent = `${fmtDay(selectedDay)} · ${rows.length} rounds`;
   }
+
+  // Run-level status → { text, cls } — makes it explicit WHY the run stopped:
+  // the user pressed Dừng (STOPPED) vs. the runner stopped itself after the
+  // configured number of rounds (COMPLETED). Neither reads like a raw enum code.
+  const RUN_STATE_TEXT = {
+    IDLE: 'Chưa chạy',
+    WAITING_ROUND: 'Đang chờ ván…',
+    BET_SENDING: 'Đang đặt cược…',
+    WAITING_BET_ACK: 'Chờ xác nhận cược…',
+    WATCHING_ODD: 'Đang theo dõi tỉ lệ…',
+    CASHOUT_SENDING: 'Đang rút…',
+    WAITING_CASHOUT_ACK: 'Chờ xác nhận rút…',
+  };
+  function statusInfo(state, roundCount) {
+    if (state === 'STOPPED') return { text: '⏹ Bạn đã nhấn Dừng', cls: 'st-user' };
+    if (state === 'COMPLETED') return { text: `■ Tự dừng — đã chạy hết ${roundCount != null ? roundCount + ' ' : ''}lượt`, cls: 'st-auto' };
+    if (state === 'ERROR') return { text: '✕ Lỗi — đã dừng', cls: 'st-err' };
+    if (RUN_STATE_TEXT[state]) return { text: RUN_STATE_TEXT[state], cls: 'st-run' };
+    return { text: state || 'Chưa chạy', cls: 'st-run' };
+  }
+  // Per-round result → friendly label + colour bucket.
+  const RES_LABEL = {
+    COMPLETED: '✓ Thắng (đã rút)',
+    ROUND_ENDED_BEFORE_THRESHOLD: '✗ Thua — nổ trước mốc',
+    STOPPED: '⏹ Đã nhấn dừng',
+    BET_ACK_TIMEOUT: '⚠ Cược quá hạn xác nhận',
+    BET_REJECTED: '⚠ Cược bị từ chối',
+    CASHOUT_ACK_TIMEOUT: '⚠ Rút quá hạn xác nhận',
+    CASHOUT_REJECTED: '⚠ Rút bị từ chối',
+    ERROR: '✕ Lỗi',
+    INCONCLUSIVE: '? Không rõ',
+  };
+  function resLabel(r) { return RES_LABEL[r] || r || '—'; }
 
   function setChip(status) {
     const chip = $('at-status-chip'); if (!chip) return;
@@ -914,7 +970,10 @@ renderActions();
   function render() {
     if (!snap) return;
     setChip(snap.state);
-    $('at-status').textContent = snap.state;
+    const si = statusInfo(snap.state, snap.config ? snap.config.roundCount : null);
+    const statusEl = $('at-status');
+    statusEl.textContent = si.text;
+    statusEl.className = 'at-status ' + si.cls;
     const p = snap.progress || {};
     $('at-progress').textContent = `${p.finished ?? 0} / ${p.target ?? '—'}`;
     $('at-sid').textContent = snap.liveSid != null ? snap.liveSid : '—';
@@ -931,10 +990,13 @@ renderActions();
     const rows = visibleRounds();
     syncDayControls(rows);
     const m = metricsForRounds(rows);
+    $('at-m-winloss').textContent = `${m.wins} / ${m.losses}`;
+    const winEl = $('at-m-winsum'); winEl.textContent = money(m.totalWin); winEl.className = pnlCls(m.totalWin);
+    const loseEl = $('at-m-losesum'); loseEl.textContent = m.totalLose > 0 ? money(-m.totalLose) : '0'; loseEl.className = pnlCls(-m.totalLose);
+    const netEl = $('at-m-net'); netEl.textContent = money(m.netPnl); netEl.className = pnlCls(m.netPnl);
     $('at-m-count').textContent = `${m.completed ?? 0} / ${m.finished ?? 0}`;
-    $('at-m-stops').textContent = m.successfulStops ?? 0;
     $('at-m-last-stop').textContent = m.lastSuccessfulStopOdd != null ? Number(m.lastSuccessfulStopOdd).toFixed(2) + 'x' : '—';
-    $('at-m-early').textContent = m.endedBeforeThreshold ?? 0;
+    $('at-m-pending').textContent = m.pending ?? 0;
     $('at-m-bet').textContent = m.avgBetAckLatencyMs != null ? m.avgBetAckLatencyMs + 'ms' : '—';
     $('at-m-tts').textContent = m.avgTriggerToSendMs != null ? m.avgTriggerToSendMs + 'ms' : '—';
     $('at-m-cash').textContent = m.avgCashoutAckLatencyMs != null ? m.avgCashoutAckLatencyMs + 'ms' : '—';
@@ -942,30 +1004,33 @@ renderActions();
     renderCta();
   }
 
-  function resClass(r) {
-    if (r === 'COMPLETED') return 'COMPLETED';
-    if (['ROUND_ENDED_BEFORE_THRESHOLD', 'STOPPED', 'BET_ACK_TIMEOUT', 'BET_REJECTED', 'CASHOUT_ACK_TIMEOUT', 'CASHOUT_REJECTED', 'ERROR', 'INCONCLUSIVE'].includes(r)) return 'AUTO_STOPPED';
-    return 'ENDED';
+  function pnlCls(n) { return n > 0 ? 'pnl-pos' : (n < 0 ? 'pnl-neg' : ''); }
+  // One coloured cell per round: odd (top) + tiền lãi/lỗ (bottom). Màu theo kết quả.
+  function resCell(r) {
+    const f2 = (n) => (n == null ? '—' : Number(n).toFixed(2));
+    let cls, oddTxt, pnlTxt;
+    if (r.result === 'COMPLETED') { cls = 'win'; oddTxt = stopOddFor(r) != null ? f2(stopOddFor(r)) + 'x' : '—'; pnlTxt = money(winProfit(r)); }
+    else if (r.result === 'ROUND_ENDED_BEFORE_THRESHOLD') { cls = 'loss'; oddTxt = r.triggerOdd != null ? f2(r.triggerOdd) + 'x' : '—'; pnlTxt = money(-(Number(r.amount) || 0)); }
+    else if (r.result === 'STOPPED') { cls = 'stopped'; oddTxt = 'dừng'; pnlTxt = '—'; }
+    else { cls = 'pending'; oddTxt = '?'; pnlTxt = '—'; }
+    const title = `#${(r.index ?? 0) + 1} · sid ${r.sid ?? ''} · ${resLabel(r.result)} · bet ${r.amount ?? '—'}`;
+    return `<span class="at-res-cell ${cls}" title="${esc(title)}"><span class="odd">${esc(oddTxt)}</span><span class="pnl">${esc(pnlTxt)}</span></span>`;
   }
   function renderHistory(rounds) {
     const el = $('at-history'); if (!el) return;
-    if (!rounds.length) { el.innerHTML = `<div class="muted">No rounds completed for ${esc(fmtDay(selectedDay))}.</div>`; return; }
+    if (!rounds.length) { el.innerHTML = `<div class="muted">Chưa có ván nào cho ${esc(fmtDay(selectedDay))}.</div>`; return; }
+    // Ván gần nhất (tối đa 300), gom theo ngày; trong mỗi ngày xếp theo thứ tự chơi (cũ → mới).
     const byDay = new Map();
-    for (const r of rounds.slice().reverse().slice(0, 80)) {
+    for (const r of rounds.slice(-300)) {
       const day = r.finishedDay || 'unknown';
       if (!byDay.has(day)) byDay.set(day, []);
       byDay.get(day).push(r);
     }
-    el.innerHTML = [...byDay.entries()].map(([day, rows]) => {
-      const stopCount = rows.filter((r) => r.result === 'COMPLETED').length;
-      return `<div class="at-day-group">${esc(fmtDay(day))} · ${esc(stopCount)} stops · ${esc(rows.length)} rounds</div>` + rows.map((r) => {
-        const f2 = (n) => (n == null ? '—' : Number(n).toFixed(2));
-        return `<div class="obs-round">`
-          + `<div class="obs-round-head"><b>#${esc(r.index + 1)} · sid ${esc(r.sid)}</b><span class="obs-res ${resClass(r.result)}">${esc(r.result)}</span></div>`
-          + `<div class="obs-round-meta">bet ${esc(r.amount != null ? r.amount : '—')} · target ${esc(f2(r.stopOdd))} · trigger ${esc(f2(r.triggerOdd))} · ack ${esc(f2(r.ackOdd))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
-          + `<div class="obs-round-meta">${esc(r.betResult || '—')} · betLat ${esc(r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—')} · cashLat ${esc(r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—')}</div>`
-          + `</div>`;
-      }).join('');
+    const days = [...byDay.entries()].sort((a, b) => String(b[0]).localeCompare(String(a[0])));
+    el.innerHTML = days.map(([day, rows]) => {
+      const dm = metricsForRounds(rows);
+      const head = `<div class="at-day-group">${esc(fmtDay(day))} · thắng ${esc(dm.wins)} / thua ${esc(dm.losses)} · ròng <span class="${pnlCls(dm.netPnl)}">${esc(money(dm.netPnl))}</span></div>`;
+      return head + `<div class="at-res-strip">${rows.map(resCell).join('')}</div>`;
     }).join('');
   }
 
