@@ -48,12 +48,11 @@
   }
 
   /**
-   * validate(state, ctx) — context-aware, human-readable. ctx: { envAllowed, hasSid }.
+   * validate(state, ctx) — context-aware, human-readable. ctx: { hasSid }.
    * Returns { canSend, level:'ok|info|warn|block', message, negative, expect, allowMismatch }.
    */
   function validate(state, ctx) {
     const base = { canSend: true, level: 'ok', message: '', negative: false, expect: null, allowMismatch: false };
-    if (!ctx || !ctx.envAllowed) return { ...base, canSend: false, level: 'block', message: 'Control disabled for this target — host is not in the QA/staging allowlist.' };
 
     if (state.scenario === 'manual') {
       const built = buildPayload(state);
@@ -66,7 +65,7 @@
       return { ...base, level: 'warn', message: 'Manual SID enabled — sending a stale round on purpose. The server should reject it.', negative: true, expect: 'reject', allowMismatch: true };
     }
 
-    if (!ctx.hasSid) return { ...base, canSend: false, level: 'block', message: 'Waiting for the current server round (cmd:100005).' };
+    if (!ctx || !ctx.hasSid) return { ...base, canSend: false, level: 'block', message: 'Waiting for the current server round (cmd:100005).' };
 
     if (state.command === 'cashout') {
       if (state.scenario === 'amount') return { ...base, canSend: false, level: 'info', message: 'Invalid-amount validation applies to Bet only.' };

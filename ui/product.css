@@ -267,6 +267,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .obs-res{font-size:var(--t-cap);font-weight:700;padding:2px 7px;border-radius:20px}
 .obs-res.COMPLETED{color:var(--ok);background:var(--ok-bg)}
 .obs-res.ROUND_ENDED_BEFORE_TRIGGER{color:var(--warn);background:var(--warn-bg)}
+.obs-res.AUTO_STOPPED{color:var(--err);background:var(--err-bg)}
 .obs-res.ENDED{color:var(--dim);background:var(--panel);border:1px solid var(--line)}
 .obs-res.OBSERVING{color:var(--info);background:var(--info-bg)}
 .proto-sidhist .odd.trig{border-color:var(--warn);color:var(--warn);font-weight:700}
@@ -307,6 +308,12 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .at-odd.trig{color:var(--ok)}
 .at-odd-target{font-size:var(--t-sm);color:var(--dim)}
 .at-metrics .proto-kv b{font-family:var(--f-mono)}
+.at-day-filter{display:flex;align-items:flex-end;gap:7px;flex-wrap:wrap;margin-bottom:8px}
+.at-day-filter label{display:grid;gap:3px;font-size:var(--t-cap);color:var(--dim);min-width:142px;flex:1}
+.at-day-filter input{width:100%;box-sizing:border-box}
+.at-day-filter .btn{height:30px;padding:0 10px}
+.at-day-group{font-size:var(--t-cap);font-weight:800;letter-spacing:.06em;color:var(--dim);padding:8px 2px 5px;text-transform:uppercase}
+.at-day-group:first-child{padding-top:0}
 .at-sequence-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:var(--t-cap);font-weight:800;letter-spacing:.08em;color:var(--dim)}
 .at-test-rows{display:grid;gap:8px}
 .at-test-row{display:grid;grid-template-columns:28px 1fr 1fr 1fr 30px;gap:7px;align-items:end;padding:9px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surface)}

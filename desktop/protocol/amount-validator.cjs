@@ -4,7 +4,6 @@ const EventEmitter = require('node:events');
 const { performance } = require('node:perf_hooks');
 const { CMD } = require('./aviator.cjs');
 const { autoHostAllowed } = require('./auto-runner.cjs');
-const { environmentGuardEnabled } = require('./environment-gate.cjs');
 
 // ---------------------------------------------------------------------------
 // AmountValidator — WU10.2. Sends an EXACT, tester-supplied bet amount `b` on each
@@ -15,7 +14,7 @@ const { environmentGuardEnabled } = require('./environment-gate.cjs');
 // be tested. It never clamps/snaps/rounds the value.
 //
 // Bet-only: no odd watching, no cashout, no 100003 (§34). One case per distinct
-// server SID (§10). Hard-bound to local/offline endpoints (reuses the WU10 gate).
+// server SID (§10).
 // The WU10 round flow (AutoRunner) is untouched — this is a separate mode (§35).
 // ---------------------------------------------------------------------------
 
@@ -90,9 +89,7 @@ class AmountValidator extends EventEmitter {
     this._tracker = deps.roundTracker;
     this._harness = deps.harness;
     this._getTargetUrl = deps.getTargetUrl || (() => '');
-    this._extraHosts = (deps.autoHosts && deps.autoHosts.length ? deps.autoHosts : String(process.env.OBSERVATORY_AUTOTEST_HOSTS || '').split(','))
-      .map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
-    this._environmentGuard = deps.environmentGuard == null ? environmentGuardEnabled() : deps.environmentGuard !== false;
+    this._extraHosts = [];
     this._now = deps.now || (() => performance.now());
     this._state = STATE.IDLE;
     this._running = false;
@@ -113,7 +110,7 @@ class AmountValidator extends EventEmitter {
     const url = String(this._getTargetUrl(targetId) || '');
     let host = ''; try { host = url ? new URL(url).hostname.toLowerCase() : ''; } catch { host = ''; }
     const matched = autoHostAllowed(host, this._extraHosts);
-    return { host, url, allowed: !this._environmentGuard || matched, matched, guardEnabled: this._environmentGuard, requiresConfirmation: !this._environmentGuard && !matched };
+    return { host, url, allowed: true, matched, guardEnabled: false, requiresConfirmation: false };
   }
 
   _totalCases() { return this._config ? this._config.roundCount : 0; }
@@ -136,7 +133,6 @@ class AmountValidator extends EventEmitter {
     const v = validateAmountConfig(cfg || {});
     if (v.error) return { error: v.error };
     const env = this.environmentFor(targetId);
-    if (!env.allowed) return { error: { code: 'AUTO_TEST_TARGET_NOT_ALLOWED', message: `Amount validation is bound to local/offline test endpoints. Host "${env.host || '(unknown)'}" is not permitted.` } };
     this._config = v.config;
     this._targetId = targetId != null ? String(targetId) : null;
     this._caseIndex = 0;

@@ -210,13 +210,12 @@ test('verdictFor: any=>null, accept/reject => PASS/FAIL', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §9 (gate) — hard local/test endpoint binding.
+// §9 — product targets are no longer local-gated.
 // ---------------------------------------------------------------------------
-test('start refuses a non-local endpoint when the env guard is enabled', () => {
-  // The guard is opt-in (disabled by default for real endpoints); the §9 gate test
-  // enables it explicitly to verify the local/test binding it is meant to enforce.
+test('start accepts a non-local endpoint', () => {
   const { v } = make(null, 'https://casino.example.com/game', { environmentGuard: true });
-  assert.equal(v.start('T', { mode: 'single', amount: 7777, roundCount: 1 }).error.code, 'AUTO_TEST_TARGET_NOT_ALLOWED');
+  const r = v.start('T', { mode: 'single', amount: 7777, roundCount: 1 });
+  assert.ok(r.ok);
 });
 
 test('validator treats round snapshot 100008 as a round start', async () => {

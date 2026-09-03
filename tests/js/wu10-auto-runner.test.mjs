@@ -13,7 +13,7 @@ const flush = async () => { for (let i = 0; i < 5; i++) await tick(); };
 // Wire tracker -> observer -> runner exactly as main.cjs does. The fake harness
 // records what it WOULD send (and the current server sid at send time, which the
 // real harness binds from RoundTracker) and returns a scripted ack.
-function make({ host = 'http://localhost:8080/game', exec } = {}) {
+function make({ host = 'http://localhost:8080/game', exec, wallNow } = {}) {
   const tracker = new RoundTracker({ ackWindowMs: 60000 });
   const observer = new RoundObserver({ roundTracker: tracker }); // constructed BEFORE runner
   const sends = [];
@@ -26,7 +26,7 @@ function make({ host = 'http://localhost:8080/game', exec } = {}) {
     },
   };
   const clock = { t: 0 };
-  const runner = new AutoRunner({ roundTracker: tracker, observer, harness, getTargetUrl: () => host, now: () => clock.t, environmentGuard: true });
+  const runner = new AutoRunner({ roundTracker: tracker, observer, harness, getTargetUrl: () => host, now: () => clock.t, wallNow, environmentGuard: true });
   const feed = (raw, direction = 'recv') => tracker.observe({ raw, direction, targetId: 'T', url: 'wss://game.local/ws' });
   const betCount = () => sends.filter((s) => s.command === 'bet').length;
   const cashCount = () => sends.filter((s) => s.command === 'cashout').length;
@@ -39,7 +39,7 @@ async function playQualifying(feed, sid, odds) {
 }
 
 // ---------------------------------------------------------------------------
-// §2 — HARD local/test endpoint binding.
+// §2 — product targets are no longer local-gated.
 // ---------------------------------------------------------------------------
 test('autoHostAllowed: loopback + reserved test names only', () => {
   assert.equal(autoHostAllowed('localhost'), true);
@@ -51,11 +51,12 @@ test('autoHostAllowed: loopback + reserved test names only', () => {
   assert.equal(autoHostAllowed('staging.acme.com', ['staging.acme.com']), true); // explicit env extension
 });
 
-test('start refuses a non-local target with AUTO_TEST_TARGET_NOT_ALLOWED', () => {
+test('start accepts a non-local target', () => {
   const { runner } = make({ host: 'https://casino.example.com/game' });
   const r = runner.start('T', { roundCount: 3, amount: 5000, stopOdd: 2 });
-  assert.equal(r.error.code, 'AUTO_TEST_TARGET_NOT_ALLOWED');
-  assert.equal(runner.isRunning(), false);
+  assert.ok(r.ok);
+  assert.equal(runner.isRunning(), true);
+  assert.equal(runner.state(), STATE.WAITING_ROUND);
 });
 
 test('start accepts a local target', () => {
@@ -94,6 +95,8 @@ test('live odd updates; trigger occurs only at the first odd >= stopOdd', async 
   feed('{"cmd":100009,"sid":100,"odd":2.01}'); await flush();
   assert.equal(cashCount(), 1, 'cashout at the first qualifying server odd');
   assert.equal(runner.history()[0].triggerOdd, 2.01);
+  assert.equal(runner.metrics().successfulStops, 1);
+  assert.equal(runner.metrics().lastSuccessfulStopOdd, 2.05);
 });
 
 test('round snapshot 100008 starts an auto-run bet on the server SID', async () => {
@@ -154,6 +157,22 @@ test('triggerOdd and server ackOdd are recorded separately', async () => {
   assert.equal(r.ackOdd, 2.09);
   assert.equal(r.wm, 8100);
   assert.notEqual(r.triggerOdd, r.ackOdd);
+  assert.equal(runner.metrics().successfulStops, 1);
+  assert.equal(runner.metrics().lastSuccessfulStopOdd, 2.09);
+});
+
+test('successful stops are grouped and filterable by local day', async () => {
+  let wall = new Date(2026, 8, 3, 9, 0, 0).getTime();
+  const { runner, feed } = make({ wallNow: () => wall });
+  runner.start('T', { roundCount: 3, amount: 5000, stopOdd: 2.0 });
+  await playQualifying(feed, 100, [2.5]);
+  wall = new Date(2026, 8, 4, 10, 0, 0).getTime();
+  await playQualifying(feed, 107, [2.5]);
+
+  assert.deepEqual(runner.history().map((r) => r.finishedDay), ['2026-09-03', '2026-09-04']);
+  assert.equal(runner.metricsForDay('2026-09-03').successfulStops, 1);
+  assert.equal(runner.metricsForDay('2026-09-04').successfulStops, 1);
+  assert.deepEqual(runner.dayGroups().map((g) => g.day), ['2026-09-04', '2026-09-03']);
 });
 
 // ---------------------------------------------------------------------------

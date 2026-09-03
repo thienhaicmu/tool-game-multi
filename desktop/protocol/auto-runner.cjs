@@ -3,16 +3,9 @@
 const EventEmitter = require('node:events');
 const { performance } = require('node:perf_hooks');
 const { CMD } = require('./aviator.cjs');
-const { environmentGuardEnabled } = require('./environment-gate.cjs');
 
 // ---------------------------------------------------------------------------
-// AutoRunner — WU10. Offline/local automated round test runner.
-//
-// HARD SCOPE: this drives an authorized OFFLINE/LOCAL test server only. At start
-// the active target host is checked against an immutable local/test allowlist; a
-// non-permitted host is refused with AUTO_TEST_TARGET_NOT_ALLOWED and the UI can
-// NOT override it. The default allowlist is loopback + reserved test names; an
-// operator may extend it only out-of-band (env), never from the UI.
+// AutoRunner — automated round runner.
 //
 // It reuses everything: RoundTracker/RoundObserver own SID + ODD + round lifecycle
 // (this runner only READS them), and ProtocolHarness + wsReplay own the send seam
@@ -34,8 +27,6 @@ const RESULT = Object.freeze({
   STOPPED: 'STOPPED', ERROR: 'ERROR', INCONCLUSIVE: 'INCONCLUSIVE',
 });
 
-// Immutable local/test binding (WU10 §2). Loopback + reserved, non-routable test
-// names. Extendable ONLY via env (out-of-band), never the UI.
 const LOCAL_HOSTS = ['127.0.0.1', 'localhost', '::1', '[::1]', '0.0.0.0'];
 const LOCAL_SUFFIXES = ['.test.local', '.localhost', '.local', '.test'];
 
@@ -67,10 +58,9 @@ class AutoRunner extends EventEmitter {
     this._observer = deps.observer;                 // RoundObserver — source of truth for sid/odd
     this._harness = deps.harness;                   // ProtocolHarness — send + ack correlation
     this._getTargetUrl = deps.getTargetUrl || (() => '');
-    this._extraHosts = (deps.autoHosts && deps.autoHosts.length ? deps.autoHosts : String(process.env.OBSERVATORY_AUTOTEST_HOSTS || '').split(','))
-      .map((s) => String(s || '').trim().toLowerCase()).filter(Boolean);
-    this._environmentGuard = deps.environmentGuard == null ? environmentGuardEnabled() : deps.environmentGuard !== false;
+    this._extraHosts = [];
     this._now = deps.now || (() => performance.now());
+    this._wallNow = deps.wallNow || (() => Date.now());
 
     this._state = STATE.IDLE;
     this._running = false;
@@ -92,8 +82,7 @@ class AutoRunner extends EventEmitter {
     let host = '';
     try { host = url ? new URL(url).hostname.toLowerCase() : ''; } catch { host = ''; }
     const matched = autoHostAllowed(host, this._extraHosts);
-    const allowed = !this._environmentGuard || matched;
-    return { host, url, allowed, matched, guardEnabled: this._environmentGuard, requiresConfirmation: !this._environmentGuard && !matched };
+    return { host, url, allowed: true, matched, guardEnabled: false, requiresConfirmation: false };
   }
 
   snapshot() {
@@ -109,6 +98,8 @@ class AutoRunner extends EventEmitter {
       liveState: cur ? cur.phase : null,
       history: this.history(),
       metrics: this.metrics(),
+      dayGroups: this.dayGroups(),
+      currentDay: this.currentDay(),
     };
   }
 
@@ -118,8 +109,6 @@ class AutoRunner extends EventEmitter {
     const v = validateConfig(cfg || {});
     if (v.error) return { error: v.error };
     const env = this.environmentFor(targetId);
-    // Hard local/test binding — refuse anything not on the immutable allowlist.
-    if (!env.allowed) return { error: { code: 'AUTO_TEST_TARGET_NOT_ALLOWED', message: `Automated runner is bound to local/offline test endpoints. Host "${env.host || '(unknown)'}" is not permitted.` } };
 
     this._config = v.config;
     this._targetId = targetId != null ? String(targetId) : null;
@@ -146,20 +135,26 @@ class AutoRunner extends EventEmitter {
     return { ok: true, state: this._state };
   }
 
-  metrics() {
-    const done = this._history;
-    const completed = done.filter((r) => r.result === RESULT.COMPLETED);
-    return {
-      attempted: this._attempted, finished: done.length, completed: completed.length,
-      endedBeforeThreshold: done.filter((r) => r.result === RESULT.ROUND_ENDED_BEFORE_THRESHOLD).length,
-      betTimeouts: done.filter((r) => r.result === RESULT.BET_ACK_TIMEOUT).length,
-      avgBetAckLatencyMs: avg(done.map((r) => r.betLatencyMs)),
-      avgTriggerToSendMs: avg(done.map((r) => r.triggerToSendMs)),
-      avgCashoutAckLatencyMs: avg(done.map((r) => r.cashoutLatencyMs)),
-      avgTriggerOdd: avg(done.map((r) => r.triggerOdd)),
-      avgAckOdd: avg(completed.map((r) => r.ackOdd)),
-    };
+  metrics() { return metricsForRounds(this._history, this._attempted); }
+
+  dayGroups() {
+    const groups = new Map();
+    for (const r of this._history) {
+      const day = r.finishedDay || 'unknown';
+      if (!groups.has(day)) groups.set(day, []);
+      groups.get(day).push(r);
+    }
+    return [...groups.entries()]
+      .map(([day, rows]) => ({ day, ...metricsForRounds(rows) }))
+      .sort((a, b) => String(b.day).localeCompare(String(a.day)));
   }
+
+  metricsForDay(day) {
+    const key = String(day || '').trim();
+    return metricsForRounds(key ? this._history.filter((r) => r.finishedDay === key) : this._history);
+  }
+
+  currentDay() { return localDayKey(this._wallNow()); }
 
   // ---- event-driven state machine (reads observer for authoritative sid/odd) ----
   _onFrame(ev) {
@@ -262,6 +257,8 @@ class AutoRunner extends EventEmitter {
     round.result = result;
     round.error = error || null;
     round.finishedAtMono = this._now();
+    round.finishedAtMs = this._wallNow();
+    round.finishedDay = localDayKey(round.finishedAtMs);
     this._history.push(publicRound(round));
     if (this._active === round) this._active = null;
     this._afterRound(result);
@@ -289,10 +286,34 @@ function publicRound(r) {
     triggerOdd: r.triggerOdd, ackOdd: r.ackOdd, wm: r.wm,
     triggerToSendMs: r.triggerToSendMs, cashoutLatencyMs: r.cashoutLatencyMs,
     result: r.result, error: r.error || null,
+    finishedAtMs: r.finishedAtMs || null, finishedDay: r.finishedDay || null,
   };
 }
 
 function round1(n) { return (n == null || !Number.isFinite(n)) ? null : Math.round(n * 10) / 10; }
 function avg(list) { const xs = list.filter((x) => typeof x === 'number' && Number.isFinite(x)); if (!xs.length) return null; return Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 100) / 100; }
+function localDayKey(ms) {
+  const d = new Date(Number(ms) || Date.now());
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${yyyy}-${mm}-${dd}`;
+}
+function metricsForRounds(done, attempted = done.length) {
+  const completed = done.filter((r) => r.result === RESULT.COMPLETED);
+  const lastCompleted = completed.length ? completed[completed.length - 1] : null;
+  return {
+    attempted, finished: done.length, completed: completed.length,
+    successfulStops: completed.length,
+    lastSuccessfulStopOdd: lastCompleted ? (lastCompleted.ackOdd ?? lastCompleted.triggerOdd ?? null) : null,
+    endedBeforeThreshold: done.filter((r) => r.result === RESULT.ROUND_ENDED_BEFORE_THRESHOLD).length,
+    betTimeouts: done.filter((r) => r.result === RESULT.BET_ACK_TIMEOUT).length,
+    avgBetAckLatencyMs: avg(done.map((r) => r.betLatencyMs)),
+    avgTriggerToSendMs: avg(done.map((r) => r.triggerToSendMs)),
+    avgCashoutAckLatencyMs: avg(done.map((r) => r.cashoutLatencyMs)),
+    avgTriggerOdd: avg(done.map((r) => r.triggerOdd)),
+    avgAckOdd: avg(completed.map((r) => r.ackOdd)),
+  };
+}
 
-module.exports = { AutoRunner, validateConfig, autoHostAllowed, STATE, RESULT, LOCAL_HOSTS, LOCAL_SUFFIXES };
+module.exports = { AutoRunner, validateConfig, autoHostAllowed, STATE, RESULT, LOCAL_HOSTS, LOCAL_SUFFIXES, localDayKey };

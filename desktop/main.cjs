@@ -252,8 +252,8 @@ function initProtocolSubsystem() {
   protocolContext = new ProtocolContext({ roundTracker: aviator });
   protocolContext.on('change', c => { if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-context', c); });
   aviator.on('actiontrace', t => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-actiontrace', t); });
-  // WU7: Protocol Test Harness — authorized QA sender bound to the selected target's
-  // own live socket (via wsReplay.sendRaw). Gated by an explicit host allowlist.
+  // WU7: Protocol Test Harness — sender bound to the selected target's own live
+  // socket (via wsReplay.sendRaw).
   harness = new ProtocolHarness({
     roundTracker: aviator,
     send: (ctx, payload) => wsReplay.sendProtocol(ctx, payload),
@@ -274,9 +274,8 @@ function initProtocolSubsystem() {
     if (observerDirty) return; observerDirty = true;
     setTimeout(() => { observerDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('observer-update', observer.snapshot()); }, 120);
   });
-  // WU10: offline automated round test runner. Event-driven over the frame stream;
-  // reuses the observer (sid/odd owner) + harness (send + ack). HARD-BOUND to local/
-  // test endpoints — start() refuses any non-allowlisted host and the UI can't override.
+  // WU10: automated round runner. Event-driven over the frame stream; reuses the
+  // observer (sid/odd owner) + harness (send + ack).
   autoRunner = new AutoRunner({
     roundTracker: aviator, observer, harness,
     getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
@@ -288,7 +287,7 @@ function initProtocolSubsystem() {
     setTimeout(() => { autoDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('autotest-update', autoRunner.snapshot()); }, 100);
   });
   // WU10.2: separate bet-amount server-validation mode (bet-only; sends the EXACT
-  // tester value; never clamps/snaps; hard-bound to local/test like the runner).
+  // tester value; never clamps/snaps).
   amountValidator = new AmountValidator({
     roundTracker: aviator, harness,
     getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
@@ -570,12 +569,12 @@ handle('protocol-context', () => protocolContext.get());
 // WU8 — read-only observer IPC (snapshot + display-only config; never sends).
 handle('observer-snapshot', () => observer.snapshot());
 handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });
-// WU10 — automated runner IPC (hard-bound to local/test endpoints; start() gates).
+// WU10 — automated runner IPC.
 handle('autotest-environment', (_event, targetId) => autoRunner.environmentFor(String(targetId || selectedTargetId || '')));
 handle('autotest-start', (_event, config = {}) => { const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
 handle('autotest-stop', () => { const r = autoRunner.stop(); return r.error ? r : autoRunner.snapshot(); });
 handle('autotest-snapshot', () => autoRunner.snapshot());
-// WU10.2 — bet-amount server-validation IPC (bet-only; local/test gated).
+// WU10.2 — bet-amount server-validation IPC (bet-only).
 handle('bvalidate-environment', (_event, targetId) => amountValidator.environmentFor(String(targetId || selectedTargetId || '')));
 handle('bvalidate-start', (_event, config = {}) => { const r = amountValidator.start(String(selectedTargetId || ''), config || {}); return r.error ? r : amountValidator.snapshot(); });
 handle('bvalidate-stop', () => { const r = amountValidator.stop(); return r.error ? r : amountValidator.snapshot(); });

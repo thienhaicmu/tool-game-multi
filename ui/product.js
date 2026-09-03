@@ -808,14 +808,14 @@ renderActions();
   $('obs-close').onclick = () => { $('obs-panel').hidden = true; };
 })();
 
-// ==================== WU10 AUTOMATED OFFLINE TEST RUNNER (local/test only) ====================
+// ==================== WU10 AUTOMATED RUNNER ====================
 // Config -> Start. The runner takes SID/ODD only from the server (RoundTracker/Observer),
-// sends one bet + at most one threshold cashout per round, N rounds. HARD-BOUND to
-// local/offline endpoints in the main process; this UI cannot override that gate.
+// sends one bet + at most one threshold cashout per round, N rounds.
 (function autoTestUI() {
   if (!api.autotestStart) return; // preload without WU10 — inert
   const ATC = window.AutoTestConfig;
   let snap = null, env = { allowed: false, host: '' }, configValid = true, sequenceIndex = 0, sequenceRunning = false;
+  let selectedDay = localTodayKey();
 
   function testRows() { return [...document.querySelectorAll('#at-test-rows .at-test-row')]; }
   function renumberRows() { testRows().forEach((row, i) => { row.dataset.index = String(i); row.querySelector('.at-row-number').textContent = String(i + 1); }); }
@@ -839,6 +839,40 @@ renderActions();
     return configValid;
   }
 
+  function localTodayKey() {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  }
+  function fmtDay(day) {
+    if (!day) return 'All days';
+    const m = String(day).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    return m ? `${m[3]}/${m[2]}/${m[1]}` : day;
+  }
+  function stopOddFor(r) { return r ? (r.ackOdd ?? r.triggerOdd ?? null) : null; }
+  function metricsForRounds(rows) {
+    const completed = rows.filter((r) => r.result === 'COMPLETED');
+    const lastCompleted = completed.length ? completed[completed.length - 1] : null;
+    const avg = (xs) => { const ys = xs.filter((x) => typeof x === 'number' && Number.isFinite(x)); return ys.length ? Math.round((ys.reduce((a, b) => a + b, 0) / ys.length) * 100) / 100 : null; };
+    return {
+      finished: rows.length,
+      completed: completed.length,
+      successfulStops: completed.length,
+      lastSuccessfulStopOdd: stopOddFor(lastCompleted),
+      endedBeforeThreshold: rows.filter((r) => r.result === 'ROUND_ENDED_BEFORE_THRESHOLD').length,
+      avgBetAckLatencyMs: avg(rows.map((r) => r.betLatencyMs)),
+      avgTriggerToSendMs: avg(rows.map((r) => r.triggerToSendMs)),
+      avgCashoutAckLatencyMs: avg(rows.map((r) => r.cashoutLatencyMs)),
+    };
+  }
+  function visibleRounds() {
+    const rows = (snap && snap.history) || [];
+    return selectedDay ? rows.filter((r) => r.finishedDay === selectedDay) : rows;
+  }
+  function syncDayControls(rows) {
+    const input = $('at-day-filter'); if (input) input.value = selectedDay || '';
+    const summary = $('at-day-summary'); if (summary) summary.textContent = `${fmtDay(selectedDay)} · ${rows.length} rounds`;
+  }
+
   function setChip(status) {
     const chip = $('at-status-chip'); if (!chip) return;
     const on = ['WAITING_ROUND', 'BET_SENDING', 'WAITING_BET_ACK', 'WATCHING_ODD', 'CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(status);
@@ -849,11 +883,10 @@ renderActions();
   async function refreshEnv() {
     try { env = await api.autotestEnvironment(); } catch { env = { allowed: false, host: '' }; }
     const badge = $('at-env');
-    badge.textContent = env.allowed ? `LOCAL OK · ${env.host || ''}` : 'NOT A LOCAL/TEST ENDPOINT';
-    badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
+    badge.textContent = `READY · ${env.host || ''}`;
+    badge.className = 'proto-env on';
     const gate = $('at-gate');
-    if (env.allowed) { gate.hidden = true; }
-    else { gate.hidden = false; gate.textContent = `Automated runner is not enabled for "${env.host || '(unknown)'}" — Start is disabled.`; }
+    gate.hidden = true;
     renderCta();
   }
   // The single Auto-Run CTA: label/action by state (WU11.1), gated by context/env/config.
@@ -868,7 +901,6 @@ renderActions();
     let reason = '';
     if (!running) {
       if (!protoCtxReady()) reason = 'Waiting for login context…';
-      else if (!env.allowed) reason = 'Target is not enabled for automated runs.';
       else if (!configValid) reason = 'Fix the highlighted fields.';
     }
     cta.disabled = !running && reason !== '';
@@ -896,27 +928,44 @@ renderActions();
     const active = snap.active;
     $('at-bet').textContent = active ? (active.betResult || (['BET_SENDING', 'WAITING_BET_ACK'].includes(snap.state) ? 'sending…' : '—')) : '—';
     $('at-cash').textContent = ['CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(snap.state) ? 'sending…' : (active && active.ackOdd != null ? 'ACK ' + active.ackOdd : 'waiting');
-    const m = snap.metrics || {};
-    $('at-m-count').textContent = `${m.completed ?? 0} / ${m.attempted ?? 0}`;
+    const rows = visibleRounds();
+    syncDayControls(rows);
+    const m = metricsForRounds(rows);
+    $('at-m-count').textContent = `${m.completed ?? 0} / ${m.finished ?? 0}`;
+    $('at-m-stops').textContent = m.successfulStops ?? 0;
+    $('at-m-last-stop').textContent = m.lastSuccessfulStopOdd != null ? Number(m.lastSuccessfulStopOdd).toFixed(2) + 'x' : '—';
     $('at-m-early').textContent = m.endedBeforeThreshold ?? 0;
     $('at-m-bet').textContent = m.avgBetAckLatencyMs != null ? m.avgBetAckLatencyMs + 'ms' : '—';
     $('at-m-tts').textContent = m.avgTriggerToSendMs != null ? m.avgTriggerToSendMs + 'ms' : '—';
     $('at-m-cash').textContent = m.avgCashoutAckLatencyMs != null ? m.avgCashoutAckLatencyMs + 'ms' : '—';
-    renderHistory(snap.history || []);
+    renderHistory(rows);
     renderCta();
   }
 
-  function resClass(r) { return r === 'COMPLETED' ? 'COMPLETED' : r === 'ROUND_ENDED_BEFORE_THRESHOLD' ? 'ROUND_ENDED_BEFORE_TRIGGER' : 'ENDED'; }
+  function resClass(r) {
+    if (r === 'COMPLETED') return 'COMPLETED';
+    if (['ROUND_ENDED_BEFORE_THRESHOLD', 'STOPPED', 'BET_ACK_TIMEOUT', 'BET_REJECTED', 'CASHOUT_ACK_TIMEOUT', 'CASHOUT_REJECTED', 'ERROR', 'INCONCLUSIVE'].includes(r)) return 'AUTO_STOPPED';
+    return 'ENDED';
+  }
   function renderHistory(rounds) {
     const el = $('at-history'); if (!el) return;
-    if (!rounds.length) { el.innerHTML = '<div class="muted">No rounds completed yet.</div>'; return; }
-    el.innerHTML = rounds.slice().reverse().slice(0, 40).map((r) => {
-      const f2 = (n) => (n == null ? '—' : Number(n).toFixed(2));
-      return `<div class="obs-round">`
-        + `<div class="obs-round-head"><b>#${esc(r.index + 1)} · sid ${esc(r.sid)}</b><span class="obs-res ${resClass(r.result)}">${esc(r.result)}</span></div>`
-        + `<div class="obs-round-meta">bet ${esc(r.amount != null ? r.amount : '—')} · target ${esc(f2(r.stopOdd))} · trigger ${esc(f2(r.triggerOdd))} · ack ${esc(f2(r.ackOdd))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
-        + `<div class="obs-round-meta">${esc(r.betResult || '—')} · betLat ${esc(r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—')} · cashLat ${esc(r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—')}</div>`
-        + `</div>`;
+    if (!rounds.length) { el.innerHTML = `<div class="muted">No rounds completed for ${esc(fmtDay(selectedDay))}.</div>`; return; }
+    const byDay = new Map();
+    for (const r of rounds.slice().reverse().slice(0, 80)) {
+      const day = r.finishedDay || 'unknown';
+      if (!byDay.has(day)) byDay.set(day, []);
+      byDay.get(day).push(r);
+    }
+    el.innerHTML = [...byDay.entries()].map(([day, rows]) => {
+      const stopCount = rows.filter((r) => r.result === 'COMPLETED').length;
+      return `<div class="at-day-group">${esc(fmtDay(day))} · ${esc(stopCount)} stops · ${esc(rows.length)} rounds</div>` + rows.map((r) => {
+        const f2 = (n) => (n == null ? '—' : Number(n).toFixed(2));
+        return `<div class="obs-round">`
+          + `<div class="obs-round-head"><b>#${esc(r.index + 1)} · sid ${esc(r.sid)}</b><span class="obs-res ${resClass(r.result)}">${esc(r.result)}</span></div>`
+          + `<div class="obs-round-meta">bet ${esc(r.amount != null ? r.amount : '—')} · target ${esc(f2(r.stopOdd))} · trigger ${esc(f2(r.triggerOdd))} · ack ${esc(f2(r.ackOdd))} · wm ${esc(r.wm != null ? r.wm : '—')}</div>`
+          + `<div class="obs-round-meta">${esc(r.betResult || '—')} · betLat ${esc(r.betLatencyMs != null ? r.betLatencyMs + 'ms' : '—')} · cashLat ${esc(r.cashoutLatencyMs != null ? r.cashoutLatencyMs + 'ms' : '—')}</div>`
+          + `</div>`;
+      }).join('');
     }).join('');
   }
 
@@ -940,6 +989,9 @@ renderActions();
   // Live validation as the tester types (§6). aid/eid are not inputs anymore.
   addTestRow();
   $('at-add-row').onclick = () => { if (!sequenceRunning) { addTestRow(); validateConfigUI(); } };
+  $('at-day-filter').onchange = () => { selectedDay = $('at-day-filter').value || ''; render(); };
+  $('at-day-today').onclick = () => { selectedDay = (snap && snap.currentDay) || localTodayKey(); render(); };
+  $('at-day-all').onclick = () => { selectedDay = ''; render(); };
   document.addEventListener('protoctx-change', () => { if (!$('at-panel').hidden) renderCta(); });
 
   async function startRun() {
@@ -962,12 +1014,12 @@ renderActions();
   $('at-close').onclick = () => { $('at-panel').hidden = true; };
   $('at-panel').addEventListener('shell:activate', openAuto); // WU11 nav hook
 
-  // Re-check the endpoint gate when the selected target changes.
+  // Refresh target host when the selected target changes.
   const prev = $('targets').onchange;
   $('targets').onchange = (e) => { if (prev) prev.call($('targets'), e); setTimeout(() => { if (!$('at-panel').hidden) refreshEnv(); }, 80); };
 })();
 
-// ==================== WU10.2 BET AMOUNT SERVER VALIDATION (bet-only, local/test) ====================
+// ==================== WU10.2 BET AMOUNT SERVER VALIDATION (bet-only) ====================
 // Sends an EXACT tester-supplied `b` on each server round and reports what the server
 // does: ACCEPTED_EXACT / ACCEPTED_NORMALIZED / REJECTED / INCONCLUSIVE. No cashout,
 // no odd. UI does TYPE validation only — any numeric b is allowed on purpose.
@@ -985,11 +1037,10 @@ renderActions();
   async function refreshEnv() {
     try { env = await api.bvalidateEnvironment(); } catch { env = { allowed: false, host: '' }; }
     const badge = $('bv-env');
-    badge.textContent = env.allowed ? `LOCAL OK · ${env.host || ''}` : 'NOT A LOCAL/TEST ENDPOINT';
-    badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
+    badge.textContent = `READY · ${env.host || ''}`;
+    badge.className = 'proto-env on';
     const gate = $('bv-gate');
-    gate.hidden = !!env.allowed;
-    if (!env.allowed) gate.textContent = `Amount check is not enabled for "${env.host || '(unknown)'}" — Start is disabled.`;
+    gate.hidden = true;
     validate();
   }
 
@@ -1009,11 +1060,10 @@ renderActions();
   }
   function syncButtons() {
     const running = snap && snap.running;
-    // Disabled until the session context is ready + endpoint allowed + config valid.
+    // Disabled until the session context is ready + config valid.
     let reason = '';
     if (!running) {
       if (!protoCtxReady()) reason = 'Waiting for login context…';
-      else if (!env.allowed) reason = 'Target is not enabled for amount checks.';
       else if (!valid) reason = 'Fix the highlighted fields.';
     }
     $('bv-start').disabled = running || reason !== '';

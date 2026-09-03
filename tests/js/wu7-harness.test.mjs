@@ -31,7 +31,7 @@ function decodeWirePayload(payload) {
 }
 
 // ---------------------------------------------------------------------------
-// §3 — environment allowlist gate.
+// §3 — host helpers and product environment state.
 // ---------------------------------------------------------------------------
 test('hostAllowed: exact, *.suffix and keyword patterns', () => {
   assert.equal(hostAllowed('localhost', ['localhost']), true);
@@ -41,19 +41,19 @@ test('hostAllowed: exact, *.suffix and keyword patterns', () => {
   assert.equal(hostAllowed('production.acme.io', ['localhost', '127.0.0.1']), false);
 });
 
-test('environmentFor gates on host; non-allowlisted -> CONTROL_DISABLED', () => {
+test('environmentFor allows non-local product targets', () => {
   const { harness } = setup({ host: 'production.game.com', allowlist: ['localhost', 'staging'], environmentGuard: true });
   const env = harness.environmentFor('T');
-  assert.equal(env.allowed, false);
-  assert.equal(env.label, 'CONTROL_DISABLED_FOR_TARGET');
+  assert.equal(env.allowed, true);
+  assert.equal(env.label, 'CONTROL ENABLED');
 });
 
-test('execute on a non-allowlisted target refuses to send', async () => {
-  const { harness, sends } = setup({ host: 'production.game.com', allowlist: ['localhost'], environmentGuard: true });
+test('execute on a non-allowlisted target still sends', async () => {
+  const { tracker, harness, sends } = setup({ host: 'production.game.com', allowlist: ['localhost'], environmentGuard: true });
+  openRound(tracker, 2986908);
   const ex = await harness.execute({ targetId: 'T', command: 'bet' });
-  assert.equal(ex.result, 'ERROR');
-  assert.equal(ex.error.code, 'CONTROL_DISABLED_FOR_TARGET');
-  assert.equal(sends.length, 0, 'nothing sent to a disallowed target');
+  assert.equal(ex.result, 'TIMEOUT');
+  assert.equal(sends.length, 1);
 });
 
 // ---------------------------------------------------------------------------

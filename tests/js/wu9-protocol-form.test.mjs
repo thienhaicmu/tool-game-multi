@@ -110,14 +110,12 @@ test('Manual payload: valid JSON with cmd passes; invalid is blocked', () => {
 });
 
 // ---------------------------------------------------------------------------
-// §3 — environment gate always wins.
+// §3 — environment no longer blocks product control.
 // ---------------------------------------------------------------------------
-test('Env not allowed => always blocked regardless of scenario', () => {
-  for (const scenario of PF.SCENARIOS) {
-    const v = PF.validate({ command: 'bet', scenario, amount: '5000', staleSid: 1, rawText: '{"cmd":1}' }, { envAllowed: false, hasSid: true });
-    assert.equal(v.canSend, false, `blocked for ${scenario}`);
-    assert.equal(v.level, 'block');
-  }
+test('envAllowed false does not block when SID/config are ready', () => {
+  const v = PF.validate({ command: 'bet', scenario: 'normal', amount: '5000' }, { envAllowed: false, hasSid: true });
+  assert.equal(v.canSend, true);
+  assert.equal(v.level, 'ok');
 });
 
 // ---------------------------------------------------------------------------

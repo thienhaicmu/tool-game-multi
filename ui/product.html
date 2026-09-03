@@ -313,7 +313,7 @@
   <aside id="at-panel" class="proto-panel" hidden aria-label="Automated Round Runner">
     <div class="proto-head">
       <b>⚙ Auto Run</b>
-      <span id="at-env" class="proto-env off" title="The automated runner is limited by the configured environment gate">LOCAL ONLY</span>
+      <span id="at-env" class="proto-env off" title="Current target host">READY</span>
       <div class="spacer"></div>
       <button id="at-close" class="btn icon" title="Hide panel">✕</button>
     </div>
@@ -351,7 +351,15 @@
 
     <div class="proto-card at-metrics">
       <div class="proto-state-title">METRICS</div>
-      <div class="proto-kv"><span>Completed / Attempted</span><b id="at-m-count">—</b></div>
+      <div class="at-day-filter">
+        <label>Day<input id="at-day-filter" type="date"></label>
+        <button id="at-day-today" class="btn" type="button">Today</button>
+        <button id="at-day-all" class="btn" type="button">All</button>
+        <span id="at-day-summary" class="faint"></span>
+      </div>
+      <div class="proto-kv"><span>Completed / Finished</span><b id="at-m-count">—</b></div>
+      <div class="proto-kv"><span>Successful stops</span><b id="at-m-stops">—</b></div>
+      <div class="proto-kv"><span>Last stop odd</span><b id="at-m-last-stop">—</b></div>
       <div class="proto-kv"><span>Ended before threshold</span><b id="at-m-early">—</b></div>
       <div class="proto-kv"><span>Avg bet ACK latency</span><b id="at-m-bet">—</b></div>
       <div class="proto-kv"><span>Avg trigger→send</span><b id="at-m-tts">—</b></div>

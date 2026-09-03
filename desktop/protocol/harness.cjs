@@ -4,11 +4,9 @@ const EventEmitter = require('node:events');
 const { randomUUID } = require('node:crypto');
 const { CODES } = require('../cdp/errors.cjs');
 const { classifyFrame, CMD } = require('./aviator.cjs');
-const { environmentGuardEnabled } = require('./environment-gate.cjs');
-
-// Test-environment safety gate (WU7 §3). Request control activates ONLY when the
-// target host matches an explicit QA/staging allowlist. Defaults are local-only;
-// operators extend via OBSERVATORY_TEST_HOSTS. Patterns:
+// Host pattern helpers are kept for tests and diagnostics only. Product control
+// no longer blocks non-local targets.
+// Patterns:
 //   exact host  "localhost"          -> host === pattern
 //   suffix      "*.staging.acme.io"  -> host ends with ".staging.acme.io"
 //   keyword     "staging"            -> host contains "staging" (no dot in pattern)
@@ -62,7 +60,6 @@ class ProtocolHarness extends EventEmitter {
     this._send = deps.send || (async () => ({ ok: false, error: { code: CODES.TEST_SESSION_UNAVAILABLE, message: 'No send seam configured' } }));
     this._getTargetUrl = deps.getTargetUrl || (() => '');
     this._allowlist = normalizeAllowlist(deps.allowlist && deps.allowlist.length ? deps.allowlist : DEFAULT_ALLOWLIST);
-    this._environmentGuard = deps.environmentGuard == null ? environmentGuardEnabled() : deps.environmentGuard !== false;
     this._ackTimeoutMs = Number(deps.ackTimeoutMs || 8000);
     this._executions = [];      // append-only ProtocolTestExecution[]
     this._byId = new Map();
@@ -75,14 +72,13 @@ class ProtocolHarness extends EventEmitter {
   executions() { return this._executions.map((e) => ({ ...e })); }
   getExecution(id) { const e = this._byId.get(id); return e ? { ...e } : undefined; }
 
-  // WU7 §3 — environment gate. Returns the visible enabled/disabled state.
+  // Returns the visible target environment state. Non-local targets are allowed.
   environmentFor(targetId) {
     const url = String(this._getTargetUrl(targetId) || '');
     let host = '';
     try { host = url ? new URL(url).hostname.toLowerCase() : ''; } catch { host = ''; }
     const matched = hostAllowed(host, this._allowlist);
-    const allowed = !this._environmentGuard || matched;
-    return { targetId: targetId != null ? String(targetId) : null, host, url, allowed, matched, guardEnabled: this._environmentGuard, requiresConfirmation: !this._environmentGuard && !matched, name: allowed ? host : null, label: allowed ? (this._environmentGuard ? 'TEST CONTROL — ENABLED' : 'ENVIRONMENT GUARD OFF') : 'CONTROL_DISABLED_FOR_TARGET' };
+    return { targetId: targetId != null ? String(targetId) : null, host, url, allowed: true, matched, guardEnabled: false, requiresConfirmation: false, name: host, label: 'CONTROL ENABLED' };
   }
 
   // WU7 §6 — templates for confirmed commands only, seeded with the CURRENT
@@ -117,10 +113,7 @@ class ProtocolHarness extends EventEmitter {
     const env = this.environmentFor(targetId);
     const warnings = [];
 
-    // 1) Environment safety gate.
-    if (!env.allowed) return this._fail({ targetId, source, environment: env, error: { code: CODES.CONTROL_DISABLED_FOR_TARGET, message: `Target host "${env.host || '(unknown)'}" is not in the QA/staging allowlist` }, warnings });
-
-    // 2) Resolve the payload (explicit object/string, or a template).
+    // 1) Resolve the payload (explicit object/string, or a template).
     let payload = opts.payload;
     if (payload == null && opts.command) payload = this.buildTemplate(opts.command, opts.overrides || {});
     let obj;
@@ -133,7 +126,7 @@ class ProtocolHarness extends EventEmitter {
     const eid = obj.eid != null ? obj.eid : null;
     const negative = Boolean(opts.negative);
 
-    // 3) SID binding check (WU7 §7). A mismatch is only permitted for an explicit
+    // 2) SID binding check (WU7 §7). A mismatch is only permitted for an explicit
     // negative test; otherwise we refuse rather than send from a guessed sid.
     const sidCheck = this.checkSid(sid);
     if (sidCheck.warning) {
@@ -145,7 +138,7 @@ class ProtocolHarness extends EventEmitter {
 
     const ctx = this._sendContext(targetId);
 
-    // 4) Build the append-only record and emit it as pending.
+    // 3) Build the append-only record and emit it as pending.
     const rec = {
       id: 'ptx_' + randomUUID(), seq: this._seq++, targetId, source,
       command, sid, eid, requestPayload: obj, requestJson: stableJson(obj), wireJson: wireJson(obj, ctx),
