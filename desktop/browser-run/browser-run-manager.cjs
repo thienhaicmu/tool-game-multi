@@ -191,7 +191,11 @@ class BrowserRunManager extends EventEmitter {
     if (run.targetManager && run.targetManager.stop) {
       try { await run.targetManager.stop(); } catch { /* already gone */ }
     }
-    if (run.launcher && run.launcher.close) {
+    // WU-E.1B — prefer a graceful close so Chrome flushes cookies/login to disk; it force
+    // kills on a bounded timeout, so no phantom Chrome / stuck profile lock (D2-001).
+    if (run.launcher && run.launcher.closeGraceful) {
+      try { await run.launcher.closeGraceful(); } catch { try { if (run.launcher.close) run.launcher.close(); } catch { /* best effort */ } }
+    } else if (run.launcher && run.launcher.close) {
       try { run.launcher.close(); } catch { /* best effort */ }
     }
     run.endedAt = new Date(this._now()).toISOString();

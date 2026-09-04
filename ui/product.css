@@ -637,3 +637,26 @@ body[data-mode=product] #at-panel .proto-head .btn.icon{ display:none; }
 .ov-web-overlay{ background:rgba(11,13,16,.9); }
 .ov-web-overlay .empty-ic{ font-size:30px; opacity:.6; }
 #ov-web-overlay-text{ max-width:280px; line-height:1.5; }
+
+/* ============================================================================
+   WU-E.1B — product polish (header hierarchy, rail clarity, web focus). CSS only.
+   ========================================================================= */
+/* Header: license pill is PRIMARY; running/profile counters are quiet secondary. */
+#shell-running, #cap-badge{ background:transparent; border-color:transparent; color:var(--faint); font-weight:600; padding:4px 4px; }
+#cap-badge.full{ color:var(--err); background:transparent; }
+.ab-pill.license{ font-weight:700; }
+/* Rail: hide the internal BR-id for customers (visible under Nâng cao); clearer selection;
+   calmer secondary actions; more readable name. */
+body:not([data-mode=advanced]) .rr-brid{ display:none; }
+.rr-item{ padding:8px 9px; }
+.rr-item.sel{ box-shadow:inset 3px 0 0 var(--accent); }
+.rr-name{ font-weight:550; color:var(--text); }
+.rr-actions .rr-mini{ opacity:.82; transition:opacity .12s; }
+.rr-item:hover .rr-actions .rr-mini,.rr-item.sel .rr-actions .rr-mini{ opacity:1; }
+/* Web workspace: keyboard-capture affordance + subtle framing. */
+.ov-web-host:focus{ outline:2px solid var(--accent); outline-offset:-2px; }
+.ov-web-host:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
+/* Overview: emphasize the live ODD; tidy sidebar rhythm. */
+.wsi-m.odd b{ color:var(--accent); }
+.ov-side .live-cell.odd b{ color:var(--accent); }
+.ov-side .section-title{ letter-spacing:.04em; }

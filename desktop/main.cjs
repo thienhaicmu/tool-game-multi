@@ -181,6 +181,21 @@ function killAllManagedBrowsers() {
     if (r && r.launcher && r.launcher.close) { try { r.launcher.close(); } catch { /* already gone */ } }
   }
 }
+// WU-E.1B — on app quit, GRACEFULLY close managed Chrome (so cookies/login flush to disk)
+// with a BOUNDED overall timeout, then force-kill any straggler. Preserves D2-001: nothing
+// can be left phantom because killAllManagedBrowsers() force-kills at the end and will-quit
+// force-kills again as a final guard.
+async function shutdownAllManagedBrowsers(timeoutMs = 4000) {
+  if (!runManager) return;
+  const runs = runManager.list().map((s) => runManager.get(s.id)).filter((r) => r && r.launcher);
+  try {
+    await Promise.race([
+      Promise.all(runs.map((r) => (r.launcher.closeGraceful ? r.launcher.closeGraceful(Math.max(800, timeoutMs - 400)) : Promise.resolve()).catch(() => {}))),
+      new Promise((res) => setTimeout(res, timeoutMs)),
+    ]);
+  } catch { /* best effort */ }
+  killAllManagedBrowsers(); // force-kill any Chrome that did not exit gracefully in time
+}
 // Snapshot of the active run's launcher for instance-info; safe default when idle.
 function activeLauncherSnapshot() {
   const run = runManager && runManager.activeRun();
@@ -888,15 +903,25 @@ app.whenReady().then(() => {
   createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+let _gracefulQuitDone = false;
 app.on('before-quit', event => {
-  killAllManagedBrowsers(); // WU-D.2 (D2-001) — never orphan managed Chrome on quit
-  if (importTimer) clearInterval(importTimer);
-  if (importStarted) return;
-  const child = importJournalOnExit();
-  if (!child) return;
+  if (_gracefulQuitDone) return; // second pass (after our async shutdown) → allow quit
   event.preventDefault();
-  child.once('close', () => app.quit());
-  child.once('error', () => app.quit());
+  if (importTimer) clearInterval(importTimer);
+  (async () => {
+    // WU-E.1B — flush managed Chrome profiles (cookies/login) gracefully, bounded; then
+    // WU-D.2 (D2-001) journal import still runs. shutdownAllManagedBrowsers force-kills any
+    // straggler, so no phantom Chrome regardless of graceful-close timing.
+    try { await shutdownAllManagedBrowsers(4000); } catch { /* best effort */ }
+    try {
+      if (!importStarted) {
+        const child = importJournalOnExit();
+        if (child) await new Promise((res) => { const t = setTimeout(res, 8000); child.once('close', () => { clearTimeout(t); res(); }); child.once('error', () => { clearTimeout(t); res(); }); });
+      }
+    } catch { /* best effort */ }
+    _gracefulQuitDone = true;
+    app.quit();
+  })();
 });
 app.on('will-quit', () => { killAllManagedBrowsers(); try { appInstance.lock.release(); } catch { /* best effort */ } });
 handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });

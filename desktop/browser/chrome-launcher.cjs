@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { allocateFreePort } = require('./port-allocator.cjs');
+const CDP = require('chrome-remote-interface');
 
 const canRead = (p) => { try { return !!p && fs.existsSync(p); } catch { return false; } };
 
@@ -70,11 +71,12 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, onRuntime = () => {}, onExit = () => {} } = {}) {
+  constructor({ profilePath, env = process.env, onRuntime = () => {}, onExit = () => {}, cdp = CDP } = {}) {
     this.profilePath = profilePath;
     this.env = env;
     this.onRuntime = onRuntime;
     this.onExit = onExit;
+    this._cdp = cdp;              // injectable for tests
     this.process = null;
     this.port = null;
   }
@@ -114,6 +116,30 @@ class ChromeLauncher {
     const proc = this.process;
     if (proc && !proc.killed) { try { proc.kill(); } catch { /* already gone */ } }
     this.process = null;
+  }
+
+  // WU-E.1B — graceful close so Chrome FLUSHES its profile (cookies/login) to disk before
+  // exiting. A hard kill (close()) can drop lazily-committed cookies, so a login set shortly
+  // before close is lost. We ask Chrome to close via CDP Browser.close, wait a BOUNDED time
+  // for the process to exit, then FORCE KILL if it is still alive — so the D2-001 guarantee
+  // (no phantom Chrome, no stuck profile lock) is preserved even if graceful close hangs.
+  async closeGraceful(timeoutMs = 3500) {
+    const proc = this.process;
+    if (!proc || proc.killed) { this.process = null; return { ok: true, graceful: false, reason: 'not-running' }; }
+    const exited = new Promise((res) => proc.once('exit', () => res(true)));
+    let requested = false;
+    const port = this.port || Number(this.env.OBSERVATORY_CDP_PORT || 0);
+    if (port) {
+      try {
+        const client = await this._cdp({ host: '127.0.0.1', port });
+        try { await client.Browser.close(); requested = true; } catch { /* fall through to kill */ }
+        try { await client.close(); } catch { /* connection dropped by Browser.close */ }
+      } catch { /* CDP unreachable — force kill below */ }
+    }
+    const timedOut = await Promise.race([exited.then(() => false), new Promise((res) => setTimeout(() => res(true), Math.max(500, timeoutMs)))]);
+    if (timedOut && proc && !proc.killed) { try { proc.kill(); } catch { /* already gone */ } }
+    this.process = null;
+    return { ok: true, graceful: requested && !timedOut, forced: !!timedOut };
   }
 
   snapshot() {
