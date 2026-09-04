@@ -127,19 +127,23 @@ class ChromeLauncher {
     const proc = this.process;
     if (!proc || proc.killed) { this.process = null; return { ok: true, graceful: false, reason: 'not-running' }; }
     const exited = new Promise((res) => proc.once('exit', () => res(true)));
-    let requested = false;
     const port = this.port || Number(this.env.OBSERVATORY_CDP_PORT || 0);
+    // Fire the graceful close request but NEVER block on it: a frozen Chrome could make
+    // Browser.close hang forever, which would hang Close/quit. The exit-or-timeout race
+    // below bounds the whole method regardless, and force-kills on timeout (D2-001 safe).
     if (port) {
-      try {
-        const client = await this._cdp({ host: '127.0.0.1', port });
-        try { await client.Browser.close(); requested = true; } catch { /* fall through to kill */ }
-        try { await client.close(); } catch { /* connection dropped by Browser.close */ }
-      } catch { /* CDP unreachable — force kill below */ }
+      (async () => {
+        try {
+          const client = await this._cdp({ host: '127.0.0.1', port });
+          try { await client.Browser.close(); } catch { /* chrome may drop the socket as it exits */ }
+          try { await client.close(); } catch { /* connection dropped by Browser.close */ }
+        } catch { /* CDP unreachable — force kill happens on timeout */ }
+      })();
     }
     const timedOut = await Promise.race([exited.then(() => false), new Promise((res) => setTimeout(() => res(true), Math.max(500, timeoutMs)))]);
     if (timedOut && proc && !proc.killed) { try { proc.kill(); } catch { /* already gone */ } }
     this.process = null;
-    return { ok: true, graceful: requested && !timedOut, forced: !!timedOut };
+    return { ok: true, graceful: !timedOut, forced: !!timedOut };
   }
 
   snapshot() {
