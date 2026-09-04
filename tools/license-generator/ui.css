@@ -29,3 +29,16 @@ button:disabled{opacity:.5;cursor:default}
 .chip.off{color:var(--err);background:#fff1f0;border-color:#ffccc7}
 .error{border:1px solid #ffccc7;background:#fff1f0;color:var(--err);border-radius:6px;padding:10px}
 @media (max-width:640px){.grid{grid-template-columns:1fr}header{align-items:flex-start;gap:10px;flex-direction:column}}
+/* WU-C.4 — v2 generator additions */
+.tabs{display:flex;gap:6px;margin:6px 0}
+.tab{padding:8px 16px;border:1px solid var(--line);background:#fff;border-radius:8px 8px 0 0;font-weight:700;cursor:pointer;color:#667}
+.tab.active{color:var(--accent,#2563eb);border-bottom-color:#fff;background:#f7f9ff}
+.section-title{font-size:11px;font-weight:800;letter-spacing:.08em;color:#8892a0;margin:14px 0 6px}
+.features{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.features label{display:flex;align-items:center;gap:8px;font-weight:600}
+.features-view{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+.feat{font-weight:700;font-size:13px}
+.feat.on{color:var(--ok)}
+.feat.off{color:#98a2b3}
+.ok{color:var(--ok);background:#ecfdf3;border:1px solid #b7e4c7;border-radius:6px;padding:9px 11px;font-weight:700;margin-top:8px}
+.inspect-body{display:flex;flex-direction:column;gap:2px}

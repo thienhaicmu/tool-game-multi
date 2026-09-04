@@ -9,20 +9,20 @@
 <body data-mode="product" data-license="checking">
   <section id="activation-screen" class="activation-screen">
     <div class="activation-panel">
-      <div class="activation-title">ACTIVATE PRODUCT</div>
+      <div class="activation-title">KÍCH HOẠT BẢN QUYỀN</div>
       <div id="activation-error" class="activation-error" hidden></div>
-      <label>Machine ID
+      <label>Mã máy
         <div class="activation-copy-row">
-          <input id="activation-machine" class="mono" readonly value="Loading...">
-          <button id="activation-copy" class="btn" type="button">COPY MACHINE ID</button>
+          <input id="activation-machine" class="mono" readonly value="Đang tải...">
+          <button id="activation-copy" class="btn" type="button">SAO CHÉP MÃ MÁY</button>
         </div>
       </label>
-      <div id="activation-help" class="activation-help">Send this Machine ID to your license provider.</div>
+      <div id="activation-help" class="activation-help">Gửi Mã máy này cho nhà cung cấp bản quyền.</div>
       <div id="activation-license-machine" class="activation-help" hidden></div>
-      <label>License Key
+      <label>Khóa kích hoạt
         <textarea id="activation-license" class="mono" rows="5" spellcheck="false"></textarea>
       </label>
-      <button id="activation-submit" class="primary" type="button">ACTIVATE</button>
+      <button id="activation-submit" class="primary" type="button">KÍCH HOẠT</button>
     </div>
   </section>
   <!-- Focused Aviator control shell -->
@@ -381,6 +381,13 @@
         <label class="pf-field">Minimum Jackpot<input id="at-jp-min" class="mono" value="50000000"><span class="hint">Auto starts only when server jackpot ≥ this value. Current: <b id="at-jp-cur">—</b></span></label>
         <div id="at-jp-err" class="cfg-err"></div>
       </div>
+      <!-- WU-D — Stop 1000x SESSION kill switch. Distinct from "Stop odd" above:
+           Stop odd = cash out EACH qualifying round; Stop 1000x = stop the WHOLE Auto
+           session for this browser when the server round reaches 1000x. -->
+      <label class="jp-toggle" title="Dừng toàn bộ phiên Tự động của trình duyệt này khi vòng máy chủ đạt 1000x. Khác với 'Dừng tại ODD' (rút tiền từng vòng).">
+        <input type="checkbox" id="at-stop1000"> ⛔ Dừng khi đạt 1000x
+      </label>
+      <div class="hint">“Dừng tại ODD” = rút tiền mỗi vòng đạt mốc. “Dừng khi đạt 1000x” = dừng cả phiên Tự động khi vòng máy chủ chạm 1000x.</div>
       <div id="at-cfg-err" class="errb"></div>
       <div id="at-cta-note" class="cta-note"></div>
       <button id="at-cta" class="cta primary">▶ START AUTO RUN</button>

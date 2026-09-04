@@ -59,16 +59,17 @@ function remainingDaysTrusted(expiresAt) {
 function licenseFriendly(status) {
   const code = status && status.error && status.error.code;
   if (!code) return '';
-  if (code === 'LICENSE_MISSING') return 'Enter your license key to unlock this device.';
-  if (code === 'LICENSE_EXPIRED') return `LICENSE EXPIRED\nExpired ${dateFromSecondsTrusted(status.error.expiredAt || (status.error.payload && status.error.payload.expiresAt))}\nContact your license provider to renew.`;
-  if (code === 'LICENSE_MACHINE_MISMATCH') return 'LICENSE DOES NOT MATCH THIS DEVICE';
-  if (code === 'LICENSE_BAD_SIGNATURE') return 'License signature is invalid. Check the key and try again.';
-  if (code === 'LICENSE_CLOCK_ROLLBACK') return 'Trusted time rollback detected. Contact support.';
-  if (code === 'TRUSTED_TIME_UNAVAILABLE') return 'Cannot verify trusted UTC+7 time. Check internet connection and try again.';
-  if (code === 'LICENSE_LAUNCH_LIMIT_REACHED') return `LICENSE LAUNCH LIMIT REACHED\nUsed ${status.error.usedLaunches || 0} / ${status.error.maxLaunches || 0} launches.\nContact your license provider to renew.`;
-  if (code === 'MACHINE_ID_UNAVAILABLE') return 'Machine ID is unavailable on this PC.';
-  if (code === 'LICENSE_WRONG_PRODUCT') return 'This license is for another product.';
-  return 'License is invalid.';
+  if (code === 'LICENSE_MISSING') return 'Nhập khóa kích hoạt để mở khóa thiết bị này.';
+  if (code === 'LICENSE_EXPIRED') return `BẢN QUYỀN ĐÃ HẾT HẠN\nHết hạn ${dateFromSecondsTrusted(status.error.expiredAt || (status.error.payload && status.error.payload.expiresAt))}\nLiên hệ nhà cung cấp để gia hạn.`;
+  if (code === 'LICENSE_MACHINE_MISMATCH') return 'Khóa kích hoạt không thuộc máy này.';
+  if (code === 'LICENSE_BAD_SIGNATURE') return 'Chữ ký khóa không hợp lệ. Kiểm tra lại khóa và thử lại.';
+  if (code === 'LICENSE_CLOCK_ROLLBACK') return 'Phát hiện đồng hồ hệ thống bị chỉnh lùi. Liên hệ hỗ trợ.';
+  if (code === 'TRUSTED_TIME_UNAVAILABLE') return 'Không xác minh được thời gian UTC+7 tin cậy. Kiểm tra kết nối mạng và thử lại.';
+  if (code === 'LICENSE_LAUNCH_LIMIT_REACHED') return `ĐÃ ĐẠT GIỚI HẠN SỐ LẦN CHẠY\nĐã dùng ${status.error.usedLaunches || 0} / ${status.error.maxLaunches || 0} lần.\nLiên hệ nhà cung cấp để gia hạn.`;
+  if (code === 'MACHINE_ID_UNAVAILABLE') return 'Không lấy được Mã máy trên máy tính này.';
+  if (code === 'LICENSE_WRONG_PRODUCT') return 'Khóa này dành cho sản phẩm khác.';
+  if (code === 'LICENSE_INVALID_FORMAT') return 'Khóa kích hoạt không hợp lệ.';
+  return 'Bản quyền không hợp lệ.';
 }
 function renderLicenseStatus(status) {
   licenseState = status || licenseState;
@@ -77,11 +78,12 @@ function renderLicenseStatus(status) {
   const shellLicense = $('shell-license');
   if (shellLicense) {
     shellLicense.textContent = licenseState.checking
-      ? 'License checking...'
+      ? 'Đang kiểm tra bản quyền...'
       : licenseState.active && licenseState.payload
-      ? `License ${remainingDaysTrusted(licenseState.payload.expiresAt)} · Expires ${dateFromSecondsTrusted(licenseState.payload.expiresAt)}`
-      : 'License LOCKED';
+      ? `Bản quyền còn ${remainingDaysTrusted(licenseState.payload.expiresAt)} · Hết hạn ${dateFromSecondsTrusted(licenseState.payload.expiresAt)}`
+      : 'Chưa kích hoạt bản quyền';
   }
+  if (licenseState.active) refreshEntitlement();
   const machine = $('activation-machine'); if (machine) machine.value = licenseState.machineId || 'MACHINE_ID_UNAVAILABLE';
   const err = $('activation-error');
   if (err) {
@@ -97,13 +99,31 @@ function renderLicenseStatus(status) {
   if (licenseLabel) licenseLabel.hidden = hideKeyEntry;
   if (submit) submit.hidden = hideKeyEntry;
   const help = $('activation-help');
-  if (help && hideKeyEntry) help.textContent = licenseState.checking ? 'Stored license found. Verifying...' : 'Stored license found, but it cannot be verified right now.';
-  else if (help) help.textContent = 'Send this Machine ID to your license provider.';
+  if (help && hideKeyEntry) help.textContent = licenseState.checking ? 'Đã tìm thấy khóa đã lưu. Đang xác minh...' : 'Đã tìm thấy khóa đã lưu nhưng chưa xác minh được lúc này.';
+  else if (help) help.textContent = 'Gửi Mã máy này cho nhà cung cấp bản quyền.';
   const lm = $('activation-license-machine');
   const licenseMachine = licenseState.error && licenseState.error.licenseMachineId;
-  if (lm) { lm.hidden = !licenseMachine; lm.textContent = licenseMachine ? `License Machine ID: ${licenseMachine}` : ''; }
+  if (lm) { lm.hidden = !licenseMachine; lm.textContent = licenseMachine ? `Mã máy của khóa: ${licenseMachine}` : ''; }
   if (licenseState.active && $('activation-license')) $('activation-license').value = '';
   if (typeof renderOverview === 'function' && $('view-overview') && !$('view-overview').hidden) renderOverview();
+}
+// WU-C.4 — compact verified-entitlement display (plan / capacity / features). Read
+// from the trusted main-process snapshot; the renderer never decides authorization.
+let entitlementState = null;
+const FEATURE_VI = { autoRun: 'Chạy tự động', jackpotLive: 'Jackpot trực tiếp', jackpotGate: 'Chờ Jackpot', roundHistory: 'Lịch sử vòng chơi' };
+async function refreshEntitlement() {
+  if (!api.licenseEntitlement) return;
+  try { entitlementState = await api.licenseEntitlement(); } catch { entitlementState = null; }
+  const e = entitlementState;
+  const chip = $('shell-license');
+  if (chip && e && e.valid && !e.error) {
+    const plan = e.plan && e.plan !== 'LEGACY' ? ` · Gói ${e.plan}` : (e.legacy ? ' · Gói cũ' : '');
+    if (!/Gói/.test(chip.textContent)) chip.textContent = chip.textContent + plan;
+    const cap = `Hồ sơ ${e.registeredBrowsers}/${e.maxBrowsers == null ? '∞' : e.maxBrowsers} · Đang chạy ${e.runningBrowsers}/${e.maxConcurrentBrowsers == null ? '∞' : e.maxConcurrentBrowsers}`;
+    const feats = Object.keys(FEATURE_VI).map((k) => (e.features && e.features[k] ? '✓' : '✕') + ' ' + FEATURE_VI[k]).join(' · ');
+    chip.title = `${cap}\n${feats}`;
+  }
+  document.dispatchEvent(new CustomEvent('entitlement-change', { detail: e }));
 }
 async function refreshLicenseStatus() {
   if (!api.licenseStatus) { document.body.dataset.license = 'active'; return; }
@@ -115,10 +135,10 @@ async function refreshLicenseStatus() {
   if (copyBtn) copyBtn.onclick = () => copy($('activation-machine').value, 'Machine ID');
   const submit = $('activation-submit');
   if (submit) submit.onclick = async () => {
-    submit.disabled = true; submit.textContent = 'VERIFYING...';
+    submit.disabled = true; submit.textContent = 'ĐANG XÁC MINH...';
     try { renderLicenseStatus(await api.activateLicense(($('activation-license').value || '').trim())); }
-    catch { renderLicenseStatus({ active: false, machineId: licenseState.machineId, error: { code: 'LICENSE_INVALID_FORMAT', message: 'Activation failed' } }); }
-    submit.disabled = false; submit.textContent = 'ACTIVATE';
+    catch { renderLicenseStatus({ active: false, machineId: licenseState.machineId, error: { code: 'LICENSE_INVALID_FORMAT', message: 'Kích hoạt thất bại' } }); }
+    submit.disabled = false; submit.textContent = 'KÍCH HOẠT';
   };
   refreshLicenseStatus();
   setInterval(refreshLicenseStatus, 60_000);
@@ -941,7 +961,9 @@ renderActions();
     CASHOUT_SENDING: 'Đang rút…',
     WAITING_CASHOUT_ACK: 'Chờ xác nhận rút…',
   };
-  function statusInfo(state, roundCount) {
+  function statusInfo(state, roundCount, terminationReason) {
+    // WU-D — Stop-1000x is a distinct terminal state, not a plain manual Stop.
+    if (terminationReason === 'STOPPED_1000X_REACHED') return { text: '⛔ Dừng tại 1000x', cls: 'st-auto' };
     if (state === 'STOPPED') return { text: '⏹ Bạn đã nhấn Dừng', cls: 'st-user' };
     if (state === 'COMPLETED') return { text: `■ Tự dừng — đã chạy hết ${roundCount != null ? roundCount + ' ' : ''}lượt`, cls: 'st-auto' };
     if (state === 'ERROR') return { text: '✕ Lỗi — đã dừng', cls: 'st-err' };
@@ -1003,7 +1025,7 @@ renderActions();
   function render() {
     if (!snap) return;
     setChip(snap.state);
-    const si = statusInfo(snap.state, snap.config ? snap.config.roundCount : null);
+    const si = statusInfo(snap.state, snap.config ? snap.config.roundCount : null, snap.terminationReason);
     const statusEl = $('at-status');
     statusEl.textContent = si.text;
     statusEl.className = 'at-status ' + si.cls;
@@ -1112,7 +1134,14 @@ renderActions();
       if (jpMin == null) { sequenceRunning = false; $('at-jp-err').textContent = 'Nhập mức jackpot tối thiểu hợp lệ (số ≥ 0).'; renderCta(); return; }
       $('at-jp-err').textContent = '';
     }
-    const cfg = { ...v.config, waitForJackpot: jpWait, jackpotThreshold: jpMin };
+    // WU-D — Stop-1000x session kill switch (default OFF). Distinct from stopOdd.
+    const stop1000 = !!($('at-stop1000') && $('at-stop1000').checked);
+    const cfg = { ...v.config, waitForJackpot: jpWait, jackpotThreshold: jpMin, stopAutoAt1000x: stop1000 };
+    // WU-D — persist this browser's operating config so it restores on next open. This
+    // is a saved REQUEST only; main still enforces license features at execution time.
+    if (currentBrowserId && api.browserConfigSet) {
+      try { api.browserConfigSet(currentBrowserId, { amount: Number(v.config.amount), roundCount: Number(v.config.roundCount), stopOdd: Number(v.config.stopOdd), waitForJackpot: jpWait, jackpotThreshold: jpMin, stopAutoAt1000x: stop1000 }); } catch { /* best-effort */ }
+    }
     // WU-C.1.1 — START AUTO first ensures Aviator entry, then (if enabled) the Jackpot
     // gate. AUTO RUNNING only appears once the AutoRunner has actually started.
     const cta = $('at-cta'); const note = $('at-cta-note');
@@ -1135,7 +1164,23 @@ renderActions();
   async function stopRun() { sequenceRunning = false; const r = await api.autotestStop(currentRunId); if (r && !r.error) { snap = r; render(); } }
   $('at-cta').onclick = () => { (snap && snap.running) ? stopRun() : startRun(); };
 
-  async function openAuto() { await refreshEnv(); try { snap = await api.autotestSnapshot(currentRunId); } catch { snap = null; } validateConfigUI(); render(); }
+  // WU-D — apply a browser's persisted operating config to the Auto form fields.
+  async function loadBrowserConfig() {
+    if (!currentBrowserId || !api.browserConfigGet) return;
+    let cfg; try { cfg = await api.browserConfigGet(currentBrowserId); } catch { cfg = null; }
+    if (!cfg || cfg.error) return;
+    const row = testRows()[0];
+    if (row) {
+      if (cfg.roundCount != null) row.querySelector('.at-rounds').value = cfg.roundCount;
+      if (cfg.amount != null) row.querySelector('.at-amount').value = cfg.amount;
+      if (cfg.stopOdd != null) row.querySelector('.at-stopodd').value = cfg.stopOdd;
+    }
+    const jpWaitBox = $('at-jp-wait');
+    if (jpWaitBox) { jpWaitBox.checked = !!cfg.waitForJackpot; const c = $('at-jp-config'); if (c) c.hidden = !jpWaitBox.checked; }
+    if (cfg.jackpotThreshold != null && $('at-jp-min')) $('at-jp-min').value = cfg.jackpotThreshold;
+    if ($('at-stop1000')) $('at-stop1000').checked = !!cfg.stopAutoAt1000x;
+  }
+  async function openAuto() { await refreshEnv(); await loadBrowserConfig(); try { snap = await api.autotestSnapshot(currentRunId); } catch { snap = null; } validateConfigUI(); render(); }
   $('at-toggle').onclick = async () => { const p = $('at-panel'); p.hidden = !p.hidden; if (!p.hidden) await openAuto(); };
   $('at-close').onclick = () => { $('at-panel').hidden = true; };
   $('at-panel').addEventListener('shell:activate', openAuto); // WU11 nav hook
@@ -1424,6 +1469,8 @@ renderActions();
     if (!b.online) return { cls: 'disconnected', text: 'OFFLINE' };
     if (b.runtimeStatus === 'ERROR') return { cls: 'error', text: 'ERROR' };
     if (b.runtimeStatus === 'DISCONNECTED') return { cls: 'disconnected', text: 'DISCONNECTED' };
+    // WU-D — a session terminated by the Stop-1000x kill switch is distinct from a plain stop.
+    if (!b.autoRunning && b.stop1000State === 'STOPPED_1000X') return { cls: 'auto', text: 'DỪNG 1000x' };
     if (b.autoRunning) return { cls: 'auto', text: 'AUTO' };
     if (b.entryState === 'ENTERING') return { cls: 'wait', text: 'ENTERING' };
     if (b.testRunning) return { cls: 'test', text: 'TEST' };

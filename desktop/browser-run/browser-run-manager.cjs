@@ -81,7 +81,7 @@ class BrowserRunManager extends EventEmitter {
       // protocol subsystem (assigned below)
       aviator: null, protocolContext: null, observer: null,
       harness: null, autoRunner: null, amountValidator: null, entryGate: null,
-      jackpotObserver: null, jackpotGate: null,
+      jackpotObserver: null, jackpotGate: null, stop1000: null,
     };
     run.launcher = this._createLauncher(run);
     const subsystem = this._buildSubsystem(run) || {};
@@ -94,6 +94,7 @@ class BrowserRunManager extends EventEmitter {
     run.entryGate = subsystem.entryGate || null;
     run.jackpotObserver = subsystem.jackpotObserver || null;
     run.jackpotGate = subsystem.jackpotGate || null;
+    run.stop1000 = subsystem.stop1000 || null;   // WU-D per-run Auto session kill switch
 
     this._runs.set(id, run);
     this._order.push(id);
@@ -211,6 +212,7 @@ class BrowserRunManager extends EventEmitter {
   // Stop this run's protocol activity without touching shared resources. Only THIS
   // run's runners are stopped and only THIS run's harness waiters are resolved.
   _quiesceSubsystem(run) {
+    try { if (run.stop1000 && run.stop1000.disarm) run.stop1000.disarm(); } catch { /* ignore */ }
     try { if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run.autoRunner.stop(); } catch { /* ignore */ }
     try { if (run.amountValidator && run.amountValidator.isRunning && run.amountValidator.isRunning()) run.amountValidator.stop(); } catch { /* ignore */ }
     try { if (run.harness && run.harness.cancelWaiters) run.harness.cancelWaiters(); } catch { /* ignore */ }
@@ -252,6 +254,11 @@ class BrowserRunManager extends EventEmitter {
       jackpotObservedAt: run.jackpotObserver && run.jackpotObserver.snapshot ? run.jackpotObserver.snapshot().jackpotObservedAt : null,
       jackpotGateState: run.jackpotGate && run.jackpotGate.state ? run.jackpotGate.state() : 'IDLE',
       jackpotThreshold: run.jackpotGate && run.jackpotGate.threshold ? run.jackpotGate.threshold() : null,
+      // WU-D — per-run Auto session kill switch (Stop 1000x). State + last evidence.
+      stop1000State: run.stop1000 && run.stop1000.state ? run.stop1000.state() : 'IDLE',
+      stop1000Enabled: !!(run.stop1000 && run.stop1000.enabled && run.stop1000.enabled()),
+      stop1000Evidence: run.stop1000 && run.stop1000.evidence ? run.stop1000.evidence() : null,
+      terminationReason: run.autoRunner && run.autoRunner.snapshot ? (run.autoRunner.snapshot().terminationReason || null) : null,
       error: run.error || null,
     };
   }

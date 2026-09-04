@@ -22,6 +22,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   openBrowser: url => ipcRenderer.invoke('open-browser', url),
   copyText: text => ipcRenderer.invoke('copy-text', text),
   licenseStatus: () => ipcRenderer.invoke('license-status'),
+  licenseEntitlement: () => ipcRenderer.invoke('license-entitlement'),
   activateLicense: license => ipcRenderer.invoke('license-activate', license),
   onLicenseChanged: callback => ipcRenderer.on('license-changed', (_event, status) => callback(status)),
   instanceInfo: () => ipcRenderer.invoke('instance-info'),
@@ -44,6 +45,9 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   openBrowserById: browserId => ipcRenderer.invoke('browser-open', browserId),
   updateBrowser: (browserId, patch) => ipcRenderer.invoke('browser-update', browserId, patch),
   deleteBrowser: browserId => ipcRenderer.invoke('browser-delete', browserId),
+  // WU-D — persistent per-browser operating configuration (Auto settings).
+  browserConfigGet: browserId => ipcRenderer.invoke('browser-config-get', browserId),
+  browserConfigSet: (browserId, patch) => ipcRenderer.invoke('browser-config-set', browserId, patch),
   onBrowsersChanged: callback => ipcRenderer.on('browsers-changed', (_event, payload) => callback(payload)),
   // WU-C.2 — read-only persistent round history / statistics per browser.
   browserHistory: (browserId, options) => ipcRenderer.invoke('browser-history-list', browserId, options),

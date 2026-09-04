@@ -29,11 +29,15 @@ const { deriveFeatureKey } = require('./licensing/feature-key.cjs');
 const { install: installSealedLoader, SEALED_BASENAMES } = require('./protocol/sealed-loader.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { BrowserRegistry } = require('./browser-run/browser-registry.cjs');
+const { RuntimeCapacity } = require('./browser-run/runtime-capacity.cjs');
+const { normalizeEntitlement, deniedEntitlement } = require('./licensing/entitlements.cjs');
 const { RoundHistoryStore } = require('./browser-run/round-history-store.cjs');
 const { RoundHistoryCollector } = require('./browser-run/round-history-collector.cjs');
+const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { JackpotObserver } = require('./protocol/jackpot-observer.cjs');
 const { JackpotGate } = require('./protocol/jackpot-gate.cjs');
+const { Stop1000Guard } = require('./protocol/stop1000-guard.cjs');
 
 let shell;
 const capturedClients = new WeakSet();
@@ -54,11 +58,22 @@ let runManager = null;
 let browserRegistry = null;
 // WU-C.2: persistent per-browser round history, separate from registry + runtime.
 let roundHistoryStore = null;
+// WU-D: persistent per-browser user operating configuration (Auto settings),
+// separate from registry (identity) and history (evidence).
+let browserConfigStore = null;
 let importStarted = false;
 let importInProgress = false;
 let importTimer;
 const protocolEnvironmentGuard = environmentGuardEnabled();
 const baseUserDataPath = app.getPath('userData');
+// WU-C.4 — enforce ONE customer application instance BEFORE any product runtime is
+// created. The lock is taken against the base userData (before the per-instance
+// override below), so a second launch — even with a different --instance-id — is a
+// secondary process: it focuses the existing window and exits without building a
+// second BrowserRegistry / BrowserRunManager / launching Chrome.
+const { acquireSingleInstance, focusExistingWindow } = require('./instance/single-instance.cjs');
+const singleInstance = acquireSingleInstance(app, { onSecondInstance: () => focusExistingWindow(shell) });
+if (!singleInstance.primary) { app.quit(); return; }
 const instanceManager = new InstanceManager({ baseUserDataPath, argv: process.argv, env: process.env });
 const instanceStart = instanceManager.start();
 if (!instanceStart.ok) {
@@ -84,18 +99,27 @@ function runLauncherEnv(run) {
   return env;
 }
 
-// ---- WU-C.1 persistent browser registry + license entitlement ----
-// Browser capacity comes from VERIFIED license state: a future signed license may
-// carry `maxBrowsers`; until then it is unlimited (null). An OBSERVATORY_MAX_BROWSERS
-// env override exists as an ops/testing seam. The renderer never supplies this value.
-function browserEntitlement() {
+// ---- WU-C.4 verified entitlement snapshot (single source of truth) ----
+// The trusted, normalized entitlement is derived from the VERIFIED signed license
+// payload (LicenseGuard). It is fail-closed: when no active license, everything is
+// denied. BrowserRegistry capacity, runtime capacity, feature gates and the renderer
+// display all consume THIS — the license is never decoded in multiple places.
+function currentEntitlement() {
   const s = licenseGuard && licenseGuard.status ? licenseGuard.status() : null;
-  const payload = s && s.payload ? s.payload : null;
-  if (payload && payload.maxBrowsers != null && Number.isFinite(Number(payload.maxBrowsers))) return { maxBrowsers: Math.max(0, Number(payload.maxBrowsers)) };
+  if (!s || !s.active || !s.payload) return deniedEntitlement();
+  return normalizeEntitlement(s.payload) || deniedEntitlement();
+}
+// WU-C.1 seam kept: BrowserRegistry reads maxBrowsers from the verified entitlement.
+// An OBSERVATORY_MAX_BROWSERS env override remains for ops/testing only.
+function browserEntitlement() {
   const envMax = process.env.OBSERVATORY_MAX_BROWSERS;
   if (envMax != null && envMax !== '' && Number.isFinite(Number(envMax))) return { maxBrowsers: Math.max(0, Number(envMax)) };
-  return { maxBrowsers: null }; // unlimited when no signed/ops limit is present
+  return { maxBrowsers: currentEntitlement().maxBrowsers };
 }
+function featureDenied(feature, message) { return { error: { code: 'FEATURE_NOT_LICENSED', feature, message: message || 'Tính năng này không có trong gói bản quyền hiện tại.' } }; }
+// WU-C.4 runtime capacity — simultaneously running managed browsers (maxConcurrentBrowsers).
+const runtimeCapacity = new RuntimeCapacity({ getMax: () => currentEntitlement().maxConcurrentBrowsers });
+function releaseRunCapacity(run) { if (run && run._capacityToken) { runtimeCapacity.release(run._capacityToken); run._capacityToken = null; } }
 function ensureBrowserRegistry() {
   if (browserRegistry) return browserRegistry;
   browserRegistry = new BrowserRegistry({
@@ -111,6 +135,15 @@ function ensureRoundHistoryStore() {
   if (roundHistoryStore) return roundHistoryStore;
   roundHistoryStore = new RoundHistoryStore({ dir: path.join(appInstance.paths.root, 'history') });
   return roundHistoryStore;
+}
+// WU-D — per-browser operating config store (Auto settings). Loaded once; a corrupt
+// file is reported (never silently overwritten). Migration runs on load.
+function ensureBrowserConfigStore() {
+  if (browserConfigStore) return browserConfigStore;
+  browserConfigStore = new BrowserConfigStore({ filePath: path.join(appInstance.paths.root, 'browser-configs.json') });
+  const res = browserConfigStore.load();
+  if (res && res.error && shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', res.error);
+  return browserConfigStore;
 }
 function broadcastHistoryChanged(browserId) { if (shell && !shell.isDestroyed()) shell.webContents.send('browser-history-changed', { browserId: String(browserId) }); }
 function createRunLauncher(run) {
@@ -411,6 +444,16 @@ function buildProtocolSubsystem(run) {
   const jackpotGate = new JackpotGate({ observer: jackpotObserver });
   jackpotGate.on('state', () => scheduleRunsBroadcast());
 
+  // WU-D — Stop-1000x Auto session kill switch. Reads THIS run's OWN authoritative
+  // odd (RoundObserver), not AutoRunner's per-round listener, so it can still observe
+  // 1000x after a per-round cashout. Terminates only THIS run's AutoRunner. Isolated.
+  const stop1000 = new Stop1000Guard({ observer, autoRunner, browserId: run.browserId, browserRunId: run.id });
+  stop1000.on('state', () => scheduleRunsBroadcast());
+  stop1000.on('stop1000', (evidence) => {
+    try { journal?.append(normalizeCaptureEvent({ kind: 'stop-1000x', id: `stop1000-${run.id}-${evidence && evidence.sid}`, targetId: run.selectedTargetId, browserRunId: run.id, timestamp: new Date().toISOString(), stop1000: evidence }, sessionId)); } catch { /* journal best-effort */ }
+    scheduleRunsBroadcast();
+  });
+
   // WU-C.2 — persist finalized rounds to the OWNING persistent browser's history.
   // Only runs with a persistent browserId are recorded (Advanced Debug / external
   // attaches have no persistent owner). Attribution is structural (run.browserId),
@@ -424,7 +467,7 @@ function buildProtocolSubsystem(run) {
     });
   }
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, historyCollector };
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector };
 }
 
 // Lazily construct the BrowserRunManager and register the ONE shared capture->run
@@ -438,7 +481,13 @@ function ensureRunManager() {
   });
   runManager.on('run-updated', () => { broadcastRuns(); broadcastBrowsers(); });
   runManager.on('run-created', () => { broadcastRuns(); broadcastBrowsers(); });
-  runManager.on('run-closed', () => { broadcastRuns(); broadcastBrowsers(); });
+  runManager.on('run-closed', (summary) => {
+    // WU-C.4 — free the concurrent runtime slot when the run terminates (user close,
+    // Chrome exit/crash, cleanup). Idempotent; never double-releases.
+    const run = summary && runManager.get(summary.id);
+    releaseRunCapacity(run);
+    broadcastRuns(); broadcastBrowsers();
+  });
   runManager.on('active-changed', () => { broadcastTargets(); broadcastRuns(); broadcastBrowsers(); });
   // Shared WS frame stream -> the owning run's protocol subsystem (never global).
   capture.on('request', req => {
@@ -456,7 +505,11 @@ function broadcastRuns() { if (shell && !shell.isDestroyed() && runManager) shel
 // forwarded — only the same coalesced aggregate summaries as WU-C.
 function browserSummaries() {
   ensureBrowserRegistry();
+  ensureBrowserConfigStore();
   const capacity = browserRegistry.capacity();
+  // WU-C.4 — the licensed "Jackpot Live" PRODUCT capability. When unlicensed the raw
+  // observer still runs internally, but the product does not expose the value.
+  const jackpotLive = currentEntitlement().features.jackpotLive;
   const browsers = browserRegistry.list().map((b) => {
     const run = runManager ? runManager.liveRunForBrowser(b.id) : null;
     const rs = run ? runManager.summary(run) : null;
@@ -469,8 +522,15 @@ function browserSummaries() {
       autoRunning: rs ? rs.autoRunning : false, testRunning: rs ? rs.testRunning : false,
       aviatorEntered: rs ? rs.aviatorEntered : false, entryState: rs ? rs.entryState : 'NOT_ENTERED',
       // WU-C.3 — live jackpot telemetry (null when offline / not yet observed).
-      currentJackpot: rs ? rs.currentJackpot : null, jackpotGateState: rs ? rs.jackpotGateState : 'IDLE',
-      jackpotThreshold: rs ? rs.jackpotThreshold : null,
+      // WU-C.4 — gated by the jackpotLive entitlement (product capability).
+      currentJackpot: rs && jackpotLive ? rs.currentJackpot : null, jackpotGateState: rs ? rs.jackpotGateState : 'IDLE',
+      jackpotThreshold: rs ? rs.jackpotThreshold : null, jackpotLive,
+      // WU-D — persistent operating config (Auto settings) + live Stop-1000x state.
+      config: browserConfigStore.get(b.id),
+      stop1000State: rs ? rs.stop1000State : 'IDLE',
+      stop1000Enabled: rs ? rs.stop1000Enabled : false,
+      stop1000Evidence: rs ? rs.stop1000Evidence : null,
+      terminationReason: rs ? rs.terminationReason : null,
       error: rs ? rs.error : null,
     };
   });
@@ -496,14 +556,22 @@ async function openPersistentBrowser(browserId) {
   ensureRunManager(); ensureBrowserRegistry();
   const browser = browserRegistry.get(String(browserId || ''));
   if (!browser) return { ok: false, error: { code: 'BROWSER_NOT_FOUND', message: 'No such browser' } };
+  // Same persistent browser cannot double-launch (independent of maxConcurrent §22).
   const existing = runManager.liveRunForBrowser(browser.id);
   if (existing) { runManager.setActive(existing.id); broadcastTargets(); broadcastBrowsers(); return { ok: true, runId: existing.id, browserId: browser.id, alreadyRunning: true }; }
+  // WU-C.4 — reserve a concurrent runtime slot BEFORE spawning (LAUNCHING counts), so
+  // two simultaneous OPENs cannot both take the final slot. Released on any failure/close.
+  const reservation = runtimeCapacity.reserve(browser.id);
+  if (reservation.error) { broadcastBrowsers(); return { ok: false, error: reservation.error, browserId: browser.id }; }
   const run = runManager.createRun({ launchUrl: browser.launchUrl, browserId: browser.id, profileDir: browser.profileDir });
+  run._capacityToken = reservation.token;
   runManager.setActive(run.id);
   browserRegistry.touchOpened(browser.id, run.id);
   broadcastBrowsers();
-  const launched = await run.launcher.open(browser.launchUrl);
-  if (!launched.ok) { runManager.failRun(run, launched.error); broadcastBrowsers(); return { ok: false, error: launched.error, browserId: browser.id, runId: run.id }; }
+  let launched;
+  try { launched = await run.launcher.open(browser.launchUrl); }
+  catch (e) { launched = { ok: false, error: { code: 'CHROME_LAUNCH_FAILED', message: String(e && e.message || e) } }; }
+  if (!launched.ok) { releaseRunCapacity(run); runManager.failRun(run, launched.error); broadcastBrowsers(); return { ok: false, error: launched.error, browserId: browser.id, runId: run.id }; }
   run.cdpEndpoint = launched.endpoint;
   connectRunEndpointWithRetry(run, launched.endpoint);
   return { ok: true, runId: run.id, browserId: browser.id };
@@ -523,6 +591,9 @@ async function deletePersistentBrowser(browserId) {
   ensureRunManager(); ensureBrowserRegistry();
   if (runManager.liveRunForBrowser(String(browserId || ''))) return { ok: false, error: { code: 'BROWSER_ALREADY_RUNNING', message: 'Close the browser before deleting it.' } };
   const res = browserRegistry.remove(String(browserId || ''));
+  // WU-D — drop the deleted identity's operating config (best-effort). History and
+  // profile directory are intentionally RETAINED (conservative WU-C.1 delete policy).
+  if (!res.error) { try { ensureBrowserConfigStore(); browserConfigStore.remove(String(browserId || '')); } catch { /* best-effort */ } }
   broadcastBrowsers();
   return res.error ? { ok: false, error: res.error } : { ok: true, profileRetained: res.profileRetained };
 }
@@ -849,8 +920,30 @@ handle('browser-update', (_event, browserId, patch = {}) => { ensureBrowserRegis
 handle('browser-delete', (_event, browserId) => deletePersistentBrowser(String(browserId || '')));
 // WU-C.2 — read-only persistent round history / statistics (main is the source of
 // truth; the renderer can never write a result). Attribution is by persistent browserId.
-handle('browser-history-list', (_event, browserId, options = {}) => { ensureRoundHistoryStore(); return roundHistoryStore.list(String(browserId || ''), options || {}); });
-handle('browser-history-stats', (_event, browserId) => { ensureRoundHistoryStore(); return roundHistoryStore.stats(String(browserId || '')); });
+handle('browser-history-list', (_event, browserId, options = {}) => { if (!currentEntitlement().features.roundHistory) return []; ensureRoundHistoryStore(); return roundHistoryStore.list(String(browserId || ''), options || {}); });
+handle('browser-history-stats', (_event, browserId) => { if (!currentEntitlement().features.roundHistory) return { browserId: String(browserId || ''), licensed: false, totalRounds: 0, wins: 0, losses: 0, unknown: 0, resolvedWinRate: null, totalBet: null, betUnknownCount: 0, totalPayout: null, netResult: null, payoutAvailable: false, highestObservedOdd: null, lastSid: null, lastPlayedAt: null }; ensureRoundHistoryStore(); return roundHistoryStore.stats(String(browserId || '')); });
+// WU-D — per-browser operating configuration (Auto settings). The store owns only
+// user-entered config; it holds NO runtime truth and NO license authority. A saved
+// waitForJackpot:true is a REQUEST — autotest-start still enforces features.jackpotGate.
+handle('browser-config-get', (_event, browserId) => { ensureBrowserConfigStore(); return browserConfigStore.get(String(browserId || '')); });
+handle('browser-config-set', (_event, browserId, patch = {}) => {
+  ensureBrowserConfigStore();
+  const res = browserConfigStore.set(String(browserId || ''), patch || {});
+  if (!res.error) broadcastBrowsers();
+  return res;
+});
+// WU-C.4 — sanitized entitlement + live capacity for renderer DISPLAY only (the
+// renderer never decides authorization; main enforces it).
+handle('license-entitlement', () => {
+  const ent = currentEntitlement();
+  const registered = browserRegistry ? browserRegistry.count() : 0;
+  return {
+    valid: ent.valid, plan: ent.plan, expiresAt: ent.expiresAt, legacy: !!ent.legacy,
+    maxBrowsers: ent.maxBrowsers, registeredBrowsers: registered,
+    maxConcurrentBrowsers: ent.maxConcurrentBrowsers, runningBrowsers: runtimeCapacity.runningCount(),
+    features: ent.features,
+  };
+});
 // WU-A — browser run introspection (runtime layer).
 handle('list-runs', () => runManager ? runManager.list() : []);
 handle('select-run', (_event, runId) => {
@@ -890,6 +983,9 @@ handle('autotest-environment', (_event, runId, targetId) => { const run = viewRu
 handle('autotest-start', async (_event, runId, config = {}) => {
   const r = execRun(runId); if (r.error) return r;
   const run = r.run;
+  // WU-C.4 — feature entitlement (main-process authority; renderer cannot bypass).
+  const ent = currentEntitlement();
+  if (!ent.features.autoRun) return featureDenied('autoRun', 'Tính năng Chạy tự động không có trong giấy phép hiện tại.');
   // WU-C.1.1 — Aviator entry prerequisite: ensure THIS run's socket is in the game
   // before any bet. No BET (cmd 100002) is possible until entry is authoritatively
   // confirmed by the run's own server round evidence. Never sends through another run.
@@ -900,6 +996,8 @@ handle('autotest-start', async (_event, runId, config = {}) => {
   // WU-C.3 — optional Jackpot gate AFTER entry: automated betting is released only
   // once THIS run's own authoritative jackpot reaches the configured threshold.
   if (config && config.waitForJackpot) {
+    // WU-C.4 — Jackpot Gate requires the signed jackpotGate (which implies jackpotLive).
+    if (!ent.features.jackpotLive || !ent.features.jackpotGate) return featureDenied('jackpotGate', 'Tính năng Chờ Jackpot không có trong giấy phép hiện tại.');
     const t = Number(config.jackpotThreshold);
     if (!Number.isFinite(t) || t < 0) return { error: { code: 'INVALID_JACKPOT_THRESHOLD', message: 'Enter a valid minimum jackpot (a number >= 0).' } };
     if (run.jackpotGate) {
@@ -907,8 +1005,15 @@ handle('autotest-start', async (_event, runId, config = {}) => {
       if (jg && jg.error) return { error: jg.error };
     }
   }
+  // WU-D — snapshot the effective execution config for THIS run (§8.3): later UI edits
+  // to the Auto form do not mutate an already-running session's behavior.
+  run._runConfig = { ...(config || {}) };
   const res = run.autoRunner.start(String(run.selectedTargetId || ''), config || {});
-  return res.error ? res : run.autoRunner.snapshot();
+  if (res.error) return res;
+  // WU-D — arm the Stop-1000x session kill switch from the snapshot config. It watches
+  // THIS run's authoritative odd and terminates only THIS run's Auto at >= 1000x.
+  if (run.stop1000) run.stop1000.arm(run._runConfig);
+  return run.autoRunner.snapshot();
 });
 handle('autotest-stop', (_event, runId) => {
   const r = execRun(runId); if (r.error) return r;
@@ -916,6 +1021,7 @@ handle('autotest-stop', (_event, runId) => {
   // Cancel a pending Jackpot wait so a later jackpot update can never start Auto (§38).
   const wasWaiting = !!(run.jackpotGate && run.jackpotGate.isWaiting());
   if (run.jackpotGate) run.jackpotGate.cancel('STOPPED');
+  if (run.stop1000) run.stop1000.disarm();
   const res = run.autoRunner.stop();
   if (res.error && wasWaiting) return run.autoRunner.snapshot(); // stopped while gate-waiting
   return res.error ? res : run.autoRunner.snapshot();

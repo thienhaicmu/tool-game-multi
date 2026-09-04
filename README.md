@@ -36,3 +36,15 @@ variable (or set it to `false`) to restore the default guard.
 are currently functional, but capture persistence/application-service integration is still the next
 planned milestone. The Python package remains the authoritative domain, policy, storage, analysis,
 and reporting implementation; see `docs/adr/0001-desktop-application-boundary.md`.
+
+Optional licensing is disabled by default. Enable verification with
+`OBSERVATORY_LICENSE_ENABLED=true`, then provide `OBSERVATORY_LICENSE_PUBLIC_KEY`
+and optionally `OBSERVATORY_LICENSE_FILE`:
+
+```powershell
+node tools/license-gen.cjs keygen license-keys
+node tools/license-gen.cjs issue license-keys/private.pem license.json LIC-001 "Company A" 2027-12-31T23:59:59Z
+```
+
+Keep `private.pem` outside the application and never commit it. The desktop app
+only verifies licenses with the public key.

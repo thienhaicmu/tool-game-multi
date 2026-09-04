@@ -1,90 +1,133 @@
 <!doctype html>
-<html lang="en">
+<html lang="vi">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>WVPT License Generator</title>
+  <title>WVPT — Trình tạo khóa bản quyền</title>
   <link rel="stylesheet" href="ui.css">
 </head>
 <body>
   <main class="shell">
     <header>
       <div>
-        <h1>WVPT License Generator</h1>
-        <p>Private offline generator for Aviator Control Studio licenses.</p>
+        <h1>TRÌNH TẠO KHÓA BẢN QUYỀN</h1>
+        <p>Công cụ ký khóa ngoại tuyến cho Aviator Control Studio (WVPT).</p>
       </div>
-      <span id="key-chip" class="chip off">KEY MISSING</span>
+      <span id="key-chip" class="chip off">CHƯA CÓ KHÓA KÝ</span>
     </header>
 
     <section class="panel">
       <div class="panel-head">
-        <b>Private Key</b>
-        <button id="choose-key" type="button">Choose key</button>
+        <b>Khóa ký</b>
+        <button id="choose-key" type="button">Chọn khóa ký</button>
       </div>
-      <div id="key-path" class="path">Loading...</div>
-      <div class="hint">Private key stays outside the customer app. Do not commit. Do not ship with customer builds.</div>
+      <div id="key-path" class="path">Đang tải...</div>
+      <div class="hint">Khóa ký riêng KHÔNG nằm trong ứng dụng khách. Không commit, không đóng gói kèm bản khách.</div>
     </section>
 
-    <section class="panel form">
-      <label>Machine ID
-        <input id="machine-id" class="mono" placeholder="WVPT-PC-9F4C-7A18-2D0E-C631">
-      </label>
+    <div class="tabs">
+      <button id="tab-create" class="tab active" type="button">Tạo khóa</button>
+      <button id="tab-inspect" class="tab" type="button">Kiểm tra khóa</button>
+    </div>
 
-      <div class="grid">
-        <label>Duration
-          <select id="duration">
-            <option value="1">1 day</option>
-            <option value="3">3 days</option>
-            <option value="7">7 days</option>
-            <option value="30">30 days</option>
-            <option value="60">60 days</option>
-            <option value="90">90 days</option>
-            <option value="180">180 days</option>
-            <option value="365">365 days</option>
-            <option value="custom">Custom expiry date</option>
-          </select>
+    <!-- ============ TẠO KHÓA ============ -->
+    <div id="view-create">
+      <section class="panel form">
+        <label>Mã máy
+          <input id="machine-id" class="mono" placeholder="WVPT-PC-9F4C-7A18-2D0E-C631">
         </label>
-        <label id="custom-wrap" hidden>Custom Expiry Date
-          <input id="custom-expiry" type="date">
+
+        <div class="grid">
+          <label>Gói bản quyền
+            <select id="plan">
+              <option value="TRIAL">Dùng thử (TRIAL)</option>
+              <option value="STANDARD" selected>Tiêu chuẩn (STANDARD)</option>
+              <option value="PRO">Pro (PRO)</option>
+            </select>
+          </label>
+          <label>Thời hạn
+            <select id="duration">
+              <option value="30">1 tháng</option>
+              <option value="60" selected>2 tháng</option>
+              <option value="90">3 tháng</option>
+              <option value="180">6 tháng</option>
+              <option value="365">12 tháng</option>
+              <option value="custom">Tùy chỉnh</option>
+            </select>
+          </label>
+        </div>
+
+        <div class="grid">
+          <label id="custom-wrap" hidden>Ngày hết hạn
+            <input id="custom-expiry" type="date">
+          </label>
+          <div class="stat"><span>Ngày hết hạn</span><b id="expires">Tính khi tạo khóa</b></div>
+        </div>
+
+        <div class="section-title">GIỚI HẠN TRÌNH DUYỆT</div>
+        <div class="grid">
+          <label>Số hồ sơ tối đa
+            <input id="max-browsers" class="mono" type="number" min="1" max="100000" step="1" value="5">
+          </label>
+          <label>Số trình duyệt chạy đồng thời
+            <input id="max-concurrent" class="mono" type="number" min="1" max="100000" step="1" value="2">
+          </label>
+        </div>
+
+        <div class="section-title">TÍNH NĂNG</div>
+        <div class="features">
+          <label><input type="checkbox" id="f-auto-run" checked> Chạy tự động</label>
+          <label><input type="checkbox" id="f-jackpot-live" checked> Jackpot trực tiếp</label>
+          <label><input type="checkbox" id="f-jackpot-gate" checked> Chờ Jackpot</label>
+          <label><input type="checkbox" id="f-round-history" checked> Lịch sử vòng chơi</label>
+        </div>
+        <div id="feature-note" class="hint"></div>
+
+        <button id="generate" class="primary" type="button">TẠO KHÓA KÍCH HOẠT</button>
+        <div id="error" class="error" hidden></div>
+      </section>
+
+      <section class="panel result">
+        <div class="panel-head">
+          <b>Khóa kích hoạt</b>
+          <button id="copy-license" type="button" disabled>SAO CHÉP KHÓA</button>
+        </div>
+        <textarea id="license-output" class="mono" rows="6" readonly></textarea>
+        <div id="generate-ok" class="ok" hidden>Đã tạo khóa thành công.</div>
+        <div class="grid">
+          <div class="stat"><span>Mã giấy phép</span><b id="license-id">—</b></div>
+          <div class="stat"><span>Gói</span><b id="license-plan">—</b></div>
+        </div>
+        <div class="grid">
+          <div class="stat"><span>Số hồ sơ tối đa</span><b id="license-maxbrowsers">—</b></div>
+          <div class="stat"><span>Chạy đồng thời</span><b id="license-maxconcurrent">—</b></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ============ KIỂM TRA KHÓA ============ -->
+    <div id="view-inspect" hidden>
+      <section class="panel form">
+        <label>Dán khóa cần kiểm tra
+          <textarea id="inspect-input" class="mono" rows="5" placeholder="WVPT1...."></textarea>
         </label>
-      </div>
-
-      <div class="grid">
-        <div class="stat"><span>Issued</span><b id="issued">—</b></div>
-        <div class="stat"><span>Expires</span><b id="expires">—</b></div>
-      </div>
-
-      <div class="grid">
-        <label>Launch Limit
-          <select id="launch-limit">
-            <option value="unlimited">Unlimited</option>
-            <option value="10">10 launches</option>
-            <option value="30">30 launches</option>
-            <option value="100">100 launches</option>
-            <option value="custom">Custom</option>
-          </select>
-        </label>
-        <label id="custom-launch-wrap" hidden>Custom Launches
-          <input id="custom-launches" type="number" min="1" max="1000000" step="1" placeholder="50">
-        </label>
-      </div>
-
-      <button id="generate" class="primary" type="button">GENERATE LICENSE</button>
-      <div id="error" class="error" hidden></div>
-    </section>
-
-    <section class="panel result">
-      <div class="panel-head">
-        <b>License Key</b>
-        <button id="copy-license" type="button" disabled>Copy</button>
-      </div>
-      <textarea id="license-output" class="mono" rows="7" readonly></textarea>
-      <div class="grid">
-        <div class="stat"><span>License ID</span><b id="license-id">—</b></div>
-        <div class="stat"><span>Machine</span><b id="license-machine">—</b></div>
-        <div class="stat"><span>Launches</span><b id="license-launches">—</b></div>
-      </div>
-    </section>
+        <button id="inspect" class="primary" type="button">KIỂM TRA KHÓA</button>
+      </section>
+      <section class="panel result">
+        <div class="panel-head"><b>Kết quả</b><span id="inspect-sig" class="chip off">—</span></div>
+        <div id="inspect-error" class="error" hidden></div>
+        <div id="inspect-body" class="inspect-body" hidden>
+          <div class="stat"><span>Mã giấy phép</span><b id="i-license-id">—</b></div>
+          <div class="stat"><span>Mã máy</span><b id="i-machine">—</b></div>
+          <div class="stat"><span>Gói</span><b id="i-plan">—</b></div>
+          <div class="stat"><span>Ngày hết hạn</span><b id="i-expires">—</b></div>
+          <div class="stat"><span>Số hồ sơ tối đa</span><b id="i-maxbrowsers">—</b></div>
+          <div class="stat"><span>Chạy đồng thời</span><b id="i-maxconcurrent">—</b></div>
+          <div class="section-title">Tính năng</div>
+          <div id="i-features" class="features-view"></div>
+        </div>
+      </section>
+    </div>
   </main>
   <script src="ui.js"></script>
 </body>

@@ -1,79 +1,123 @@
 (function () {
   const api = window.licenseGenerator;
   const $ = (id) => document.getElementById(id);
-  const UTC_PLUS_7_OFFSET_SECONDS = 7 * 60 * 60;
+  const UTC_PLUS_7 = 7 * 60 * 60;
+  const FEATURE_LABELS = { autoRun: 'Chạy tự động', jackpotLive: 'Jackpot trực tiếp', jackpotGate: 'Chờ Jackpot', roundHistory: 'Lịch sử vòng chơi' };
+  let presets = null;
 
-  function yyyyMmDdFromSeconds(seconds) {
-    return new Date((Number(seconds) + UTC_PLUS_7_OFFSET_SECONDS) * 1000).toISOString().slice(0, 10);
-  }
+  const ymd = (s) => new Date((Number(s) + UTC_PLUS_7) * 1000).toISOString().slice(0, 10);
 
-  function calcExpires() {
-    $('issued').textContent = 'Trusted UTC+7';
-    if ($('duration').value === 'custom') {
-      $('custom-wrap').hidden = false;
-      $('expires').textContent = $('custom-expiry').value || '—';
-      return;
-    }
-    $('custom-wrap').hidden = true;
-    $('expires').textContent = 'Calculated on generate';
-  }
-
-  function selectedMaxLaunches() {
-    const mode = $('launch-limit').value;
-    if (mode === 'unlimited') return null;
-    if (mode === 'custom') return $('custom-launches').value ? Number($('custom-launches').value) : null;
-    return Number(mode);
-  }
-
-  function syncLaunchLimit() {
-    $('custom-launch-wrap').hidden = $('launch-limit').value !== 'custom';
-  }
-
+  // ---- private key status ----
   async function refreshKey() {
     const status = await api.keyStatus();
-    $('key-path').textContent = status.envKey ? 'Loaded from WVPT_PRIVATE_KEY environment variable' : status.privateKeyPath;
-    $('key-chip').textContent = status.envKey || status.exists ? 'KEY READY' : 'KEY MISSING';
-    $('key-chip').className = 'chip ' + (status.envKey || status.exists ? 'on' : 'off');
+    $('key-path').textContent = status.envKey ? 'Nạp từ biến môi trường WVPT_PRIVATE_KEY' : status.privateKeyPath;
+    const ready = status.envKey || status.exists;
+    $('key-chip').textContent = ready ? 'ĐÃ NẠP KHÓA KÝ' : 'CHƯA CÓ KHÓA KÝ';
+    $('key-chip').className = 'chip ' + (ready ? 'on' : 'off');
   }
 
-  async function chooseKey() {
-    await api.choosePrivateKey();
-    await refreshKey();
+  // ---- create tab ----
+  function features() {
+    return {
+      autoRun: $('f-auto-run').checked,
+      jackpotLive: $('f-jackpot-live').checked,
+      jackpotGate: $('f-jackpot-gate').checked,
+      roundHistory: $('f-round-history').checked,
+    };
   }
+  // Dependency (§10): "Chờ Jackpot" needs "Jackpot trực tiếp".
+  function applyDependency() {
+    const live = $('f-jackpot-live').checked;
+    const gate = $('f-jackpot-gate');
+    gate.disabled = !live;
+    if (!live) gate.checked = false;
+    $('feature-note').textContent = live ? '' : '“Chờ Jackpot” cần bật “Jackpot trực tiếp”.';
+  }
+  function applyPreset() {
+    if (!presets) return;
+    const p = presets[$('plan').value];
+    if (!p) return;
+    $('max-browsers').value = p.maxBrowsers;
+    $('max-concurrent').value = p.maxConcurrentBrowsers;
+    $('f-auto-run').checked = !!p.features.autoRun;
+    $('f-jackpot-live').checked = !!p.features.jackpotLive;
+    $('f-jackpot-gate').checked = !!p.features.jackpotGate;
+    $('f-round-history').checked = !!p.features.roundHistory;
+    applyDependency();
+  }
+  function syncCustom() { $('custom-wrap').hidden = $('duration').value !== 'custom'; }
 
   async function generate() {
-    $('error').hidden = true;
+    $('error').hidden = true; $('generate-ok').hidden = true;
     $('generate').disabled = true;
     const result = await api.generateLicense({
       machineId: $('machine-id').value,
+      schema: 2,
+      plan: $('plan').value,
       mode: $('duration').value === 'custom' ? 'custom' : 'duration',
       durationDays: Number($('duration').value),
       expires: $('custom-expiry').value,
-      maxLaunches: selectedMaxLaunches(),
+      maxBrowsers: Number($('max-browsers').value),
+      maxConcurrentBrowsers: Number($('max-concurrent').value),
+      features: features(),
     });
     $('generate').disabled = false;
-    if (!result.ok) {
-      $('error').hidden = false;
-      $('error').textContent = result.error.message || result.error.code;
-      return;
-    }
+    if (!result.ok) { $('error').hidden = false; $('error').textContent = result.error.message || result.error.code; return; }
+    const p = result.payload;
     $('license-output').value = result.license;
-    $('license-id').textContent = result.payload.licenseId;
-    $('license-machine').textContent = result.payload.machineId;
-    $('license-launches').textContent = result.payload.maxLaunches ? String(result.payload.maxLaunches) : 'Unlimited';
+    $('generate-ok').hidden = false;
+    $('license-id').textContent = p.licenseId;
+    $('license-plan').textContent = p.plan || '—';
+    $('license-maxbrowsers').textContent = p.maxBrowsers != null ? p.maxBrowsers : '—';
+    $('license-maxconcurrent').textContent = p.maxConcurrentBrowsers != null ? p.maxConcurrentBrowsers : '—';
+    $('expires').textContent = ymd(p.expiresAt);
     $('copy-license').disabled = false;
-    $('issued').textContent = yyyyMmDdFromSeconds(result.payload.issuedAt);
-    $('expires').textContent = yyyyMmDdFromSeconds(result.payload.expiresAt);
   }
 
-  $('duration').onchange = calcExpires;
-  $('custom-expiry').oninput = calcExpires;
-  $('launch-limit').onchange = syncLaunchLimit;
-  $('choose-key').onclick = chooseKey;
+  // ---- inspect tab ----
+  async function inspect() {
+    $('inspect-error').hidden = true; $('inspect-body').hidden = true;
+    const res = await api.inspectLicense($('inspect-input').value.trim());
+    if (!res || !res.ok) { $('inspect-error').hidden = false; $('inspect-error').textContent = (res && res.error) || 'Không đọc được khóa.'; $('inspect-sig').textContent = '—'; $('inspect-sig').className = 'chip off'; return; }
+    $('inspect-sig').textContent = res.signatureValid ? 'CHỮ KÝ HỢP LỆ' : 'CHỮ KÝ KHÔNG HỢP LỆ';
+    $('inspect-sig').className = 'chip ' + (res.signatureValid ? 'on' : 'off');
+    const ent = res.entitlement || {};
+    const p = res.payload || {};
+    $('inspect-body').hidden = false;
+    $('i-license-id').textContent = p.licenseId || '—';
+    $('i-machine').textContent = p.machineId || '—';
+    $('i-plan').textContent = ent.plan || (p.v === 1 ? 'LEGACY' : '—');
+    $('i-expires').textContent = p.expiresAt ? ymd(p.expiresAt) : '—';
+    $('i-maxbrowsers').textContent = ent.maxBrowsers == null ? 'Không giới hạn' : ent.maxBrowsers;
+    $('i-maxconcurrent').textContent = ent.maxConcurrentBrowsers == null ? 'Không giới hạn' : ent.maxConcurrentBrowsers;
+    const f = ent.features || {};
+    $('i-features').innerHTML = Object.keys(FEATURE_LABELS).map((k) =>
+      `<div class="feat ${f[k] ? 'on' : 'off'}">${f[k] ? '✓' : '✕'} ${FEATURE_LABELS[k]}</div>`).join('');
+  }
+
+  // ---- tabs ----
+  function showTab(which) {
+    $('view-create').hidden = which !== 'create';
+    $('view-inspect').hidden = which !== 'inspect';
+    $('tab-create').classList.toggle('active', which === 'create');
+    $('tab-inspect').classList.toggle('active', which === 'inspect');
+  }
+
+  // ---- wire ----
+  $('choose-key').onclick = async () => { await api.choosePrivateKey(); refreshKey(); };
+  $('plan').onchange = applyPreset;
+  $('duration').onchange = syncCustom;
+  $('f-jackpot-live').onchange = applyDependency;
   $('generate').onclick = generate;
   $('copy-license').onclick = () => api.copy($('license-output').value);
+  $('inspect').onclick = inspect;
+  $('tab-create').onclick = () => showTab('create');
+  $('tab-inspect').onclick = () => showTab('inspect');
 
-  calcExpires();
-  syncLaunchLimit();
-  refreshKey();
+  (async () => {
+    try { presets = await api.planPresets(); } catch { presets = null; }
+    applyPreset();
+    syncCustom();
+    refreshKey();
+  })();
 })();

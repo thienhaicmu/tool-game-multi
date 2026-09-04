@@ -3,9 +3,14 @@
 const { app, BrowserWindow, ipcMain, dialog, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { randomBytes, sign } = require('node:crypto');
+const crypto = require('node:crypto');
+const { randomBytes, sign } = crypto;
 const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
 const { TrustedTimeProvider } = require('../../desktop/licensing/trusted-time.cjs');
+const { parseLicense } = require('../../desktop/licensing/license-verifier.cjs');
+const { PLAN_PRESETS, PLANS, buildLicensePayloadV2, validateEntitlementInput, normalizeEntitlement } = require('../../desktop/licensing/entitlements.cjs');
+let PUBLIC_KEY_PEM = null;
+try { PUBLIC_KEY_PEM = require('../../desktop/licensing/public-key.cjs').PUBLIC_KEY_PEM; } catch { /* optional */ }
 
 let win;
 let privateKeyPath = process.env.WVPT_PRIVATE_KEY_PATH || defaultPrivateKeyPath();
@@ -53,24 +58,49 @@ async function buildPayload(input) {
   const expiresAt = mode === 'custom'
     ? utcDateSeconds(input.expires)
     : issuedAt + Number(input.durationDays || 30) * 24 * 60 * 60;
-  const maxLaunches = input.maxLaunches ? Number(input.maxLaunches) : null;
-  if (!Number.isInteger(expiresAt) || expiresAt <= issuedAt) throw new Error('Expiry must be in the future');
-  if (maxLaunches != null && (!Number.isInteger(maxLaunches) || maxLaunches < 1 || maxLaunches > 1000000)) throw new Error('Max launches must be a whole number from 1 to 1000000');
-  return {
-    v: 1,
-    product: 'WVPT',
-    machineId: normalizeMachineId(input.machineId),
-    issuedAt,
-    expiresAt,
-    ...(maxLaunches ? { maxLaunches } : {}),
-    licenseId: 'LIC-' + randomBytes(4).toString('hex').toUpperCase(),
-  };
+  if (!Number.isInteger(expiresAt) || expiresAt <= issuedAt) throw new Error('Ngày hết hạn phải ở tương lai.');
+  const machineId = normalizeMachineId(input.machineId);
+  const licenseId = 'LIC-' + randomBytes(4).toString('hex').toUpperCase();
+
+  // Legacy schema v1 (kept for compatibility).
+  if (Number(input.schema) === 1) {
+    const maxLaunches = input.maxLaunches ? Number(input.maxLaunches) : null;
+    if (maxLaunches != null && (!Number.isInteger(maxLaunches) || maxLaunches < 1 || maxLaunches > 1000000)) throw new Error('Số lần chạy phải từ 1 đến 1000000.');
+    return { v: 1, product: 'WVPT', machineId, issuedAt, expiresAt, ...(maxLaunches ? { maxLaunches } : {}), licenseId };
+  }
+
+  // Schema v2 — signed plan / capacities / features. Plan is a preset only; the seller
+  // may override before signing. validateEntitlementInput enforces the dependency.
+  const plan = String(input.plan || 'STANDARD').toUpperCase();
+  if (!PLANS.includes(plan)) throw new Error('Gói bản quyền không hợp lệ.');
+  const preset = PLAN_PRESETS[plan];
+  const maxBrowsers = Number(input.maxBrowsers != null ? input.maxBrowsers : preset.maxBrowsers);
+  const maxConcurrentBrowsers = Number(input.maxConcurrentBrowsers != null ? input.maxConcurrentBrowsers : preset.maxConcurrentBrowsers);
+  const features = input.features && typeof input.features === 'object' ? input.features : preset.features;
+  const check = validateEntitlementInput({ plan, maxBrowsers, maxConcurrentBrowsers, features });
+  if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
+  return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId });
 }
 
 function createLicense(payload) {
   const canonical = canonicalJson(payload);
   const signature = sign(null, Buffer.from(canonical, 'utf8'), readPrivateKey());
   return `WVPT1.${base64url(canonical)}.${base64url(signature)}`;
+}
+
+// Signature-verifying inspector (§47/§48). Verifies with the public key that matches
+// the loaded signing key (round-trip), falling back to the bundled public key. Reports
+// exactly what the key grants — independent of the customer machine/expiry.
+function inspectLicense(license) {
+  let parsed;
+  try { parsed = parseLicense(license); } catch { return { ok: false, error: 'Định dạng khóa không hợp lệ.' }; }
+  let publicKey = PUBLIC_KEY_PEM;
+  try { publicKey = crypto.createPublicKey(readPrivateKey()).export({ type: 'spki', format: 'pem' }); } catch { /* use bundled public key */ }
+  const canonical = canonicalJson(parsed.payload);
+  const canonicalOk = parsed.payloadRaw.toString('utf8') === canonical;
+  let signatureValid = false;
+  try { signatureValid = canonicalOk && !!publicKey && crypto.verify(null, Buffer.from(canonical, 'utf8'), publicKey, parsed.signature); } catch { signatureValid = false; }
+  return { ok: true, signatureValid, payload: parsed.payload, entitlement: normalizeEntitlement(parsed.payload) };
 }
 
 function createWindow() {
@@ -114,6 +144,13 @@ ipcMain.handle('generate-license', async (_event, input) => {
     return { ok: false, error: { code: 'LICENSE_GENERATE_FAILED', message: String(error && error.message || error) } };
   }
 });
+
+ipcMain.handle('inspect-license', (_event, license) => {
+  try { return inspectLicense(String(license || '')); }
+  catch (error) { return { ok: false, error: String(error && error.message || error) }; }
+});
+
+ipcMain.handle('plan-presets', () => PLAN_PRESETS);
 
 ipcMain.handle('copy', (_event, text) => {
   clipboard.writeText(String(text || ''));

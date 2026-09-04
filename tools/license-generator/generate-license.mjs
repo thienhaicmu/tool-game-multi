@@ -6,6 +6,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
 const { TrustedTimeProvider, utcPlus7Date } = require('../../desktop/licensing/trusted-time.cjs');
+const { PLAN_PRESETS, PLANS, buildLicensePayloadV2, validateEntitlementInput } = require('../../desktop/licensing/entitlements.cjs');
 
 function arg(name, fallback = null) {
   const idx = process.argv.indexOf(name);
@@ -52,24 +53,44 @@ async function trustedIssuedAt() {
   return Math.floor(result.nowMs / 1000);
 }
 
+function boolArg(name, fallback) {
+  if (process.argv.includes(`--no-${name}`)) return false;
+  if (process.argv.includes(`--${name}`)) return true;
+  return fallback;
+}
+
 async function buildPayload({ machineId, durationDays, expires }) {
   const issuedAt = await trustedIssuedAt();
   const expiresAt = expires ? utcDateSeconds(expires) : issuedAt + Number(durationDays) * 24 * 60 * 60;
   if (!machineId) throw new Error('Machine ID is required');
   if (!/^WVPT-PC-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(machineId)) throw new Error('Machine ID format is invalid');
   if (!Number.isInteger(expiresAt) || expiresAt <= issuedAt) throw new Error('Expiry must be in the future');
-  const maxLaunchArg = arg('--max-launches', null);
-  const maxLaunches = maxLaunchArg == null ? null : Number(maxLaunchArg);
-  if (maxLaunchArg != null && (!Number.isInteger(maxLaunches) || maxLaunches < 1 || maxLaunches > 1000000)) throw new Error('max-launches must be a whole number from 1 to 1000000');
-  return {
-    v: 1,
-    product: 'WVPT',
-    machineId,
-    issuedAt,
-    expiresAt,
-    ...(maxLaunches ? { maxLaunches } : {}),
-    licenseId: 'LIC-' + randomBytes(4).toString('hex').toUpperCase(),
+  const licenseId = 'LIC-' + randomBytes(4).toString('hex').toUpperCase();
+
+  // Legacy v1 (kept for backward compatibility): --schema 1.
+  if (arg('--schema', '2') === '1') {
+    const maxLaunchArg = arg('--max-launches', null);
+    const maxLaunches = maxLaunchArg == null ? null : Number(maxLaunchArg);
+    if (maxLaunchArg != null && (!Number.isInteger(maxLaunches) || maxLaunches < 1 || maxLaunches > 1000000)) throw new Error('max-launches must be a whole number from 1 to 1000000');
+    return { v: 1, product: 'WVPT', machineId, issuedAt, expiresAt, ...(maxLaunches ? { maxLaunches } : {}), licenseId };
+  }
+
+  // Schema v2 — signed plan / capacities / features. Plan selects presets; explicit
+  // flags override before signing; validateEntitlementInput enforces the dependency.
+  const plan = String(arg('--plan', 'STANDARD')).toUpperCase();
+  if (!PLANS.includes(plan)) throw new Error('Plan must be TRIAL, STANDARD or PRO');
+  const preset = PLAN_PRESETS[plan];
+  const maxBrowsers = Number(arg('--max-browsers', preset.maxBrowsers));
+  const maxConcurrentBrowsers = Number(arg('--max-concurrent', preset.maxConcurrentBrowsers));
+  const features = {
+    autoRun: boolArg('auto-run', preset.features.autoRun),
+    jackpotLive: boolArg('jackpot-live', preset.features.jackpotLive),
+    jackpotGate: boolArg('jackpot-gate', preset.features.jackpotGate),
+    roundHistory: boolArg('round-history', preset.features.roundHistory),
   };
+  const check = validateEntitlementInput({ plan, maxBrowsers, maxConcurrentBrowsers, features });
+  if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
+  return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId });
 }
 
 function createSignedLicense(payload, privateKeyPem) {

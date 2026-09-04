@@ -106,5 +106,8 @@ test('main process is wired to instance-owned storage and browser runtime', () =
   assert.ok(/appInstance\.paths\.windowState/.test(main));
   assert.ok(/new ChromeLauncher/.test(main));
   assert.ok(/handle\('instance-info'/.test(main));
-  assert.ok(!/requestSingleInstanceLock/.test(main), 'global single-instance lock is not used');
+  // WU-C.4 supersedes the earlier multi-instance policy: the customer app now enforces
+  // single-instance ownership (via the single-instance seam) before product runtime.
+  assert.ok(/acquireSingleInstance/.test(main), 'WU-C.4: customer app enforces single-instance ownership');
+  assert.ok(/singleInstance\.primary/.test(main), 'WU-C.4: secondary launches do not initialize product runtime');
 });

@@ -49,8 +49,9 @@ test('appbar exposes URL + Open Browser + Diagnostics toggle', () => {
 });
 
 test('appbar license badge includes expiry date text', () => {
+  // WU-C.4 — customer license UI is Vietnamese ("Hết hạn" = Expires).
   const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
-  assert.ok(/Expires \$\{dateFromSecondsTrusted\(licenseState\.payload\.expiresAt\)\}/.test(js));
+  assert.ok(/Hết hạn \$\{dateFromSecondsTrusted\(licenseState\.payload\.expiresAt\)\}/.test(js));
 });
 
 test('left nav contains Overview / Manual Control / Auto Run / Amount Check', () => {

@@ -12,6 +12,9 @@
     "tools/license-generator/ui.js",
     "desktop/licensing/canonical-json.cjs",
     "desktop/licensing/trusted-time.cjs",
+    "desktop/licensing/license-verifier.cjs",
+    "desktop/licensing/entitlements.cjs",
+    "desktop/licensing/public-key.cjs",
     "package.json"
   ],
   "extraResources": [

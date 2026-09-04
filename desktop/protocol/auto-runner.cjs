@@ -65,6 +65,9 @@ class AutoRunner extends EventEmitter {
     this._state = STATE.IDLE;
     this._running = false;
     this._config = null;
+    // WU-D: how the LAST session terminated — kept distinct so a Stop-1000x kill
+    // switch, a manual Stop and a normal N-round completion are never confused.
+    this._terminationReason = null;
     this._targetId = null;
     this._attempted = 0;
     this._usedSids = new Set();
@@ -90,6 +93,7 @@ class AutoRunner extends EventEmitter {
     const env = this.environmentFor(this._targetId);
     return {
       running: this._running, state: this._state, config: this._config,
+      terminationReason: this._terminationReason,
       environment: { host: env.host, allowed: env.allowed },
       progress: { attempted: this._attempted, finished: this._attempted, target: this._config ? this._config.roundCount : null },
       active: this._active ? publicRound(this._active) : null,
@@ -117,14 +121,19 @@ class AutoRunner extends EventEmitter {
     this._history = [];
     this._active = null;
     this._running = true;
+    this._terminationReason = null;
     this._state = STATE.WAITING_ROUND;
     this._emit();
     return { ok: true, state: this._state, config: this._config, environment: { host: env.host, allowed: true } };
   }
 
-  stop() {
+  // stop(meta) — meta.reason lets a session kill switch (e.g. Stop-1000x) record a
+  // distinct terminal reason. Absent meta, this is a normal manual Stop. Behavior is
+  // otherwise unchanged: no cashout is sent just because the session stopped (§21).
+  stop(meta = {}) {
     if (!this._running) return { error: { code: 'AUTO_TEST_NOT_RUNNING', message: 'No test run is active' } };
     this._running = false;
+    this._terminationReason = (meta && meta.reason) || 'MANUAL';
     // Do NOT send a cashout just because the user stopped (§21). Finalize an
     // in-flight watched round as STOPPED only if it had not already committed.
     if (this._active && !this._active._cashoutSent && this._active.result == null) {
@@ -283,7 +292,7 @@ class AutoRunner extends EventEmitter {
       this._state = STATE.WAITING_ROUND;
       return;
     }
-    if (this._attempted >= this._config.roundCount) { this._running = false; this._state = STATE.COMPLETED; return; }
+    if (this._attempted >= this._config.roundCount) { this._running = false; this._terminationReason = 'COMPLETED'; this._state = STATE.COMPLETED; return; }
     this._state = STATE.WAITING_ROUND;          // wait for the next server 100005 (§19)
   }
 

@@ -21,16 +21,33 @@ function parseLicense(license) {
   return { payload, payloadRaw, signature };
 }
 
+const SUPPORTED_SCHEMAS = new Set([1, 2]);
+const PLANS = new Set(['TRIAL', 'STANDARD', 'PRO']);
+const FEATURE_KEYS = ['autoRun', 'jackpotLive', 'jackpotGate', 'roundHistory'];
+
 function validatePayloadShape(payload, nowSeconds) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'LICENSE_INVALID_FORMAT';
-  if (payload.v !== 1) return 'LICENSE_INVALID_FORMAT';
+  if (!SUPPORTED_SCHEMAS.has(payload.v)) return 'LICENSE_INVALID_FORMAT';
   if (payload.product !== PRODUCT) return 'LICENSE_WRONG_PRODUCT';
   if (!/^WVPT-PC-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(String(payload.machineId || ''))) return 'LICENSE_INVALID_FORMAT';
   if (!/^LIC-[0-9A-F]{8,32}$/.test(String(payload.licenseId || ''))) return 'LICENSE_INVALID_FORMAT';
   if (!Number.isInteger(payload.issuedAt) || !Number.isInteger(payload.expiresAt)) return 'LICENSE_INVALID_FORMAT';
   if (payload.issuedAt <= 0 || payload.expiresAt <= 0 || payload.expiresAt <= payload.issuedAt) return 'LICENSE_INVALID_FORMAT';
   if (payload.issuedAt > nowSeconds + MAX_FUTURE_ISSUE_SKEW_SECONDS) return 'LICENSE_INVALID_FORMAT';
-  if (payload.maxLaunches != null && (!Number.isInteger(payload.maxLaunches) || payload.maxLaunches < 1 || payload.maxLaunches > 1000000)) return 'LICENSE_INVALID_FORMAT';
+  if (payload.v === 1) {
+    // Legacy schema — optional launch cap, no signed entitlements.
+    if (payload.maxLaunches != null && (!Number.isInteger(payload.maxLaunches) || payload.maxLaunches < 1 || payload.maxLaunches > 1000000)) return 'LICENSE_INVALID_FORMAT';
+    return null;
+  }
+  // Schema v2 — signed plan, capacities and features are all part of the trust anchor.
+  if (!PLANS.has(payload.plan)) return 'LICENSE_INVALID_FORMAT';
+  if (!Number.isInteger(payload.maxBrowsers) || payload.maxBrowsers < 1 || payload.maxBrowsers > 100000) return 'LICENSE_INVALID_FORMAT';
+  if (!Number.isInteger(payload.maxConcurrentBrowsers) || payload.maxConcurrentBrowsers < 1 || payload.maxConcurrentBrowsers > 100000) return 'LICENSE_INVALID_FORMAT';
+  if (payload.maxConcurrentBrowsers > payload.maxBrowsers) return 'LICENSE_INVALID_FORMAT';
+  const f = payload.features;
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return 'LICENSE_INVALID_FORMAT';
+  for (const k of FEATURE_KEYS) if (typeof f[k] !== 'boolean') return 'LICENSE_INVALID_FORMAT';
+  if (f.jackpotGate === true && f.jackpotLive !== true) return 'LICENSE_INVALID_FORMAT'; // dependency (§10)
   return null;
 }
 
