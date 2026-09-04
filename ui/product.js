@@ -1541,7 +1541,12 @@ renderActions();
       const runtime = b.online
         ? `<div class="rr-meta"><span>SID ${b.currentSid != null ? esc(b.currentSid) : '—'}</span><span class="rr-odd">${odd != null ? esc(odd) + 'x' : '—'}</span></div><div class="rr-brid">${esc(b.runId || '')}</div>`
         : `<div class="rr-meta"><span>${b.lastOpenedAt ? 'Dùng lần cuối ' + esc(fmtTimeShort(b.lastOpenedAt)) : 'Chưa mở lần nào'}</span></div>`;
-      const actions = b.online
+      // A run in ERROR is a dead end without a retry affordance: offer "Mở lại"
+      // (close the failed run, then open again) so the user isn't forced to Đóng→Mở.
+      const errored = b.online && b.runtimeStatus === 'ERROR';
+      const actions = errored
+        ? `<div class="rr-actions"><button class="rr-open-btn" data-reopen="${esc(b.browserId)}">Mở lại</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
+        : b.online
         ? `<div class="rr-actions"><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
         : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}">Mở</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Xóa</button></div>`;
       // WU-C.3 — compact but distinctive jackpot line (always shown; "—" when unknown).
@@ -1557,6 +1562,7 @@ renderActions();
       el.onclick = (e) => { if (e.target.closest('button')) return; select(el.dataset.browser); };
     }
     listEl.querySelectorAll('[data-open]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openBrowser(x.dataset.open); }; });
+    listEl.querySelectorAll('[data-reopen]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.reopen); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } await openBrowser(x.dataset.reopen); }; });
     listEl.querySelectorAll('[data-close]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.close); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } }; });
     listEl.querySelectorAll('[data-edit]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openModal('edit', browsers.find((r) => r.browserId === x.dataset.edit)); }; });
     listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Xóa trình duyệt này? Dữ liệu hồ sơ vẫn được giữ trên đĩa.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast(browserErrVi(r.error)); }; });
