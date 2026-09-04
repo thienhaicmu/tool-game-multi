@@ -439,6 +439,30 @@ body[data-view=auto] #appbar #shell-running{ display:inline-flex; }
 .bh-res.unknown{ background:var(--elevate); color:var(--dim); border:1px solid var(--line); } /* neutral — not a failure */
 .bh-odd{ font-family:var(--f-mono); }
 .bh-reason{ color:var(--faint); font-size:var(--t-cap); }
+/* WU-C.3 — Jackpot: ALWAYS visually prominent (gate on OR off). The gate is a
+   separate additive state and never reduces the jackpot value's prominence. */
+.jp-chip{ display:flex; align-items:center; gap:8px; margin:0 0 10px; padding:10px 14px; border-radius:var(--r3);
+  background:linear-gradient(90deg, var(--accent-weak), var(--surface)); border:1.5px solid var(--accent);
+  box-shadow:var(--shadow); transition:border-color .18s ease, box-shadow .18s ease; }
+.jp-chip .jp-star{ color:var(--warn); font-size:16px; line-height:1; }
+.jp-chip .jp-label{ font-size:var(--t-cap); font-weight:800; letter-spacing:.1em; color:var(--dim); }
+.jp-chip .jp-value{ margin-left:auto; font-family:var(--f-mono); font-size:20px; font-weight:800; color:var(--text); letter-spacing:.01em; }
+.jp-chip.unknown{ border-color:var(--line-strong); background:var(--elevate); }
+.jp-chip.unknown .jp-value{ color:var(--faint); }
+/* Gate ACTIVE — additional state layered on top; jackpot value stays highlighted. */
+.jp-chip.gated{ border-color:var(--warn); box-shadow:0 0 0 3px var(--warn-bg); }
+.jp-gate{ display:inline-flex; align-items:center; gap:4px; margin-left:10px; font-size:9px; font-weight:800; letter-spacing:.06em; padding:2px 7px; border-radius:999px; text-transform:uppercase; }
+.jp-gate.waiting{ background:var(--warn-bg); color:var(--warn); }
+.jp-gate.ready{ background:var(--ok-bg); color:var(--ok); }
+.jp-toggle{ display:flex; align-items:center; gap:7px; font-weight:600; font-size:var(--t-sm); margin:8px 0 4px; }
+.jp-config{ margin:2px 0 8px; padding:8px 10px; border-radius:var(--r2); background:var(--warn-bg); }
+.jp-config[hidden]{ display:none; }
+.jp-config .pf-field{ margin:0; }
+/* Rail: compact but still distinctive jackpot line per browser row. */
+.rr-jp{ display:flex; align-items:center; gap:5px; margin-top:4px; font-family:var(--f-mono); font-weight:700; font-size:var(--t-sm); color:var(--accent); }
+.rr-jp .rr-jp-star{ color:var(--warn); }
+.rr-jp.unknown{ color:var(--faint); font-weight:400; }
+.rr-jp.gated{ color:var(--warn); }
 #shell-nav{ width:var(--nav-w); flex:0 0 var(--nav-w); border-right:1px solid var(--line); background:var(--panel); padding:12px 8px; display:flex; flex-direction:column; gap:4px; }
 #shell-nav .nav-item{ text-align:left; background:transparent; border:none; padding:10px 12px; border-radius:var(--r2); font-weight:600; font-size:var(--t-md); color:var(--dim); cursor:pointer; }
 #shell-nav .nav-item:hover{ background:var(--elevate); color:var(--text); }

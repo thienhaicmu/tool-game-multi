@@ -342,6 +342,15 @@
 
     <div id="at-gate" class="proto-validation block" hidden></div>
 
+    <!-- WU-C.3 — Jackpot is the top visual priority; always highlighted whether or
+         not the gate is enabled. The gate badge is a SEPARATE state on top of it. -->
+    <div id="at-jp-chip" class="jp-chip unknown" role="status" aria-label="Live jackpot">
+      <span class="jp-star" aria-hidden="true">★</span>
+      <span class="jp-label">JACKPOT</span>
+      <span class="jp-value" id="at-jp-value">—</span>
+      <span class="jp-gate" id="at-jp-gate" hidden></span>
+    </div>
+
     <!-- Live state: current server odd is the prominent number -->
     <div class="proto-card at-live">
       <div class="proto-kv"><span>Status</span><b id="at-status" class="at-status">IDLE</b></div>
@@ -365,6 +374,13 @@
       <div id="at-test-rows" class="at-test-rows"></div>
       <div class="hint">Các lượt chạy tuần tự: hoàn tất dòng trước mới chuyển sang dòng tiếp theo.</div>
       <div class="ctx-line">SID · AID · EID are supplied automatically by the server session — you don't enter them.</div>
+      <!-- WU-C.3 — optional Jackpot gate (default OFF). When off, jackpot is still
+           observed and highlighted above but has zero effect on Auto Run. -->
+      <label class="jp-toggle"><input type="checkbox" id="at-jp-wait"> ★ Wait for Jackpot</label>
+      <div id="at-jp-config" class="jp-config" hidden>
+        <label class="pf-field">Minimum Jackpot<input id="at-jp-min" class="mono" value="50000000"><span class="hint">Auto starts only when server jackpot ≥ this value. Current: <b id="at-jp-cur">—</b></span></label>
+        <div id="at-jp-err" class="cfg-err"></div>
+      </div>
       <div id="at-cfg-err" class="errb"></div>
       <div id="at-cta-note" class="cta-note"></div>
       <button id="at-cta" class="cta primary">▶ START AUTO RUN</button>

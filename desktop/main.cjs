@@ -32,6 +32,8 @@ const { BrowserRegistry } = require('./browser-run/browser-registry.cjs');
 const { RoundHistoryStore } = require('./browser-run/round-history-store.cjs');
 const { RoundHistoryCollector } = require('./browser-run/round-history-collector.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
+const { JackpotObserver } = require('./protocol/jackpot-observer.cjs');
+const { JackpotGate } = require('./protocol/jackpot-gate.cjs');
 
 let shell;
 const capturedClients = new WeakSet();
@@ -402,6 +404,13 @@ function buildProtocolSubsystem(run) {
   entryGate.on('state', () => scheduleRunsBroadcast());
   entryGate.on('entered', () => scheduleRunsBroadcast());
 
+  // WU-C.3 — read-only per-run Jackpot telemetry (recv eI.jp) + optional Auto Run
+  // threshold gate. Both bound to THIS run's frame stream; never global.
+  const jackpotObserver = new JackpotObserver({ roundTracker: aviator });
+  jackpotObserver.on('update', () => scheduleRunsBroadcast());
+  const jackpotGate = new JackpotGate({ observer: jackpotObserver });
+  jackpotGate.on('state', () => scheduleRunsBroadcast());
+
   // WU-C.2 — persist finalized rounds to the OWNING persistent browser's history.
   // Only runs with a persistent browserId are recorded (Advanced Debug / external
   // attaches have no persistent owner). Attribution is structural (run.browserId),
@@ -415,7 +424,7 @@ function buildProtocolSubsystem(run) {
     });
   }
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, historyCollector };
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, historyCollector };
 }
 
 // Lazily construct the BrowserRunManager and register the ONE shared capture->run
@@ -459,6 +468,9 @@ function browserSummaries() {
       currentSid: rs ? rs.currentSid : null, currentOdd: rs ? rs.currentOdd : null, phase: rs ? rs.phase : null,
       autoRunning: rs ? rs.autoRunning : false, testRunning: rs ? rs.testRunning : false,
       aviatorEntered: rs ? rs.aviatorEntered : false, entryState: rs ? rs.entryState : 'NOT_ENTERED',
+      // WU-C.3 — live jackpot telemetry (null when offline / not yet observed).
+      currentJackpot: rs ? rs.currentJackpot : null, jackpotGateState: rs ? rs.jackpotGateState : 'IDLE',
+      jackpotThreshold: rs ? rs.jackpotThreshold : null,
       error: rs ? rs.error : null,
     };
   });
@@ -682,6 +694,9 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
       if (run.protocolContext) run.protocolContext.reset();
       // WU-C.1.1 — the owning socket is gone: entry readiness must not be trusted.
       if (run.entryGate) run.entryGate.onDisconnect();
+      // WU-C.3 — jackpot is runtime truth: invalidate it and cancel any pending gate.
+      if (run.jackpotGate) run.jackpotGate.cancel('DISCONNECTED');
+      if (run.jackpotObserver) run.jackpotObserver.onDisconnect();
     }
     // Browser fully gone (no targets left): quiesce this run's protocol activity.
     if (!runManager.targetsForRun(run.id).length) runManager.disconnectRun(run);
@@ -882,10 +897,29 @@ handle('autotest-start', async (_event, runId, config = {}) => {
     const gate = await run.entryGate.ensureEntered();
     if (gate && gate.error) return { error: gate.error };
   }
+  // WU-C.3 — optional Jackpot gate AFTER entry: automated betting is released only
+  // once THIS run's own authoritative jackpot reaches the configured threshold.
+  if (config && config.waitForJackpot) {
+    const t = Number(config.jackpotThreshold);
+    if (!Number.isFinite(t) || t < 0) return { error: { code: 'INVALID_JACKPOT_THRESHOLD', message: 'Enter a valid minimum jackpot (a number >= 0).' } };
+    if (run.jackpotGate) {
+      const jg = await run.jackpotGate.ensureThreshold(t);
+      if (jg && jg.error) return { error: jg.error };
+    }
+  }
   const res = run.autoRunner.start(String(run.selectedTargetId || ''), config || {});
   return res.error ? res : run.autoRunner.snapshot();
 });
-handle('autotest-stop', (_event, runId) => { const r = execRun(runId); if (r.error) return r; const res = r.run.autoRunner.stop(); return res.error ? res : r.run.autoRunner.snapshot(); });
+handle('autotest-stop', (_event, runId) => {
+  const r = execRun(runId); if (r.error) return r;
+  const run = r.run;
+  // Cancel a pending Jackpot wait so a later jackpot update can never start Auto (§38).
+  const wasWaiting = !!(run.jackpotGate && run.jackpotGate.isWaiting());
+  if (run.jackpotGate) run.jackpotGate.cancel('STOPPED');
+  const res = run.autoRunner.stop();
+  if (res.error && wasWaiting) return run.autoRunner.snapshot(); // stopped while gate-waiting
+  return res.error ? res : run.autoRunner.snapshot();
+});
 handle('autotest-snapshot', (_event, runId) => viewRun(runId).autoRunner.snapshot());
 // WU10.2 — bet-amount server-validation IPC (bet-only), bound to an EXPLICIT run.
 handle('bvalidate-environment', (_event, runId, targetId) => { const run = viewRun(runId); return run.amountValidator.environmentFor(String(targetId || run.selectedTargetId || '')); });

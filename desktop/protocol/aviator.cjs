@@ -67,6 +67,10 @@ function classifyFrame(raw) {
     agentId: json.agentId != null ? json.agentId : undefined,
     wm: json.wm != null ? json.wm : undefined,
     iOE: json.iOE != null ? json.iOE : undefined,
+    // WU-C.3: authoritative Jackpot telemetry. Observed live as eI.jp on the server
+    // (recv) protocol payload; surfaced verbatim (no scaling — the raw value maps
+    // directly to the displayed jackpot). Undefined when the frame carries no eI.jp.
+    jp: (json.eI && typeof json.eI === 'object' && json.eI.jp != null && Number.isFinite(Number(json.eI.jp))) ? Number(json.eI.jp) : undefined,
   };
 }
 

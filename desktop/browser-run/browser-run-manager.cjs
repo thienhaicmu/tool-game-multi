@@ -81,6 +81,7 @@ class BrowserRunManager extends EventEmitter {
       // protocol subsystem (assigned below)
       aviator: null, protocolContext: null, observer: null,
       harness: null, autoRunner: null, amountValidator: null, entryGate: null,
+      jackpotObserver: null, jackpotGate: null,
     };
     run.launcher = this._createLauncher(run);
     const subsystem = this._buildSubsystem(run) || {};
@@ -91,6 +92,8 @@ class BrowserRunManager extends EventEmitter {
     run.autoRunner = subsystem.autoRunner || null;
     run.amountValidator = subsystem.amountValidator || null;
     run.entryGate = subsystem.entryGate || null;
+    run.jackpotObserver = subsystem.jackpotObserver || null;
+    run.jackpotGate = subsystem.jackpotGate || null;
 
     this._runs.set(id, run);
     this._order.push(id);
@@ -212,6 +215,8 @@ class BrowserRunManager extends EventEmitter {
     try { if (run.amountValidator && run.amountValidator.isRunning && run.amountValidator.isRunning()) run.amountValidator.stop(); } catch { /* ignore */ }
     try { if (run.harness && run.harness.cancelWaiters) run.harness.cancelWaiters(); } catch { /* ignore */ }
     try { if (run.entryGate && run.entryGate.onDisconnect) run.entryGate.onDisconnect(); } catch { /* ignore */ }
+    try { if (run.jackpotGate && run.jackpotGate.cancel) run.jackpotGate.cancel('DISCONNECTED'); } catch { /* ignore */ }
+    try { if (run.jackpotObserver && run.jackpotObserver.onDisconnect) run.jackpotObserver.onDisconnect(); } catch { /* ignore */ }
     try { if (run.observer && run.observer.onDisconnect) run.observer.onDisconnect(); } catch { /* ignore */ }
   }
 
@@ -243,6 +248,10 @@ class BrowserRunManager extends EventEmitter {
       testRunning: !!(run.amountValidator && run.amountValidator.isRunning && run.amountValidator.isRunning()),
       aviatorEntered: !!(run.entryGate && run.entryGate.isEntered && run.entryGate.isEntered()),
       entryState: run.entryGate && run.entryGate.state ? run.entryGate.state() : 'NOT_ENTERED',
+      currentJackpot: run.jackpotObserver && run.jackpotObserver.current ? run.jackpotObserver.current() : null,
+      jackpotObservedAt: run.jackpotObserver && run.jackpotObserver.snapshot ? run.jackpotObserver.snapshot().jackpotObservedAt : null,
+      jackpotGateState: run.jackpotGate && run.jackpotGate.state ? run.jackpotGate.state() : 'IDLE',
+      jackpotThreshold: run.jackpotGate && run.jackpotGate.threshold ? run.jackpotGate.threshold() : null,
       error: run.error || null,
     };
   }

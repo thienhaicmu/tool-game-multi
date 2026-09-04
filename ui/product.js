@@ -1087,6 +1087,10 @@ renderActions();
   // Live validation as the tester types (§6). aid/eid are not inputs anymore.
   addTestRow();
   $('at-add-row').onclick = () => { if (!sequenceRunning) { addTestRow(); validateConfigUI(); } };
+  // WU-C.3 — Jackpot gate config (default OFF -> unchanged Auto behavior).
+  const jpWaitBox = $('at-jp-wait');
+  if (jpWaitBox) jpWaitBox.onchange = () => { const cfg = $('at-jp-config'); if (cfg) cfg.hidden = !jpWaitBox.checked; };
+  function parseJp(v) { const s = String(v == null ? '' : v).replace(/[,\s_]/g, ''); if (s === '') return null; const n = Number(s); return Number.isFinite(n) && n >= 0 ? n : null; }
   $('at-day-filter').onchange = () => { selectedDay = $('at-day-filter').value || ''; render(); };
   $('at-day-today').onclick = () => { selectedDay = (snap && snap.currentDay) || localTodayKey(); render(); };
   $('at-day-all').onclick = () => { selectedDay = ''; render(); };
@@ -1100,18 +1104,29 @@ renderActions();
   async function startCurrentRow() {
     const v = ATC ? ATC.validate(rawFields()) : { ok: true, config: rawFields() };
     if (!v.ok) { sequenceRunning = false; validateConfigUI(); return; }
-    // WU-C.1.1 — START AUTO first ensures the Aviator entry prerequisite (may send
-    // cmd:100000 and wait for the run's own server round evidence). Show that state;
-    // AUTO RUNNING only appears once the AutoRunner has actually started.
+    // WU-C.3 — snapshot the Jackpot gate config at START (locked for this session).
+    const jpWait = !!($('at-jp-wait') && $('at-jp-wait').checked);
+    let jpMin = null;
+    if (jpWait) {
+      jpMin = parseJp($('at-jp-min').value);
+      if (jpMin == null) { sequenceRunning = false; $('at-jp-err').textContent = 'Nhập mức jackpot tối thiểu hợp lệ (số ≥ 0).'; renderCta(); return; }
+      $('at-jp-err').textContent = '';
+    }
+    const cfg = { ...v.config, waitForJackpot: jpWait, jackpotThreshold: jpMin };
+    // WU-C.1.1 — START AUTO first ensures Aviator entry, then (if enabled) the Jackpot
+    // gate. AUTO RUNNING only appears once the AutoRunner has actually started.
     const cta = $('at-cta'); const note = $('at-cta-note');
-    if (cta) cta.disabled = true; if (note) note.textContent = 'Đang vào game (Aviator)…';
-    const r = await api.autotestStart(currentRunId, v.config);
+    if (cta) cta.disabled = true; if (note) note.textContent = jpWait ? 'Đang chuẩn bị (vào game · chờ jackpot)…' : 'Đang vào game (Aviator)…';
+    const r = await api.autotestStart(currentRunId, cfg);
     if (cta) cta.disabled = false;
     if (r && r.error) {
       sequenceRunning = false;
       const code = String(r.error.code || '');
+      // Cancellations (user STOP / disconnect) are benign, not scary errors.
+      const benign = code === 'JACKPOT_GATE_CANCELLED' || code === 'AVIATOR_ENTRY_DISCONNECTED';
       const entry = code.indexOf('AVIATOR_ENTRY') === 0;
-      $('at-cfg-err').textContent = (entry ? 'Vào game thất bại — ' : '') + `${code}: ${r.error.message || ''}`;
+      const jp = code.indexOf('JACKPOT') === 0 || code === 'INVALID_JACKPOT_THRESHOLD';
+      $('at-cfg-err').textContent = benign ? '' : ((entry ? 'Vào game thất bại — ' : jp ? 'Jackpot gate — ' : '') + `${code}: ${r.error.message || ''}`);
       renderCta();
       return;
     }
@@ -1443,10 +1458,14 @@ renderActions();
       const actions = b.online
         ? `<div class="rr-actions"><button class="rr-mini" data-edit="${esc(b.browserId)}">Edit</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Close</button></div>`
         : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}">OPEN</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Edit</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Delete</button></div>`;
+      // WU-C.3 — compact but distinctive jackpot line (always shown; "—" when unknown).
+      const jpTxt = b.currentJackpot != null ? Number(b.currentJackpot).toLocaleString() : '—';
+      const jpCls = b.currentJackpot == null ? 'unknown' : ((b.jackpotGateState === 'WAITING' || b.jackpotGateState === 'READY') ? 'gated' : '');
+      const jpLine = `<div class="rr-jp ${jpCls}"><span class="rr-jp-star">★</span>JP ${esc(jpTxt)}</div>`;
       return `<div class="${cls}" data-browser="${esc(b.browserId)}">`
         + `<div class="rr-item-top"><span class="rr-dot"></span><span class="rr-id">${esc(b.browserId)}</span><span class="rr-badge ${bd.cls}" style="margin-left:auto">${esc(bd.text)}</span></div>`
         + `<div class="rr-name">${esc(b.name || '')}</div>`
-        + runtime + actions + `</div>`;
+        + jpLine + runtime + actions + `</div>`;
     }).join('');
     for (const el of listEl.querySelectorAll('.rr-item')) {
       el.onclick = (e) => { if (e.target.closest('button')) return; select(el.dataset.browser); };
@@ -1472,10 +1491,30 @@ renderActions();
     setCurrentBrowser(selectedBrowserId); // drives the persistent history panel
   }
 
+  // WU-C.3 — always-highlighted jackpot chip for the selected browser, plus the
+  // SEPARATE gate active/ready indicator (the jackpot value stays prominent either way).
+  function renderJackpot() {
+    const chip = $('at-jp-chip'); if (!chip) return;
+    const b = browsers.find((x) => x.browserId === selectedBrowserId);
+    const jp = b ? b.currentJackpot : null;
+    const txt = jp != null ? Number(jp).toLocaleString() : '—';
+    const val = $('at-jp-value'); if (val) val.textContent = txt;
+    const cur = $('at-jp-cur'); if (cur) cur.textContent = txt;
+    chip.classList.toggle('unknown', jp == null);
+    const gs = b ? b.jackpotGateState : 'IDLE';
+    const gate = $('at-jp-gate');
+    if (gate) {
+      if (gs === 'WAITING') { gate.hidden = false; gate.className = 'jp-gate waiting'; gate.textContent = 'Gate • waiting' + (b && b.jackpotThreshold != null ? ' ≥ ' + Number(b.jackpotThreshold).toLocaleString() : ''); }
+      else if (gs === 'READY') { gate.hidden = false; gate.className = 'jp-gate ready'; gate.textContent = 'Gate • ready'; }
+      else { gate.hidden = true; gate.textContent = ''; }
+    }
+    chip.classList.toggle('gated', gs === 'WAITING' || gs === 'READY');
+  }
+
   function apply(payload) {
     browsers = (payload && payload.browsers) || [];
     capacity = (payload && payload.capacity) || capacity;
-    render(); reconcile();
+    render(); reconcile(); renderJackpot();
   }
   api.onBrowsersChanged(apply);
   api.listBrowsers().then(apply).catch(() => {});
