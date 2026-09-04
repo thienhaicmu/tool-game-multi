@@ -1525,7 +1525,7 @@ renderActions();
       else { capEl.textContent = `${capacity.registered}/${capacity.max}`; capEl.classList.toggle('full', !capacity.canCreate); }
     }
     const newBtn = $('rr-new');
-    if (newBtn) { newBtn.disabled = !capacity.canCreate; newBtn.title = capacity.canCreate ? 'Create a new persistent browser' : `Browser limit reached (${capacity.registered}/${capacity.max})`; }
+    if (newBtn) { newBtn.disabled = !capacity.canCreate; newBtn.title = capacity.canCreate ? 'Tạo trình duyệt mới' : `Đã đạt giới hạn hồ sơ (${capacity.registered}/${capacity.max})`; }
     const running = $('shell-running');
     if (running) { const n = browsers.filter((b) => b.online).length; running.textContent = `${n} đang chạy`; }
   }
@@ -1559,11 +1559,11 @@ renderActions();
     listEl.querySelectorAll('[data-open]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openBrowser(x.dataset.open); }; });
     listEl.querySelectorAll('[data-close]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.close); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } }; });
     listEl.querySelectorAll('[data-edit]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openModal('edit', browsers.find((r) => r.browserId === x.dataset.edit)); }; });
-    listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Xóa trình duyệt này? Dữ liệu hồ sơ vẫn được giữ trên đĩa.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast((r.error.message || r.error.code)); }; });
+    listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Xóa trình duyệt này? Dữ liệu hồ sơ vẫn được giữ trên đĩa.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast(browserErrVi(r.error)); }; });
   }
 
   function select(browserId) { selectedBrowserId = browserId; render(); reconcile(); }
-  async function openBrowser(browserId) { selectedBrowserId = browserId; const r = await api.openBrowserById(browserId); if (r && r.error) toast(r.error.message || r.error.code); }
+  async function openBrowser(browserId) { selectedBrowserId = browserId; const r = await api.openBrowserById(browserId); if (r && r.error) toast(browserErrVi(r.error)); }
 
   // Bind currentRunId to the selected browser's live run, or null when OFFLINE.
   function reconcile() {
@@ -1630,14 +1630,26 @@ renderActions();
   // rail populates without waiting for the next lifecycle event.
   if (api.onLicenseChanged) api.onLicenseChanged((s) => { if (s && s.active) api.listBrowsers().then(apply).catch(() => {}); });
 
+  // Map source-real error codes → Vietnamese customer message (§22). Technical detail
+  // (code) is preserved for support but never shown raw as the primary message.
+  function browserErrVi(err) {
+    if (!err) return 'Đã xảy ra lỗi.';
+    const code = err.code || '';
+    if (code === 'CHROME_NOT_FOUND') return 'Không tìm thấy Google Chrome. Hãy cài Chrome, hoặc đặt biến môi trường CHROME_PATH trỏ tới chrome.exe, rồi mở lại.';
+    if (code === 'BROWSER_LIMIT_REACHED') return 'Đã đạt giới hạn số hồ sơ theo bản quyền của bạn.';
+    if (code === 'BROWSER_RUNTIME_LIMIT_REACHED') return 'Đã đạt giới hạn số trình duyệt chạy đồng thời theo bản quyền.';
+    if (code === 'BROWSER_ALREADY_RUNNING') return 'Trình duyệt này đang chạy.';
+    return err.message || code || 'Đã xảy ra lỗi.';
+  }
+
   // ---- New / Edit modal ----
   let modalMode = 'new', modalBrowserId = null;
   function openModal(mode, browser) {
     modalMode = mode; modalBrowserId = browser ? browser.browserId : null;
-    $('bm-title').textContent = mode === 'edit' ? `Edit ${browser.browserId}` : 'New Browser';
+    $('bm-title').textContent = mode === 'edit' ? `Chỉnh sửa ${browser.browserId}` : 'Trình duyệt mới';
     $('bm-name').value = browser ? (browser.name || '') : '';
     $('bm-url').value = browser ? (browser.launchUrl || '') : '';
-    $('bm-submit').textContent = mode === 'edit' ? 'Save' : 'Create & Open';
+    $('bm-submit').textContent = mode === 'edit' ? 'Lưu' : 'Tạo & Mở';
     const err = $('bm-error'); err.hidden = true; err.textContent = '';
     $('browser-modal').hidden = false; $('bm-name').focus();
   }
@@ -1645,19 +1657,19 @@ renderActions();
   function modalError(m) { const err = $('bm-error'); err.hidden = false; err.textContent = m; }
   async function submitModal() {
     const name = $('bm-name').value.trim(); const url = $('bm-url').value.trim();
-    if (!/^https?:\/\//i.test(url)) return modalError('Enter a valid http(s) URL.');
+    if (!/^https?:\/\//i.test(url)) return modalError('Hãy nhập địa chỉ http(s) hợp lệ.');
     if (modalMode === 'edit') {
       const r = await api.updateBrowser(modalBrowserId, { name, launchUrl: url });
-      if (r && r.error) return modalError(r.error.message || r.error.code);
+      if (r && r.error) return modalError(browserErrVi(r.error));
       closeModal();
     } else {
       const r = await api.createBrowser({ name, url });
-      if (r && r.error) return modalError(r.error.message || r.error.code);
+      if (r && r.error) return modalError(browserErrVi(r.error));
       selectedBrowserId = r.browserId; closeModal();
     }
   }
   const newBtn = $('rr-new');
-  if (newBtn) newBtn.onclick = () => { if (!capacity.canCreate) return toast(`Browser limit reached (${capacity.registered}/${capacity.max})`); openModal('new', null); };
+  if (newBtn) newBtn.onclick = () => { if (!capacity.canCreate) return toast(`Đã đạt giới hạn hồ sơ (${capacity.registered}/${capacity.max})`); openModal('new', null); };
   $('bm-cancel').onclick = closeModal;
   $('bm-submit').onclick = submitModal;
   $('bm-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitModal(); });
