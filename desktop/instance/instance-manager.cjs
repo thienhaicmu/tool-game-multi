@@ -2,9 +2,16 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { randomUUID } = require('node:crypto');
 const { instancePaths, sanitizeInstanceId } = require('./paths.cjs');
 const { RuntimeLock } = require('./runtime-lock.cjs');
+
+// The customer double-clicks the app with no arguments, so the DEFAULT instance id
+// must be STABLE across launches — otherwise every restart resolves to a brand-new
+// instances/<id>/ root and the persistent browser registry, per-browser configs,
+// round history, chrome profiles and cookies all appear empty (WU-D.2 bug D2-003:
+// "created browsers vanish after restart"). Explicit --instance-id / OBSERVATORY_
+// INSTANCE_ID still select a separate isolated store for power users.
+const DEFAULT_INSTANCE_ID = 'default';
 
 function argvValue(argv, name) {
   const prefix = `--${name}=`;
@@ -22,7 +29,7 @@ class InstanceManager {
   }
 
   resolveInstanceId() {
-    return sanitizeInstanceId(argvValue(this.argv, 'instance-id') || this.env.OBSERVATORY_INSTANCE_ID || randomUUID());
+    return sanitizeInstanceId(argvValue(this.argv, 'instance-id') || this.env.OBSERVATORY_INSTANCE_ID || DEFAULT_INSTANCE_ID);
   }
 
   start() {
@@ -66,4 +73,4 @@ class InstanceManager {
   }
 }
 
-module.exports = { InstanceManager, argvValue };
+module.exports = { InstanceManager, argvValue, DEFAULT_INSTANCE_ID };

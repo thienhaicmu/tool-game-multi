@@ -151,8 +151,34 @@ function createRunLauncher(run) {
     profilePath: runProfilePath(run),
     env: runLauncherEnv(run),
     onRuntime: (patch) => appInstance.lock.update(patch),
-    onExit: () => { if (runManager) runManager.closeRun(run.id).catch(() => {}); },
+    onExit: () => {
+      if (!runManager) return;
+      const r = runManager.get(run.id);
+      // WU-D.2 (D2-002): Chrome exited while the run never attached a target. This is
+      // the classic "immediate handoff" — another Chrome (a phantom from a previous
+      // session / crash) still holds this profile, so the newly spawned process quits
+      // at once and its CDP port never answers. Surface an ACTIONABLE error instead of
+      // a silent close, and free the reserved runtime slot.
+      if (r && r.status === RUN_STATUS.STARTING) {
+        releaseRunCapacity(r);
+        runManager.failRun(r, { code: 'CHROME_EXITED_BEFORE_CDP', message: 'Chrome thoát trước khi cổng điều khiển sẵn sàng. Có thể một cửa sổ Chrome cũ đang dùng hồ sơ này — hãy đóng Chrome đó rồi mở lại.' });
+        return;
+      }
+      runManager.closeRun(run.id).catch(() => {});
+    },
   });
+}
+// WU-D.2 (D2-001): terminate every managed Chrome this app launched. Chrome is
+// spawned detached+unref'd so it survives the Electron process; without this sweep a
+// clean quit (or window-all-closed) would orphan Chrome windows that keep holding
+// their persistent profiles, and the NEXT launch's Open would hand off to the phantom
+// and fail. Synchronous + best-effort so it also runs inside before-quit.
+function killAllManagedBrowsers() {
+  if (!runManager) return;
+  for (const summary of runManager.list()) {
+    const r = runManager.get(summary.id);
+    if (r && r.launcher && r.launcher.close) { try { r.launcher.close(); } catch { /* already gone */ } }
+  }
 }
 // Snapshot of the active run's launcher for instance-info; safe default when idle.
 function activeLauncherSnapshot() {
@@ -839,6 +865,7 @@ app.whenReady().then(() => {
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('before-quit', event => {
+  killAllManagedBrowsers(); // WU-D.2 (D2-001) — never orphan managed Chrome on quit
   if (importTimer) clearInterval(importTimer);
   if (importStarted) return;
   const child = importJournalOnExit();
@@ -847,7 +874,7 @@ app.on('before-quit', event => {
   child.once('close', () => app.quit());
   child.once('error', () => app.quit());
 });
-app.on('will-quit', () => { try { appInstance.lock.release(); } catch { /* best effort */ } });
+app.on('will-quit', () => { killAllManagedBrowsers(); try { appInstance.lock.release(); } catch { /* best effort */ } });
 handle('scope-set', (_event, hosts) => { allowedHosts = new Set((hosts || []).map(String).map(x => x.toLowerCase())); return true; });
 handle('license-status', () => licenseStatus());
 handle('license-activate', async (_event, license) => {

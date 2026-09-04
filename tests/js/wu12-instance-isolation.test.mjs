@@ -8,7 +8,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { instancePaths, sanitizeInstanceId } = require('../../desktop/instance/paths.cjs');
 const { RuntimeLock } = require('../../desktop/instance/runtime-lock.cjs');
-const { InstanceManager } = require('../../desktop/instance/instance-manager.cjs');
+const { InstanceManager, DEFAULT_INSTANCE_ID } = require('../../desktop/instance/instance-manager.cjs');
 const { ChromeLauncher, findChromeExecutable } = require('../../desktop/browser/chrome-launcher.cjs');
 
 function tempRoot() {
@@ -55,17 +55,50 @@ test('runtime lock blocks a live process and clears stale locks', () => {
   }
 });
 
-test('instance manager creates registry and distinct default instances', () => {
+// WU-D.2 (D2-003): a no-argument (customer double-click) launch MUST resolve to a
+// STABLE instance id across restarts, so the persistent browser registry, per-browser
+// configs, round history, chrome profiles and cookies survive a quit/relaunch. The old
+// behaviour minted a random UUID per launch, which is exactly why created browsers
+// vanished after restart ("0/10 — Chưa có trình duyệt").
+test('default (no-arg) launch resolves to a STABLE instance so data persists across restart', () => {
+  const dir = tempRoot();
+  try {
+    const first = new InstanceManager({ baseUserDataPath: dir, argv: ['app'], env: {} }).start();
+    assert.equal(first.ok, true);
+    assert.equal(first.instanceId, DEFAULT_INSTANCE_ID);
+    const firstRoot = first.paths.root;
+    const firstProfile = first.paths.chromeProfile;
+    first.lock.release(); // simulate app quit
+
+    // Relaunch (same no-arg invocation) must reuse the SAME on-disk store.
+    const second = new InstanceManager({ baseUserDataPath: dir, argv: ['app'], env: {} }).start();
+    assert.equal(second.ok, true);
+    assert.equal(second.instanceId, DEFAULT_INSTANCE_ID);
+    assert.equal(second.paths.root, firstRoot, 'restart must reuse the same instance root');
+    assert.equal(second.paths.chromeProfile, firstProfile, 'restart must reuse the same chrome profile');
+    second.lock.release();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// A second concurrent default launch is refused by the runtime lock (single owner),
+// while an explicit --instance-id still selects a SEPARATE isolated store.
+test('concurrent default launch is refused; explicit --instance-id isolates a distinct store', () => {
   const dir = tempRoot();
   try {
     const a = new InstanceManager({ baseUserDataPath: dir, argv: ['app'], env: {} }).start();
     const b = new InstanceManager({ baseUserDataPath: dir, argv: ['app'], env: {} }).start();
     assert.equal(a.ok, true);
-    assert.equal(b.ok, true);
-    assert.notEqual(a.instanceId, b.instanceId);
-    assert.notEqual(a.paths.chromeProfile, b.paths.chromeProfile);
+    assert.equal(b.ok, false);
+    assert.equal(b.error.code, 'INSTANCE_ALREADY_RUNNING');
+
+    const other = new InstanceManager({ baseUserDataPath: dir, argv: ['app', '--instance-id=desk-2'], env: {} }).start();
+    assert.equal(other.ok, true);
+    assert.notEqual(other.paths.root, a.paths.root);
+    assert.notEqual(other.paths.chromeProfile, a.paths.chromeProfile);
     a.lock.release();
-    b.lock.release();
+    other.lock.release();
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
