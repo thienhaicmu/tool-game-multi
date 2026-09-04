@@ -735,6 +735,22 @@ async function attachCdpCapture(client, target) {
   wsReplay.injectSession(client, undefined).catch(() => {});
 }
 
+// WU-D.1 — bet/cashout is sent through the page's OWN WebSocket via an injected hook
+// (wsReplay). `addScriptToEvaluateOnNewDocument` only affects FUTURE document loads, so
+// the very first socket — opened during the initial load before we attached — is not
+// tracked, and Auto fails with PROTOCOL_SEND_FAILED until the user manually reloads.
+// Reload the freshly opened game ONCE, right after the hook is registered, so the game's
+// socket is CONSTRUCTED while the tracking hook is in place. Guarded per-run so it only
+// fires on the first attach (before login) — it never reloads a logged-in session.
+async function reloadOnceForWsHook(run, client) {
+  if (!run || run._wsHookReloaded) return;
+  run._wsHookReloaded = true;
+  try {
+    await wsReplay.injectSession(client, undefined); // ensure the hook is registered for the next document
+    await client.Page.reload();                       // fresh load → game socket is tracked from construction
+  } catch { /* best effort — the in-app message still guides a manual reload */ }
+}
+
 // The renderer (WU-A, single-stream UI) shows the ACTIVE run's targets.
 function broadcastTargets() {
   const run = activeRun();
@@ -751,6 +767,7 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
     if (!run.selectedTargetId) run.selectedTargetId = target.cdpTargetId; // auto-select first attachable target
     attachCdpCapture(client, target);
     autoRestoreOnAttach(target.cdpTargetId).catch(() => {});
+    reloadOnceForWsHook(run, client); // WU-D.1 — guarantee the WS send-hook is present before the game opens its socket
     if (runManager.isActive(run)) broadcastTargets();
     broadcastRuns();
   });
