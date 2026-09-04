@@ -17,22 +17,24 @@ const ATC = loadUI('../../ui/autotest-config.js').AutoTestConfig;
 // §1/§2/§16 — compact window defaults + bounds restore/validation.
 // ---------------------------------------------------------------------------
 test('fresh launch defaults to 960x680 (no maximize)', () => {
-  assert.deepEqual(resolveBounds(null), { width: 960, height: 680 });
-  assert.deepEqual(resolveBounds(undefined), { width: 960, height: 680 });
-  assert.equal(DEFAULTS.minWidth, 760);
-  assert.equal(DEFAULTS.minHeight, 560);
+  // WU-E.1 — Overview now hosts the embedded browser workspace, so the default opens at a
+  // workspace size; min stays small enough for the 1100x700 acceptance viewport.
+  assert.deepEqual(resolveBounds(null), { width: 1300, height: 860 });
+  assert.deepEqual(resolveBounds(undefined), { width: 1300, height: 860 });
+  assert.equal(DEFAULTS.minWidth, 1000);
+  assert.equal(DEFAULTS.minHeight, 680);
 });
 
 test('valid saved bounds are restored (incl. position)', () => {
   assert.deepEqual(resolveBounds({ width: 1200, height: 800, x: 40, y: 60 }), { width: 1200, height: 800, x: 40, y: 60 });
-  assert.deepEqual(resolveBounds({ width: 900, height: 700 }), { width: 900, height: 700 });
+  assert.deepEqual(resolveBounds({ width: 1100, height: 700 }), { width: 1100, height: 700 });
 });
 
 test('invalid / too-small / malformed bounds fall back to default', () => {
-  assert.deepEqual(resolveBounds({ width: 100, height: 100 }), { width: 960, height: 680 }, 'below min');
-  assert.deepEqual(resolveBounds({ width: 'x', height: 680 }), { width: 960, height: 680 }, 'NaN width');
-  assert.deepEqual(resolveBounds({ width: 99999, height: 680 }), { width: 960, height: 680 }, 'absurd width');
-  assert.deepEqual(resolveBounds({}), { width: 960, height: 680 });
+  assert.deepEqual(resolveBounds({ width: 100, height: 100 }), { width: 1300, height: 860 }, 'below min');
+  assert.deepEqual(resolveBounds({ width: 'x', height: 720 }), { width: 1300, height: 860 }, 'NaN width');
+  assert.deepEqual(resolveBounds({ width: 99999, height: 720 }), { width: 1300, height: 860 }, 'absurd width');
+  assert.deepEqual(resolveBounds({}), { width: 1300, height: 860 });
 });
 
 test('main.cjs opens the window with resolveBounds (no maximize/fullscreen)', () => {

@@ -53,6 +53,11 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   browserHistory: (browserId, options) => ipcRenderer.invoke('browser-history-list', browserId, options),
   browserStats: browserId => ipcRenderer.invoke('browser-history-stats', browserId),
   onBrowserHistoryChanged: callback => ipcRenderer.on('browser-history-changed', (_event, payload) => callback(payload)),
+  // WU-E.1 — embedded web mirror in Tổng quan (per-run screencast + input forwarding).
+  screencastStart: (runId, opts) => ipcRenderer.invoke('screencast-start', runId, opts),
+  screencastStop: runId => ipcRenderer.invoke('screencast-stop', runId),
+  screencastInput: (runId, ev) => ipcRenderer.invoke('screencast-input', runId, ev),
+  onScreencastFrame: callback => { const l = (_e, f) => callback(f); ipcRenderer.on('screencast-frame', l); return () => ipcRenderer.removeListener('screencast-frame', l); },
   // WU-A/WU-B — browser run selection (view state) + explicit run binding.
   listRuns: () => ipcRenderer.invoke('list-runs'),
   selectRun: runId => ipcRenderer.invoke('select-run', runId),

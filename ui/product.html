@@ -91,40 +91,50 @@
           <div id="ov-empty-text">Mở trình duyệt để bắt đầu.</div>
           <div class="empty-sub">Chọn một trình duyệt và nhấn <b>Mở</b>.</div>
         </div>
-        <div id="ov-body" hidden>
-          <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Chờ đăng nhập…</span></div>
-          <div class="live-grid">
-            <div class="live-cell"><span class="live-label">SID</span><b id="ov-sid">—</b></div>
-            <div class="live-cell odd"><span class="live-label">ODD HIỆN TẠI</span><b id="ov-odd">—</b></div>
-            <div class="live-cell jp"><span class="live-label">JACKPOT</span><b id="ov-jackpot">—</b></div>
-          </div>
-          <div class="kv-grid">
-            <div class="kv2"><span>Trạng thái game</span><b id="ov-proto">—</b></div>
-            <div class="kv2"><span>Phase</span><b id="ov-phase">—</b></div>
-            <div class="kv2"><span>Max ODD</span><b id="ov-maxodd">—</b></div>
-            <div class="kv2"><span>Số khung ODD</span><b id="ov-frames">—</b></div>
-            <div class="kv2"><span>Tuổi vòng</span><b id="ov-age">—</b></div>
-            <div class="kv2"><span>Cập nhật</span><b id="ov-last">—</b></div>
-          </div>
-          <div class="section-title">ODD GẦN ĐÂY</div>
-          <div id="ov-recent" class="proto-sidhist"><span class="muted">chưa có</span></div>
-          <details class="ov-tech">
-            <summary>Chi tiết kỹ thuật</summary>
-            <div class="kv-grid">
-              <div class="kv2"><span>Bản quyền</span><b id="ov-license">—</b></div>
-              <div class="kv2"><span>Hết hạn</span><b id="ov-license-exp">—</b></div>
-              <div class="kv2"><span>Còn lại</span><b id="ov-license-rem">—</b></div>
-              <div class="kv2"><span>Số lần chạy</span><b id="ov-license-launches">—</b></div>
-              <div class="kv2"><span>Instance</span><b id="ov-instance">—</b></div>
-              <div class="kv2"><span>Chrome profile</span><b id="ov-profile">—</b></div>
-              <div class="kv2"><span>CDP</span><b id="ov-cdp">—</b></div>
-              <div class="kv2"><span>Browser</span><b id="ov-browser">—</b></div>
-              <div class="kv2"><span>Target</span><b id="ov-target">—</b></div>
-              <div class="kv2"><span>WebSocket</span><b id="ov-ws">—</b></div>
-              <div class="kv2"><span>AID</span><b id="ov-aid">—</b></div>
-              <div class="kv2"><span>EID</span><b id="ov-eid">—</b></div>
+        <div id="ov-body" hidden class="ov-layout">
+          <!-- WU-E.1 — embedded web surface: a live mirror of THIS browser's managed Chrome
+               page (CDP screencast + input forwarding). Same runtime; display + input only. -->
+          <div class="ov-web">
+            <div id="ov-web-host" class="ov-web-host" tabindex="0">
+              <canvas id="ov-canvas" class="ov-canvas"></canvas>
+              <div id="ov-web-overlay" class="ov-web-overlay" hidden><div class="ov-web-overlay-in"><div class="empty-ic">◴</div><div id="ov-web-overlay-text">Đang kết nối…</div></div></div>
             </div>
-          </details>
+          </div>
+          <aside class="ov-side">
+            <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Chờ đăng nhập…</span></div>
+            <div class="live-grid">
+              <div class="live-cell"><span class="live-label">SID</span><b id="ov-sid">—</b></div>
+              <div class="live-cell odd"><span class="live-label">ODD HIỆN TẠI</span><b id="ov-odd">—</b></div>
+              <div class="live-cell jp"><span class="live-label">JACKPOT</span><b id="ov-jackpot">—</b></div>
+            </div>
+            <div class="kv-grid">
+              <div class="kv2"><span>Trạng thái game</span><b id="ov-proto">—</b></div>
+              <div class="kv2"><span>Phase</span><b id="ov-phase">—</b></div>
+              <div class="kv2"><span>Max ODD</span><b id="ov-maxodd">—</b></div>
+              <div class="kv2"><span>Số khung ODD</span><b id="ov-frames">—</b></div>
+              <div class="kv2"><span>Tuổi vòng</span><b id="ov-age">—</b></div>
+              <div class="kv2"><span>Cập nhật</span><b id="ov-last">—</b></div>
+            </div>
+            <div class="section-title">ODD GẦN ĐÂY</div>
+            <div id="ov-recent" class="proto-sidhist"><span class="muted">chưa có</span></div>
+            <details class="ov-tech">
+              <summary>Chi tiết kỹ thuật</summary>
+              <div class="kv-grid">
+                <div class="kv2"><span>Bản quyền</span><b id="ov-license">—</b></div>
+                <div class="kv2"><span>Hết hạn</span><b id="ov-license-exp">—</b></div>
+                <div class="kv2"><span>Còn lại</span><b id="ov-license-rem">—</b></div>
+                <div class="kv2"><span>Số lần chạy</span><b id="ov-license-launches">—</b></div>
+                <div class="kv2"><span>Instance</span><b id="ov-instance">—</b></div>
+                <div class="kv2"><span>Chrome profile</span><b id="ov-profile">—</b></div>
+                <div class="kv2"><span>CDP</span><b id="ov-cdp">—</b></div>
+                <div class="kv2"><span>Browser</span><b id="ov-browser">—</b></div>
+                <div class="kv2"><span>Target</span><b id="ov-target">—</b></div>
+                <div class="kv2"><span>WebSocket</span><b id="ov-ws">—</b></div>
+                <div class="kv2"><span>AID</span><b id="ov-aid">—</b></div>
+                <div class="kv2"><span>EID</span><b id="ov-eid">—</b></div>
+              </div>
+            </details>
+          </aside>
         </div>
       </section>
 

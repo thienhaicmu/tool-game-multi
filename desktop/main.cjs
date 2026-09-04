@@ -8,6 +8,7 @@ const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
 const CDP = require('chrome-remote-interface');
 const { TargetManager } = require('./cdp/target-manager.cjs');
+const { PageScreencast } = require('./cdp/screencast.cjs');
 const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { InteractionTracker } = require('./cdp/interaction-tracker.cjs');
@@ -338,6 +339,28 @@ async function connectRunEndpointWithRetry(run, endpoint, attempt = 0) {
   return result;
 }
 
+// WU-E.1 — embedded web mirror. Resolve the top-level PAGE client for a run (the surface
+// the user sees/interacts with in Tổng quan). Prefers a real page target, else the run's
+// selected target. Never crosses runs.
+function resolvePageClient(runId) {
+  const run = runManager && runManager.get(String(runId || ''));
+  if (!run || !run.targetManager) return null;
+  const targets = run.targetManager.listTargets();
+  const pick = targets.find((t) => String(t.type).toLowerCase() === 'page')
+    || targets.find((t) => t.cdpTargetId === run.selectedTargetId)
+    || targets[0];
+  if (!pick) return null;
+  const s = run.targetManager.getSession(pick.cdpTargetId);
+  return s && s.client ? { client: s.client, targetId: pick.cdpTargetId } : null;
+}
+// One mirror at a time (the selected browser). Frames are pushed to the renderer; other
+// runs keep executing in the background with their own ownership untouched.
+const screencast = new PageScreencast({
+  resolvePageClient,
+  onFrame: ({ runId, data, metadata }) => { if (shell && !shell.isDestroyed()) shell.webContents.send('screencast-frame', { runId, data, metadata }); },
+  onError: (err) => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err); },
+});
+
 // Shared correlator: holds RAW evidence (unredacted) for all attached targets and
 // resolves response bodies through each request's OWN target client. With multiple
 // runs, targetIds are globally unique, so we resolve the owning run's TargetManager.
@@ -512,6 +535,7 @@ function ensureRunManager() {
     // Chrome exit/crash, cleanup). Idempotent; never double-releases.
     const run = summary && runManager.get(summary.id);
     releaseRunCapacity(run);
+    if (screencast) screencast.onRunGone(summary && summary.id); // WU-E.1 — stop a dead mirror
     broadcastRuns(); broadcastBrowsers();
   });
   runManager.on('active-changed', () => { broadcastTargets(); broadcastRuns(); broadcastBrowsers(); });
@@ -995,6 +1019,11 @@ handle('select-run', (_event, runId) => {
   return { ok: true, activeRunId: runManager.activeRunId() };
 });
 handle('close-run', async (_event, runId) => { if (runManager) await runManager.closeRun(String(runId)); return { ok: true }; });
+// WU-E.1 — embedded web mirror IPC (display + input over the run's OWN page CDP session).
+// Read/interaction only: no protocol send, no ownership change, no cross-run target.
+handle('screencast-start', async (_event, runId, opts = {}) => { const r = execRun(runId); if (r.error) return r; return screencast.start(String(runId), opts || {}); });
+handle('screencast-stop', async (_event, runId) => { if (runId != null && screencast.activeRunId() !== String(runId)) return { ok: true }; return screencast.stop(); });
+handle('screencast-input', async (_event, runId, ev = {}) => { const r = execRun(runId); if (r.error) return r; return screencast.input(String(runId), ev || {}); });
 handle('adb-list-webviews', async () => {
   try { return { ok: true, sockets: await androidBridge.listWebviewSockets(process.env.OBSERVATORY_ADB || 'adb') }; }
   catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }

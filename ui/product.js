@@ -1364,6 +1364,7 @@ renderActions();
     const el = $(sectionId); if (el) el.hidden = false;
     if (view === 'overview') renderOverview();
     if (view === 'history') document.dispatchEvent(new CustomEvent('history-activate'));
+    document.dispatchEvent(new CustomEvent('view-changed', { detail: { view } })); // WU-E.1 — embedded web mirror follows the visible view
   }
   for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.onclick = () => setView(b.dataset.view);
 
@@ -1438,10 +1439,11 @@ renderActions();
 
   function renderOverview() {
     const s = state.obs, cur = s && s.current;
-    const protocolSeen = !!(s && (s.status !== 'IDLE' || (s.history && s.history.length)));
     const empty = $('ov-empty'), body = $('ov-body'), etext = $('ov-empty-text');
-    if (!state.connected) { empty.hidden = false; body.hidden = true; etext.textContent = 'Chưa kết nối — mở một trình duyệt để bắt đầu.'; return; }
-    if (!protocolSeen) { empty.hidden = false; body.hidden = true; etext.textContent = 'Đã kết nối trình duyệt. Đang chờ dữ liệu game (đăng nhập & vào game)…'; return; }
+    // WU-E.1 — the web area IS the login/game surface, so show it whenever the selected
+    // browser is ONLINE (do NOT wait for protocol frames — the user logs in THROUGH it).
+    const online = !!((typeof currentRunId !== 'undefined' && currentRunId) || state.connected);
+    if (!online) { empty.hidden = false; body.hidden = true; etext.textContent = 'Chưa kết nối — mở một trình duyệt để bắt đầu.'; return; }
     empty.hidden = true; body.hidden = false;
     // Session context (aid/eid) banner — owned by ProtocolContext (§ context ownership).
     const ctxEl = $('ov-ctx');
@@ -1533,7 +1535,13 @@ renderActions();
   function render() {
     renderCap();
     if (!browsers.length) { listEl.innerHTML = '<div class="rr-empty">Chưa có trình duyệt.<span class="rr-empty-sub">Nhấn <b>＋ Tạo</b> để thêm một trình duyệt.</span></div>'; return; }
-    listEl.innerHTML = browsers.map((b) => {
+    // WU-E.1 §5 — concurrency capacity from the signed entitlement. When at the limit, an
+    // OFFLINE browser's Open is disabled + noted; Close/Stop/recovery stay enabled.
+    const maxConc = entitlementState && entitlementState.maxConcurrentBrowsers != null ? Number(entitlementState.maxConcurrentBrowsers) : null;
+    const running = browsers.filter((b) => b.online).length;
+    const atConc = maxConc != null && running >= maxConc;
+    const concNote = atConc ? `<div class="cap-note">Đang chạy ${running}/${maxConc} trình duyệt đồng thời (giới hạn theo key). Đóng bớt một trình duyệt để mở cái khác.</div>` : '';
+    listEl.innerHTML = concNote + browsers.map((b) => {
       const bd = badge(b);
       const dotCls = b.autoRunning ? 'auto' : b.runtimeStatus === 'ERROR' ? 'err' : b.online ? 'live' : '';
       const cls = ['rr-item', b.browserId === selectedBrowserId ? 'sel' : '', dotCls, b.online ? '' : 'closed'].filter(Boolean).join(' ');
@@ -1548,7 +1556,7 @@ renderActions();
         ? `<div class="rr-actions"><button class="rr-open-btn" data-reopen="${esc(b.browserId)}">Mở lại</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
         : b.online
         ? `<div class="rr-actions"><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
-        : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}">Mở</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Xóa</button></div>`;
+        : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}"${atConc ? ' disabled title="' + esc(`Đang chạy ${running}/${maxConc} trình duyệt đồng thời.`) + '"' : ''}>Mở</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Xóa</button></div>`;
       // WU-C.3 — compact but distinctive jackpot line (always shown; "—" when unknown).
       const jpTxt = b.currentJackpot != null ? Number(b.currentJackpot).toLocaleString() : '—';
       const jpCls = b.currentJackpot == null ? 'unknown' : ((b.jackpotGateState === 'WAITING' || b.jackpotGateState === 'READY') ? 'gated' : '');
@@ -1751,4 +1759,155 @@ renderActions();
   document.addEventListener('history-activate', refresh); // re-fetch when the Lịch sử tab opens
   if (api.onBrowserHistoryChanged) api.onBrowserHistoryChanged((p) => { if (p && p.browserId === currentBrowserId) refresh(); });
   refresh();
+})();
+
+
+// ==================== WU-E.1 EMBEDDED WEB MIRROR (Tong quan) ====================
+// Live mirror of the SELECTED browser's managed-Chrome page via CDP screencast, with
+// input forwarded back to that SAME run's page session. Display + input only: it never
+// sends protocol, never changes ownership, never retargets a run. One visible browser at
+// a time (the selected B); background runs keep executing untouched.
+(function overviewWebUI() {
+  if (!api.screencastStart) return; // preload without WU-E.1 surface - inert
+  const host = $('ov-web-host'), canvas = $('ov-canvas'), overlay = $('ov-web-overlay'), overlayText = $('ov-web-overlay-text');
+  if (!host || !canvas) return;
+  const ctx = canvas.getContext('2d');
+  let activeRunId = null;      // the run we asked main to mirror
+  let viewIsOverview = (document.body.dataset.view || 'overview') === 'overview';
+  let meta = null;             // last frame metadata (deviceWidth/deviceHeight)
+  let drawn = { dx: 0, dy: 0, dw: 0, dh: 0 };
+  const img = new Image();
+  let pending = null;          // latest base64 waiting to paint
+  let startSeq = 0;
+
+  function showOverlay(text) { if (overlay) { overlay.hidden = false; if (overlayText) overlayText.textContent = text; } }
+  function hideOverlay() { if (overlay) overlay.hidden = true; }
+  function clearCanvas() { try { ctx.clearRect(0, 0, canvas.width, canvas.height); } catch (e) { /* ignore */ } }
+
+  function sizeCanvas() {
+    const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
+    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; if (img.complete && img.naturalWidth) paint(); }
+  }
+  function paint() {
+    const cw = canvas.width, ch = canvas.height, iw = img.naturalWidth, ih = img.naturalHeight;
+    if (!iw || !ih) return;
+    const scale = Math.min(cw / iw, ch / ih);
+    const dw = iw * scale, dh = ih * scale, dx = (cw - dw) / 2, dy = (ch - dh) / 2;
+    drawn = { dx: dx, dy: dy, dw: dw, dh: dh };
+    ctx.clearRect(0, 0, cw, ch);
+    ctx.drawImage(img, dx, dy, dw, dh);
+  }
+  img.onload = function () { hideOverlay(); paint(); if (pending) { const p = pending; pending = null; img.src = 'data:image/jpeg;base64,' + p; } };
+
+  api.onScreencastFrame(function (f) {
+    if (!f || f.runId !== activeRunId) return;         // strict per-run: ignore other runs' frames
+    meta = f.metadata || meta;
+    if (!img.complete) { pending = f.data; return; }    // coalesce: only paint the newest frame
+    img.src = 'data:image/jpeg;base64,' + f.data;
+  });
+
+  // ---- input forwarding (mouse/keyboard/wheel) -> the mirrored run's page session ----
+  function toPage(clientX, clientY) {
+    if (!meta || !drawn.dw) return null;
+    const rect = canvas.getBoundingClientRect();
+    const px = (clientX - rect.left) * (canvas.width / rect.width);
+    const py = (clientY - rect.top) * (canvas.height / rect.height);
+    if (px < drawn.dx || px > drawn.dx + drawn.dw || py < drawn.dy || py > drawn.dy + drawn.dh) return null;
+    const dw = Number(meta.deviceWidth) || drawn.dw, dh = Number(meta.deviceHeight) || drawn.dh;
+    return { x: ((px - drawn.dx) / drawn.dw) * dw, y: ((py - drawn.dy) / drawn.dh) * dh };
+  }
+  function mods(e) { return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0); }
+  const BTN = { 0: 'left', 1: 'middle', 2: 'right' };
+  function sendInput(ev) { if (activeRunId) api.screencastInput(activeRunId, ev).catch(function () {}); }
+  function mouse(type, e) {
+    const p = toPage(e.clientX, e.clientY); if (!p) return;
+    sendInput({ kind: 'mouse', type: type, x: p.x, y: p.y, button: BTN[e.button] || 'none', buttons: e.buttons, clickCount: (type === 'mousePressed' || type === 'mouseReleased') ? (e.detail || 1) : 0, modifiers: mods(e) });
+  }
+  host.addEventListener('mousedown', function (e) { host.focus(); mouse('mousePressed', e); });
+  host.addEventListener('mouseup', function (e) { mouse('mouseReleased', e); });
+  let lastMove = 0;
+  host.addEventListener('mousemove', function (e) { const t = Date.now(); if (t - lastMove < 40) return; lastMove = t; mouse('mouseMoved', e); });
+  host.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+  host.addEventListener('wheel', function (e) { const p = toPage(e.clientX, e.clientY); if (!p) return; e.preventDefault(); sendInput({ kind: 'wheel', type: 'mouseWheel', x: p.x, y: p.y, deltaX: e.deltaX, deltaY: e.deltaY, modifiers: mods(e) }); }, { passive: false });
+  function key(type, e) {
+    if (!activeRunId) return;
+    const printable = e.key && e.key.length === 1;
+    const ev = { kind: 'key', type: (printable && type === 'keyDown') ? 'keyDown' : (type === 'keyDown' ? 'rawKeyDown' : 'keyUp'), key: e.key, code: e.code, windowsVirtualKeyCode: e.keyCode, modifiers: mods(e) };
+    if (printable && type === 'keyDown') ev.text = e.key;
+    if (e.key === 'Enter' && type === 'keyDown') ev.text = '\r';
+    sendInput(ev);
+  }
+  host.addEventListener('keydown', function (e) { if (!activeRunId) return; e.preventDefault(); key('keyDown', e); });
+  host.addEventListener('keyup', function (e) { if (!activeRunId) return; e.preventDefault(); key('keyUp', e); });
+
+  // ---- lifecycle: follow the selected browser + visible view ----
+  async function startFor(runId) {
+    const seq = ++startSeq;
+    sizeCanvas();
+    showOverlay('Dang ket noi man hinh trinh duyet...');
+    for (let i = 0; i < 8; i++) {
+      const r = await api.screencastStart(runId, { maxWidth: Math.max(320, host.clientWidth), maxHeight: Math.max(240, host.clientHeight), quality: 60 }).catch(function () { return { error: { code: 'X' } }; });
+      if (seq !== startSeq) return;                 // superseded by a newer selection
+      if (r && r.ok) { activeRunId = runId; return; }
+      if (r && r.error && r.error.code !== 'SCREENCAST_TARGET_UNAVAILABLE' && r.error.code !== 'RUN_NOT_FOUND') { showOverlay('Khong mo duoc man hinh: ' + (r.error.message || r.error.code)); return; }
+      await new Promise(function (res) { setTimeout(res, 700); }); // target not attached yet - retry
+    }
+    if (seq === startSeq) showOverlay('Chua nhan duoc man hinh trinh duyet. Thu lai khi game da tai.');
+  }
+  async function stopMirror() {
+    startSeq++;
+    const prev = activeRunId; activeRunId = null; meta = null; clearCanvas();
+    if (prev) { try { await api.screencastStop(prev); } catch (e) { /* ignore */ } }
+  }
+  function reconcile() {
+    const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
+    if (viewIsOverview && runId) { if (activeRunId !== runId) { stopMirror().then(function () { startFor(runId); }); } }
+    else { if (activeRunId) stopMirror(); }
+  }
+
+  document.addEventListener('view-changed', function (e) { viewIsOverview = e.detail && e.detail.view === 'overview'; reconcile(); });
+  document.addEventListener('run-selected', function () { reconcile(); });
+  if (api.onBrowsersChanged) api.onBrowsersChanged(function () { const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null; if (runId !== activeRunId) reconcile(); });
+  if (typeof ResizeObserver !== 'undefined') { let rt = null; new ResizeObserver(function () { sizeCanvas(); if (activeRunId) { clearTimeout(rt); rt = setTimeout(function () { api.screencastStart(activeRunId, { maxWidth: Math.max(320, host.clientWidth), maxHeight: Math.max(240, host.clientHeight), quality: 60 }).catch(function () {}); }, 250); } }).observe(host); }
+  window.addEventListener('beforeunload', function () { if (activeRunId) api.screencastStop(activeRunId); });
+  reconcile();
+})();
+
+
+// ==================== WU-E.1 SYSTEMATIC FEATURE-LOCK UI ====================
+// Renders locked (dim + 🔒 + non-interactive + note) states for features the current key
+// lacks. Notes name the RIGHT (entitlement), never a plan (no runtime plan->feature map).
+// Main process is the real authority; this is the visible, honest UX layer over it.
+(function featureLockUI() {
+  function ensureNote(afterEl, id, text, ent) {
+    if (!afterEl || !afterEl.parentNode) return null;
+    let n = document.getElementById(id);
+    if (!n) { n = document.createElement('div'); n.id = id; n.className = 'lock-note'; afterEl.parentNode.insertBefore(n, afterEl.nextSibling); }
+    n.innerHTML = '<span>' + text + ' <span class="ent">Entitlement: ' + ent + '</span></span>';
+    return n;
+  }
+  function apply(e) {
+    const f = (e && e.features) || {};
+    // "Chờ Jackpot" gate (jackpotGate) — the checkbox + its config become locked.
+    const box = document.getElementById('at-jp-wait');
+    const label = box ? box.closest('label') : null;
+    const gateOk = !!f.jackpotGate;
+    if (box) {
+      box.disabled = !gateOk;
+      if (!gateOk) { box.checked = false; const c = document.getElementById('at-jp-config'); if (c) c.hidden = true; }
+      if (label) { label.classList.toggle('feature-locked', !gateOk); }
+      const note = ensureNote(label || box, 'at-jp-lock', 'Key hiện tại chưa có quyền "Chờ Jackpot". Yêu cầu key có quyền này.', 'jackpotGate');
+      if (note) note.hidden = gateOk;
+    }
+    // "Jackpot trực tiếp" (jackpotLive) — value is withheld by main; add an explicit note.
+    const chip = document.getElementById('at-jp-chip');
+    const liveOk = !!f.jackpotLive;
+    if (chip) {
+      const note = ensureNote(chip, 'at-jplive-lock', 'Key hiện tại chưa có quyền "Jackpot trực tiếp" — giá trị jackpot sẽ ẩn.', 'jackpotLive');
+      if (note) note.hidden = liveOk;
+    }
+  }
+  document.addEventListener('entitlement-change', function (ev) { apply(ev.detail || {}); });
+  document.addEventListener('view-changed', function () { if (typeof entitlementState !== 'undefined' && entitlementState) apply(entitlementState); });
+  if (typeof entitlementState !== 'undefined' && entitlementState) apply(entitlementState);
 })();
