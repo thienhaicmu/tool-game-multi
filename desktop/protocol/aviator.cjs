@@ -122,8 +122,9 @@ class RoundTracker extends EventEmitter {
   roundHistory() { return this._roundOrder.map((sid) => ({ ...this._rounds.get(sid) })); }
   actionTraces() { return this._actionTraces.map((t) => ({ ...t })); }
   // Send-seam context for a target (the live game socket we can .send() through).
+  // Target-scoped by design: there is deliberately no "any socket" accessor, so a
+  // send can only ever resolve the owning target's own connection.
   socketContext(targetId) { const c = this._socketByTarget.get(String(targetId)); return c ? { ...c, targetId: String(targetId) } : null; }
-  anySocketContext() { const it = this._socketByTarget.entries().next(); return it.done ? null : { ...it.value[1], targetId: it.value[0] }; }
 
   /**
    * observe(frame) — feed a captured WebSocket frame.

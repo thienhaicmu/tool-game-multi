@@ -6,7 +6,7 @@ function normalizeCaptureEvent(event, sessionId) {
   // under test (cmd/sid/b/aid/eid/wm/odd) are intentionally NOT masked (§21); the
   // execution payload carries no credentials/tokens.
   if (event.kind === 'protocol-test') {
-    return { schemaVersion: 1, sessionId, kind: 'protocol-test', id: event.id ? String(event.id) : undefined, targetId: event.targetId ? String(event.targetId) : undefined, timestamp: event.timestamp || new Date().toISOString(), exec: event.exec };
+    return { schemaVersion: 1, sessionId, kind: 'protocol-test', id: event.id ? String(event.id) : undefined, targetId: event.targetId ? String(event.targetId) : undefined, browserRunId: event.browserRunId ? String(event.browserRunId) : undefined, timestamp: event.timestamp || new Date().toISOString(), exec: event.exec };
   }
   return {
     schemaVersion: 1,
@@ -15,6 +15,7 @@ function normalizeCaptureEvent(event, sessionId) {
     id: event.id ? String(event.id) : undefined,
     requestId: event.requestId ? String(event.requestId) : undefined,
     targetId: event.targetId ? String(event.targetId) : undefined,
+    browserRunId: event.browserRunId ? String(event.browserRunId) : undefined,
     // Interaction (user click) fields + the link from a request to its click.
     text: event.text != null ? String(event.text) : undefined,
     selector: event.selector ? String(event.selector) : undefined,

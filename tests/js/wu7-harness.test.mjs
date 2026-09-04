@@ -144,14 +144,16 @@ test('prefixed Socket.IO frames send with the observed wire prefix', async () =>
   assert.deepEqual(wire.slice(0, 3), ['6', 'MiniGame', 'aviatorPlugin']);
 });
 
-test('execute falls back to any observed socket context when selected target has none', async () => {
+// WU-B: there is NO arbitrary-socket fallback. A send must resolve the OWNING
+// target's own socket; if that target has none, it fails rather than riding a
+// different target's (or another run's) connection.
+test('execute does NOT fall back to another target socket (owning target only)', async () => {
   const { tracker, harness, sends } = setup();
-  openRound(tracker, 2986908, 'SOCKET_TARGET');
-  const p = harness.execute({ targetId: 'SELECTED_TARGET', command: 'bet' });
-  setTimeout(() => tracker.observe({ direction: 'recv', raw: '{"eid":1,"b":5000,"cmd":100002}' }), 20);
-  const ex = await p;
-  assert.equal(ex.result, 'ACK');
-  assert.equal(sends[0].ctx.targetId, 'SOCKET_TARGET');
+  openRound(tracker, 2986908, 'SOCKET_TARGET');            // socket observed on a different target
+  const ex = await harness.execute({ targetId: 'SELECTED_TARGET', command: 'bet' });
+  assert.equal(ex.result, 'ERROR');
+  assert.equal(ex.error.code, 'TEST_SESSION_UNAVAILABLE');
+  assert.equal(sends.length, 0, 'nothing is sent through a foreign socket');
 });
 
 // ---------------------------------------------------------------------------

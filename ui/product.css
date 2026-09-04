@@ -346,7 +346,7 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent);outline:none}
 .cfg-err{color:var(--err);font-size:var(--t-cap);min-height:12px}
 
 /* ============================= WU11 FOCUSED PROTOCOL TESTER SHELL ============================= */
-:root{ --appbar-h:54px; --nav-w:188px; }
+:root{ --appbar-h:54px; --nav-w:188px; --run-rail-w:190px; }
 body{ display:block; }                       /* override the legacy body grid */
 
 #appbar{ position:fixed; inset:0 0 auto 0; height:var(--appbar-h); display:flex; align-items:center; gap:14px; padding:0 18px; background:var(--surface); border-bottom:1px solid var(--line); z-index:60; }
@@ -364,7 +364,65 @@ body{ display:block; }                       /* override the legacy body grid */
 .ab-adv{ display:inline-flex; align-items:center; gap:5px; font-size:var(--t-sm); color:var(--dim); cursor:pointer; border:1px solid var(--line-strong); border-radius:var(--r2); padding:4px 9px; }
 .ab-adv input{ margin:0; }
 
-#shell{ position:fixed; inset:var(--appbar-h) 0 0 0; display:flex; }
+#shell{ position:fixed; inset:var(--appbar-h) 0 0 var(--run-rail-w); display:flex; }
+
+/* WU-C — persistent Browser Runs rail (product mode only). Shows every run's live
+   status/SID/ODD at once; selecting a row changes the DETAIL view, never execution. */
+#run-rail{ position:fixed; top:var(--appbar-h); left:0; bottom:0; width:var(--run-rail-w); z-index:55;
+  background:var(--panel); border-right:1px solid var(--line); display:flex; flex-direction:column; }
+body[data-mode=advanced] #run-rail{ display:none; }
+body[data-license=checking] #run-rail, body[data-license=locked] #run-rail{ display:none!important; }
+.rr-head{ display:flex; align-items:center; justify-content:space-between; padding:10px 12px 8px; border-bottom:1px solid var(--line); }
+.rr-head b{ font-size:var(--t-cap); letter-spacing:.08em; color:var(--dim); }
+.rr-head .btn{ height:24px; padding:0 8px; font-size:var(--t-sm); }
+.rr-list{ flex:1; overflow:auto; padding:6px; display:flex; flex-direction:column; gap:5px; }
+.rr-empty{ color:var(--faint); font-size:var(--t-sm); padding:10px 8px; }
+.rr-empty-sub{ display:block; margin-top:4px; color:var(--faint); font-size:var(--t-cap); }
+.rr-item{ border:1px solid var(--line); border-radius:var(--r2); padding:7px 8px; cursor:pointer; background:var(--surface); position:relative; }
+.rr-item:hover{ border-color:var(--line-strong); }
+.rr-item.sel{ border-color:var(--accent); background:var(--accent-weak); }
+.rr-item.closed{ opacity:.6; }
+.rr-item-top{ display:flex; align-items:center; gap:6px; }
+.rr-dot{ width:8px; height:8px; border-radius:50%; background:var(--faint); flex:0 0 auto; }
+.rr-item.live .rr-dot{ background:var(--ok); }
+.rr-item.auto .rr-dot{ background:var(--accent); box-shadow:0 0 0 3px var(--accent-weak); }
+.rr-item.err .rr-dot{ background:var(--err); }
+.rr-id{ font-weight:700; font-size:var(--t-sm); font-family:var(--f-mono); }
+.rr-x{ margin-left:auto; border:none; background:transparent; color:var(--faint); cursor:pointer; font-size:12px; line-height:1; padding:2px 4px; border-radius:var(--r1); }
+.rr-x:hover{ color:var(--err); background:var(--err-bg); }
+.rr-badge{ display:inline-block; font-size:9px; font-weight:800; letter-spacing:.06em; padding:1px 6px; border-radius:999px; margin-top:5px; text-transform:uppercase; }
+.rr-badge.auto{ background:var(--accent-weak); color:var(--accent); }
+.rr-badge.test{ background:var(--info-bg); color:var(--info); }
+.rr-badge.ready{ background:var(--ok-bg); color:var(--ok); }
+.rr-badge.wait,.rr-badge.starting{ background:var(--warn-bg); color:var(--warn); }
+.rr-badge.disconnected,.rr-badge.closed{ background:var(--elevate); color:var(--faint); }
+.rr-badge.error{ background:var(--err-bg); color:var(--err); }
+.rr-meta{ margin-top:4px; font-size:var(--t-cap); color:var(--dim); display:flex; justify-content:space-between; gap:6px; }
+.rr-odd{ font-family:var(--f-mono); font-weight:700; color:var(--text); }
+.rr-host{ font-size:var(--t-cap); color:var(--faint); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+/* WU-C.1 — persistent browser rail additions */
+.rr-cap{ font-size:var(--t-cap); color:var(--dim); font-weight:700; margin-left:auto; margin-right:8px; }
+.rr-cap.full{ color:var(--err); }
+.rr-name{ font-size:var(--t-sm); color:var(--dim); margin-top:2px; }
+.rr-brid{ font-size:9px; color:var(--faint); font-family:var(--f-mono); }
+.rr-actions{ display:flex; gap:6px; margin-top:6px; }
+.rr-open-btn{ flex:1; height:24px; font-size:var(--t-sm); background:var(--accent); color:#fff; border-color:var(--accent); border-radius:var(--r1); font-weight:600; }
+.rr-open-btn:hover{ filter:brightness(1.05); }
+.rr-mini{ height:22px; padding:0 7px; font-size:var(--t-cap); border:1px solid var(--line); border-radius:var(--r1); background:var(--surface); color:var(--dim); cursor:pointer; }
+.rr-mini:hover{ border-color:var(--line-strong); color:var(--text); }
+.rr-mini.danger:hover{ color:var(--err); border-color:var(--err); }
+/* Global launcher hidden in normal product mode; browser identity owns the URL. */
+body[data-mode=product] #appbar .ab-url{ display:none; }
+body[data-view=auto] #appbar #shell-running{ display:inline-flex; }
+/* New/Edit browser modal */
+.bm-overlay{ position:fixed; inset:0; z-index:120; background:rgba(16,24,40,.34); display:flex; align-items:center; justify-content:center; }
+.bm-overlay[hidden]{ display:none; }
+.bm-card{ background:var(--surface); border:1px solid var(--line-strong); border-radius:var(--r3); padding:18px; width:360px; box-shadow:0 8px 32px rgba(16,24,40,.28); }
+.bm-title{ font-size:var(--t-xl); font-weight:700; margin-bottom:12px; }
+.bm-field{ display:flex; flex-direction:column; gap:4px; font-size:var(--t-sm); color:var(--dim); margin-bottom:10px; }
+.bm-field input{ height:32px; }
+.bm-error{ background:var(--err-bg); color:var(--err); font-size:var(--t-sm); padding:7px 9px; border-radius:var(--r2); margin-bottom:10px; }
+.bm-actions{ display:flex; justify-content:flex-end; gap:8px; margin-top:4px; }
 #shell-nav{ width:var(--nav-w); flex:0 0 var(--nav-w); border-right:1px solid var(--line); background:var(--panel); padding:12px 8px; display:flex; flex-direction:column; gap:4px; }
 #shell-nav .nav-item{ text-align:left; background:transparent; border:none; padding:10px 12px; border-radius:var(--r2); font-weight:600; font-size:var(--t-md); color:var(--dim); cursor:pointer; }
 #shell-nav .nav-item:hover{ background:var(--elevate); color:var(--text); }
@@ -388,13 +446,14 @@ body[data-mode=advanced] #shell-nav{ display:none; }
 /* Auto Run is a focused workspace: hide the navigation rail and expand the
    runner so the sequence table remains the primary task surface. */
 body[data-view=auto] #shell-nav{ display:none; }
-body[data-view=auto] #at-panel:not([hidden]){ left:0; width:auto; border-left:0; }
+body[data-view=auto] #at-panel:not([hidden]){ left:var(--run-rail-w); width:auto; border-left:0; }
 
-/* Manual/Auto/Amount panels dock into the main content region in product mode */
+/* Manual/Auto/Amount panels dock into the main content region in product mode,
+   to the right of the Browser Runs rail + nav. */
 body[data-mode=product] #proto-panel:not([hidden]),
 body[data-mode=product] #at-panel:not([hidden]),
 body[data-mode=product] #bv-panel:not([hidden]){
-  position:fixed; top:var(--appbar-h); left:var(--nav-w); right:0; bottom:0;
+  position:fixed; top:var(--appbar-h); left:calc(var(--run-rail-w) + var(--nav-w)); right:0; bottom:0;
   width:auto; height:auto; box-shadow:none; border-left:none; z-index:12;
 }
 body[data-mode=product] .proto-panel .proto-head .btn.icon{ display:none; }  /* no close ✕ when docked */
@@ -404,7 +463,7 @@ body[data-view=auto] #appbar .brand,
 body[data-view=auto] #appbar #shell-status,
 body[data-view=auto] #appbar #shell-advanced-wrap{ display:none; }
 body[data-view=auto] #appbar .ab-url{ flex:1 1 auto; max-width:none; }
-body[data-view=auto] #at-panel:not([hidden]){ top:var(--appbar-h); left:0; right:0; bottom:0; width:auto; height:auto; }
+body[data-view=auto] #at-panel:not([hidden]){ top:var(--appbar-h); left:var(--run-rail-w); right:0; bottom:0; width:auto; height:auto; }
 /* In advanced mode the WU7-10 panels keep their original floating behavior. */
 
 /* ---- WU11.1 Auto Run CTA + protocol context ---- */

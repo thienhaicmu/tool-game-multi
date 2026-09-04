@@ -30,10 +30,11 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, onRuntime = () => {} } = {}) {
+  constructor({ profilePath, env = process.env, onRuntime = () => {}, onExit = () => {} } = {}) {
     this.profilePath = profilePath;
     this.env = env;
     this.onRuntime = onRuntime;
+    this.onExit = onExit;
     this.process = null;
     this.port = null;
   }
@@ -61,9 +62,18 @@ class ChromeLauncher {
     this.process.once('exit', () => {
       this.process = null;
       this.onRuntime({ chromePid: null });
+      try { this.onExit(); } catch { /* best effort */ }
     });
     this.onRuntime({ cdpPort: port, chromePid: this.process.pid, chromeProfile: profile });
     return { ok: true, reused: false, endpoint: { host: '127.0.0.1', port }, profile, pid: this.process.pid };
+  }
+
+  // Terminate the browser this launcher owns (used when a BrowserRun is closed
+  // from the app rather than by the user closing the window). Best effort.
+  close() {
+    const proc = this.process;
+    if (proc && !proc.killed) { try { proc.kill(); } catch { /* already gone */ } }
+    this.process = null;
   }
 
   snapshot() {

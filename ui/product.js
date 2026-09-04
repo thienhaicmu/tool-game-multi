@@ -3,13 +3,37 @@ const api = window.desktopCapture || {};
 const $ = (id) => document.getElementById(id);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
+// WU-B: the browser run this window currently controls. It is a VIEW pointer only
+// (which run the panels show); every execution IPC passes it EXPLICITLY so the
+// engine binds a send/auto/b-Test to this exact run, never to whatever the main
+// process happens to consider "active". Changing it never retargets a running run.
+// currentRunId is a VIEW pointer to the run whose detail panels are shown, and the
+// explicit runId used for execution IPC (WU-B). When the selected PERSISTENT browser
+// is OFFLINE it is null, so execution is safely rejected — a selected offline browser
+// can never execute against another live run. When no persistent browser exists
+// (Advanced Debug / legacy launch), it falls back to mirroring main's active run.
+let currentRunId = null;
+function setCurrentRun(runId) {
+  const next = runId || null;
+  if (next === currentRunId) return;
+  currentRunId = next;
+  if (next && api.selectRun) api.selectRun(next).catch(() => {}); // make gated streams follow the view
+  document.dispatchEvent(new CustomEvent('run-selected', { detail: { runId: next } }));
+}
+function pickActiveRun(runs) { const list = runs || []; return list.find((r) => r.active) || null; }
+let _railSel = { active: false, runId: null }; // set by the BROWSERS rail (browserListUI)
+let _lastActiveRunId = null;                    // last active runtime run (advanced/legacy fallback)
+function recomputeCurrentRun() { setCurrentRun(_railSel.active ? _railSel.runId : _lastActiveRunId); }
+function railSelect(active, runId) { _railSel = { active: !!active, runId: runId || null }; recomputeCurrentRun(); }
+if (api.onRunsChanged) api.onRunsChanged((runs) => { const a = pickActiveRun(runs); _lastActiveRunId = a ? a.id : _lastActiveRunId; recomputeCurrentRun(); });
+
 // Session aid/eid — owned by the main process (ProtocolContext), never hardcoded /
 // user-entered. All control panels read this and stay DISABLED until ready.
 let protoCtx = { aid: null, eid: null, ready: false };
 function protoCtxReady() { return !!(protoCtx && protoCtx.ready); }
 function broadcastProtoCtx() { document.dispatchEvent(new CustomEvent('protoctx-change')); }
 if (api.onProtocolContext) api.onProtocolContext((c) => { protoCtx = c || protoCtx; broadcastProtoCtx(); });
-if (api.protocolContext) api.protocolContext().then((c) => { if (c) { protoCtx = c; broadcastProtoCtx(); } }).catch(() => {});
+if (api.protocolContext) api.protocolContext(currentRunId).then((c) => { if (c) { protoCtx = c; broadcastProtoCtx(); } }).catch(() => {});
 
 let licenseState = { active: false, checking: true, machineId: null };
 const UTC_PLUS_7_OFFSET_SECONDS = 7 * 60 * 60;
@@ -563,7 +587,7 @@ renderActions();
       badge.className = 'proto-env ' + (env.allowed ? 'on' : 'off');
     }
   }
-  async function refreshEnv() { try { env = await api.protocolEnvironment(); } catch { env = { allowed: false }; } setEnvBadge(); recompute(); }
+  async function refreshEnv() { try { env = await api.protocolEnvironment(currentRunId); } catch { env = { allowed: false }; } setEnvBadge(); recompute(); }
 
   // ---- dynamic request fields for command + scenario ----
   const SCENARIO_NOTE = {
@@ -649,10 +673,10 @@ renderActions();
     const base = { command: state.command, payload: built.payload, negative: v.negative, expect: v.expect, allowMismatch: v.allowMismatch };
     try {
       if (state.scenario === 'duplicate') {
-        showSendResult(await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: null, negative: false }), { ...base, source: 'NEGATIVE_TEST' });
-        showSendResult(await api.protocolExecute({ ...base, source: 'NEGATIVE_TEST', expect: 'reject', negative: true }), { ...base, source: 'NEGATIVE_TEST' });
+        showSendResult(await api.protocolExecute(currentRunId, { ...base, source: 'NEGATIVE_TEST', expect: null, negative: false }), { ...base, source: 'NEGATIVE_TEST' });
+        showSendResult(await api.protocolExecute(currentRunId, { ...base, source: 'NEGATIVE_TEST', expect: 'reject', negative: true }), { ...base, source: 'NEGATIVE_TEST' });
       } else {
-        showSendResult(await api.protocolExecute(base), base);
+        showSendResult(await api.protocolExecute(currentRunId, base), base);
       }
     } catch { toast('Send failed'); }
     btn.textContent = 'Send Request'; recompute();
@@ -710,8 +734,8 @@ renderActions();
   // ---- panel open/close ----
   async function openManual() {
     await refreshEnv();
-    try { const st = await api.protocolRoundState(); round = st.current; sidHistory = (st.sidHistory || []).map((h) => h.sid); } catch { /* ignore */ }
-    try { const list = await api.protocolExecutions(); execs.length = 0; execById.clear(); for (const x of list.reverse()) pushExec(x); } catch { /* ignore */ }
+    try { const st = await api.protocolRoundState(currentRunId); round = st.current; sidHistory = (st.sidHistory || []).map((h) => h.sid); } catch { /* ignore */ }
+    try { const list = await api.protocolExecutions(currentRunId); execs.length = 0; execById.clear(); for (const x of list.reverse()) pushExec(x); } catch { /* ignore */ }
     renderContext(); renderFields();
   }
   $('proto-toggle').onclick = async () => { const p = $('proto-panel'); p.hidden = !p.hidden; if (!p.hidden) await openManual(); };
@@ -803,7 +827,7 @@ renderActions();
 
   $('obs-toggle').onclick = async () => {
     const p = $('obs-panel'); p.hidden = !p.hidden;
-    if (!p.hidden) { try { snap = await api.observerSnapshot(); } catch { snap = null; } render(); }
+    if (!p.hidden) { try { snap = await api.observerSnapshot(currentRunId); } catch { snap = null; } render(); }
   };
   $('obs-close').onclick = () => { $('obs-panel').hidden = true; };
 })();
@@ -937,7 +961,7 @@ renderActions();
   }
 
   async function refreshEnv() {
-    try { env = await api.autotestEnvironment(); } catch { env = { allowed: false, host: '' }; }
+    try { env = await api.autotestEnvironment(currentRunId); } catch { env = { allowed: false, host: '' }; }
     const badge = $('at-env');
     badge.textContent = `READY · ${env.host || ''}`;
     badge.className = 'proto-env on';
@@ -1067,14 +1091,14 @@ renderActions();
   async function startCurrentRow() {
     const v = ATC ? ATC.validate(rawFields()) : { ok: true, config: rawFields() };
     if (!v.ok) { sequenceRunning = false; validateConfigUI(); return; }
-    const r = await api.autotestStart(v.config);
+    const r = await api.autotestStart(currentRunId, v.config);
     if (r && r.error) { sequenceRunning = false; $('at-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; renderCta(); return; }
     snap = r; render();
   }
-  async function stopRun() { sequenceRunning = false; const r = await api.autotestStop(); if (r && !r.error) { snap = r; render(); } }
+  async function stopRun() { sequenceRunning = false; const r = await api.autotestStop(currentRunId); if (r && !r.error) { snap = r; render(); } }
   $('at-cta').onclick = () => { (snap && snap.running) ? stopRun() : startRun(); };
 
-  async function openAuto() { await refreshEnv(); try { snap = await api.autotestSnapshot(); } catch { snap = null; } validateConfigUI(); render(); }
+  async function openAuto() { await refreshEnv(); try { snap = await api.autotestSnapshot(currentRunId); } catch { snap = null; } validateConfigUI(); render(); }
   $('at-toggle').onclick = async () => { const p = $('at-panel'); p.hidden = !p.hidden; if (!p.hidden) await openAuto(); };
   $('at-close').onclick = () => { $('at-panel').hidden = true; };
   $('at-panel').addEventListener('shell:activate', openAuto); // WU11 nav hook
@@ -1100,7 +1124,7 @@ renderActions();
     chip.className = 'chip ' + (on ? 'on' : (status === 'COMPLETED' ? 'warn' : 'off'));
   }
   async function refreshEnv() {
-    try { env = await api.bvalidateEnvironment(); } catch { env = { allowed: false, host: '' }; }
+    try { env = await api.bvalidateEnvironment(currentRunId); } catch { env = { allowed: false, host: '' }; }
     const badge = $('bv-env');
     badge.textContent = `READY · ${env.host || ''}`;
     badge.className = 'proto-env on';
@@ -1189,12 +1213,12 @@ renderActions();
   $('bv-start').onclick = async () => {
     if (!validate() || !protoCtxReady()) return;
     $('bv-cfg-err').textContent = '';
-    const r = await api.bvalidateStart(buildConfig()); // config carries session aid/eid
+    const r = await api.bvalidateStart(currentRunId, buildConfig()); // config carries session aid/eid
     if (r && r.error) { $('bv-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; return; }
     snap = r; render();
   };
-  $('bv-stop').onclick = async () => { const r = await api.bvalidateStop(); if (r && !r.error) { snap = r; render(); } };
-  async function openBtest() { await refreshEnv(); try { snap = await api.bvalidateSnapshot(); } catch { snap = null; } validate(); render(); }
+  $('bv-stop').onclick = async () => { const r = await api.bvalidateStop(currentRunId); if (r && !r.error) { snap = r; render(); } };
+  async function openBtest() { await refreshEnv(); try { snap = await api.bvalidateSnapshot(currentRunId); } catch { snap = null; } validate(); render(); }
   $('bv-toggle').onclick = async () => { const p = $('bv-panel'); p.hidden = !p.hidden; if (!p.hidden) await openBtest(); };
   $('bv-close').onclick = () => { $('bv-panel').hidden = true; };
   $('bv-panel').addEventListener('shell:activate', openBtest); // WU11 nav hook
@@ -1280,6 +1304,16 @@ renderActions();
   // ---- Overview: protocol status + prominent ODD (from the observer snapshot) ----
   api.onObserverUpdate && api.onObserverUpdate((s) => { state.obs = s; if (state.view === 'overview' && !$('view-overview').hidden) renderOverview(); });
   document.addEventListener('protoctx-change', () => { if (state.view === 'overview' && !$('view-overview').hidden) renderOverview(); });
+
+  // WU-C — selecting a different BrowserRun re-seeds the DETAIL view for that run.
+  // It changes the VIEW only: no execution is started/stopped/retargeted here (that
+  // is entirely run-scoped in the engine and driven by the explicit runId in WU-B).
+  document.addEventListener('run-selected', async () => {
+    try { const c = await api.protocolContext(currentRunId); protoCtx = c || { aid: null, eid: null, ready: false }; broadcastProtoCtx(); } catch { /* ignore */ }
+    try { state.obs = await api.observerSnapshot(currentRunId); } catch { state.obs = null; }
+    refreshInstanceInfo();
+    setView(state.view); // re-activates the visible panel, which re-fetches for currentRunId
+  });
   const f2 = (n) => (n == null || !Number.isFinite(Number(n))) ? '—' : Number(n).toFixed(2);
 
   function renderOverview() {
@@ -1327,7 +1361,134 @@ renderActions();
   (async () => {
     await refreshInstanceInfo();
     try { const t = await api.listTargets(); if (t && t.length) { state.connected = true; state.targetName = t[0].title || t[0].url || t[0].cdpTargetId; setStatus('on', 'Connected'); } } catch { /* ignore */ }
-    try { state.obs = await api.observerSnapshot(); } catch { /* ignore */ }
+    try { state.obs = await api.observerSnapshot(currentRunId); } catch { /* ignore */ }
     if (state.view === 'overview') renderOverview();
   })();
+})();
+
+// ==================== WU-C.1 PERSISTENT BROWSERS RAIL ====================
+// The rail's primary entities are PERSISTENT browsers (B-xxxx), joined with their
+// live runtime run (BR-xxxx) when online. Summaries come from the coalesced
+// `browsers-changed` push (built from registry + each run's own state) — never from
+// forwarding raw protocol frames. Selecting a browser is a VIEW change: it binds
+// currentRunId to that browser's live run (or null when OFFLINE, so execution is
+// safely rejected). It never starts/stops/retargets any AutoRunner.
+(function browserListUI() {
+  if (!api.listBrowsers) return; // preload without WU-C.1 surface — inert
+  const listEl = $('run-list');
+  if (!listEl) return;
+  let browsers = [];
+  let capacity = { registered: 0, max: null, canCreate: true, overCapacity: false, unlimited: true };
+  let selectedBrowserId = null;
+  const f2 = (n) => (n == null || !Number.isFinite(Number(n))) ? null : Number(n).toFixed(2);
+
+  // Normalized, source-real badge. OFFLINE and AUTO are the most visible.
+  function badge(b) {
+    if (!b.online) return { cls: 'disconnected', text: 'OFFLINE' };
+    if (b.runtimeStatus === 'ERROR') return { cls: 'error', text: 'ERROR' };
+    if (b.runtimeStatus === 'DISCONNECTED') return { cls: 'disconnected', text: 'DISCONNECTED' };
+    if (b.autoRunning) return { cls: 'auto', text: 'AUTO' };
+    if (b.testRunning) return { cls: 'test', text: 'TEST' };
+    if (b.protocolReady) return { cls: 'ready', text: 'READY' };
+    if (b.runtimeStatus === 'CONNECTED' || b.runtimeStatus === 'WAITING_PROTOCOL') return { cls: 'wait', text: 'WAITING' };
+    return { cls: 'starting', text: 'STARTING' };
+  }
+
+  function renderCap() {
+    const capEl = $('rr-cap');
+    if (capEl) {
+      if (capacity.unlimited || capacity.max == null) { capEl.textContent = String(capacity.registered); capEl.classList.remove('full'); }
+      else { capEl.textContent = `${capacity.registered}/${capacity.max}`; capEl.classList.toggle('full', !capacity.canCreate); }
+    }
+    const newBtn = $('rr-new');
+    if (newBtn) { newBtn.disabled = !capacity.canCreate; newBtn.title = capacity.canCreate ? 'Create a new persistent browser' : `Browser limit reached (${capacity.registered}/${capacity.max})`; }
+    const running = $('shell-running');
+    if (running) { const n = browsers.filter((b) => b.online).length; running.textContent = `${n} Running`; }
+  }
+
+  function render() {
+    renderCap();
+    if (!browsers.length) { listEl.innerHTML = '<div class="rr-empty">No browsers yet.<span class="rr-empty-sub">Click <b>+ New</b> to create one.</span></div>'; return; }
+    listEl.innerHTML = browsers.map((b) => {
+      const bd = badge(b);
+      const dotCls = b.autoRunning ? 'auto' : b.runtimeStatus === 'ERROR' ? 'err' : b.online ? 'live' : '';
+      const cls = ['rr-item', b.browserId === selectedBrowserId ? 'sel' : '', dotCls, b.online ? '' : 'closed'].filter(Boolean).join(' ');
+      const odd = f2(b.currentOdd);
+      const runtime = b.online
+        ? `<div class="rr-meta"><span>SID ${b.currentSid != null ? esc(b.currentSid) : '—'}</span><span class="rr-odd">${odd != null ? esc(odd) + 'x' : '—'}</span></div><div class="rr-brid">${esc(b.runId || '')}</div>`
+        : `<div class="rr-meta"><span>${b.lastOpenedAt ? 'Last used ' + esc(fmtTimeShort(b.lastOpenedAt)) : 'Never opened'}</span></div>`;
+      const actions = b.online
+        ? `<div class="rr-actions"><button class="rr-mini" data-edit="${esc(b.browserId)}">Edit</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Close</button></div>`
+        : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}">OPEN</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Edit</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Delete</button></div>`;
+      return `<div class="${cls}" data-browser="${esc(b.browserId)}">`
+        + `<div class="rr-item-top"><span class="rr-dot"></span><span class="rr-id">${esc(b.browserId)}</span><span class="rr-badge ${bd.cls}" style="margin-left:auto">${esc(bd.text)}</span></div>`
+        + `<div class="rr-name">${esc(b.name || '')}</div>`
+        + runtime + actions + `</div>`;
+    }).join('');
+    for (const el of listEl.querySelectorAll('.rr-item')) {
+      el.onclick = (e) => { if (e.target.closest('button')) return; select(el.dataset.browser); };
+    }
+    listEl.querySelectorAll('[data-open]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openBrowser(x.dataset.open); }; });
+    listEl.querySelectorAll('[data-close]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.close); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } }; });
+    listEl.querySelectorAll('[data-edit]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openModal('edit', browsers.find((r) => r.browserId === x.dataset.edit)); }; });
+    listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Delete this browser? Its profile data is kept on disk.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast((r.error.message || r.error.code)); }; });
+  }
+
+  function select(browserId) { selectedBrowserId = browserId; render(); reconcile(); }
+  async function openBrowser(browserId) { selectedBrowserId = browserId; const r = await api.openBrowserById(browserId); if (r && r.error) toast(r.error.message || r.error.code); }
+
+  // Bind currentRunId to the selected browser's live run, or null when OFFLINE.
+  function reconcile() {
+    if (!browsers.length) { selectedBrowserId = null; railSelect(false, null); return; }
+    if (!selectedBrowserId || !browsers.find((b) => b.browserId === selectedBrowserId)) {
+      const online = browsers.find((b) => b.online);
+      selectedBrowserId = (online || browsers[0]).browserId;
+    }
+    const sel = browsers.find((b) => b.browserId === selectedBrowserId);
+    railSelect(true, sel && sel.online ? sel.runId : null);
+  }
+
+  function apply(payload) {
+    browsers = (payload && payload.browsers) || [];
+    capacity = (payload && payload.capacity) || capacity;
+    render(); reconcile();
+  }
+  api.onBrowsersChanged(apply);
+  api.listBrowsers().then(apply).catch(() => {});
+  // Browser IPCs are license-gated; re-fetch when a license becomes active so the
+  // rail populates without waiting for the next lifecycle event.
+  if (api.onLicenseChanged) api.onLicenseChanged((s) => { if (s && s.active) api.listBrowsers().then(apply).catch(() => {}); });
+
+  // ---- New / Edit modal ----
+  let modalMode = 'new', modalBrowserId = null;
+  function openModal(mode, browser) {
+    modalMode = mode; modalBrowserId = browser ? browser.browserId : null;
+    $('bm-title').textContent = mode === 'edit' ? `Edit ${browser.browserId}` : 'New Browser';
+    $('bm-name').value = browser ? (browser.name || '') : '';
+    $('bm-url').value = browser ? (browser.launchUrl || '') : '';
+    $('bm-submit').textContent = mode === 'edit' ? 'Save' : 'Create & Open';
+    const err = $('bm-error'); err.hidden = true; err.textContent = '';
+    $('browser-modal').hidden = false; $('bm-name').focus();
+  }
+  function closeModal() { $('browser-modal').hidden = true; }
+  function modalError(m) { const err = $('bm-error'); err.hidden = false; err.textContent = m; }
+  async function submitModal() {
+    const name = $('bm-name').value.trim(); const url = $('bm-url').value.trim();
+    if (!/^https?:\/\//i.test(url)) return modalError('Enter a valid http(s) URL.');
+    if (modalMode === 'edit') {
+      const r = await api.updateBrowser(modalBrowserId, { name, launchUrl: url });
+      if (r && r.error) return modalError(r.error.message || r.error.code);
+      closeModal();
+    } else {
+      const r = await api.createBrowser({ name, url });
+      if (r && r.error) return modalError(r.error.message || r.error.code);
+      selectedBrowserId = r.browserId; closeModal();
+    }
+  }
+  const newBtn = $('rr-new');
+  if (newBtn) newBtn.onclick = () => { if (!capacity.canCreate) return toast(`Browser limit reached (${capacity.registered}/${capacity.max})`); openModal('new', null); };
+  $('bm-cancel').onclick = closeModal;
+  $('bm-submit').onclick = submitModal;
+  $('bm-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitModal(); });
+  $('browser-modal').addEventListener('click', (e) => { if (e.target.id === 'browser-modal') closeModal(); });
 })();

@@ -28,6 +28,9 @@
   <!-- Focused Aviator control shell -->
   <header id="appbar">
     <div class="brand"><span class="glyph">◇</span><b>Aviator&nbsp;Control&nbsp;Studio</b></div>
+    <span id="shell-running" class="ab-status" title="Live browser runs">0 Running</span>
+    <!-- Legacy global launcher: hidden in normal product mode (browsers are created
+         per-record via the BROWSERS rail); kept for Advanced Debug workflows. -->
     <div class="ab-url">
       <input id="shell-url" placeholder="https://your.game" aria-label="Game URL">
       <button id="shell-open" class="primary">Open Browser</button>
@@ -41,6 +44,25 @@
       <input type="checkbox" id="shell-advanced"> ⚙ Diagnostics
     </label>
   </header>
+
+  <aside id="run-rail" aria-label="Browsers">
+    <div class="rr-head"><b>BROWSERS</b><span id="rr-cap" class="rr-cap" title="Registered browsers / license capacity"></span><button id="rr-new" class="btn" type="button" title="Create a new persistent browser">+ New</button></div>
+    <div id="run-list" class="rr-list"><div class="rr-empty">No browsers yet.<span class="rr-empty-sub">Click <b>+ New</b> to create one.</span></div></div>
+  </aside>
+
+  <!-- WU-C.1 — create / edit a persistent browser (Name + URL). -->
+  <div id="browser-modal" class="bm-overlay" hidden>
+    <div class="bm-card" role="dialog" aria-modal="true" aria-labelledby="bm-title">
+      <div class="bm-title" id="bm-title">New Browser</div>
+      <label class="bm-field">Name<input id="bm-name" class="mono" placeholder="Browser 1"></label>
+      <label class="bm-field">URL<input id="bm-url" class="mono" placeholder="https://your.game"></label>
+      <div id="bm-error" class="bm-error" hidden></div>
+      <div class="bm-actions">
+        <button id="bm-cancel" class="btn" type="button">Cancel</button>
+        <button id="bm-submit" class="primary" type="button">Create &amp; Open</button>
+      </div>
+    </div>
+  </div>
 
   <div id="shell">
     <nav id="shell-nav" aria-label="Aviator control navigation">

@@ -27,21 +27,26 @@ const { ChromeLauncher } = require('./browser/chrome-launcher.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { deriveFeatureKey } = require('./licensing/feature-key.cjs');
 const { install: installSealedLoader, SEALED_BASENAMES } = require('./protocol/sealed-loader.cjs');
+const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
+const { BrowserRegistry } = require('./browser-run/browser-registry.cjs');
 
 let shell;
-let targetManager = null;
-let selectedTargetId = null;
 const capturedClients = new WeakSet();
 let allowedHosts = new Set();
 let capturePaused = false;
 let sessionId = randomUUID();
 let journal;
 let licenseGuard;
-// Tier 2: populated by initProtocolSubsystem() once a valid license unlocks the
-// sealed protocol modules. Every IPC that touches these is Tier-1 gated, so they are
-// never referenced before initialization.
-let aviator, harness, protocolContext, observer, autoRunner, amountValidator;
-let protocolSubsystemReady = false;
+// Tier 2: the sealed protocol classes are unlocked once per valid license
+// (unsealProtocolClasses) and cached here. Each BrowserRun instantiates its OWN
+// subsystem from them via buildProtocolSubsystem(); nothing protocol-related is a
+// process-wide singleton. Every IPC that touches a subsystem is Tier-1 gated.
+let protocolClasses = null;
+// WU-A: ownership layer. One BrowserRun per "Open Browser", each owning its
+// browser process, TargetManager and protocol subsystem.
+let runManager = null;
+// WU-C.1: persistent browser identity/profile ownership, separate from runtime runs.
+let browserRegistry = null;
 let importStarted = false;
 let importInProgress = false;
 let importTimer;
@@ -54,11 +59,61 @@ if (!instanceStart.ok) {
 }
 const appInstance = instanceStart;
 app.setPath('userData', appInstance.paths.appData);
-const chromeLauncher = new ChromeLauncher({
-  profilePath: appInstance.paths.chromeProfile,
-  env: process.env,
-  onRuntime: (patch) => appInstance.lock.update(patch),
-});
+
+// Per-run browser profile. A persistent browser owns a STABLE profileDir (WU-C.1),
+// reused across every open. Runs with no persistent owner (Advanced Debug / external
+// attach) fall back to a runtime dir: run #1 reuses the instance profile (keeps
+// existing verification setup), others get a per-run dir. Chrome locks a profile to
+// one process, so concurrent persistent browsers each carry their own free port.
+function runProfilePath(run) {
+  if (run.profileDir) return run.profileDir; // persistent browser owns it
+  return run.ordinal === 0 ? appInstance.paths.chromeProfile : path.join(appInstance.paths.chromeProfile, 'runs', run.id);
+}
+function runLauncherEnv(run) {
+  if (!run.profileDir && run.ordinal === 0) return process.env; // legacy/advanced first run honours env overrides
+  const env = { ...process.env };
+  delete env.OBSERVATORY_CDP_PORT;     // force a fresh free port per concurrent run
+  delete env.OBSERVATORY_CHROME_PROFILE; // use this run's own profile dir, not a shared override
+  return env;
+}
+
+// ---- WU-C.1 persistent browser registry + license entitlement ----
+// Browser capacity comes from VERIFIED license state: a future signed license may
+// carry `maxBrowsers`; until then it is unlimited (null). An OBSERVATORY_MAX_BROWSERS
+// env override exists as an ops/testing seam. The renderer never supplies this value.
+function browserEntitlement() {
+  const s = licenseGuard && licenseGuard.status ? licenseGuard.status() : null;
+  const payload = s && s.payload ? s.payload : null;
+  if (payload && payload.maxBrowsers != null && Number.isFinite(Number(payload.maxBrowsers))) return { maxBrowsers: Math.max(0, Number(payload.maxBrowsers)) };
+  const envMax = process.env.OBSERVATORY_MAX_BROWSERS;
+  if (envMax != null && envMax !== '' && Number.isFinite(Number(envMax))) return { maxBrowsers: Math.max(0, Number(envMax)) };
+  return { maxBrowsers: null }; // unlimited when no signed/ops limit is present
+}
+function ensureBrowserRegistry() {
+  if (browserRegistry) return browserRegistry;
+  browserRegistry = new BrowserRegistry({
+    filePath: path.join(appInstance.paths.root, 'browser-registry.json'),
+    profilesRoot: path.join(appInstance.paths.root, 'browser-profiles'),
+    entitlement: browserEntitlement,
+  });
+  const res = browserRegistry.load();
+  if (res && res.error && shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', res.error);
+  return browserRegistry;
+}
+function createRunLauncher(run) {
+  return new ChromeLauncher({
+    profilePath: runProfilePath(run),
+    env: runLauncherEnv(run),
+    onRuntime: (patch) => appInstance.lock.update(patch),
+    onExit: () => { if (runManager) runManager.closeRun(run.id).catch(() => {}); },
+  });
+}
+// Snapshot of the active run's launcher for instance-info; safe default when idle.
+function activeLauncherSnapshot() {
+  const run = runManager && runManager.activeRun();
+  if (run && run.launcher) return run.launcher.snapshot();
+  return { cdpPort: null, chromePid: null, chromeProfile: appInstance.paths.chromeProfile };
+}
 
 function importJournalOnExit() {
   if (importStarted || !journal) return null;
@@ -104,10 +159,15 @@ function safeHeaders(headers) {
 }
 
 function emit(event) {
-  const normalized = normalizeCaptureEvent(event, sessionId);
+  // Tag evidence with the owning BrowserRun (by target). All runs are journaled;
+  // the single-stream renderer only shows the ACTIVE run so lists stay coherent.
+  const run = event && event.targetId != null && runManager ? runManager.runForTarget(event.targetId) : null;
+  const normalized = normalizeCaptureEvent({ ...event, browserRunId: run ? run.id : (event && event.browserRunId) }, sessionId);
   if (!normalized) return;
   try { journal?.append(normalized); } catch { /* journal failure must not stop capture */ }
-  if (shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
+  const activeId = runManager ? runManager.activeRunId() : null;
+  const forActive = !run || !activeId || run.id === activeId;
+  if (forActive && shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
 }
 
 function windowStatePath() { return appInstance.paths.windowState; }
@@ -153,24 +213,35 @@ function createWindow() {
   journal = new EventJournal(journalPath);
   importTimer = setInterval(importJournalNow, 10_000);
   cookieVault = new CookieVault(appInstance.paths.cookieVault);
+  // WU-C.1: load the persistent browser registry now so a corrupt file is reported
+  // early and the rail can render registered browsers as OFFLINE at startup.
+  ensureBrowserRegistry();
   // Auto-save the session so a fresh login is captured for next time.
-  const cookieTimer = setInterval(() => { if (selectedTargetId) saveCookiesFor(selectedTargetId).catch(() => {}); }, 12_000);
+  const cookieTimer = setInterval(() => { const tid = activeSelectedTargetId(); if (tid) saveCookiesFor(tid).catch(() => {}); }, 12_000);
   if (cookieTimer.unref) cookieTimer.unref();
   shell.loadURL('app://ui/product.html');
 }
 
+// WU-A: each Open Browser creates a NEW BrowserRun that owns its own Chrome
+// process, TargetManager and protocol subsystem. A second press never reuses the
+// first run's state — it creates BR-0002, and so on.
 async function openBrowserWindow(url) {
-  const launched = await chromeLauncher.open(url);
-  if (!launched.ok) return false;
-  connectEndpointWithRetry(launched.endpoint);
+  ensureRunManager();
+  const run = runManager.createRun({ launchUrl: String(url) });
+  runManager.setActive(run.id);
+  const launched = await run.launcher.open(url);
+  if (!launched.ok) { runManager.failRun(run, launched.error); return false; }
+  run.cdpEndpoint = launched.endpoint;
+  connectRunEndpointWithRetry(run, launched.endpoint);
   return true;
 }
 
-// Unlock the sealed protocol subsystem the moment a license verifies active. Safe to
-// call with any status (no-op unless active) and idempotent. Failure to unlock is
+// Unlock the sealed protocol classes the moment a license verifies active. Safe to
+// call with any status (no-op unless active) and idempotent. Each BrowserRun then
+// instantiates its own subsystem from the cached classes. Failure to unlock is
 // surfaced but must not crash the license flow.
 function ensureProtocolSubsystem(status) {
-  try { if (status && status.active) initProtocolSubsystem(); }
+  try { if (status && status.active) unsealProtocolClasses(); }
   catch (err) { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', { code: 'FEATURE_UNLOCK_FAILED', message: String((err && err.message) || err) }); }
   return status;
 }
@@ -185,15 +256,26 @@ async function licenseStatus() {
   return ensureProtocolSubsystem(status);
 }
 // Newly launched Chrome needs ~1s before its CDP endpoint answers; retry connect.
-async function connectEndpointWithRetry(endpoint, attempt = 0) {
-  const result = await connectEndpoint(endpoint);
-  if (!result.ok && attempt < 12) { setTimeout(() => connectEndpointWithRetry(endpoint, attempt + 1), 1000); }
+async function connectRunEndpointWithRetry(run, endpoint, attempt = 0) {
+  const result = await connectRunEndpoint(run, endpoint);
+  if (!result.ok && attempt < 12 && run.status !== RUN_STATUS.CLOSED) {
+    setTimeout(() => connectRunEndpointWithRetry(run, endpoint, attempt + 1), 1000);
+  }
   return result;
 }
 
 // Shared correlator: holds RAW evidence (unredacted) for all attached targets and
-// resolves response bodies through each request's OWN target client.
-function resolveTargetClient(targetId) { const s = targetManager && targetManager.getSession(targetId); return s ? s.client : null; }
+// resolves response bodies through each request's OWN target client. With multiple
+// runs, targetIds are globally unique, so we resolve the owning run's TargetManager.
+function resolveTargetClient(targetId) {
+  const run = runManager && runManager.runForTarget(targetId);
+  const s = run && run.targetManager && run.targetManager.getSession(targetId);
+  return s ? s.client : null;
+}
+function resolveTargetSession(targetId) {
+  const run = runManager && runManager.runForTarget(targetId);
+  return run && run.targetManager ? run.targetManager.getSession(targetId) : undefined;
+}
 const capture = new CaptureCorrelator({ resolveClient: resolveTargetClient });
 // User-action tracking: records clicks in the target (page + iframes) and links
 // each click to the requests it triggers, so you can see which action fired which
@@ -221,12 +303,11 @@ const replay = new ReplayEngine({
 const timeline = new Timeline({ capture, replay, intercept });
 // WU7+: the Aviator protocol subsystem (RoundTracker, harness, observer, runners) is
 // the crown-jewel logic. Its modules ship as sealed ciphertext and are only decrypted
-// and wired up here — AFTER a genuine, machine-matched license unlocks the seal key.
-// Building it lazily means the code does not exist in a runnable form until a valid
-// license is present, so flipping the renderer flag or patching the Tier-1 gate is not
-// enough to get the features. Idempotent; safe to call on every license change.
-function initProtocolSubsystem() {
-  if (protocolSubsystemReady) return true;
+// here — AFTER a genuine, machine-matched license unlocks the seal key. We unlock the
+// CLASSES once (they do not exist in runnable form until a valid license is present),
+// then every BrowserRun instantiates its OWN subsystem from them. Idempotent.
+function unsealProtocolClasses() {
+  if (protocolClasses) return protocolClasses;
   const license = licenseGuard && licenseGuard.storedLicense ? licenseGuard.storedLicense() : null;
   const key = deriveFeatureKey({ license, machineId: licenseGuard ? licenseGuard.machineId() : null });
   installSealedLoader({ key, files: SEALED_BASENAMES.map((name) => path.join(__dirname, 'protocol', `${name}.cjs`)) });
@@ -236,75 +317,205 @@ function initProtocolSubsystem() {
   const { AutoRunner } = require('./protocol/auto-runner.cjs');
   const { AmountValidator } = require('./protocol/amount-validator.cjs');
   const { ProtocolContext } = require('./protocol/protocol-context.cjs');
+  protocolClasses = { RoundTracker, ProtocolHarness, RoundObserver, AutoRunner, AmountValidator, ProtocolContext };
+  return protocolClasses;
+}
 
-  // WU7: Aviator protocol observer — classifies WS frames, tracks the authoritative
-  // CurrentRound (sid from server cmd:100005 ONLY, never arithmetic), SID history and
-  // send->ack ActionTraces. Fed from captured WebSocket data frames.
-  aviator = new RoundTracker();
-  capture.on('request', req => {
-    if (req && req.isWebSocket && req.wsDirection) {
-      aviator.observe({ targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url, direction: req.wsDirection, raw: req.body && req.body.raw });
-    }
-  });
-  aviator.on('round', r => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-round', r); });
-  // Session aid/eid — learned from observed frames, owned here (never hardcoded /
-  // user-entered). Protocol testing stays disabled until this is ready.
-  protocolContext = new ProtocolContext({ roundTracker: aviator });
-  protocolContext.on('change', c => { if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-context', c); });
-  aviator.on('actiontrace', t => { if (shell && !shell.isDestroyed()) shell.webContents.send('aviator-actiontrace', t); });
-  // WU7: Protocol Test Harness — sender bound to the selected target's own live
-  // socket (via wsReplay.sendRaw).
-  harness = new ProtocolHarness({
+// Build ONE run's protocol subsystem. Every instance is bound to `run`: its events
+// are tagged with run.id and only forwarded to the renderer while this run is the
+// active run (the WU-A renderer shows a single stream). The send seam + getTargetUrl
+// resolve through the run's own TargetManager.
+function buildProtocolSubsystem(run) {
+  const C = unsealProtocolClasses();
+  const getTargetUrl = (targetId) => { const s = run.targetManager && run.targetManager.getSession(targetId); return s ? s.target.url : ''; };
+  const toActive = (channel, payload) => { if (runManager && runManager.isActive(run) && shell && !shell.isDestroyed()) shell.webContents.send(channel, payload); };
+
+  const aviator = new C.RoundTracker();
+  aviator.on('round', r => { toActive('aviator-round', r); scheduleRunsBroadcast(); });
+  aviator.on('actiontrace', t => toActive('aviator-actiontrace', t));
+
+  // Session aid/eid — learned from observed frames, owned per run (never hardcoded).
+  const protocolContext = new C.ProtocolContext({ roundTracker: aviator });
+  protocolContext.on('change', c => { toActive('protocol-context', c); scheduleRunsBroadcast(); });
+
+  // Protocol Test Harness — sender bound to this run's own live socket.
+  const harness = new C.ProtocolHarness({
     roundTracker: aviator,
     send: (ctx, payload) => wsReplay.sendProtocol(ctx, payload),
-    getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
+    getTargetUrl,
     allowlist: (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map(s => s.trim()).filter(Boolean),
     environmentGuard: protocolEnvironmentGuard,
   });
   harness.on('execution', ex => {
-    try { journal?.append(normalizeCaptureEvent({ kind: 'protocol-test', id: ex.id, targetId: ex.targetId, timestamp: ex.sentAt, exec: ex }, sessionId)); } catch { /* journal failure must not stop testing */ }
-    if (shell && !shell.isDestroyed()) shell.webContents.send('protocol-execution', ex);
+    try { journal?.append(normalizeCaptureEvent({ kind: 'protocol-test', id: ex.id, targetId: ex.targetId, browserRunId: run.id, timestamp: ex.sentAt, exec: ex }, sessionId)); } catch { /* journal failure must not stop testing */ }
+    toActive('protocol-execution', ex);
   });
-  // WU8: READ-ONLY multi-round observer. Consumes the RoundTracker frame stream and
-  // records per-round evidence (sid, odd stream, bet/cashout timing, server odd/wm,
-  // latencies). It never sends — RoundTracker stays the sole owner of sid/odd/state.
-  observer = new RoundObserver({ roundTracker: aviator });
+
+  // READ-ONLY multi-round observer over this run's frame stream.
+  const observer = new C.RoundObserver({ roundTracker: aviator });
   let observerDirty = false;
   observer.on('update', () => {
+    scheduleRunsBroadcast();
     if (observerDirty) return; observerDirty = true;
-    setTimeout(() => { observerDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('observer-update', observer.snapshot()); }, 120);
+    setTimeout(() => { observerDirty = false; toActive('observer-update', observer.snapshot()); }, 120);
   });
-  // WU10: automated round runner. Event-driven over the frame stream; reuses the
-  // observer (sid/odd owner) + harness (send + ack).
-  autoRunner = new AutoRunner({
-    roundTracker: aviator, observer, harness,
-    getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
-    environmentGuard: protocolEnvironmentGuard,
-  });
+
+  // Automated round runner, bound to this run's observer + harness.
+  const autoRunner = new C.AutoRunner({ roundTracker: aviator, observer, harness, getTargetUrl, environmentGuard: protocolEnvironmentGuard });
   let autoDirty = false;
   autoRunner.on('update', () => {
+    if (runManager && autoRunner.isRunning()) runManager.setStatus(run, RUN_STATUS.AUTO_RUNNING);
+    scheduleRunsBroadcast();
     if (autoDirty) return; autoDirty = true;
-    setTimeout(() => { autoDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('autotest-update', autoRunner.snapshot()); }, 100);
+    setTimeout(() => { autoDirty = false; toActive('autotest-update', autoRunner.snapshot()); }, 100);
   });
-  // WU10.2: separate bet-amount server-validation mode (bet-only; sends the EXACT
-  // tester value; never clamps/snaps).
-  amountValidator = new AmountValidator({
-    roundTracker: aviator, harness,
-    getTargetUrl: targetId => { const s = targetManager && targetManager.getSession(targetId); return s ? s.target.url : ''; },
-    environmentGuard: protocolEnvironmentGuard,
-  });
+
+  // Separate bet-amount server-validation mode (bet-only; sends the EXACT value).
+  const amountValidator = new C.AmountValidator({ roundTracker: aviator, harness, getTargetUrl, environmentGuard: protocolEnvironmentGuard });
   let bvalDirty = false;
   amountValidator.on('update', () => {
+    scheduleRunsBroadcast();
     if (bvalDirty) return; bvalDirty = true;
-    setTimeout(() => { bvalDirty = false; if (shell && !shell.isDestroyed()) shell.webContents.send('bvalidate-update', amountValidator.snapshot()); }, 100);
+    setTimeout(() => { bvalDirty = false; toActive('bvalidate-update', amountValidator.snapshot()); }, 100);
   });
-  protocolSubsystemReady = true;
-  return true;
+
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator };
+}
+
+// Lazily construct the BrowserRunManager and register the ONE shared capture->run
+// frame router. Frames are routed to the owning run's aviator by targetId.
+function ensureRunManager() {
+  if (runManager) return runManager;
+  runManager = new BrowserRunManager({
+    createLauncher: createRunLauncher,
+    createTargetManager: (endpoint) => new TargetManager(endpoint),
+    buildSubsystem: buildProtocolSubsystem,
+  });
+  runManager.on('run-updated', () => { broadcastRuns(); broadcastBrowsers(); });
+  runManager.on('run-created', () => { broadcastRuns(); broadcastBrowsers(); });
+  runManager.on('run-closed', () => { broadcastRuns(); broadcastBrowsers(); });
+  runManager.on('active-changed', () => { broadcastTargets(); broadcastRuns(); broadcastBrowsers(); });
+  // Shared WS frame stream -> the owning run's protocol subsystem (never global).
+  capture.on('request', req => {
+    if (!req || !req.isWebSocket || !req.wsDirection) return;
+    const run = runManager.runForTarget(req.targetId);
+    if (run && run.aviator) run.aviator.observe({ targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url, direction: req.wsDirection, raw: req.body && req.body.raw });
+  });
+  return runManager;
+}
+function broadcastRuns() { if (shell && !shell.isDestroyed() && runManager) shell.webContents.send('runs-changed', runManager.list()); }
+
+// WU-C.1 — the run rail now shows PERSISTENT browsers. A browser summary joins the
+// registered record with its live run's summary (if any). Offline browsers carry no
+// runtime values; live ones read them from the owning BrowserRun. No raw frame is
+// forwarded — only the same coalesced aggregate summaries as WU-C.
+function browserSummaries() {
+  ensureBrowserRegistry();
+  const capacity = browserRegistry.capacity();
+  const browsers = browserRegistry.list().map((b) => {
+    const run = runManager ? runManager.liveRunForBrowser(b.id) : null;
+    const rs = run ? runManager.summary(run) : null;
+    return {
+      browserId: b.id, name: b.name, launchUrl: b.launchUrl, lastOpenedAt: b.lastOpenedAt, lastRunId: b.lastRunId,
+      online: !!run, runId: run ? run.id : null, active: !!(run && runManager.isActive(run)),
+      runtimeStatus: rs ? rs.status : 'OFFLINE',
+      protocolReady: rs ? rs.protocolReady : false,
+      currentSid: rs ? rs.currentSid : null, currentOdd: rs ? rs.currentOdd : null, phase: rs ? rs.phase : null,
+      autoRunning: rs ? rs.autoRunning : false, testRunning: rs ? rs.testRunning : false,
+      error: rs ? rs.error : null,
+    };
+  });
+  return { browsers, capacity };
+}
+function broadcastBrowsers() { if (shell && !shell.isDestroyed()) shell.webContents.send('browsers-changed', browserSummaries()); }
+
+// Coalesced live-summary push (WU-C). ODD frames can be frequent and there may be
+// several runs, so we throttle instead of emitting per frame. Summaries are built
+// from each run's own state — no raw frame is forwarded.
+let _runsBroadcastTimer = null;
+function scheduleRunsBroadcast() {
+  if (_runsBroadcastTimer || !runManager) return;
+  _runsBroadcastTimer = setTimeout(() => { _runsBroadcastTimer = null; broadcastRuns(); broadcastBrowsers(); }, 300);
+  if (_runsBroadcastTimer.unref) _runsBroadcastTimer.unref();
+}
+
+// ---- WU-C.1 persistent browser lifecycle ----
+// Open a registered browser: enforce one live run per persistent browser (never
+// launch the same profileDir twice), link the new BrowserRun to browserId, and
+// launch with the browser's stable profile. Never restores stale protocol state.
+async function openPersistentBrowser(browserId) {
+  ensureRunManager(); ensureBrowserRegistry();
+  const browser = browserRegistry.get(String(browserId || ''));
+  if (!browser) return { ok: false, error: { code: 'BROWSER_NOT_FOUND', message: 'No such browser' } };
+  const existing = runManager.liveRunForBrowser(browser.id);
+  if (existing) { runManager.setActive(existing.id); broadcastTargets(); broadcastBrowsers(); return { ok: true, runId: existing.id, browserId: browser.id, alreadyRunning: true }; }
+  const run = runManager.createRun({ launchUrl: browser.launchUrl, browserId: browser.id, profileDir: browser.profileDir });
+  runManager.setActive(run.id);
+  browserRegistry.touchOpened(browser.id, run.id);
+  broadcastBrowsers();
+  const launched = await run.launcher.open(browser.launchUrl);
+  if (!launched.ok) { runManager.failRun(run, launched.error); broadcastBrowsers(); return { ok: false, error: launched.error, browserId: browser.id, runId: run.id }; }
+  run.cdpEndpoint = launched.endpoint;
+  connectRunEndpointWithRetry(run, launched.endpoint);
+  return { ok: true, runId: run.id, browserId: browser.id };
+}
+// Create a new persistent browser (capacity-checked in the registry), then open it.
+async function createPersistentBrowser({ name, url } = {}) {
+  ensureBrowserRegistry();
+  const res = browserRegistry.create({ name, launchUrl: url });
+  broadcastBrowsers();
+  if (res.error) return { ok: false, error: res.error };
+  const opened = await openPersistentBrowser(res.browser.id);
+  return { ok: opened.ok, browserId: res.browser.id, runId: opened.runId, error: opened.error };
+}
+// Delete a persistent browser record (conservative: profile dir is retained). Refuse
+// while a live run exists — Close is not Delete.
+async function deletePersistentBrowser(browserId) {
+  ensureRunManager(); ensureBrowserRegistry();
+  if (runManager.liveRunForBrowser(String(browserId || ''))) return { ok: false, error: { code: 'BROWSER_ALREADY_RUNNING', message: 'Close the browser before deleting it.' } };
+  const res = browserRegistry.remove(String(browserId || ''));
+  broadcastBrowsers();
+  return res.error ? { ok: false, error: res.error } : { ok: true, profileRetained: res.profileRetained };
 }
 // Persistent session store (cookies) — independent of launching Chrome, so a
 // login survives reconnects on Chrome / WebView / WebView2 / CEF alike.
 let cookieVault;
-function targetHost(targetId) { const s = targetManager && targetManager.getSession(targetId); try { return s ? new URL(s.target.url).hostname : ''; } catch { return ''; } }
+// Active run's currently-selected target (auto-selected first attachable, or the
+// user's pick). Used by IPC handlers that historically relied on `selectedTargetId`.
+function activeRun() { return runManager ? runManager.activeRun() : null; }
+function activeSelectedTargetId() { const r = activeRun(); return r ? r.selectedTargetId : null; }
+// Read-only "idle" subsystem so snapshot/context IPC has a well-formed shape to
+// return before any browser is open. It is never wired to a live socket (its
+// aviator is never fed a frame), so it always reports empty/idle state.
+let _idleRun = null;
+function idleRun() {
+  if (_idleRun) return _idleRun;
+  ensureRunManager();
+  _idleRun = { id: 'BR-IDLE', ordinal: -1, status: 'IDLE', targetManager: null, selectedTargetId: null };
+  Object.assign(_idleRun, buildProtocolSubsystem(_idleRun));
+  return _idleRun;
+}
+// The run whose protocol subsystem answers a read-only protocol IPC when no runId
+// is supplied: the active run, or the idle provider when no browser is open yet.
+function protoRun() { return activeRun() || idleRun(); }
+
+// EXECUTION ownership is ALWAYS explicit (WU-B): a bet/cashout/auto/b-Test run binds
+// to the run named by the caller, NEVER to the active-run view pointer. Switching
+// the active run in the UI therefore cannot retarget a running execution.
+function execRun(runId) {
+  const id = runId != null ? String(runId) : '';
+  const run = id && runManager ? runManager.get(id) : null;
+  if (!run) return { error: { code: 'RUN_NOT_FOUND', message: 'No such browser run — open a browser and pass its runId.' } };
+  if (run.status === RUN_STATUS.CLOSED) return { error: { code: 'RUN_CLOSED', message: 'Browser run is closed.' } };
+  return { run };
+}
+// Read-only DISPLAY ownership: the named run if given, else the active/idle provider.
+function viewRun(runId) {
+  const id = runId != null ? String(runId) : '';
+  const named = id && runManager ? runManager.get(id) : null;
+  return named || protoRun();
+}
+function targetHost(targetId) { const s = resolveTargetSession(targetId); try { return s ? new URL(s.target.url).hostname : ''; } catch { return ''; } }
 async function saveCookiesFor(targetId) {
   const client = resolveTargetClient(targetId);
   if (!client || !cookieVault) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'No attached target' } };
@@ -404,31 +615,57 @@ async function attachCdpCapture(client, target) {
   wsReplay.injectSession(client, undefined).catch(() => {});
 }
 
+// The renderer (WU-A, single-stream UI) shows the ACTIVE run's targets.
 function broadcastTargets() {
-  if (shell && !shell.isDestroyed() && targetManager) shell.webContents.send('targets-changed', targetManager.listTargets());
+  const run = activeRun();
+  if (shell && !shell.isDestroyed() && run && run.targetManager) shell.webContents.send('targets-changed', run.targetManager.listTargets());
 }
 
-async function connectEndpoint({ host = '127.0.0.1', port = 9222, runtimeHint = null } = {}) {
-  if (targetManager) { try { await targetManager.stop(); } catch { /* ignore */ } targetManager = null; selectedTargetId = null; }
-  const manager = new TargetManager({ host, port, runtimeHint });
+// Attach a TargetManager to a specific run's CDP endpoint. All target/capture
+// wiring is scoped to `run`; other runs are never touched.
+async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtimeHint = null } = {}) {
+  if (!run || run.status === RUN_STATUS.CLOSED) return { ok: false, error: { code: 'RUN_CLOSED', message: 'Browser run is closed' } };
+  const manager = runManager.setTargetManager(run, { host, port, runtimeHint });
   manager.on('attached', ({ target, client }) => {
-    if (!selectedTargetId) selectedTargetId = target.cdpTargetId; // auto-select first attachable target
+    runManager.registerTarget(target.cdpTargetId, run);
+    if (!run.selectedTargetId) run.selectedTargetId = target.cdpTargetId; // auto-select first attachable target
     attachCdpCapture(client, target);
     autoRestoreOnAttach(target.cdpTargetId).catch(() => {});
-    broadcastTargets();
+    if (runManager.isActive(run)) broadcastTargets();
+    broadcastRuns();
   });
-  manager.on('target-added', broadcastTargets);
-  manager.on('target-updated', broadcastTargets);
-  manager.on('target-removed', id => { intercept.onTargetDetached(id); observer.onDisconnect(id); if (selectedTargetId === id) { selectedTargetId = null; protocolContext.reset(); } broadcastTargets(); });
-  manager.on('error', err => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) }); });
+  manager.on('target-added', () => { if (runManager.isActive(run)) broadcastTargets(); });
+  manager.on('target-updated', () => { if (runManager.isActive(run)) broadcastTargets(); });
+  manager.on('target-removed', id => {
+    intercept.onTargetDetached(id);
+    if (run.observer) run.observer.onDisconnect(id);
+    runManager.unregisterTarget(id);
+    if (run.selectedTargetId === id) { run.selectedTargetId = null; if (run.protocolContext) run.protocolContext.reset(); }
+    // Browser fully gone (no targets left): quiesce this run's protocol activity.
+    if (!runManager.targetsForRun(run.id).length) runManager.disconnectRun(run);
+    if (runManager.isActive(run)) broadcastTargets();
+    broadcastRuns();
+  });
+  manager.on('error', err => { if (runManager.isActive(run) && shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) }); });
   try {
     await manager.start();
-    targetManager = manager;
-    broadcastTargets();
-    return { ok: true, targets: manager.listTargets() };
+    runManager.setStatus(run, RUN_STATUS.CONNECTED);
+    if (runManager.isActive(run)) broadcastTargets();
+    broadcastRuns();
+    return { ok: true, runId: run.id, targets: manager.listTargets() };
   } catch (err) {
     return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err && err.message || err) } };
   }
+}
+
+// Manual/adb connect flows (cdp-connect, adb-forward-webview): attach an endpoint
+// that this app did not launch. Each gets its own run so evidence stays scoped.
+async function connectExternalEndpoint(endpoint = {}) {
+  ensureRunManager();
+  const run = runManager.createRun({ launchUrl: '' });
+  runManager.setActive(run.id);
+  run.cdpEndpoint = { host: endpoint.host || '127.0.0.1', port: endpoint.port || 9222 };
+  return connectRunEndpoint(run, endpoint);
 }
 
 // Tier 1 license enforcement — the real gate. The renderer only *hides* locked UI
@@ -479,8 +716,8 @@ handle('instance-info', () => ({
   name: appInstance.registry && appInstance.registry.name,
   root: appInstance.paths.root,
   sessions: appInstance.paths.sessions,
-  chromeProfile: chromeLauncher.snapshot().chromeProfile,
-  runtime: chromeLauncher.snapshot(),
+  chromeProfile: activeLauncherSnapshot().chromeProfile,
+  runtime: activeLauncherSnapshot(),
 }));
 handle('list-sessions', () => {
   const dir = appInstance.paths.sessions;
@@ -524,11 +761,11 @@ handle('replay-execute', (_event, draftId) => replay.execute(String(draftId)));
 handle('replay-history', (_event, capturedRequestId) => replay.history(String(capturedRequestId)));
 handle('ws-send', (_event, capturedId, payload) => wsReplay.send(String(capturedId), payload == null ? '' : String(payload)));
 handle('timeline-build', (_event, capturedRequestId) => timeline.build(String(capturedRequestId)));
-handle('cookies-save', (_event, targetId) => saveCookiesFor(String(targetId || selectedTargetId || '')));
-handle('cookies-restore', (_event, targetId, reload) => restoreCookiesFor(String(targetId || selectedTargetId || ''), !!reload));
-// WU4 intercept IPC. Default scope is the selected target only.
-handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || selectedTargetId || ''), rule || {}));
-handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || selectedTargetId || '')));
+handle('cookies-save', (_event, targetId) => saveCookiesFor(String(targetId || activeSelectedTargetId() || '')));
+handle('cookies-restore', (_event, targetId, reload) => restoreCookiesFor(String(targetId || activeSelectedTargetId() || ''), !!reload));
+// WU4 intercept IPC. Default scope is the active run's selected target only.
+handle('intercept-enable', (_event, rule = {}, targetId) => intercept.enable(String(targetId || activeSelectedTargetId() || ''), rule || {}));
+handle('intercept-disable', (_event, targetId) => intercept.disable(String(targetId || activeSelectedTargetId() || '')));
 handle('intercept-list', () => intercept.listPaused());
 handle('intercept-update-draft', (_event, id, patch = {}) => intercept.updateDraft(String(id), patch));
 handle('intercept-continue', (_event, id) => intercept.continue(String(id)));
@@ -536,15 +773,30 @@ handle('intercept-continue-modified', (_event, id, patch) => intercept.continueM
 handle('intercept-abort', (_event, id) => intercept.abort(String(id)));
 handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
 handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
-handle('cdp-connect', (_event, endpoint = {}) => connectEndpoint(endpoint));
-handle('list-targets', () => targetManager ? targetManager.listTargets() : []);
+handle('cdp-connect', (_event, endpoint = {}) => connectExternalEndpoint(endpoint));
+handle('list-targets', () => { const r = activeRun(); return r && r.targetManager ? r.targetManager.listTargets() : []; });
 handle('select-target', (_event, id) => {
-  if (!targetManager) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Not connected to a CDP endpoint' } };
-  const session = targetManager.getSession(id);
+  const run = activeRun();
+  if (!run || !run.targetManager) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Not connected to a CDP endpoint' } };
+  const session = run.targetManager.getSession(id);
   if (!session) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Target is no longer available' } };
-  selectedTargetId = String(id);
-  return { ok: true, selectedTargetId };
+  run.selectedTargetId = String(id);
+  return { ok: true, selectedTargetId: run.selectedTargetId, runId: run.id };
 });
+// WU-C.1 — persistent browser management (registry is the source of truth).
+handle('browser-list', () => browserSummaries());
+handle('browser-capacity', () => { ensureBrowserRegistry(); return browserRegistry.capacity(); });
+handle('browser-create', (_event, input = {}) => createPersistentBrowser({ name: input && input.name, url: input && input.url }));
+handle('browser-open', (_event, browserId) => openPersistentBrowser(String(browserId || '')));
+handle('browser-update', (_event, browserId, patch = {}) => { ensureBrowserRegistry(); const r = browserRegistry.update(String(browserId || ''), patch || {}); broadcastBrowsers(); return r.error ? r : { ok: true, browser: r.browser }; });
+handle('browser-delete', (_event, browserId) => deletePersistentBrowser(String(browserId || '')));
+// WU-A — browser run introspection (runtime layer).
+handle('list-runs', () => runManager ? runManager.list() : []);
+handle('select-run', (_event, runId) => {
+  if (!runManager || !runManager.setActive(String(runId))) return { ok: false, error: { code: 'RUN_NOT_FOUND', message: 'Browser run not found' } };
+  return { ok: true, activeRunId: runManager.activeRunId() };
+});
+handle('close-run', async (_event, runId) => { if (runManager) await runManager.closeRun(String(runId)); return { ok: true }; });
 handle('adb-list-webviews', async () => {
   try { return { ok: true, sockets: await androidBridge.listWebviewSockets(process.env.OBSERVATORY_ADB || 'adb') }; }
   catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
@@ -552,30 +804,33 @@ handle('adb-list-webviews', async () => {
 handle('adb-forward-webview', async (_event, socket, localPort = 9223) => {
   try {
     const endpoint = await androidBridge.forwardSocket(process.env.OBSERVATORY_ADB || 'adb', localPort, String(socket));
-    return await connectEndpoint(endpoint);
+    return await connectExternalEndpoint(endpoint);
   } catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
 });
 handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 // WU7 — Protocol Test Harness IPC. Every send is target-bound and gated by the
 // environment allowlist; sid is read from the observed server round, never guessed.
-handle('protocol-environment', (_event, targetId) => harness.environmentFor(String(targetId || selectedTargetId || '')));
-handle('protocol-allowlist', () => harness.allowlist());
-handle('protocol-round-state', () => ({ current: aviator.currentRound(), sidHistory: aviator.sidHistory(), roundHistory: aviator.roundHistory(), actionTraces: aviator.actionTraces() }));
-handle('protocol-template', (_event, command, overrides = {}) => { const payload = harness.buildTemplate(String(command), overrides || {}); return { payload, sidCheck: harness.checkSid(payload ? payload.sid : null) }; });
-handle('protocol-check-sid', (_event, sid) => harness.checkSid(sid));
-handle('protocol-execute', (_event, opts = {}) => harness.execute({ ...opts, targetId: opts.targetId || selectedTargetId || null }));
-handle('protocol-executions', () => harness.executions());
-handle('protocol-context', () => protocolContext.get());
+// Read-only display IPC (named run or active/idle provider). Never sends.
+handle('protocol-environment', (_event, runId, targetId) => { const run = viewRun(runId); return run.harness.environmentFor(String(targetId || run.selectedTargetId || '')); });
+handle('protocol-allowlist', (_event, runId) => viewRun(runId).harness.allowlist());
+handle('protocol-round-state', (_event, runId) => { const a = viewRun(runId).aviator; return { current: a.currentRound(), sidHistory: a.sidHistory(), roundHistory: a.roundHistory(), actionTraces: a.actionTraces() }; });
+handle('protocol-template', (_event, runId, command, overrides = {}) => { const h = viewRun(runId).harness; const payload = h.buildTemplate(String(command), overrides || {}); return { payload, sidCheck: h.checkSid(payload ? payload.sid : null) }; });
+handle('protocol-check-sid', (_event, runId, sid) => viewRun(runId).harness.checkSid(sid));
+handle('protocol-executions', (_event, runId) => viewRun(runId).harness.executions());
+handle('protocol-context', (_event, runId) => viewRun(runId).protocolContext.get());
+// WU7 — manual send: bound to an EXPLICIT run, never the active-run pointer.
+handle('protocol-execute', (_event, runId, opts = {}) => { const r = execRun(runId); if (r.error) return r; return r.run.harness.execute({ ...opts, targetId: opts.targetId || r.run.selectedTargetId || null }); });
 // WU8 — read-only observer IPC (snapshot + display-only config; never sends).
-handle('observer-snapshot', () => observer.snapshot());
-handle('observer-config', (_event, patch = {}) => { const r = observer.setConfig(patch || {}); return r.error ? r : observer.snapshot(); });
-// WU10 — automated runner IPC.
-handle('autotest-environment', (_event, targetId) => autoRunner.environmentFor(String(targetId || selectedTargetId || '')));
-handle('autotest-start', (_event, config = {}) => { const r = autoRunner.start(String(selectedTargetId || ''), config || {}); return r.error ? r : autoRunner.snapshot(); });
-handle('autotest-stop', () => { const r = autoRunner.stop(); return r.error ? r : autoRunner.snapshot(); });
-handle('autotest-snapshot', () => autoRunner.snapshot());
-// WU10.2 — bet-amount server-validation IPC (bet-only).
-handle('bvalidate-environment', (_event, targetId) => amountValidator.environmentFor(String(targetId || selectedTargetId || '')));
-handle('bvalidate-start', (_event, config = {}) => { const r = amountValidator.start(String(selectedTargetId || ''), config || {}); return r.error ? r : amountValidator.snapshot(); });
-handle('bvalidate-stop', () => { const r = amountValidator.stop(); return r.error ? r : amountValidator.snapshot(); });
-handle('bvalidate-snapshot', () => amountValidator.snapshot());
+handle('observer-snapshot', (_event, runId) => viewRun(runId).observer.snapshot());
+handle('observer-config', (_event, runId, patch = {}) => { const o = viewRun(runId).observer; const res = o.setConfig(patch || {}); return res.error ? res : o.snapshot(); });
+// WU10 — automated runner IPC. Execution binds to an EXPLICIT run so multiple runs
+// may run their AutoRunner concurrently and UI switching never retargets a run.
+handle('autotest-environment', (_event, runId, targetId) => { const run = viewRun(runId); return run.autoRunner.environmentFor(String(targetId || run.selectedTargetId || '')); });
+handle('autotest-start', (_event, runId, config = {}) => { const r = execRun(runId); if (r.error) return r; const res = r.run.autoRunner.start(String(r.run.selectedTargetId || ''), config || {}); return res.error ? res : r.run.autoRunner.snapshot(); });
+handle('autotest-stop', (_event, runId) => { const r = execRun(runId); if (r.error) return r; const res = r.run.autoRunner.stop(); return res.error ? res : r.run.autoRunner.snapshot(); });
+handle('autotest-snapshot', (_event, runId) => viewRun(runId).autoRunner.snapshot());
+// WU10.2 — bet-amount server-validation IPC (bet-only), bound to an EXPLICIT run.
+handle('bvalidate-environment', (_event, runId, targetId) => { const run = viewRun(runId); return run.amountValidator.environmentFor(String(targetId || run.selectedTargetId || '')); });
+handle('bvalidate-start', (_event, runId, config = {}) => { const r = execRun(runId); if (r.error) return r; const res = r.run.amountValidator.start(String(r.run.selectedTargetId || ''), config || {}); return res.error ? res : r.run.amountValidator.snapshot(); });
+handle('bvalidate-stop', (_event, runId) => { const r = execRun(runId); if (r.error) return r; const res = r.run.amountValidator.stop(); return res.error ? res : r.run.amountValidator.snapshot(); });
+handle('bvalidate-snapshot', (_event, runId) => viewRun(runId).amountValidator.snapshot());

@@ -212,6 +212,15 @@ class ProtocolHarness extends EventEmitter {
 
   _removeWaiter(w) { const i = this._waiters.indexOf(w); if (i >= 0) this._waiters.splice(i, 1); }
 
+  // Resolve every pending ACK waiter now (owned by THIS run only). Used when the
+  // owning BrowserRun is closed/disconnected so in-flight sends resolve promptly
+  // instead of hanging until their ack timeout. Never touches another run's harness.
+  cancelWaiters() {
+    const waiters = this._waiters.splice(0);
+    for (const w of waiters) { if (w.done) continue; w.done = true; clearTimeout(w.timer); w.resolve(null); }
+    return waiters.length;
+  }
+
   _onFrame(ev) {
     if (!ev || ev.direction !== 'recv') return;
     const cls = classifyFrame(ev.raw);
@@ -227,11 +236,12 @@ class ProtocolHarness extends EventEmitter {
     }
   }
 
+  // Resolve the send seam for EXACTLY this target's observed socket. There is no
+  // fallback to "any" socket: a send must ride the owning target's own connection,
+  // so a frame can never leave through another target's (or another run's) socket.
   _sendContext(targetId) {
-    if (!this._round) return null;
-    const direct = this._round.socketContext ? this._round.socketContext(targetId) : null;
-    if (direct) return direct;
-    return this._round.anySocketContext ? this._round.anySocketContext() : null;
+    if (!this._round || !this._round.socketContext) return null;
+    return this._round.socketContext(targetId);
   }
 }
 
