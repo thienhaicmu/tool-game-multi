@@ -277,8 +277,12 @@ test('protocol websocket send falls back when captured host does not exactly mat
   const src = readFileSync(new URL('../../desktop/cdp/ws-replay.cjs', import.meta.url), 'utf8');
   const main = readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
   assert.ok(main.includes('wsReplay.sendProtocol(ctx, payload)'), 'protocol harness uses the reliable send path');
-  assert.ok(src.includes("window.__wsoSendFrame('',"), 'protocol send retries any open websocket in the bound frame/session');
-  assert.ok(src.includes('window.__wsoSocketCount'), 'hook exposes socket diagnostics');
+  // WU-D.4 (D4-001): the send/count invocations MUST use globalThis (worker-safe), never
+  // bare `window` — a Web Worker global has no `window`, so window.__wso* threw and every
+  // bet/cashout failed when the game socket lived in a worker.
+  assert.ok(src.includes("globalThis.__wsoSendFrame('',"), 'protocol send retries any open websocket in the bound frame/session (worker-safe)');
+  assert.ok(src.includes('globalThis.__wsoSocketCount'), 'hook exposes socket diagnostics (worker-safe)');
+  assert.equal(/window\.__wso/.test(src), false, 'no worker-incompatible window.__wso* invocation remains');
 });
 
 test('package audit excludes generator and private signing material from customer app', () => {

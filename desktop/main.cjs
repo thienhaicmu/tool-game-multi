@@ -749,12 +749,12 @@ async function attachCdpCapture(client, target) {
       // Recurse so nested OOPIFs / workers under this child also attach.
       await client.Target.setAutoAttach(autoAttachArgs, sessionId);
     } catch { /* child gone or unsupported */ }
-    // The game's buttons AND its WebSocket usually live in a cross-origin iframe —
-    // inject the click hook + WS send-hook there too.
-    if (type === 'iframe') {
-      interactions.injectSession(client, tid, sessionId).catch(() => {});
-      wsReplay.injectSession(client, sessionId).catch(() => {});
-    }
+    // The game's buttons live in a cross-origin iframe; its WebSocket lives EITHER in
+    // that iframe OR in a Web Worker. Click tracking only makes sense in a DOM (iframe),
+    // but the WS send-hook must go into EVERY non-page child (iframe + worker) so
+    // bet/cashout can find the live socket wherever the game actually opened it.
+    if (type === 'iframe') interactions.injectSession(client, tid, sessionId).catch(() => {});
+    wsReplay.injectSession(client, sessionId).catch(() => {});
   });
   // Root-session click tracking + WS send-hook.
   interactions.attach(client, tid).catch(() => {});

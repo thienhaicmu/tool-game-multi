@@ -4,12 +4,20 @@
 // means calling `.send()` on the page's own live socket. We install a tiny hook
 // that tracks sockets as they are constructed, with a send-wrapper fallback for
 // sockets that already existed before injection.
+//
+// The global is resolved via `globalThis` (NOT `window`) so the SAME hook works in a
+// page, a cross-origin iframe AND a Web Worker. In a page/iframe globalThis === window,
+// so this is byte-for-byte equivalent to the original there; the only new behaviour is
+// that a game whose WebSocket lives in a Web Worker (common for Aviator-style games)
+// finally gets a tracked socket, instead of failing with "No tracked open WebSocket".
 const WS_HOOK = `(() => {
   try {
-    if (window.__wsoWsVersion >= 2) return; window.__wsoWsVersion = 2; window.__wsoWs = 1;
-    const WS = window.__wsoNativeWebSocket || window.WebSocket; if (!WS || !WS.prototype || !WS.prototype.send) return;
-    try { window.__wsoNativeWebSocket = WS; } catch(e){}
-    const socks = window.__wsoSocks = window.__wsoSocks || [];
+    var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof self !== 'undefined') ? self : this;
+    if (!g) return;
+    if (g.__wsoWsVersion >= 2) return; g.__wsoWsVersion = 2; g.__wsoWs = 1;
+    const WS = g.__wsoNativeWebSocket || g.WebSocket; if (!WS || !WS.prototype || !WS.prototype.send) return;
+    try { g.__wsoNativeWebSocket = WS; } catch(e){}
+    const socks = g.__wsoSocks = g.__wsoSocks || [];
     const track = function(ws){ try { if (ws && socks.indexOf(ws) === -1) socks.push(ws); } catch(e){} return ws; };
     const nativeSend = WS.prototype.send;
     const wrapped = function(data){ track(this); return nativeSend.apply(this, arguments); };
@@ -29,9 +37,9 @@ const WS_HOOK = `(() => {
       try { TrackedWebSocket.prototype = WS.prototype; } catch(e){}
       try { TrackedWebSocket.CONNECTING = WS.CONNECTING; TrackedWebSocket.OPEN = WS.OPEN; TrackedWebSocket.CLOSING = WS.CLOSING; TrackedWebSocket.CLOSED = WS.CLOSED; } catch(e){}
       try { TrackedWebSocket.toString = function(){ return WS.toString(); }; } catch(e){}
-      window.WebSocket = TrackedWebSocket;
+      g.WebSocket = TrackedWebSocket;
     } catch(e){}
-    window.__wsoSendFrame = function(urlPart, data){
+    g.__wsoSendFrame = function(urlPart, data){
       try {
         for (let i = socks.length - 1; i >= 0; i--){
           const ws = socks[i];
@@ -42,7 +50,7 @@ const WS_HOOK = `(() => {
       } catch(e){}
       return false;
     };
-    window.__wsoSocketCount = function(urlPart){
+    g.__wsoSocketCount = function(urlPart){
       let n = 0;
       try {
         for (let i = socks.length - 1; i >= 0; i--){
@@ -82,7 +90,7 @@ class WsReplay {
     if (!client) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'Kết nối tới target đã mất' } };
     let urlPart = '';
     try { urlPart = new URL(cap.url).host; } catch { /* opaque */ }
-    const expr = `window.__wsoSendFrame && window.__wsoSendFrame(${JSON.stringify(urlPart)}, ${JSON.stringify(String(payload))})`;
+    const expr = `globalThis.__wsoSendFrame && globalThis.__wsoSendFrame(${JSON.stringify(urlPart)}, ${JSON.stringify(String(payload))})`;
     try {
       const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, cap.cdpSessionId || undefined);
       const ok = res && res.result && res.result.value === true;
@@ -103,7 +111,7 @@ class WsReplay {
     await this.injectSession(client, ctx.cdpSessionId || undefined);
     const urlPart = String(ctx.host || '');
     const data = JSON.stringify(String(payload));
-    const expr = `window.__wsoSendFrame && (window.__wsoSendFrame(${JSON.stringify(urlPart)}, ${data}) || window.__wsoSendFrame('', ${data}))`;
+    const expr = `globalThis.__wsoSendFrame && (globalThis.__wsoSendFrame(${JSON.stringify(urlPart)}, ${data}) || globalThis.__wsoSendFrame('', ${data}))`;
     try {
       const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, ctx.cdpSessionId || undefined);
       if (res && res.result && res.result.value === true) return { ok: true };
@@ -121,11 +129,11 @@ class WsReplay {
     await this.injectSession(client, sessionId);
     const urlPart = String(ctx.host || '');
     const data = JSON.stringify(String(payload));
-    const expr = `window.__wsoSendFrame && (window.__wsoSendFrame(${JSON.stringify(urlPart)}, ${data}) || window.__wsoSendFrame('', ${data}))`;
+    const expr = `globalThis.__wsoSendFrame && (globalThis.__wsoSendFrame(${JSON.stringify(urlPart)}, ${data}) || globalThis.__wsoSendFrame('', ${data}))`;
     try {
       const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, sessionId);
       if (res && res.result && res.result.value === true) return { ok: true };
-      const countExpr = `window.__wsoSocketCount ? {matched: window.__wsoSocketCount(${JSON.stringify(urlPart)}), open: window.__wsoSocketCount('')} : {matched: 0, open: 0}`;
+      const countExpr = `globalThis.__wsoSocketCount ? {matched: globalThis.__wsoSocketCount(${JSON.stringify(urlPart)}), open: globalThis.__wsoSocketCount('')} : {matched: 0, open: 0}`;
       const countRes = await client.Runtime.evaluate({ expression: countExpr, returnByValue: true }, sessionId).catch(() => null);
       const counts = countRes && countRes.result && countRes.result.value || { matched: 0, open: 0 };
       return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: counts.open > 0 ? 'Cannot send through the tracked open WebSocket. Reload the game and try again.' : 'No tracked open WebSocket in this frame. Reload the game after opening the browser from the tool, log in again, then try bet/cashout.', context: { socketHost: urlPart, openSockets: counts.open || 0, matchedSockets: counts.matched || 0 } } };
