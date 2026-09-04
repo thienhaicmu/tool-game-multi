@@ -9,9 +9,13 @@
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
 
-  const VIEWS = ['overview', 'manual', 'auto', 'btest'];
-  // Which existing panel powers each control view (reused, not duplicated).
-  const PANEL_FOR_VIEW = { manual: 'proto-panel', auto: 'at-panel', btest: 'bv-panel' };
+  // WU-D.1 — final product IA (browser-centric, Vietnamese). The rail = Trình duyệt;
+  // the workspace tabs are the per-selected-browser tasks. Manual/Amount Check/Observer
+  // are secondary tools reached from the "advanced" (Nâng cao) view, not primary tabs.
+  const VIEWS = ['overview', 'auto', 'history', 'advanced'];
+  // Only the Auto workspace is powered by a reused slide-in panel; overview/history/
+  // advanced are sections in #shell-main.
+  const PANEL_FOR_VIEW = { auto: 'at-panel' };
   const STORAGE_KEY = 'wvd-advanced';
 
   // Default on a fresh install is product control mode (advanced OFF).
@@ -25,10 +29,10 @@
 
   // WU11.1 — the one Auto-Run CTA changes label/action by runner state.
   function autoCta(state, running) {
-    if (running) return { action: 'stop', label: '■ STOP AUTO RUN', note: 'Đang chạy tự động', cls: 'danger' };
-    if (state === 'COMPLETED') return { action: 'start', label: '↻ RUN AGAIN', note: 'Tự dừng — đã chạy hết lượt', cls: 'primary' };
-    if (state === 'STOPPED') return { action: 'start', label: '▶ START NEW RUN', note: 'Bạn đã nhấn Dừng', cls: 'primary' };
-    return { action: 'start', label: '▶ START AUTO RUN', note: '', cls: 'primary' };
+    if (running) return { action: 'stop', label: '■ DỪNG TỰ ĐỘNG', note: 'Đang chạy tự động', cls: 'danger' };
+    if (state === 'COMPLETED') return { action: 'start', label: '↻ CHẠY LẠI', note: 'Tự dừng — đã chạy hết lượt', cls: 'primary' };
+    if (state === 'STOPPED') return { action: 'start', label: '▶ BẮT ĐẦU LẠI', note: 'Bạn đã nhấn Dừng', cls: 'primary' };
+    return { action: 'start', label: '▶ BẮT ĐẦU TỰ ĐỘNG', note: '', cls: 'primary' };
   }
 
   return { VIEWS, PANEL_FOR_VIEW, STORAGE_KEY, loadMode, saveMode, isAdvanced, autoCta };

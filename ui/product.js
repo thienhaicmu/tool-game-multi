@@ -54,7 +54,7 @@ function remainingDaysTrusted(expiresAt) {
   const nowSeconds = Number(licenseState.nowSeconds || 0);
   if (!nowSeconds) return 'checking';
   const days = Math.ceil((Number(expiresAt) - nowSeconds) / 86400);
-  return days < 0 ? 'expired' : `${days} days`;
+  return days < 0 ? 'đã hết hạn' : `${days} ngày`;
 }
 function licenseFriendly(status) {
   const code = status && status.error && status.error.code;
@@ -122,6 +122,17 @@ async function refreshEntitlement() {
     const cap = `Hồ sơ ${e.registeredBrowsers}/${e.maxBrowsers == null ? '∞' : e.maxBrowsers} · Đang chạy ${e.runningBrowsers}/${e.maxConcurrentBrowsers == null ? '∞' : e.maxConcurrentBrowsers}`;
     const feats = Object.keys(FEATURE_VI).map((k) => (e.features && e.features[k] ? '✓' : '✕') + ' ' + FEATURE_VI[k]).join(' · ');
     chip.title = `${cap}\n${feats}`;
+    // Compact always-visible capacity badge in the appbar (signed truth).
+    const capBadge = $('cap-badge');
+    if (capBadge) {
+      capBadge.textContent = cap;
+      capBadge.classList.toggle('full', e.maxBrowsers != null && e.registeredBrowsers >= e.maxBrowsers);
+    }
+    // Feature-locked visual states (§16/§22): drive body flags the CSS/UX react to.
+    document.body.dataset.autorun = e.features && e.features.autoRun ? 'on' : 'off';
+    document.body.dataset.jackpot = e.features && e.features.jackpotLive ? 'on' : 'off';
+    document.body.dataset.jackpotgate = e.features && e.features.jackpotGate ? 'on' : 'off';
+    document.body.dataset.history = e.features && e.features.roundHistory ? 'on' : 'off';
   }
   document.dispatchEvent(new CustomEvent('entitlement-change', { detail: e }));
 }
@@ -875,7 +886,7 @@ renderActions();
   function addTestRow(values = {}) {
     const row = document.createElement('div');
     row.className = 'at-test-row';
-    row.innerHTML = `<span class="at-row-number"></span><label>Rounds<input class="mono at-rounds" value="${esc(values.rounds ?? 10)}"><span class="cfg-err at-row-error-rounds"></span></label><label>Bet amount<input class="mono at-amount" value="${esc(values.amount ?? 5000)}"><span class="cfg-err at-row-error-amount"></span></label><label>Stop odd<input class="mono at-stopodd" value="${esc(values.stopOdd ?? '2.00')}"><span class="cfg-err at-row-error-stopodd"></span></label><button class="btn icon at-row-remove" type="button" title="Remove test">×</button>`;
+    row.innerHTML = `<span class="at-row-number"></span><label>Số vòng<input class="mono at-rounds" value="${esc(values.rounds ?? 10)}"><span class="cfg-err at-row-error-rounds"></span></label><label>Tiền cược<input class="mono at-amount" value="${esc(values.amount ?? 5000)}"><span class="cfg-err at-row-error-amount"></span></label><label>Dừng tại ODD<input class="mono at-stopodd" value="${esc(values.stopOdd ?? '2.00')}"><span class="cfg-err at-row-error-stopodd"></span></label><button class="btn icon at-row-remove" type="button" title="Xóa lượt">×</button>`;
     $('at-test-rows').appendChild(row);
     row.querySelector('.at-row-remove').onclick = () => { if (testRows().length > 1 && !sequenceRunning) { row.remove(); renumberRows(); validateConfigUI(); } };
     row.querySelectorAll('input').forEach((el) => { el.oninput = validateConfigUI; });
@@ -994,25 +1005,33 @@ renderActions();
   async function refreshEnv() {
     try { env = await api.autotestEnvironment(currentRunId); } catch { env = { allowed: false, host: '' }; }
     const badge = $('at-env');
-    badge.textContent = `READY · ${env.host || ''}`;
+    badge.textContent = `Sẵn sàng · ${env.host || ''}`;
     badge.className = 'proto-env on';
     const gate = $('at-gate');
     gate.hidden = true;
     renderCta();
   }
-  // The single Auto-Run CTA: label/action by state (WU11.1), gated by context/env/config.
+  // The single Auto CTA: label/action by state (WU11.1), gated by context/env/config.
   function renderCta() {
     const running = !!(snap && snap.running);
-    const c = (window.AppShell ? window.AppShell.autoCta(snap ? snap.state : 'IDLE', running) : { action: 'start', label: '▶ START AUTO RUN', note: '', cls: 'primary' });
+    const c = (window.AppShell ? window.AppShell.autoCta(snap ? snap.state : 'IDLE', running) : { action: 'start', label: '▶ BẮT ĐẦU TỰ ĐỘNG', note: '', cls: 'primary' });
     const cta = $('at-cta');
     cta.textContent = c.label;
     cta.className = 'cta ' + c.cls;
     $('at-cta-note').textContent = c.note;
-    // Disable reason (§5) — context/attach/endpoint/config.
+    // Feature lock (§16/§22): Auto requires the signed autoRun entitlement.
+    const autoLicensed = document.body.dataset.autorun !== 'off';
+    const gate = $('at-gate');
+    if (gate) {
+      if (!autoLicensed) { gate.hidden = false; gate.className = 'proto-validation block'; gate.textContent = '🔒 Tính năng Chạy tự động chưa được cấp phép trong gói của bạn. Liên hệ nhà cung cấp để nâng cấp.'; }
+      else gate.hidden = true;
+    }
+    // Disable reason (§5) — license/context/config.
     let reason = '';
     if (!running) {
-      if (!protoCtxReady()) reason = 'Waiting for login context…';
-      else if (!configValid) reason = 'Fix the highlighted fields.';
+      if (!autoLicensed) reason = '🔒 Gói của bạn chưa có tính năng Chạy tự động.';
+      else if (!protoCtxReady()) reason = 'Chờ đăng nhập & vào game…';
+      else if (!configValid) reason = 'Hãy sửa các ô đang báo lỗi.';
     }
     cta.disabled = !running && reason !== '';
     $('at-cta-reason').textContent = reason;
@@ -1040,8 +1059,8 @@ renderActions();
     // Show the running config's amount (snapshotted at Start, not live inputs §14).
     $('at-live-amount').textContent = snap.config && snap.config.amount != null ? Number(snap.config.amount).toLocaleString() : '—';
     const active = snap.active;
-    $('at-bet').textContent = active ? (active.betResult || (['BET_SENDING', 'WAITING_BET_ACK'].includes(snap.state) ? 'sending…' : '—')) : '—';
-    $('at-cash').textContent = ['CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(snap.state) ? 'sending…' : (active && active.ackOdd != null ? 'ACK ' + active.ackOdd : 'waiting');
+    $('at-bet').textContent = active ? (active.betResult || (['BET_SENDING', 'WAITING_BET_ACK'].includes(snap.state) ? 'đang gửi…' : '—')) : '—';
+    $('at-cash').textContent = ['CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(snap.state) ? 'đang gửi…' : (active && active.ackOdd != null ? 'ACK ' + active.ackOdd : '—');
     const rows = visibleRounds();
     syncDayControls(rows);
     const m = metricsForRounds(rows);
@@ -1328,19 +1347,38 @@ renderActions();
   const initialMode = Shell.loadMode((k) => localStorage.getItem(k));
 
   // ---- nav / views ----
+  // WU-D.1 — sections live in #shell-main (overview/history/advanced); only 'auto' is a
+  // reused slide-in panel. Selecting a nav tab hides every tool panel + section, then
+  // shows the target. Switching a tab is a VIEW action only — never engine execution.
+  const SECTION_FOR_VIEW = { overview: 'view-overview', history: 'view-history', advanced: 'view-advanced' };
+  const SECTIONS = ['view-overview', 'view-history', 'view-advanced'];
   function setView(view) {
     state.view = view;
     document.body.dataset.view = view;
     for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.classList.toggle('active', b.dataset.view === view);
     for (const id of PANELS) { const el = $(id); if (el) el.hidden = true; }
-    const overview = $('view-overview');
-    if (view === 'overview') { overview.hidden = false; renderOverview(); return; }
-    overview.hidden = true;
+    for (const id of SECTIONS) { const el = $(id); if (el) el.hidden = true; }
     const panelId = Shell.PANEL_FOR_VIEW[view];
-    const el = $(panelId);
-    if (el) { el.hidden = false; el.dispatchEvent(new CustomEvent('shell:activate')); }
+    if (panelId) { const el = $(panelId); if (el) { el.hidden = false; el.dispatchEvent(new CustomEvent('shell:activate')); } return; }
+    const sectionId = SECTION_FOR_VIEW[view];
+    const el = $(sectionId); if (el) el.hidden = false;
+    if (view === 'overview') renderOverview();
+    if (view === 'history') document.dispatchEvent(new CustomEvent('history-activate'));
   }
   for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.onclick = () => setView(b.dataset.view);
+
+  // ---- Nâng cao (Advanced) tiles → open the secondary tool panels / diagnostics ----
+  document.querySelectorAll('#view-advanced [data-adv]').forEach((tile) => {
+    tile.onclick = () => {
+      const k = tile.dataset.adv;
+      if (k === 'diagnostics') { const box = $('shell-advanced'); if (box) { box.checked = true; applyMode('advanced'); } return; }
+      const toggle = { manual: 'proto-toggle', btest: 'bv-toggle', observer: 'obs-toggle' }[k];
+      const btn = $(toggle);
+      const panel = { manual: 'proto-panel', btest: 'bv-panel', observer: 'obs-panel' }[k];
+      const el = $(panel);
+      if (btn && el && el.hidden) btn.click(); // open (idempotent: only when currently hidden)
+    };
+  });
 
   // ---- Diagnostics toggle ----
   const advBox = $('shell-advanced');
@@ -1359,7 +1397,7 @@ renderActions();
 
   // ---- connection status ----
   function setStatus(cls, text) {
-    const s = $('shell-status'); if (s) s.className = 'ab-status ' + (cls || '');
+    const s = $('shell-status'); if (s) s.className = 'ab-pill diag ' + (cls || ''); // stays hidden in product mode
     const t = $('shell-status-text'); if (t) t.textContent = text;
   }
   async function refreshInstanceInfo() {
@@ -1402,27 +1440,27 @@ renderActions();
     const s = state.obs, cur = s && s.current;
     const protocolSeen = !!(s && (s.status !== 'IDLE' || (s.history && s.history.length)));
     const empty = $('ov-empty'), body = $('ov-body'), etext = $('ov-empty-text');
-    if (!state.connected) { empty.hidden = false; body.hidden = true; etext.textContent = 'Open the game to begin control.'; return; }
-    if (!protocolSeen) { empty.hidden = false; body.hidden = true; etext.textContent = 'Browser connected. Waiting for MiniGame / aviatorPlugin traffic…'; return; }
+    if (!state.connected) { empty.hidden = false; body.hidden = true; etext.textContent = 'Chưa kết nối — mở một trình duyệt để bắt đầu.'; return; }
+    if (!protocolSeen) { empty.hidden = false; body.hidden = true; etext.textContent = 'Đã kết nối trình duyệt. Đang chờ dữ liệu game (đăng nhập & vào game)…'; return; }
     empty.hidden = true; body.hidden = false;
     // Session context (aid/eid) banner — owned by ProtocolContext (§ context ownership).
     const ctxEl = $('ov-ctx');
-    if (protoCtxReady()) { ctxEl.className = 'ctx-banner ready'; $('ov-ctx-text').innerHTML = `Protocol Context ready — AID <span class="mono">${esc(protoCtx.aid)}</span> · EID <span class="mono">${esc(protoCtx.eid)}</span>`; }
-    else { ctxEl.className = 'ctx-banner wait'; $('ov-ctx-text').textContent = 'Waiting for login context…'; }
+    if (protoCtxReady()) { ctxEl.className = 'ctx-banner ready'; $('ov-ctx-text').innerHTML = `Sẵn sàng — AID <span class="mono">${esc(protoCtx.aid)}</span> · EID <span class="mono">${esc(protoCtx.eid)}</span>`; }
+    else { ctxEl.className = 'ctx-banner wait'; $('ov-ctx-text').textContent = 'Chờ đăng nhập & vào game…'; }
     $('ov-aid').textContent = protoCtxReady() ? protoCtx.aid : '—';
     $('ov-eid').textContent = protoCtxReady() ? protoCtx.eid : '—';
     const info = state.instanceInfo || {}, runtime = info.runtime || {};
     $('ov-instance').textContent = info.instanceId ? shortId(info.instanceId) : '—';
     $('ov-profile').textContent = info.chromeProfile || '—';
     $('ov-cdp').textContent = runtime.cdpPort || '—';
-    $('ov-browser').textContent = 'Connected';
-    $('ov-license').textContent = licenseState.active ? 'ACTIVE' : 'LOCKED';
+    $('ov-browser').textContent = 'Đã kết nối';
+    $('ov-license').textContent = licenseState.active ? 'Đang hoạt động' : 'Đã khóa';
     $('ov-license-exp').textContent = licenseState.payload ? dateFromSecondsTrusted(licenseState.payload.expiresAt) : '—';
     $('ov-license-rem').textContent = licenseState.payload ? remainingDaysTrusted(licenseState.payload.expiresAt) : '—';
     $('ov-license-launches').textContent = licenseState.launch ? (licenseState.launch.max ? `${licenseState.launch.used} / ${licenseState.launch.max}` : `${licenseState.launch.used} / Unlimited`) : '—';
     $('ov-target').textContent = state.targetName || '—';
-    $('ov-ws').textContent = 'Aviator detected';
-    $('ov-proto').textContent = cur ? 'Ready · live round' : 'Ready · waiting for round';
+    $('ov-ws').textContent = 'Đã phát hiện Aviator';
+    $('ov-proto').textContent = protoCtxReady() ? (cur ? 'Sẵn sàng · đang có vòng' : 'Sẵn sàng · chờ vòng') : 'Chờ đăng nhập';
     $('ov-odd').textContent = cur && cur.currentOdd != null ? f2(cur.currentOdd) + 'x' : '—';
     $('ov-sid').textContent = cur && cur.sid != null ? cur.sid : '—';
     $('ov-phase').textContent = cur ? cur.phase : (s ? s.status : '—');
@@ -1436,9 +1474,9 @@ renderActions();
 
   // ---- boot ----
   applyMode(initialMode);
-  // Product mode opens directly into the Auto Run workspace; the URL launcher
-  // remains available in the compact appbar above it.
-  setView('auto');
+  // Product mode opens on Tổng quan (home): selected-browser identity + live state.
+  // Tự động is one tab away; the identity band stays visible across all tabs.
+  setView('overview');
   // Seed overview/status from current engine state if already connected.
   (async () => {
     await refreshInstanceInfo();
@@ -1464,19 +1502,20 @@ renderActions();
   let selectedBrowserId = null;
   const f2 = (n) => (n == null || !Number.isFinite(Number(n))) ? null : Number(n).toFixed(2);
 
-  // Normalized, source-real badge. OFFLINE and AUTO are the most visible.
+  // Normalized, source-real badge → Vietnamese user state (§21). Đã đóng and Tự động
+  // are the most visible.
   function badge(b) {
-    if (!b.online) return { cls: 'disconnected', text: 'OFFLINE' };
-    if (b.runtimeStatus === 'ERROR') return { cls: 'error', text: 'ERROR' };
-    if (b.runtimeStatus === 'DISCONNECTED') return { cls: 'disconnected', text: 'DISCONNECTED' };
+    if (!b.online) return { cls: 'disconnected', text: 'Đã đóng' };
+    if (b.runtimeStatus === 'ERROR') return { cls: 'error', text: 'Lỗi' };
+    if (b.runtimeStatus === 'DISCONNECTED') return { cls: 'disconnected', text: 'Mất kết nối' };
     // WU-D — a session terminated by the Stop-1000x kill switch is distinct from a plain stop.
-    if (!b.autoRunning && b.stop1000State === 'STOPPED_1000X') return { cls: 'auto', text: 'DỪNG 1000x' };
-    if (b.autoRunning) return { cls: 'auto', text: 'AUTO' };
-    if (b.entryState === 'ENTERING') return { cls: 'wait', text: 'ENTERING' };
-    if (b.testRunning) return { cls: 'test', text: 'TEST' };
-    if (b.protocolReady) return { cls: 'ready', text: 'READY' };
-    if (b.runtimeStatus === 'CONNECTED' || b.runtimeStatus === 'WAITING_PROTOCOL') return { cls: 'wait', text: 'WAITING' };
-    return { cls: 'starting', text: 'STARTING' };
+    if (!b.autoRunning && b.stop1000State === 'STOPPED_1000X') return { cls: 'auto', text: 'Dừng 1000x' };
+    if (b.autoRunning) return { cls: 'auto', text: 'Tự động' };
+    if (b.entryState === 'ENTERING') return { cls: 'wait', text: 'Đang vào' };
+    if (b.testRunning) return { cls: 'test', text: 'Kiểm thử' };
+    if (b.protocolReady) return { cls: 'ready', text: 'Sẵn sàng' };
+    if (b.runtimeStatus === 'CONNECTED' || b.runtimeStatus === 'WAITING_PROTOCOL') return { cls: 'wait', text: 'Chờ game' };
+    return { cls: 'starting', text: 'Đang mở' };
   }
 
   function renderCap() {
@@ -1488,12 +1527,12 @@ renderActions();
     const newBtn = $('rr-new');
     if (newBtn) { newBtn.disabled = !capacity.canCreate; newBtn.title = capacity.canCreate ? 'Create a new persistent browser' : `Browser limit reached (${capacity.registered}/${capacity.max})`; }
     const running = $('shell-running');
-    if (running) { const n = browsers.filter((b) => b.online).length; running.textContent = `${n} Running`; }
+    if (running) { const n = browsers.filter((b) => b.online).length; running.textContent = `${n} đang chạy`; }
   }
 
   function render() {
     renderCap();
-    if (!browsers.length) { listEl.innerHTML = '<div class="rr-empty">No browsers yet.<span class="rr-empty-sub">Click <b>+ New</b> to create one.</span></div>'; return; }
+    if (!browsers.length) { listEl.innerHTML = '<div class="rr-empty">Chưa có trình duyệt.<span class="rr-empty-sub">Nhấn <b>＋ Tạo</b> để thêm một trình duyệt.</span></div>'; return; }
     listEl.innerHTML = browsers.map((b) => {
       const bd = badge(b);
       const dotCls = b.autoRunning ? 'auto' : b.runtimeStatus === 'ERROR' ? 'err' : b.online ? 'live' : '';
@@ -1501,10 +1540,10 @@ renderActions();
       const odd = f2(b.currentOdd);
       const runtime = b.online
         ? `<div class="rr-meta"><span>SID ${b.currentSid != null ? esc(b.currentSid) : '—'}</span><span class="rr-odd">${odd != null ? esc(odd) + 'x' : '—'}</span></div><div class="rr-brid">${esc(b.runId || '')}</div>`
-        : `<div class="rr-meta"><span>${b.lastOpenedAt ? 'Last used ' + esc(fmtTimeShort(b.lastOpenedAt)) : 'Never opened'}</span></div>`;
+        : `<div class="rr-meta"><span>${b.lastOpenedAt ? 'Dùng lần cuối ' + esc(fmtTimeShort(b.lastOpenedAt)) : 'Chưa mở lần nào'}</span></div>`;
       const actions = b.online
-        ? `<div class="rr-actions"><button class="rr-mini" data-edit="${esc(b.browserId)}">Edit</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Close</button></div>`
-        : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}">OPEN</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Edit</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Delete</button></div>`;
+        ? `<div class="rr-actions"><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
+        : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}">Mở</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Xóa</button></div>`;
       // WU-C.3 — compact but distinctive jackpot line (always shown; "—" when unknown).
       const jpTxt = b.currentJackpot != null ? Number(b.currentJackpot).toLocaleString() : '—';
       const jpCls = b.currentJackpot == null ? 'unknown' : ((b.jackpotGateState === 'WAITING' || b.jackpotGateState === 'READY') ? 'gated' : '');
@@ -1520,7 +1559,7 @@ renderActions();
     listEl.querySelectorAll('[data-open]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openBrowser(x.dataset.open); }; });
     listEl.querySelectorAll('[data-close]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.close); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } }; });
     listEl.querySelectorAll('[data-edit]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openModal('edit', browsers.find((r) => r.browserId === x.dataset.edit)); }; });
-    listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Delete this browser? Its profile data is kept on disk.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast((r.error.message || r.error.code)); }; });
+    listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Xóa trình duyệt này? Dữ liệu hồ sơ vẫn được giữ trên đĩa.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast((r.error.message || r.error.code)); }; });
   }
 
   function select(browserId) { selectedBrowserId = browserId; render(); reconcile(); }
@@ -1536,6 +1575,7 @@ renderActions();
     const sel = browsers.find((b) => b.browserId === selectedBrowserId);
     railSelect(true, sel && sel.online ? sel.runId : null);
     setCurrentBrowser(selectedBrowserId); // drives the persistent history panel
+    renderJackpot(); renderIdent();       // keep the jackpot chip + identity band in sync on selection
   }
 
   // WU-C.3 — always-highlighted jackpot chip for the selected browser, plus the
@@ -1558,10 +1598,31 @@ renderActions();
     chip.classList.toggle('gated', gs === 'WAITING' || gs === 'READY');
   }
 
+  // WU-D.1 — the selected-browser identity band is the workspace's center of gravity.
+  // It shows which B-* is in focus + its live at-a-glance state (from the signed
+  // summary), and mirrors the jackpot into the Overview. It never retargets a run.
+  function renderIdent() {
+    const emptyEl = $('wsi-empty'), bodyEl = $('wsi-body');
+    const b = browsers.find((x) => x.browserId === selectedBrowserId);
+    const set = (id, v) => { const e = $(id); if (e) e.textContent = v; };
+    if (!b) { if (emptyEl) emptyEl.hidden = false; if (bodyEl) bodyEl.hidden = true; const o = $('ov-jackpot'); if (o) o.textContent = '—'; return; }
+    if (emptyEl) emptyEl.hidden = true; if (bodyEl) bodyEl.hidden = false;
+    const bd = badge(b);
+    set('wsi-bid', b.browserId);
+    set('wsi-name', b.name || '');
+    const st = $('wsi-state'); if (st) { st.textContent = bd.text; st.className = 'wsi-state ' + bd.cls; }
+    set('wsi-sid', b.online && b.currentSid != null ? b.currentSid : '—');
+    const odd = f2(b.currentOdd);
+    set('wsi-odd', b.online && odd != null ? odd + 'x' : '—');
+    const jp = b.currentJackpot != null ? Number(b.currentJackpot).toLocaleString() : '—';
+    set('wsi-jp', jp);
+    const ovjp = $('ov-jackpot'); if (ovjp) ovjp.textContent = jp;
+  }
+
   function apply(payload) {
     browsers = (payload && payload.browsers) || [];
     capacity = (payload && payload.capacity) || capacity;
-    render(); reconcile(); renderJackpot();
+    render(); reconcile(); renderJackpot(); renderIdent();
   }
   api.onBrowsersChanged(apply);
   api.listBrowsers().then(apply).catch(() => {});
@@ -1618,29 +1679,30 @@ renderActions();
   function kv(label, value, na) { return `<div class="bh-kv ${na ? 'na' : ''}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`; }
 
   function renderStats(s) {
-    if (!s || s.corrupt) { statsEl.innerHTML = `<div class="muted">${s && s.corrupt ? 'History file unreadable (preserved for recovery).' : 'No history yet.'}</div>`; return; }
-    const wr = s.resolvedWinRate == null ? '—' : (s.resolvedWinRate * 100).toFixed(1) + '%';
+    if (s && s.licensed === false) { statsEl.innerHTML = '<div class="locked-state">🔒 Tính năng <b>Lịch sử vòng chơi</b> chưa được cấp phép trong gói của bạn.</div>'; return; }
+    if (!s || s.corrupt) { statsEl.innerHTML = `<div class="muted">${s && s.corrupt ? 'Tệp lịch sử không đọc được (đã giữ lại để khôi phục).' : 'Chưa có lịch sử.'}</div>`; return; }
     const totalBet = s.totalBet == null ? '—' : money(s.totalBet);
-    const betNote = s.betUnknownCount ? ` (+${s.betUnknownCount} unknown)` : '';
+    const betNote = s.betUnknownCount ? ` (+${s.betUnknownCount} không rõ)` : '';
+    // Evidence-safe (§17): NO win-rate (LOSS is never inferred → it would be misleading),
+    // NO LOSS row, payout/net are unproven → "Không có". UNKNOWN is first-class.
     statsEl.innerHTML =
-      kv('Rounds', s.totalRounds) +
-      kv('Win rate', wr + ` (${s.wins}/${s.wins + s.losses})`) +
-      kv('Wins', s.wins) +
-      kv('Losses', s.losses) +
-      kv('Unknown', s.unknown) +
-      kv('Highest ODD', s.highestObservedOdd != null ? f2(s.highestObservedOdd) + 'x' : '—', s.highestObservedOdd == null) +
-      kv('Total bet', (totalBet === '—' ? '—' : totalBet) + betNote, s.totalBet == null) +
-      kv('Payout', 'Unavailable', true) +           // wm/payout semantics unproven
-      kv('Net', 'Unavailable', true) +
-      kv('Last SID', s.lastSid != null ? s.lastSid : '—', s.lastSid == null);
+      kv('Tổng vòng', s.totalRounds) +
+      kv('Thắng (đã xác nhận)', s.wins) +
+      kv('Không rõ', s.unknown) +
+      kv('ODD cao nhất', s.highestObservedOdd != null ? f2(s.highestObservedOdd) + 'x' : '—', s.highestObservedOdd == null) +
+      kv('Tổng cược đã nhận', (totalBet === '—' ? '—' : totalBet) + betNote, s.totalBet == null) +
+      kv('Tiền thắng', 'Không có', true) +           // wm/payout semantics unproven
+      kv('Lãi/Lỗ', 'Không có', true) +
+      kv('SID gần nhất', s.lastSid != null ? s.lastSid : '—', s.lastSid == null);
   }
 
+  const RESULT_VI = { WIN: 'Thắng', LOSS: 'Thua', UNKNOWN: 'Không rõ' };
   function resultBadge(r) {
     const cls = r.result === 'WIN' ? 'win' : r.result === 'LOSS' ? 'loss' : 'unknown';
-    return `<span class="bh-res ${cls}">${esc(r.result || 'UNKNOWN')}</span>`;
+    return `<span class="bh-res ${cls}">${esc(RESULT_VI[r.result] || 'Không rõ')}</span>`;
   }
   function renderRounds(list) {
-    if (!list || !list.length) { roundsEl.innerHTML = '<div class="muted">No rounds recorded yet.</div>'; return; }
+    if (!list || !list.length) { roundsEl.innerHTML = '<div class="muted">Chưa ghi nhận vòng nào.</div>'; return; }
     roundsEl.innerHTML = list.map((r) => {
       const bet = r.acceptedBet != null ? money(r.acceptedBet) : (r.requestedBet != null ? money(r.requestedBet) + '?' : '—');
       const odd = r.cashoutAckOdd != null ? f2(r.cashoutAckOdd) + 'x' : (r.triggerOdd != null ? f2(r.triggerOdd) + 'x' : '—');
@@ -1668,6 +1730,7 @@ renderActions();
   }
 
   document.addEventListener('browser-view-changed', refresh);
+  document.addEventListener('history-activate', refresh); // re-fetch when the Lịch sử tab opens
   if (api.onBrowserHistoryChanged) api.onBrowserHistoryChanged((p) => { if (p && p.browserId === currentBrowserId) refresh(); });
   refresh();
 })();

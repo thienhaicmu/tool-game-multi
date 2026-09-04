@@ -25,90 +25,134 @@
       <button id="activation-submit" class="primary" type="button">KÍCH HOẠT</button>
     </div>
   </section>
-  <!-- Focused Aviator control shell -->
+  <!-- Final product shell — customer-facing (Vietnamese). Center of gravity is the
+       SELECTED persistent browser; the appbar carries only app-level truth: license
+       rights, signed capacity, and the Advanced (Nâng cao) escape hatch. -->
   <header id="appbar">
     <div class="brand"><span class="glyph">◇</span><b>Aviator&nbsp;Control&nbsp;Studio</b></div>
-    <span id="shell-running" class="ab-status" title="Live browser runs">0 Running</span>
-    <!-- Legacy global launcher: hidden in normal product mode (browsers are created
-         per-record via the BROWSERS rail); kept for Advanced Debug workflows. -->
-    <div class="ab-url">
-      <input id="shell-url" placeholder="https://your.game" aria-label="Game URL">
-      <button id="shell-open" class="primary">Open Browser</button>
-    </div>
-    <span id="shell-status" class="ab-status"><span class="dot"></span><span id="shell-status-text">Disconnected</span></span>
-    <span id="shell-license" class="ab-status license" title="License remaining days">License —</span>
-    <span id="shell-instance" class="ab-status" title="Isolated app/browser instance">Instance —</span>
-    <span id="shell-cdp" class="ab-status" title="This instance's browser control port">CDP —</span>
     <div class="spacer"></div>
-    <label id="shell-advanced-wrap" class="ab-adv" title="Show diagnostics tools (capture / replay / intercept / timeline)">
-      <input type="checkbox" id="shell-advanced"> ⚙ Diagnostics
+    <span id="shell-running" class="ab-pill" title="Số trình duyệt đang chạy">0 đang chạy</span>
+    <span id="cap-badge" class="ab-pill" title="Số hồ sơ đã đăng ký / cho phép · Số trình duyệt chạy đồng thời">Hồ sơ —</span>
+    <span id="shell-license" class="ab-pill license" title="Trạng thái bản quyền">Đang kiểm tra…</span>
+    <!-- Diagnostics-only status (hidden in normal product mode via CSS). -->
+    <span id="shell-status" class="ab-pill diag"><span class="dot"></span><span id="shell-status-text">Disconnected</span></span>
+    <span id="shell-instance" class="ab-pill diag" title="Instance">Instance —</span>
+    <span id="shell-cdp" class="ab-pill diag" title="CDP">CDP —</span>
+    <label id="shell-advanced-wrap" class="ab-adv" title="Công cụ nâng cao (kiểm tra thủ công · chẩn đoán · replay)">
+      <input type="checkbox" id="shell-advanced"> ⚙ Nâng cao
     </label>
   </header>
 
-  <aside id="run-rail" aria-label="Browsers">
-    <div class="rr-head"><b>BROWSERS</b><span id="rr-cap" class="rr-cap" title="Registered browsers / license capacity"></span><button id="rr-new" class="btn" type="button" title="Create a new persistent browser">+ New</button></div>
-    <div id="run-list" class="rr-list"><div class="rr-empty">No browsers yet.<span class="rr-empty-sub">Click <b>+ New</b> to create one.</span></div></div>
+  <aside id="run-rail" aria-label="Trình duyệt">
+    <div class="rr-head"><b>TRÌNH DUYỆT</b><span id="rr-cap" class="rr-cap" title="Số hồ sơ đã đăng ký / cho phép"></span><button id="rr-new" class="btn" type="button" title="Tạo trình duyệt mới">＋ Tạo</button></div>
+    <div id="run-list" class="rr-list"><div class="rr-empty">Chưa có trình duyệt.<span class="rr-empty-sub">Nhấn <b>＋ Tạo</b> để thêm một trình duyệt.</span></div></div>
   </aside>
 
   <!-- WU-C.1 — create / edit a persistent browser (Name + URL). -->
   <div id="browser-modal" class="bm-overlay" hidden>
     <div class="bm-card" role="dialog" aria-modal="true" aria-labelledby="bm-title">
-      <div class="bm-title" id="bm-title">New Browser</div>
-      <label class="bm-field">Name<input id="bm-name" class="mono" placeholder="Browser 1"></label>
-      <label class="bm-field">URL<input id="bm-url" class="mono" placeholder="https://your.game"></label>
+      <div class="bm-title" id="bm-title">Trình duyệt mới</div>
+      <label class="bm-field">Tên<input id="bm-name" class="mono" placeholder="Tài khoản 1"></label>
+      <label class="bm-field">Địa chỉ (URL)<input id="bm-url" class="mono" placeholder="https://your.game"></label>
       <div id="bm-error" class="bm-error" hidden></div>
       <div class="bm-actions">
-        <button id="bm-cancel" class="btn" type="button">Cancel</button>
-        <button id="bm-submit" class="primary" type="button">Create &amp; Open</button>
+        <button id="bm-cancel" class="btn" type="button">Hủy</button>
+        <button id="bm-submit" class="primary" type="button">Tạo &amp; Mở</button>
       </div>
     </div>
   </div>
 
   <div id="shell">
-    <nav id="shell-nav" aria-label="Aviator control navigation">
-      <button class="nav-item active" data-view="overview">Overview</button>
-      <button class="nav-item" data-view="manual">Manual Control</button>
-      <button class="nav-item" data-view="auto">Auto Run</button>
-      <button class="nav-item" data-view="btest">Amount Check</button>
+    <!-- SELECTED BROWSER identity band — the app's center of gravity. Always shows
+         which B-* is in focus + its live at-a-glance state. Populated from the signed
+         browsers-changed summary (never from raw protocol frames). -->
+    <div id="ws-ident" class="ws-ident">
+      <div id="wsi-empty" class="wsi-empty">Chọn một trình duyệt ở cột bên trái để bắt đầu.</div>
+      <div id="wsi-body" class="wsi-body" hidden>
+        <div class="wsi-id"><span id="wsi-bid" class="wsi-bid">—</span><span id="wsi-name" class="wsi-name"></span></div>
+        <span id="wsi-state" class="wsi-state">—</span>
+        <div class="wsi-metrics">
+          <div class="wsi-m"><span>SID</span><b id="wsi-sid">—</b></div>
+          <div class="wsi-m odd"><span>ODD</span><b id="wsi-odd">—</b></div>
+          <div class="wsi-m jp"><span>Jackpot</span><b id="wsi-jp">—</b></div>
+        </div>
+      </div>
+    </div>
+    <nav id="shell-nav" aria-label="Điều hướng">
+      <button class="nav-item active" data-view="overview">Tổng quan</button>
+      <button class="nav-item" data-view="auto">Tự động</button>
+      <button class="nav-item" data-view="history">Lịch sử</button>
+      <button class="nav-item" data-view="advanced">Nâng cao</button>
     </nav>
     <main id="shell-main">
       <section id="view-overview" class="shell-view">
-        <div id="ov-empty" class="proto-empty">
+        <div id="ov-empty" class="empty-state">
           <div class="empty-ic">◴</div>
-          <div id="ov-empty-text">Open the game to begin control.</div>
-          <div class="empty-sub">Enter a URL above and click Open Browser.</div>
+          <div id="ov-empty-text">Mở trình duyệt để bắt đầu.</div>
+          <div class="empty-sub">Chọn một trình duyệt và nhấn <b>Mở</b>.</div>
         </div>
         <div id="ov-body" hidden>
-          <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Waiting for login context…</span></div>
-          <div class="ov-detect">
-            <div class="proto-kv"><span>License</span><b id="ov-license">—</b></div>
-            <div class="proto-kv"><span>Expires</span><b id="ov-license-exp">—</b></div>
-            <div class="proto-kv"><span>Remaining</span><b id="ov-license-rem">—</b></div>
-            <div class="proto-kv"><span>Launches</span><b id="ov-license-launches">—</b></div>
-            <div class="proto-kv"><span>Instance</span><b id="ov-instance">—</b></div>
-            <div class="proto-kv"><span>Chrome profile</span><b id="ov-profile">—</b></div>
-            <div class="proto-kv"><span>CDP port</span><b id="ov-cdp">—</b></div>
-            <div class="proto-kv"><span>Browser</span><b id="ov-browser">—</b></div>
-            <div class="proto-kv"><span>Target</span><b id="ov-target">—</b></div>
-            <div class="proto-kv"><span>WebSocket</span><b id="ov-ws">—</b></div>
-            <div class="proto-kv"><span>Protocol</span><b id="ov-proto">—</b></div>
-            <div class="proto-kv"><span>AID</span><b id="ov-aid">—</b></div>
-            <div class="proto-kv"><span>EID</span><b id="ov-eid">—</b></div>
+          <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Chờ đăng nhập…</span></div>
+          <div class="live-grid">
+            <div class="live-cell"><span class="live-label">SID</span><b id="ov-sid">—</b></div>
+            <div class="live-cell odd"><span class="live-label">ODD HIỆN TẠI</span><b id="ov-odd">—</b></div>
+            <div class="live-cell jp"><span class="live-label">JACKPOT</span><b id="ov-jackpot">—</b></div>
           </div>
-          <div class="ov-odd-wrap">
-            <div class="ov-odd-label">CURRENT ODD</div>
-            <div id="ov-odd" class="ov-odd">—</div>
+          <div class="kv-grid">
+            <div class="kv2"><span>Trạng thái game</span><b id="ov-proto">—</b></div>
+            <div class="kv2"><span>Phase</span><b id="ov-phase">—</b></div>
+            <div class="kv2"><span>Max ODD</span><b id="ov-maxodd">—</b></div>
+            <div class="kv2"><span>Số khung ODD</span><b id="ov-frames">—</b></div>
+            <div class="kv2"><span>Tuổi vòng</span><b id="ov-age">—</b></div>
+            <div class="kv2"><span>Cập nhật</span><b id="ov-last">—</b></div>
           </div>
-          <div class="ov-round">
-            <div class="proto-kv"><span>SID</span><b id="ov-sid">—</b></div>
-            <div class="proto-kv"><span>Phase</span><b id="ov-phase">—</b></div>
-            <div class="proto-kv"><span>Max Odd</span><b id="ov-maxodd">—</b></div>
-            <div class="proto-kv"><span>Frames</span><b id="ov-frames">—</b></div>
-            <div class="proto-kv"><span>Round Age</span><b id="ov-age">—</b></div>
-            <div class="proto-kv"><span>Last update</span><b id="ov-last">—</b></div>
-          </div>
-          <div class="proto-state-title">RECENT ODD</div>
-          <div id="ov-recent" class="proto-sidhist"><span class="muted">none</span></div>
+          <div class="section-title">ODD GẦN ĐÂY</div>
+          <div id="ov-recent" class="proto-sidhist"><span class="muted">chưa có</span></div>
+          <details class="ov-tech">
+            <summary>Chi tiết kỹ thuật</summary>
+            <div class="kv-grid">
+              <div class="kv2"><span>Bản quyền</span><b id="ov-license">—</b></div>
+              <div class="kv2"><span>Hết hạn</span><b id="ov-license-exp">—</b></div>
+              <div class="kv2"><span>Còn lại</span><b id="ov-license-rem">—</b></div>
+              <div class="kv2"><span>Số lần chạy</span><b id="ov-license-launches">—</b></div>
+              <div class="kv2"><span>Instance</span><b id="ov-instance">—</b></div>
+              <div class="kv2"><span>Chrome profile</span><b id="ov-profile">—</b></div>
+              <div class="kv2"><span>CDP</span><b id="ov-cdp">—</b></div>
+              <div class="kv2"><span>Browser</span><b id="ov-browser">—</b></div>
+              <div class="kv2"><span>Target</span><b id="ov-target">—</b></div>
+              <div class="kv2"><span>WebSocket</span><b id="ov-ws">—</b></div>
+              <div class="kv2"><span>AID</span><b id="ov-aid">—</b></div>
+              <div class="kv2"><span>EID</span><b id="ov-eid">—</b></div>
+            </div>
+          </details>
+        </div>
+      </section>
+
+      <!-- LỊCH SỬ — evidence-safe persistent history + stats for the selected browser. -->
+      <section id="view-history" class="shell-view" hidden>
+        <div class="bh-card">
+          <div class="section-title">THỐNG KÊ <span id="bh-name" class="faint"></span></div>
+          <div id="bh-stats" class="bh-stats"><div class="muted">Chưa có lịch sử.</div></div>
+          <div class="section-title">VÒNG GẦN ĐÂY <span class="faint">(lưu vĩnh viễn · SID / kết quả)</span></div>
+          <div id="bh-rounds" class="bh-rounds"><div class="muted">Chưa ghi nhận vòng nào.</div></div>
+        </div>
+      </section>
+
+      <!-- NÂNG CAO — secondary. Test tooling + diagnostics; not required for normal use. -->
+      <section id="view-advanced" class="shell-view" hidden>
+        <div class="section-title">CÔNG CỤ NÂNG CAO</div>
+        <p class="adv-note">Các công cụ dưới đây dành cho kiểm thử &amp; chẩn đoán. Không cần thiết cho vận hành thông thường.</p>
+        <div class="adv-grid">
+          <button class="adv-tile" data-adv="manual"><b>Kiểm tra thủ công</b><span>Gửi lệnh protocol thủ công (có kiểm soát)</span></button>
+          <button class="adv-tile" data-adv="btest"><b>Kiểm tra tiền cược</b><span>Đo mức tiền cược máy chủ chấp nhận</span></button>
+          <button class="adv-tile" data-adv="observer"><b>Quan sát vòng</b><span>Theo dõi vòng/ODD chỉ đọc</span></button>
+          <button class="adv-tile" data-adv="diagnostics"><b>Chẩn đoán nâng cao</b><span>Capture · Replay · Intercept · Timeline · CDP · ADB</span></button>
+        </div>
+        <div class="section-title" style="margin-top:18px">MỞ TRÌNH DUYỆT THỦ CÔNG</div>
+        <p class="adv-note">Dành cho chẩn đoán: mở một trình duyệt trực tiếp bằng URL (không tạo hồ sơ B-*).</p>
+        <div class="ab-url">
+          <input id="shell-url" placeholder="https://your.game" aria-label="Địa chỉ game">
+          <button id="shell-open" class="primary">Mở trình duyệt</button>
         </div>
       </section>
     </main>
@@ -332,99 +376,100 @@
     </div>
   </aside>
 
-  <aside id="at-panel" class="proto-panel" hidden aria-label="Automated Round Runner">
+  <aside id="at-panel" class="proto-panel" hidden aria-label="Tự động">
     <div class="proto-head">
-      <b>⚙ Auto Run</b>
-      <span id="at-env" class="proto-env off" title="Current target host">READY</span>
+      <b>⚙ Tự động</b>
+      <span id="at-env" class="proto-env off" title="Máy chủ hiện tại">Sẵn sàng</span>
       <div class="spacer"></div>
-      <button id="at-close" class="btn icon" title="Hide panel">✕</button>
+      <button id="at-close" class="btn icon" title="Ẩn">✕</button>
     </div>
 
     <div id="at-gate" class="proto-validation block" hidden></div>
 
-    <!-- WU-C.3 — Jackpot is the top visual priority; always highlighted whether or
-         not the gate is enabled. The gate badge is a SEPARATE state on top of it. -->
-    <div id="at-jp-chip" class="jp-chip unknown" role="status" aria-label="Live jackpot">
-      <span class="jp-star" aria-hidden="true">★</span>
-      <span class="jp-label">JACKPOT</span>
-      <span class="jp-value" id="at-jp-value">—</span>
-      <span class="jp-gate" id="at-jp-gate" hidden></span>
-    </div>
-
-    <!-- Live state: current server odd is the prominent number -->
-    <div class="proto-card at-live">
-      <div class="proto-kv"><span>Status</span><b id="at-status" class="at-status">IDLE</b></div>
-      <div class="proto-kv"><span>Progress</span><b id="at-progress">— / —</b></div>
-      <div class="proto-kv"><span>SID</span><b id="at-sid">—</b></div>
-      <div class="at-odd-wrap">
-        <div class="at-odd-label">CURRENT ODD</div>
-        <div id="at-odd" class="at-odd">—</div>
-        <div class="at-odd-target">Stop at <b id="at-target">—</b></div>
+    <div class="at-body">
+      <!-- WU-C.3 — Jackpot is the top visual priority; always highlighted whether or
+           not the gate is enabled. The gate badge is a SEPARATE state on top of it. -->
+      <div id="at-jp-chip" class="jp-chip unknown" role="status" aria-label="Jackpot trực tiếp">
+        <span class="jp-star" aria-hidden="true">★</span>
+        <span class="jp-label">JACKPOT</span>
+        <span class="jp-value" id="at-jp-value">—</span>
+        <span class="jp-gate" id="at-jp-gate" hidden></span>
       </div>
-      <div id="at-oddstrip" class="proto-sidhist"><span class="muted">none</span></div>
-      <div class="proto-kv"><span>Bet Amount</span><b id="at-live-amount">—</b></div>
-      <div class="proto-kv"><span>Bet</span><b id="at-bet">—</b></div>
-      <div class="proto-kv"><span>Cashout</span><b id="at-cash">—</b></div>
-    </div>
 
-    <!-- Config (before start) -->
-    <div class="proto-card" id="at-config">
-      <div class="proto-state-title">AUTO RUN CONFIG</div>
-      <div class="at-sequence-head"><span>RUN SEQUENCE</span><button id="at-add-row" class="btn" type="button">＋ Add run</button></div>
-      <div id="at-test-rows" class="at-test-rows"></div>
-      <div class="hint">Các lượt chạy tuần tự: hoàn tất dòng trước mới chuyển sang dòng tiếp theo.</div>
-      <div class="ctx-line">SID · AID · EID are supplied automatically by the server session — you don't enter them.</div>
-      <!-- WU-C.3 — optional Jackpot gate (default OFF). When off, jackpot is still
-           observed and highlighted above but has zero effect on Auto Run. -->
-      <label class="jp-toggle"><input type="checkbox" id="at-jp-wait"> ★ Wait for Jackpot</label>
-      <div id="at-jp-config" class="jp-config" hidden>
-        <label class="pf-field">Minimum Jackpot<input id="at-jp-min" class="mono" value="50000000"><span class="hint">Auto starts only when server jackpot ≥ this value. Current: <b id="at-jp-cur">—</b></span></label>
-        <div id="at-jp-err" class="cfg-err"></div>
+      <!-- Live state: current server odd is the prominent number -->
+      <div class="proto-card at-live">
+        <div class="at-live-head">
+          <b id="at-status" class="at-status">Sẵn sàng</b>
+          <span class="at-live-sub">Tiến độ <b id="at-progress">— / —</b> · SID <b id="at-sid">—</b></span>
+        </div>
+        <div class="at-odd-wrap">
+          <div class="at-odd-label">ODD HIỆN TẠI</div>
+          <div id="at-odd" class="at-odd">—</div>
+          <div class="at-odd-target">Dừng tại <b id="at-target">—</b></div>
+        </div>
+        <div id="at-oddstrip" class="proto-sidhist"><span class="muted">chưa có</span></div>
+        <div class="at-live-kv">
+          <div class="kv2"><span>Tiền cược</span><b id="at-live-amount">—</b></div>
+          <div class="kv2"><span>Đặt cược</span><b id="at-bet">—</b></div>
+          <div class="kv2"><span>Rút tiền</span><b id="at-cash">—</b></div>
+        </div>
       </div>
-      <!-- WU-D — Stop 1000x SESSION kill switch. Distinct from "Stop odd" above:
-           Stop odd = cash out EACH qualifying round; Stop 1000x = stop the WHOLE Auto
-           session for this browser when the server round reaches 1000x. -->
-      <label class="jp-toggle" title="Dừng toàn bộ phiên Tự động của trình duyệt này khi vòng máy chủ đạt 1000x. Khác với 'Dừng tại ODD' (rút tiền từng vòng).">
-        <input type="checkbox" id="at-stop1000"> ⛔ Dừng khi đạt 1000x
-      </label>
-      <div class="hint">“Dừng tại ODD” = rút tiền mỗi vòng đạt mốc. “Dừng khi đạt 1000x” = dừng cả phiên Tự động khi vòng máy chủ chạm 1000x.</div>
-      <div id="at-cfg-err" class="errb"></div>
-      <div id="at-cta-note" class="cta-note"></div>
-      <button id="at-cta" class="cta primary">▶ START AUTO RUN</button>
-      <div id="at-cta-reason" class="cfg-err"></div>
-    </div>
 
-    <div class="proto-card at-metrics">
-      <div class="proto-state-title">METRICS</div>
-      <div class="at-day-filter">
-        <label>Day<input id="at-day-filter" type="date"></label>
-        <button id="at-day-today" class="btn" type="button">Today</button>
-        <button id="at-day-all" class="btn" type="button">All</button>
-        <span id="at-day-summary" class="faint"></span>
+      <!-- Config (before start) -->
+      <div class="proto-card" id="at-config">
+        <div class="section-title">CẤU HÌNH TỰ ĐỘNG</div>
+        <div class="at-sequence-head"><span>LƯỢT CHẠY</span><button id="at-add-row" class="btn" type="button">＋ Thêm lượt</button></div>
+        <div id="at-test-rows" class="at-test-rows"></div>
+        <div class="hint">Các lượt chạy tuần tự: hoàn tất dòng trước mới chuyển sang dòng tiếp theo. <b>Dừng tại ODD</b> = rút tiền mỗi vòng đạt mốc này.</div>
+        <div class="ctx-line">SID · AID · EID do máy chủ tự cung cấp — bạn không cần nhập.</div>
+
+        <!-- WU-C.3 — optional Jackpot gate (default OFF). When off, jackpot is still
+             observed and highlighted above but has zero effect on Auto. -->
+        <label class="jp-toggle"><input type="checkbox" id="at-jp-wait"> ★ Chờ Jackpot</label>
+        <div id="at-jp-config" class="jp-config" hidden>
+          <label class="pf-field">Jackpot tối thiểu<input id="at-jp-min" class="mono" value="50000000"><span class="hint">Chỉ bắt đầu khi jackpot máy chủ ≥ mức này. Hiện tại: <b id="at-jp-cur">—</b></span></label>
+          <div id="at-jp-err" class="cfg-err"></div>
+        </div>
+
+        <!-- WU-D — Stop 1000x SESSION kill switch. Distinct from per-round "Dừng tại ODD". -->
+        <div class="safety-box">
+          <label class="jp-toggle" title="Dừng toàn bộ phiên Tự động của trình duyệt này khi vòng máy chủ đạt 1000x.">
+            <input type="checkbox" id="at-stop1000"> ⛔ Dừng khi đạt 1000x
+          </label>
+          <div class="hint">An toàn phiên: dừng <b>cả phiên Tự động</b> khi một vòng máy chủ chạm 1000x. Khác với “Dừng tại ODD” (chỉ rút tiền từng vòng).</div>
+        </div>
+
+        <div id="at-cfg-err" class="errb"></div>
+        <div id="at-cta-note" class="cta-note"></div>
+        <button id="at-cta" class="cta primary">▶ BẮT ĐẦU TỰ ĐỘNG</button>
+        <div id="at-cta-reason" class="cfg-err"></div>
       </div>
-      <div class="proto-kv"><span>Thắng / Thua (ván)</span><b id="at-m-winloss">—</b></div>
-      <div class="proto-kv"><span>Tổng thắng</span><b id="at-m-winsum">—</b></div>
-      <div class="proto-kv"><span>Tổng thua</span><b id="at-m-losesum">—</b></div>
-      <div class="proto-kv"><span>Lãi/Lỗ ròng</span><b id="at-m-net">—</b></div>
-      <div class="proto-kv"><span>Completed / Finished</span><b id="at-m-count">—</b></div>
-      <div class="proto-kv"><span>Last win odd</span><b id="at-m-last-stop">—</b></div>
-      <div class="proto-kv"><span>Đang chờ / không rõ</span><b id="at-m-pending">—</b></div>
-      <div class="proto-kv"><span>Avg bet ACK latency</span><b id="at-m-bet">—</b></div>
-      <div class="proto-kv"><span>Avg trigger→send</span><b id="at-m-tts">—</b></div>
-      <div class="proto-kv"><span>Avg cashout ACK latency</span><b id="at-m-cash">—</b></div>
-    </div>
 
-    <div class="proto-hist">
-      <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only)</span></div>
-      <div id="at-history" class="proto-execs"><div class="muted">No rounds completed yet.</div></div>
-    </div>
-
-    <!-- WU-C.2 — persistent per-browser history + statistics (survives restart). -->
-    <div class="proto-card bh-card">
-      <div class="proto-state-title">BROWSER HISTORY <span id="bh-name" class="faint"></span></div>
-      <div id="bh-stats" class="bh-stats"><div class="muted">No history yet.</div></div>
-      <div class="proto-state-title">RECENT ROUNDS <span class="faint">(persistent · SID / result)</span></div>
-      <div id="bh-rounds" class="bh-rounds"><div class="muted">No rounds recorded yet.</div></div>
+      <div class="proto-card at-metrics">
+        <div class="section-title">KẾT QUẢ PHIÊN</div>
+        <div class="at-day-filter">
+          <label>Ngày<input id="at-day-filter" type="date"></label>
+          <button id="at-day-today" class="btn" type="button">Hôm nay</button>
+          <button id="at-day-all" class="btn" type="button">Tất cả</button>
+          <span id="at-day-summary" class="faint"></span>
+        </div>
+        <div class="at-metrics-grid">
+          <div class="kv2"><span>Thắng / Thua (ván)</span><b id="at-m-winloss">—</b></div>
+          <div class="kv2"><span>Tổng thắng</span><b id="at-m-winsum">—</b></div>
+          <div class="kv2"><span>Tổng thua</span><b id="at-m-losesum">—</b></div>
+          <div class="kv2"><span>Lãi/Lỗ ròng</span><b id="at-m-net">—</b></div>
+          <div class="kv2"><span>Hoàn tất / Kết thúc</span><b id="at-m-count">—</b></div>
+          <div class="kv2"><span>ODD thắng gần nhất</span><b id="at-m-last-stop">—</b></div>
+          <div class="kv2"><span>Đang chờ / không rõ</span><b id="at-m-pending">—</b></div>
+          <div class="kv2"><span>Trễ ACK cược (tb)</span><b id="at-m-bet">—</b></div>
+          <div class="kv2"><span>Trễ trigger→gửi (tb)</span><b id="at-m-tts">—</b></div>
+          <div class="kv2"><span>Trễ ACK rút (tb)</span><b id="at-m-cash">—</b></div>
+        </div>
+        <div class="proto-hist">
+          <div class="section-title">VÒNG CỦA PHIÊN</div>
+          <div id="at-history" class="proto-execs"><div class="muted">Chưa có vòng nào hoàn tất.</div></div>
+        </div>
+      </div>
     </div>
   </aside>
 

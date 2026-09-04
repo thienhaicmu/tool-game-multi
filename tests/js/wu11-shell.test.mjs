@@ -27,9 +27,11 @@ test('mode defaults to product; loads/saves advanced flag', () => {
   assert.equal(Shell.isAdvanced('product'), false);
 });
 
-test('view set and panel mapping reuse the existing WU7-10.2 panels', () => {
-  assert.deepEqual(Shell.VIEWS, ['overview', 'manual', 'auto', 'btest']);
-  assert.deepEqual(Shell.PANEL_FOR_VIEW, { manual: 'proto-panel', auto: 'at-panel', btest: 'bv-panel' });
+// WU-D.1 — final product IA (browser-centric). Manual/Amount Check are no longer
+// primary tabs; only the Auto workspace is powered by a reused slide-in panel.
+test('view set and panel mapping expose the final product IA', () => {
+  assert.deepEqual(Shell.VIEWS, ['overview', 'auto', 'history', 'advanced']);
+  assert.deepEqual(Shell.PANEL_FOR_VIEW, { auto: 'at-panel' });
 });
 
 // ---------------------------------------------------------------------------
@@ -39,13 +41,18 @@ test('default body opens in product mode', () => {
   assert.ok(/<body[^>]*data-mode="product"/.test(html));
 });
 
-test('appbar exposes URL + Open Browser + Diagnostics toggle', () => {
-  assert.ok(idx('id="shell-url"') >= 0, 'URL input');
-  assert.ok(idx('id="shell-open"') >= 0, 'Open Browser button');
-  assert.ok(/id="shell-open"[^>]*>\s*Open Browser/.test(html));
-  assert.ok(idx('id="shell-advanced"') >= 0, 'Diagnostics toggle');
-  assert.ok(idx('> ⚙ Diagnostics') >= 0, 'Diagnostics label');
-  assert.ok(idx('id="shell-license"') >= 0, 'License remaining badge');
+// WU-D.1 — the appbar carries app-level truth only (rights + signed capacity + the
+// Nâng cao escape hatch). The raw URL launcher moved OUT of the normal appbar into the
+// secondary Advanced (Nâng cao) view; browsers are created per-B via the rail.
+test('appbar exposes license/capacity + Nâng cao toggle; URL launcher moved to Advanced', () => {
+  assert.ok(idx('id="shell-license"') >= 0, 'License badge');
+  assert.ok(idx('id="cap-badge"') >= 0, 'Signed capacity badge');
+  assert.ok(idx('id="shell-advanced"') >= 0, 'Nâng cao toggle');
+  assert.ok(idx('> ⚙ Nâng cao') >= 0, 'Nâng cao label (Vietnamese)');
+  // URL launcher still exists but now lives inside the Advanced view, after the tabs.
+  assert.ok(idx('id="shell-url"') >= 0 && idx('id="shell-open"') >= 0, 'URL launcher retained');
+  assert.ok(idx('id="view-advanced"') >= 0 && idx('id="shell-url"') > idx('id="view-advanced"'), 'URL launcher is inside the Advanced view');
+  assert.ok(/id="shell-open"[^>]*>\s*Mở trình duyệt/.test(html), 'launcher button is Vietnamese');
 });
 
 test('appbar license badge includes expiry date text', () => {
@@ -54,9 +61,12 @@ test('appbar license badge includes expiry date text', () => {
   assert.ok(/Hết hạn \$\{dateFromSecondsTrusted\(licenseState\.payload\.expiresAt\)\}/.test(js));
 });
 
-test('left nav contains Overview / Manual Control / Auto Run / Amount Check', () => {
-  for (const label of ['Overview', 'Manual Control', 'Auto Run', 'Amount Check']) assert.ok(idx('>' + label + '<') >= 0, `nav has ${label}`);
-  for (const v of ['data-view="overview"', 'data-view="manual"', 'data-view="auto"', 'data-view="btest"']) assert.ok(idx(v) >= 0, v);
+// WU-D.1 — final Vietnamese, browser-task nav: Tổng quan / Tự động / Lịch sử / Nâng cao.
+test('workspace nav is the final Vietnamese IA (Tổng quan / Tự động / Lịch sử / Nâng cao)', () => {
+  for (const label of ['Tổng quan', 'Tự động', 'Lịch sử', 'Nâng cao']) assert.ok(idx('>' + label + '<') >= 0, `nav has ${label}`);
+  for (const v of ['data-view="overview"', 'data-view="auto"', 'data-view="history"', 'data-view="advanced"']) assert.ok(idx(v) >= 0, v);
+  // Manual Control / Amount Check are no longer primary tabs.
+  assert.ok(idx('>Manual Control<') < 0 && idx('>Amount Check<') < 0, 'test tools are not primary tabs');
 });
 
 // ---------------------------------------------------------------------------
@@ -93,8 +103,48 @@ test('product mode hides #legacy via CSS', () => {
 // §7/§8 — overview shows a prominent current ODD + protocol status.
 // ---------------------------------------------------------------------------
 test('overview has a prominent current-odd element and protocol status fields', () => {
-  for (const id of ['id="ov-odd"', 'id="ov-sid"', 'id="ov-phase"', 'id="ov-recent"', 'id="ov-browser"', 'id="ov-proto"']) assert.ok(idx(id) >= 0, id);
-  assert.ok(idx('CURRENT ODD') >= 0);
+  for (const id of ['id="ov-odd"', 'id="ov-sid"', 'id="ov-phase"', 'id="ov-recent"', 'id="ov-browser"', 'id="ov-proto"', 'id="ov-jackpot"']) assert.ok(idx(id) >= 0, id);
+  assert.ok(idx('ODD HIỆN TẠI') >= 0, 'current-odd label is Vietnamese');
+});
+
+// ---------------------------------------------------------------------------
+// WU-D.1 — final product completion criteria (§3/§4/§10/§13/§34).
+// ---------------------------------------------------------------------------
+test('selected-browser identity band is present (center of gravity)', () => {
+  for (const id of ['id="ws-ident"', 'id="wsi-bid"', 'id="wsi-name"', 'id="wsi-state"', 'id="wsi-sid"', 'id="wsi-odd"', 'id="wsi-jp"']) assert.ok(idx(id) >= 0, id);
+});
+
+test('no global broadcast execution controls exist', () => {
+  const hay = html.toUpperCase();
+  for (const bad of ['START ALL', 'STOP ALL', 'OPEN ALL', 'CLOSE ALL', 'AUTO ALL', 'BET ALL', 'CASHOUT ALL']) {
+    assert.ok(!hay.includes(bad), `must not contain "${bad}"`);
+  }
+});
+
+test('Stop-odd (per-round) and Stop-1000x (session) stay distinct controls', () => {
+  // Per-round cashout threshold lives in each Auto sequence row (rendered by product.js).
+  const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
+  assert.ok(/Dừng tại ODD/.test(js), 'per-round stop-odd label present in the sequence row');
+  // Session kill switch is a SEPARATE boolean control with its own id + label.
+  assert.ok(idx('id="at-stop1000"') >= 0, 'stop-1000x checkbox present');
+  assert.ok(idx('Dừng khi đạt 1000x') >= 0, 'stop-1000x label present');
+  // They are not the same field.
+  assert.ok(idx('id="at-stop1000"') !== idx('class="mono at-stopodd"'), 'distinct controls');
+});
+
+test('aid/eid are never editable inputs in the normal UI (session-owned)', () => {
+  assert.ok(idx('id="pf-b"') !== -2, 'sanity'); // pf-b is amount, allowed
+  // No text/number inputs bound to aid/eid ids.
+  assert.ok(!/<input[^>]*id="(at-aid|at-eid|pf-aid|pf-eid|bv-aid|bv-eid)"/.test(html), 'no editable aid/eid inputs');
+});
+
+test('History view is evidence-safe: no misleading win-rate / inferred loss/payout/net', () => {
+  const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
+  // Payout / Net render as "Không có" (unavailable), never a fabricated number.
+  assert.ok(/kv\('Tiền thắng', 'Không có', true\)/.test(js), 'payout unavailable');
+  assert.ok(/kv\('Lãi\/Lỗ', 'Không có', true\)/.test(js), 'net unavailable');
+  // The misleading wins/(wins+losses) win-rate row was removed from persistent history.
+  assert.ok(!/kv\('Win rate'/.test(js), 'no misleading win-rate row');
 });
 
 // ---------------------------------------------------------------------------

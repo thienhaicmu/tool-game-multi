@@ -46,12 +46,13 @@ test('main.cjs opens the window with resolveBounds (no maximize/fullscreen)', ()
 // §3/§4 — the Auto-Run CTA changes by state.
 // ---------------------------------------------------------------------------
 test('autoCta: READY / RUNNING / COMPLETED / STOPPED labels + actions', () => {
-  assert.deepEqual(Shell.autoCta('IDLE', false), { action: 'start', label: '▶ START AUTO RUN', note: '', cls: 'primary' });
+  // WU-D.1 — the one Auto CTA is Vietnamese in the final product UI.
+  assert.deepEqual(Shell.autoCta('IDLE', false), { action: 'start', label: '▶ BẮT ĐẦU TỰ ĐỘNG', note: '', cls: 'primary' });
   assert.equal(Shell.autoCta('WATCHING_ODD', true).action, 'stop');
-  assert.equal(Shell.autoCta('WATCHING_ODD', true).label, '■ STOP AUTO RUN');
-  assert.equal(Shell.autoCta('COMPLETED', false).label, '↻ RUN AGAIN');
+  assert.equal(Shell.autoCta('WATCHING_ODD', true).label, '■ DỪNG TỰ ĐỘNG');
+  assert.equal(Shell.autoCta('COMPLETED', false).label, '↻ CHẠY LẠI');
   assert.equal(Shell.autoCta('COMPLETED', false).note, 'Tự dừng — đã chạy hết lượt');
-  assert.equal(Shell.autoCta('STOPPED', false).label, '▶ START NEW RUN');
+  assert.equal(Shell.autoCta('STOPPED', false).label, '▶ BẮT ĐẦU LẠI');
   assert.equal(Shell.autoCta('STOPPED', false).note, 'Bạn đã nhấn Dừng');
 });
 
