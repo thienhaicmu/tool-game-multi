@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createRequire } from 'node:module';
@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const { instancePaths, sanitizeInstanceId } = require('../../desktop/instance/paths.cjs');
 const { RuntimeLock } = require('../../desktop/instance/runtime-lock.cjs');
 const { InstanceManager } = require('../../desktop/instance/instance-manager.cjs');
-const { ChromeLauncher } = require('../../desktop/browser/chrome-launcher.cjs');
+const { ChromeLauncher, findChromeExecutable } = require('../../desktop/browser/chrome-launcher.cjs');
 
 function tempRoot() {
   return mkdtempSync(join(tmpdir(), 'wso-inst-'));
@@ -95,6 +95,26 @@ test('ChromeLauncher keeps profile per instance and uses configured port only as
   assert.equal(Number.isInteger(port), true);
   assert.ok(port > 0);
   assert.equal(await isolated.cdpPort(), port, 'port is stable for the launcher instance');
+});
+
+// Chrome discovery must be robust across customer machines: explicit overrides win,
+// and a missing/stripped env must NOT hide a browser that actually exists on disk.
+test('findChromeExecutable honors explicit overrides and does not depend on env vars', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'chrome-exe-'));
+  const fake = join(dir, 'chrome.exe');
+  writeFileSync(fake, 'x');
+  try {
+    // 1) explicit overrides are authoritative
+    assert.equal(findChromeExecutable({ CHROME_PATH: fake }), fake);
+    assert.equal(findChromeExecutable({ OBSERVATORY_CHROME: fake }), fake);
+    // 2) OBSERVATORY_CHROME takes precedence over CHROME_PATH
+    assert.equal(findChromeExecutable({ OBSERVATORY_CHROME: fake, CHROME_PATH: 'X:/nope.exe' }), fake);
+    // 3) a non-existent override + empty env resolves to a real path or null — never throws
+    const res = findChromeExecutable({ CHROME_PATH: 'X:/does/not/exist.exe' });
+    assert.ok(res === null || typeof res === 'string');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('main process is wired to instance-owned storage and browser runtime', () => {

@@ -2,18 +2,58 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn } = require('node:child_process');
+const { spawn, spawnSync } = require('node:child_process');
 const { allocateFreePort } = require('./port-allocator.cjs');
 
+const canRead = (p) => { try { return !!p && fs.existsSync(p); } catch { return false; } };
+
+// Authoritative Windows lookup for a non-standard Chrome install: the "App Paths"
+// registry key records chrome.exe's full path regardless of install directory.
+function registryChromePath() {
+  if (process.platform !== 'win32') return null;
+  const keys = [
+    'HKLM\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe',
+    'HKCU\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe',
+    'HKLM\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\App Paths\\chrome.exe',
+  ];
+  for (const key of keys) {
+    try {
+      const res = spawnSync('reg', ['query', key, '/ve'], { encoding: 'utf8', windowsHide: true });
+      const m = res && res.status === 0 && res.stdout && res.stdout.match(/REG_SZ\s+(.+\.exe)/i);
+      if (m && canRead(m[1].trim())) return m[1].trim();
+    } catch { /* best effort */ }
+  }
+  return null;
+}
+
+// Discover a Chromium browser to drive over CDP. Order: explicit env override →
+// standard Chrome locations (env-derived AND absolute, so a stripped PROGRAMFILES
+// doesn't hide a default install) → registry → Chromium-based Edge as a last resort.
 function findChromeExecutable(env = process.env) {
-  const candidates = [
-    env.OBSERVATORY_CHROME,
-    env.CHROME_PATH,
-    path.join(env.LOCALAPPDATA || '', 'Google/Chrome/Application/chrome.exe'),
-    path.join(env.PROGRAMFILES || '', 'Google/Chrome/Application/chrome.exe'),
-    path.join(env['PROGRAMFILES(X86)'] || '', 'Google/Chrome/Application/chrome.exe'),
-  ].filter(Boolean);
-  return candidates.find((candidate) => fs.existsSync(candidate)) || null;
+  const pf = env.PROGRAMFILES || 'C:\\Program Files';
+  const pf86 = env['PROGRAMFILES(X86)'] || 'C:\\Program Files (x86)';
+  const local = env.LOCALAPPDATA || (env.USERPROFILE ? path.join(env.USERPROFILE, 'AppData', 'Local') : null);
+  const chromeRel = 'Google\\Chrome\\Application\\chrome.exe';
+
+  for (const p of [env.OBSERVATORY_CHROME, env.CHROME_PATH]) if (canRead(p)) return p;
+
+  const chromeCandidates = [
+    local && path.join(local, chromeRel),
+    path.join(pf, chromeRel),
+    path.join(pf86, chromeRel),
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ];
+  for (const p of chromeCandidates) if (canRead(p)) return p;
+
+  const reg = registryChromePath();
+  if (reg) return reg;
+
+  // Last resort: Microsoft Edge is Chromium and speaks the same CDP protocol.
+  const edgeRel = 'Microsoft\\Edge\\Application\\msedge.exe';
+  for (const p of [path.join(pf86, edgeRel), path.join(pf, edgeRel)]) if (canRead(p)) return p;
+
+  return null;
 }
 
 function ensureChromePersistentSession(profile) {
