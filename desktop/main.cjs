@@ -29,6 +29,7 @@ const { deriveFeatureKey } = require('./licensing/feature-key.cjs');
 const { install: installSealedLoader, SEALED_BASENAMES } = require('./protocol/sealed-loader.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { BrowserRegistry } = require('./browser-run/browser-registry.cjs');
+const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 
 let shell;
 const capturedClients = new WeakSet();
@@ -379,7 +380,17 @@ function buildProtocolSubsystem(run) {
     setTimeout(() => { bvalDirty = false; toActive('bvalidate-update', amountValidator.snapshot()); }, 100);
   });
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator };
+  // WU-C.1.1 — Aviator entry gate. Bound to THIS run's aviator (passive evidence) and
+  // its OWN socket context (the enter request rides only this run's connection).
+  const entryGate = new AviatorEntryGate({
+    roundTracker: aviator,
+    send: (ctx, wire) => wsReplay.sendProtocol(ctx, wire),
+    getContext: () => { const tid = run.selectedTargetId; return tid != null ? aviator.socketContext(tid) : null; },
+  });
+  entryGate.on('state', () => scheduleRunsBroadcast());
+  entryGate.on('entered', () => scheduleRunsBroadcast());
+
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate };
 }
 
 // Lazily construct the BrowserRunManager and register the ONE shared capture->run
@@ -422,6 +433,7 @@ function browserSummaries() {
       protocolReady: rs ? rs.protocolReady : false,
       currentSid: rs ? rs.currentSid : null, currentOdd: rs ? rs.currentOdd : null, phase: rs ? rs.phase : null,
       autoRunning: rs ? rs.autoRunning : false, testRunning: rs ? rs.testRunning : false,
+      aviatorEntered: rs ? rs.aviatorEntered : false, entryState: rs ? rs.entryState : 'NOT_ENTERED',
       error: rs ? rs.error : null,
     };
   });
@@ -640,7 +652,12 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
     intercept.onTargetDetached(id);
     if (run.observer) run.observer.onDisconnect(id);
     runManager.unregisterTarget(id);
-    if (run.selectedTargetId === id) { run.selectedTargetId = null; if (run.protocolContext) run.protocolContext.reset(); }
+    if (run.selectedTargetId === id) {
+      run.selectedTargetId = null;
+      if (run.protocolContext) run.protocolContext.reset();
+      // WU-C.1.1 — the owning socket is gone: entry readiness must not be trusted.
+      if (run.entryGate) run.entryGate.onDisconnect();
+    }
     // Browser fully gone (no targets left): quiesce this run's protocol activity.
     if (!runManager.targetsForRun(run.id).length) runManager.disconnectRun(run);
     if (runManager.isActive(run)) broadcastTargets();
@@ -826,7 +843,19 @@ handle('observer-config', (_event, runId, patch = {}) => { const o = viewRun(run
 // WU10 — automated runner IPC. Execution binds to an EXPLICIT run so multiple runs
 // may run their AutoRunner concurrently and UI switching never retargets a run.
 handle('autotest-environment', (_event, runId, targetId) => { const run = viewRun(runId); return run.autoRunner.environmentFor(String(targetId || run.selectedTargetId || '')); });
-handle('autotest-start', (_event, runId, config = {}) => { const r = execRun(runId); if (r.error) return r; const res = r.run.autoRunner.start(String(r.run.selectedTargetId || ''), config || {}); return res.error ? res : r.run.autoRunner.snapshot(); });
+handle('autotest-start', async (_event, runId, config = {}) => {
+  const r = execRun(runId); if (r.error) return r;
+  const run = r.run;
+  // WU-C.1.1 — Aviator entry prerequisite: ensure THIS run's socket is in the game
+  // before any bet. No BET (cmd 100002) is possible until entry is authoritatively
+  // confirmed by the run's own server round evidence. Never sends through another run.
+  if (run.entryGate) {
+    const gate = await run.entryGate.ensureEntered();
+    if (gate && gate.error) return { error: gate.error };
+  }
+  const res = run.autoRunner.start(String(run.selectedTargetId || ''), config || {});
+  return res.error ? res : run.autoRunner.snapshot();
+});
 handle('autotest-stop', (_event, runId) => { const r = execRun(runId); if (r.error) return r; const res = r.run.autoRunner.stop(); return res.error ? res : r.run.autoRunner.snapshot(); });
 handle('autotest-snapshot', (_event, runId) => viewRun(runId).autoRunner.snapshot());
 // WU10.2 — bet-amount server-validation IPC (bet-only), bound to an EXPLICIT run.

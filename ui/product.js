@@ -1091,8 +1091,21 @@ renderActions();
   async function startCurrentRow() {
     const v = ATC ? ATC.validate(rawFields()) : { ok: true, config: rawFields() };
     if (!v.ok) { sequenceRunning = false; validateConfigUI(); return; }
+    // WU-C.1.1 — START AUTO first ensures the Aviator entry prerequisite (may send
+    // cmd:100000 and wait for the run's own server round evidence). Show that state;
+    // AUTO RUNNING only appears once the AutoRunner has actually started.
+    const cta = $('at-cta'); const note = $('at-cta-note');
+    if (cta) cta.disabled = true; if (note) note.textContent = 'Đang vào game (Aviator)…';
     const r = await api.autotestStart(currentRunId, v.config);
-    if (r && r.error) { sequenceRunning = false; $('at-cfg-err').textContent = `${r.error.code}: ${r.error.message || ''}`; renderCta(); return; }
+    if (cta) cta.disabled = false;
+    if (r && r.error) {
+      sequenceRunning = false;
+      const code = String(r.error.code || '');
+      const entry = code.indexOf('AVIATOR_ENTRY') === 0;
+      $('at-cfg-err').textContent = (entry ? 'Vào game thất bại — ' : '') + `${code}: ${r.error.message || ''}`;
+      renderCta();
+      return;
+    }
     snap = r; render();
   }
   async function stopRun() { sequenceRunning = false; const r = await api.autotestStop(currentRunId); if (r && !r.error) { snap = r; render(); } }
@@ -1388,6 +1401,7 @@ renderActions();
     if (b.runtimeStatus === 'ERROR') return { cls: 'error', text: 'ERROR' };
     if (b.runtimeStatus === 'DISCONNECTED') return { cls: 'disconnected', text: 'DISCONNECTED' };
     if (b.autoRunning) return { cls: 'auto', text: 'AUTO' };
+    if (b.entryState === 'ENTERING') return { cls: 'wait', text: 'ENTERING' };
     if (b.testRunning) return { cls: 'test', text: 'TEST' };
     if (b.protocolReady) return { cls: 'ready', text: 'READY' };
     if (b.runtimeStatus === 'CONNECTED' || b.runtimeStatus === 'WAITING_PROTOCOL') return { cls: 'wait', text: 'WAITING' };

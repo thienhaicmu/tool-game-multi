@@ -80,7 +80,7 @@ class BrowserRunManager extends EventEmitter {
       error: null,
       // protocol subsystem (assigned below)
       aviator: null, protocolContext: null, observer: null,
-      harness: null, autoRunner: null, amountValidator: null,
+      harness: null, autoRunner: null, amountValidator: null, entryGate: null,
     };
     run.launcher = this._createLauncher(run);
     const subsystem = this._buildSubsystem(run) || {};
@@ -90,6 +90,7 @@ class BrowserRunManager extends EventEmitter {
     run.harness = subsystem.harness || null;
     run.autoRunner = subsystem.autoRunner || null;
     run.amountValidator = subsystem.amountValidator || null;
+    run.entryGate = subsystem.entryGate || null;
 
     this._runs.set(id, run);
     this._order.push(id);
@@ -210,6 +211,7 @@ class BrowserRunManager extends EventEmitter {
     try { if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run.autoRunner.stop(); } catch { /* ignore */ }
     try { if (run.amountValidator && run.amountValidator.isRunning && run.amountValidator.isRunning()) run.amountValidator.stop(); } catch { /* ignore */ }
     try { if (run.harness && run.harness.cancelWaiters) run.harness.cancelWaiters(); } catch { /* ignore */ }
+    try { if (run.entryGate && run.entryGate.onDisconnect) run.entryGate.onDisconnect(); } catch { /* ignore */ }
     try { if (run.observer && run.observer.onDisconnect) run.observer.onDisconnect(); } catch { /* ignore */ }
   }
 
@@ -239,6 +241,8 @@ class BrowserRunManager extends EventEmitter {
       phase: cur ? cur.phase : null,
       autoRunning: !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()),
       testRunning: !!(run.amountValidator && run.amountValidator.isRunning && run.amountValidator.isRunning()),
+      aviatorEntered: !!(run.entryGate && run.entryGate.isEntered && run.entryGate.isEntered()),
+      entryState: run.entryGate && run.entryGate.state ? run.entryGate.state() : 'NOT_ENTERED',
       error: run.error || null,
     };
   }
