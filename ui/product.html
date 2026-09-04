@@ -395,6 +395,14 @@
       <div class="proto-state-title">ROUND HISTORY <span class="faint">(append-only)</span></div>
       <div id="at-history" class="proto-execs"><div class="muted">No rounds completed yet.</div></div>
     </div>
+
+    <!-- WU-C.2 — persistent per-browser history + statistics (survives restart). -->
+    <div class="proto-card bh-card">
+      <div class="proto-state-title">BROWSER HISTORY <span id="bh-name" class="faint"></span></div>
+      <div id="bh-stats" class="bh-stats"><div class="muted">No history yet.</div></div>
+      <div class="proto-state-title">RECENT ROUNDS <span class="faint">(persistent · SID / result)</span></div>
+      <div id="bh-rounds" class="bh-rounds"><div class="muted">No rounds recorded yet.</div></div>
+    </div>
   </aside>
 
   <aside id="bv-panel" class="proto-panel" hidden aria-label="Bet Amount Server Validation">

@@ -45,6 +45,10 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   updateBrowser: (browserId, patch) => ipcRenderer.invoke('browser-update', browserId, patch),
   deleteBrowser: browserId => ipcRenderer.invoke('browser-delete', browserId),
   onBrowsersChanged: callback => ipcRenderer.on('browsers-changed', (_event, payload) => callback(payload)),
+  // WU-C.2 — read-only persistent round history / statistics per browser.
+  browserHistory: (browserId, options) => ipcRenderer.invoke('browser-history-list', browserId, options),
+  browserStats: browserId => ipcRenderer.invoke('browser-history-stats', browserId),
+  onBrowserHistoryChanged: callback => ipcRenderer.on('browser-history-changed', (_event, payload) => callback(payload)),
   // WU-A/WU-B — browser run selection (view state) + explicit run binding.
   listRuns: () => ipcRenderer.invoke('list-runs'),
   selectRun: runId => ipcRenderer.invoke('select-run', runId),

@@ -21,6 +21,15 @@ function setCurrentRun(runId) {
   document.dispatchEvent(new CustomEvent('run-selected', { detail: { runId: next } }));
 }
 function pickActiveRun(runs) { const list = runs || []; return list.find((r) => r.active) || null; }
+// The selected PERSISTENT browser (view). Its persistent history/stats are shown even
+// when the browser is OFFLINE. Owned by the BROWSERS rail (browserListUI).
+let currentBrowserId = null;
+function setCurrentBrowser(browserId) {
+  const next = browserId || null;
+  if (next === currentBrowserId) return;
+  currentBrowserId = next;
+  document.dispatchEvent(new CustomEvent('browser-view-changed', { detail: { browserId: next } }));
+}
 let _railSel = { active: false, runId: null }; // set by the BROWSERS rail (browserListUI)
 let _lastActiveRunId = null;                    // last active runtime run (advanced/legacy fallback)
 function recomputeCurrentRun() { setCurrentRun(_railSel.active ? _railSel.runId : _lastActiveRunId); }
@@ -1460,6 +1469,7 @@ renderActions();
     }
     const sel = browsers.find((b) => b.browserId === selectedBrowserId);
     railSelect(true, sel && sel.online ? sel.runId : null);
+    setCurrentBrowser(selectedBrowserId); // drives the persistent history panel
   }
 
   function apply(payload) {
@@ -1505,4 +1515,73 @@ renderActions();
   $('bm-submit').onclick = submitModal;
   $('bm-url').addEventListener('keydown', (e) => { if (e.key === 'Enter') submitModal(); });
   $('browser-modal').addEventListener('click', (e) => { if (e.target.id === 'browser-modal') closeModal(); });
+})();
+
+// ==================== WU-C.2 PERSISTENT BROWSER HISTORY / STATS ====================
+// Compact, read-only view of the SELECTED persistent browser's stored round history
+// and aggregate statistics. It is display only — main is the source of truth and the
+// renderer can never write a result. UNKNOWN is shown neutrally (never as a loss);
+// unproven monetary values (payout / net) render as "—", never a fake 0.
+(function browserHistoryUI() {
+  if (!api.browserStats) return; // preload without WU-C.2 surface — inert
+  const statsEl = $('bh-stats'); const roundsEl = $('bh-rounds'); const nameEl = $('bh-name');
+  if (!statsEl || !roundsEl) return;
+  const f2 = (n) => (n == null || !Number.isFinite(Number(n))) ? null : Number(n).toFixed(2);
+  const money = (n) => (n == null || !Number.isFinite(Number(n))) ? null : Number(n).toLocaleString();
+
+  function kv(label, value, na) { return `<div class="bh-kv ${na ? 'na' : ''}"><span>${esc(label)}</span><b>${esc(value)}</b></div>`; }
+
+  function renderStats(s) {
+    if (!s || s.corrupt) { statsEl.innerHTML = `<div class="muted">${s && s.corrupt ? 'History file unreadable (preserved for recovery).' : 'No history yet.'}</div>`; return; }
+    const wr = s.resolvedWinRate == null ? '—' : (s.resolvedWinRate * 100).toFixed(1) + '%';
+    const totalBet = s.totalBet == null ? '—' : money(s.totalBet);
+    const betNote = s.betUnknownCount ? ` (+${s.betUnknownCount} unknown)` : '';
+    statsEl.innerHTML =
+      kv('Rounds', s.totalRounds) +
+      kv('Win rate', wr + ` (${s.wins}/${s.wins + s.losses})`) +
+      kv('Wins', s.wins) +
+      kv('Losses', s.losses) +
+      kv('Unknown', s.unknown) +
+      kv('Highest ODD', s.highestObservedOdd != null ? f2(s.highestObservedOdd) + 'x' : '—', s.highestObservedOdd == null) +
+      kv('Total bet', (totalBet === '—' ? '—' : totalBet) + betNote, s.totalBet == null) +
+      kv('Payout', 'Unavailable', true) +           // wm/payout semantics unproven
+      kv('Net', 'Unavailable', true) +
+      kv('Last SID', s.lastSid != null ? s.lastSid : '—', s.lastSid == null);
+  }
+
+  function resultBadge(r) {
+    const cls = r.result === 'WIN' ? 'win' : r.result === 'LOSS' ? 'loss' : 'unknown';
+    return `<span class="bh-res ${cls}">${esc(r.result || 'UNKNOWN')}</span>`;
+  }
+  function renderRounds(list) {
+    if (!list || !list.length) { roundsEl.innerHTML = '<div class="muted">No rounds recorded yet.</div>'; return; }
+    roundsEl.innerHTML = list.map((r) => {
+      const bet = r.acceptedBet != null ? money(r.acceptedBet) : (r.requestedBet != null ? money(r.requestedBet) + '?' : '—');
+      const odd = r.cashoutAckOdd != null ? f2(r.cashoutAckOdd) + 'x' : (r.triggerOdd != null ? f2(r.triggerOdd) + 'x' : '—');
+      const t = r.endedAt ? fmtTimeShort(r.endedAt) : '';
+      return `<div class="bh-row" title="${esc(r.runId || '')} · ${esc(r.terminationReason || '')}">`
+        + `<span class="bh-sid">${esc(r.sid != null ? r.sid : '—')}</span>`
+        + `<span class="bh-reason">${esc(t)}</span>`
+        + `<span>${esc(bet)}</span>`
+        + `<span class="bh-odd">${esc(odd)}</span>`
+        + resultBadge(r) + `</div>`;
+    }).join('');
+  }
+
+  let loading = null;
+  async function refresh() {
+    const bid = currentBrowserId;
+    if (nameEl) nameEl.textContent = bid ? '· ' + bid : '';
+    if (!bid) { renderStats(null); renderRounds([]); return; }
+    const token = {}; loading = token;
+    try {
+      const [stats, rounds] = await Promise.all([api.browserStats(bid), api.browserHistory(bid, { limit: 50 })]);
+      if (loading !== token) return; // a newer selection superseded this fetch
+      renderStats(stats); renderRounds(rounds);
+    } catch { if (loading === token) { renderStats(null); renderRounds([]); } }
+  }
+
+  document.addEventListener('browser-view-changed', refresh);
+  if (api.onBrowserHistoryChanged) api.onBrowserHistoryChanged((p) => { if (p && p.browserId === currentBrowserId) refresh(); });
+  refresh();
 })();

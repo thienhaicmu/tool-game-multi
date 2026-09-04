@@ -161,8 +161,12 @@ class AutoRunner extends EventEmitter {
     if (!this._running || !ev || ev.direction !== 'recv') return;
     const cur = this._observer && this._observer.currentRound ? this._observer.currentRound() : null;
     if (ev.cmd === CMD.ROUND_OPEN || ev.cmd === CMD.ROUND_SNAPSHOT) this._onRoundOpen(cur ? cur.sid : ev.sid);
-    else if (ev.cmd === CMD.ODD) this._onOdd(cur);
-    else if (ev.cmd === CMD.ROUND_END) this._onRoundEnd(ev.sid);
+    else if (ev.cmd === CMD.ODD) {
+      // Track the round's highest authoritative server odd (reuses the observer's
+      // maxOdd, which is derived only from recv cmd:100009). WU-C.2 history telemetry.
+      if (this._active && cur && String(cur.sid) === String(this._active.sid) && cur.maxOdd != null) this._active.maxOdd = cur.maxOdd;
+      this._onOdd(cur);
+    } else if (ev.cmd === CMD.ROUND_END) this._onRoundEnd(ev.sid);
   }
 
   _onRoundOpen(sid) {
@@ -174,8 +178,8 @@ class AutoRunner extends EventEmitter {
     const now = this._now();
     this._active = {
       index: this._attempted - 1, sid, amount: this._config.amount, stopOdd: this._config.stopOdd,
-      openedAtMono: now, betResult: null, betLatencyMs: null,
-      triggerOdd: null, triggerAtMono: null, ackOdd: null, wm: null,
+      openedAtMono: now, openedAtMs: this._wallNow(), betResult: null, betLatencyMs: null, betAckAmount: null,
+      triggerOdd: null, triggerAtMono: null, ackOdd: null, wm: null, maxOdd: null,
       cashoutLatencyMs: null, triggerToSendMs: null, result: null,
       _cashoutSent: false, _betSentMono: null, _cashoutSentMono: null,
     };
@@ -194,6 +198,9 @@ class AutoRunner extends EventEmitter {
     if (!this._running || this._active !== round) { if (this._active === round) this._finalize(round, RESULT.STOPPED); return; }
     round.betResult = res.result;
     round.betLatencyMs = round1(this._now() - round._betSentMono);
+    // Server-echoed accepted bet amount (may differ from the requested amount if the
+    // server normalizes). Authoritative only when the bet was ACKed. (WU-C.2 §15)
+    round.betAckAmount = (res.result === 'ACK' && res.responsePayload && res.responsePayload.b != null) ? res.responsePayload.b : null;
     if (res.result === 'ACK') {
       // Bet ACK gate satisfied — only NOW may we evaluate the stop condition (§11).
       this._state = STATE.WATCHING_ODD; this._emit();
@@ -259,8 +266,12 @@ class AutoRunner extends EventEmitter {
     round.finishedAtMono = this._now();
     round.finishedAtMs = this._wallNow();
     round.finishedDay = localDayKey(round.finishedAtMs);
-    this._history.push(publicRound(round));
+    const pub = publicRound(round);
+    this._history.push(pub);
     if (this._active === round) this._active = null;
+    // WU-C.2 additive seam: a single authoritative "round finalized" event carrying the
+    // full public round, consumed by the RoundHistoryCollector for persistence.
+    this.emit('roundFinalized', pub);
     this._afterRound(result);
     this._emit();
   }
@@ -282,11 +293,11 @@ class AutoRunner extends EventEmitter {
 function publicRound(r) {
   return {
     index: r.index, sid: r.sid, amount: r.amount, stopOdd: r.stopOdd,
-    betResult: r.betResult, betLatencyMs: r.betLatencyMs,
-    triggerOdd: r.triggerOdd, ackOdd: r.ackOdd, wm: r.wm,
+    betResult: r.betResult, betLatencyMs: r.betLatencyMs, betAckAmount: r.betAckAmount ?? null,
+    triggerOdd: r.triggerOdd, ackOdd: r.ackOdd, wm: r.wm, maxOdd: r.maxOdd ?? null,
     triggerToSendMs: r.triggerToSendMs, cashoutLatencyMs: r.cashoutLatencyMs,
     result: r.result, error: r.error || null,
-    finishedAtMs: r.finishedAtMs || null, finishedDay: r.finishedDay || null,
+    openedAtMs: r.openedAtMs || null, finishedAtMs: r.finishedAtMs || null, finishedDay: r.finishedDay || null,
   };
 }
 

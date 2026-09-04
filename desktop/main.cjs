@@ -29,6 +29,8 @@ const { deriveFeatureKey } = require('./licensing/feature-key.cjs');
 const { install: installSealedLoader, SEALED_BASENAMES } = require('./protocol/sealed-loader.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { BrowserRegistry } = require('./browser-run/browser-registry.cjs');
+const { RoundHistoryStore } = require('./browser-run/round-history-store.cjs');
+const { RoundHistoryCollector } = require('./browser-run/round-history-collector.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 
 let shell;
@@ -48,6 +50,8 @@ let protocolClasses = null;
 let runManager = null;
 // WU-C.1: persistent browser identity/profile ownership, separate from runtime runs.
 let browserRegistry = null;
+// WU-C.2: persistent per-browser round history, separate from registry + runtime.
+let roundHistoryStore = null;
 let importStarted = false;
 let importInProgress = false;
 let importTimer;
@@ -101,6 +105,12 @@ function ensureBrowserRegistry() {
   if (res && res.error && shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', res.error);
   return browserRegistry;
 }
+function ensureRoundHistoryStore() {
+  if (roundHistoryStore) return roundHistoryStore;
+  roundHistoryStore = new RoundHistoryStore({ dir: path.join(appInstance.paths.root, 'history') });
+  return roundHistoryStore;
+}
+function broadcastHistoryChanged(browserId) { if (shell && !shell.isDestroyed()) shell.webContents.send('browser-history-changed', { browserId: String(browserId) }); }
 function createRunLauncher(run) {
   return new ChromeLauncher({
     profilePath: runProfilePath(run),
@@ -217,6 +227,8 @@ function createWindow() {
   // WU-C.1: load the persistent browser registry now so a corrupt file is reported
   // early and the rail can render registered browsers as OFFLINE at startup.
   ensureBrowserRegistry();
+  ensureRoundHistoryStore(); // WU-C.2 — history dir/store ready for read APIs
+
   // Auto-save the session so a fresh login is captured for next time.
   const cookieTimer = setInterval(() => { const tid = activeSelectedTargetId(); if (tid) saveCookiesFor(tid).catch(() => {}); }, 12_000);
   if (cookieTimer.unref) cookieTimer.unref();
@@ -390,7 +402,20 @@ function buildProtocolSubsystem(run) {
   entryGate.on('state', () => scheduleRunsBroadcast());
   entryGate.on('entered', () => scheduleRunsBroadcast());
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate };
+  // WU-C.2 — persist finalized rounds to the OWNING persistent browser's history.
+  // Only runs with a persistent browserId are recorded (Advanced Debug / external
+  // attaches have no persistent owner). Attribution is structural (run.browserId),
+  // never the UI's active/selected browser.
+  let historyCollector = null;
+  if (run.browserId) {
+    ensureRoundHistoryStore();
+    historyCollector = new RoundHistoryCollector({
+      store: roundHistoryStore, browserId: run.browserId, runId: run.id, autoRunner,
+      onPersisted: (bid) => { broadcastHistoryChanged(bid); scheduleRunsBroadcast(); },
+    });
+  }
+
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, historyCollector };
 }
 
 // Lazily construct the BrowserRunManager and register the ONE shared capture->run
@@ -807,6 +832,10 @@ handle('browser-create', (_event, input = {}) => createPersistentBrowser({ name:
 handle('browser-open', (_event, browserId) => openPersistentBrowser(String(browserId || '')));
 handle('browser-update', (_event, browserId, patch = {}) => { ensureBrowserRegistry(); const r = browserRegistry.update(String(browserId || ''), patch || {}); broadcastBrowsers(); return r.error ? r : { ok: true, browser: r.browser }; });
 handle('browser-delete', (_event, browserId) => deletePersistentBrowser(String(browserId || '')));
+// WU-C.2 — read-only persistent round history / statistics (main is the source of
+// truth; the renderer can never write a result). Attribution is by persistent browserId.
+handle('browser-history-list', (_event, browserId, options = {}) => { ensureRoundHistoryStore(); return roundHistoryStore.list(String(browserId || ''), options || {}); });
+handle('browser-history-stats', (_event, browserId) => { ensureRoundHistoryStore(); return roundHistoryStore.stats(String(browserId || '')); });
 // WU-A — browser run introspection (runtime layer).
 handle('list-runs', () => runManager ? runManager.list() : []);
 handle('select-run', (_event, runId) => {
