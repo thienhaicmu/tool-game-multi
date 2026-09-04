@@ -49,6 +49,13 @@ class PageScreencast {
     try {
       await client.Page.enable();
     } catch (e) { /* Page may already be enabled */ }
+    // WU-E.1A — match the managed page's viewport to the host area so the mirror FILLS the
+    // workspace (removes letterbox gutters) and stays crisp. Presentation only: viewport
+    // size, no protocol change. Input mapping uses the frame's metadata.deviceWidth/Height,
+    // which follow this override, so click/type stay accurate. Best-effort (some targets
+    // reject Emulation); on failure the mirror still works, just letterboxed.
+    try { await client.Emulation.setDeviceMetricsOverride({ width: params.maxWidth, height: params.maxHeight, deviceScaleFactor: 0, mobile: false }); this._emulated = true; }
+    catch (e) { this._emulated = false; }
     if (!this._wired.has(client)) {
       this._wired.add(client);
       client.Page.screencastFrame((frame) => this._handleFrame(client, gen, frame));
@@ -78,7 +85,11 @@ class PageScreencast {
     this._active = null;
     if (active && active.client) {
       try { await active.client.Page.stopScreencast(); } catch { /* client may be gone */ }
+      // Restore the page's natural viewport so a non-mirrored / re-selected run isn't left
+      // with the host-sized override.
+      if (this._emulated) { try { await active.client.Emulation.clearDeviceMetricsOverride(); } catch { /* client may be gone */ } }
     }
+    this._emulated = false;
     return { ok: true };
   }
 

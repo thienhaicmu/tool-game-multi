@@ -594,6 +594,7 @@ body[data-mode=product] #at-panel .proto-head .btn.icon{ display:none; }
 .ov-web-host{ position:absolute; inset:0; overflow:hidden; outline:none; }
 .ov-canvas{ display:block; width:100%; height:100%; }
 .ov-web-overlay{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(11,13,16,.86); color:#c9d3de; text-align:center; }
+.ov-web-overlay[hidden]{ display:none; }   /* WU-E.1A — flex display above otherwise beats the [hidden] UA rule */
 .ov-web-overlay-in{ display:grid; gap:8px; justify-items:center; font-size:var(--t-md); }
 .ov-side{ flex:0 0 300px; overflow:auto; padding:14px 16px; border-left:1px solid var(--line); background:var(--bg); }
 .ov-side .ctx-banner{ margin-top:0; }
@@ -612,3 +613,27 @@ body[data-mode=product] #at-panel .proto-head .btn.icon{ display:none; }
   background:var(--panel); border:1px dashed var(--line-strong); border-radius:var(--r2); }
 .cap-note[hidden]{ display:none; }
 .rr-open-btn:disabled{ opacity:.5; cursor:default; }
+
+/* ============================================================================
+   WU-E.1A — Overview workspace refinement (web-dominant, de-duplicated telemetry,
+   integrated sidebar, clear embed states). Presentation only.
+   ========================================================================= */
+.ov-web{ background:#0b0d10; }
+/* Slimmer, integrated sidebar (surface instead of the page bg so it reads as one card). */
+.ov-side{ flex-basis:284px; background:var(--surface); padding:12px 14px; }
+@media (max-width:1300px){ .ov-side{ flex-basis:250px; } }
+@media (max-width:1150px){ .ov-side{ flex-basis:216px; padding:10px 11px; } }
+/* The top identity band is the cross-tab SID/ODD/JP glance; in Overview the sidebar's live
+   cells are the operational copy — keep them but compact so they don't dominate. */
+.ov-side .live-grid{ gap:7px; margin:2px 0 10px; }
+.ov-side .live-cell{ padding:7px 8px; }
+.ov-side .live-cell .live-label{ font-size:var(--t-cap); }
+.ov-side .live-cell b{ font-size:var(--t-lg); }
+.ov-side .kv-grid{ gap:3px 14px; margin-bottom:8px; }
+.ov-side .section-title{ margin-top:6px; }
+.ov-tech summary{ cursor:pointer; color:var(--dim); font-size:var(--t-sm); padding:4px 0; }
+.ov-tech[open] summary{ margin-bottom:4px; }
+/* Clear embedded states: distinct look for offline/connecting/error overlays. */
+.ov-web-overlay{ background:rgba(11,13,16,.9); }
+.ov-web-overlay .empty-ic{ font-size:30px; opacity:.6; }
+#ov-web-overlay-text{ max-width:280px; line-height:1.5; }
