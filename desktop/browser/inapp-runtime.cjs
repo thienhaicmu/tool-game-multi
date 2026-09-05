@@ -63,6 +63,7 @@ class InAppRuntime {
     this._host = getHostWindow || (() => null);       // () => product BrowserWindow
     this._prefix = partitionPrefix;
     this._byRun = new Map();                           // runId -> { view, wc, browserId, client }
+    this._shownRunId = null;                           // the run whose view is currently visible+focused
   }
   partitionFor(browserId) { return this._prefix + String(browserId); }
   has(runId) { return this._byRun.has(runId); }
@@ -123,13 +124,27 @@ class InAppRuntime {
 
   // ---- view management (bounds/visibility) ----
   setBounds(runId, b) { const r = this._byRun.get(runId); if (r && r.view && r.wc && !r.wc.isDestroyed()) { try { r.view.setBounds({ x: Math.round(b.x), y: Math.round(b.y), width: Math.max(0, Math.round(b.width)), height: Math.max(0, Math.round(b.height)) }); } catch {} } }
-  showOnly(runId) { for (const [id, r] of this._byRun) { try { if (r.view && r.wc && !r.wc.isDestroyed()) r.view.setVisible(id === runId); } catch {} } }
-  hideAll() { for (const [, r] of this._byRun) { try { if (r.view && r.wc && !r.wc.isDestroyed()) r.view.setVisible(false); } catch {} } }
+  showOnly(runId) {
+    for (const [id, r] of this._byRun) { try { if (r.view && r.wc && !r.wc.isDestroyed()) r.view.setVisible(id === runId); } catch {} }
+    // A shown native WebContentsView is visible but NOT keyboard-focused after a programmatic
+    // show (selection switch, tab return, modal close). Without focus, the page renders but
+    // clicks/keys/scroll don't reach it until the user clicks. Focus the newly-shown view once,
+    // on transition only (not on every bounds reconcile), so we never steal focus mid-scroll.
+    if (runId && runId !== this._shownRunId) {
+      const r = this._byRun.get(runId);
+      if (r && r.wc && !r.wc.isDestroyed()) { try { r.wc.focus(); } catch {} }
+    }
+    this._shownRunId = runId || null;
+  }
+  hideAll() { for (const [, r] of this._byRun) { try { if (r.view && r.wc && !r.wc.isDestroyed()) r.view.setVisible(false); } catch {} } this._shownRunId = null; }
+  // Explicitly (re)focus a run's view — used to recover input ownership without a reload.
+  focus(runId) { const r = this._byRun.get(runId); if (r && r.wc && !r.wc.isDestroyed()) { try { r.wc.focus(); return true; } catch {} } return false; }
 
   destroy(runId) {
     const r = this._byRun.get(runId);
     if (!r) return;
     this._byRun.delete(runId);
+    if (this._shownRunId === runId) this._shownRunId = null;
     try { const host = this._host(); if (host && !host.isDestroyed() && r.view) host.contentView.removeChildView(r.view); } catch {}
     try { if (r.wc && !r.wc.isDestroyed()) r.wc.close(); } catch {}
   }

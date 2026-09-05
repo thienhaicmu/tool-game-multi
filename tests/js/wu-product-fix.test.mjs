@@ -156,6 +156,16 @@ test('browser record persists the configured launch URL verbatim (path + query p
   assert.equal(reg.get(b.id).launchUrl, next, 'edited URL persisted');
 });
 
+test('showing a browser view focuses it (keyboard input works without a click) and focus can be recovered', () => {
+  const src = read('desktop/browser/inapp-runtime.cjs');
+  // showOnly focuses the newly-shown view (on transition), so a programmatic show grants keyboard focus.
+  assert.match(src, /showOnly\([^)]*\)\s*\{[\s\S]*?wc\.focus\(\)/, 'showOnly focuses the shown view');
+  // focus is only re-applied on a real transition (tracked via _shownRunId), not on every reconcile.
+  assert.match(src, /runId !== this\._shownRunId/, 'focus applied on visibility transition, not every bounds update');
+  // an explicit focus(runId) exists for input-ownership recovery without a reload.
+  assert.match(src, /focus\(runId\)\s*\{[\s\S]*?wc\.focus\(\)/, 'explicit focus(runId) recovery method exists');
+});
+
 test('delete code path performs no storage/profile destruction', () => {
   const registrySrc = read('desktop/browser-run/browser-registry.cjs');
   const mainSrc = read('desktop/main.cjs');
