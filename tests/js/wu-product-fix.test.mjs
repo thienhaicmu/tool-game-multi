@@ -59,6 +59,23 @@ test('overviewInAppUI hides the native view while a modal is open and restores f
   assert.match(js, /const show = !!\(viewIsOverview && runId && !modalOpen\(\)\)/, 'show = overview AND selected run AND not modal — not a blind show');
 });
 
+test('Overview is a TWO-ROW layout (browser full width, info below) — not side-by-side', () => {
+  const css = read('ui/product.css');
+  const html = read('ui/product.html');
+  // Major layout stacks the two regions vertically.
+  assert.match(css, /\.ov-layout\{[^}]*flex-direction:\s*column/, 'ov-layout is a column (rows), not a side-by-side row');
+  // Row 1 (browser) spans the full content width; the info region is no longer a fixed sidebar.
+  assert.match(css, /\.ov-web\{[^}]*width:\s*100%/, 'browser region uses full width');
+  assert.doesNotMatch(css, /\.ov-side\{[^}]*flex:\s*0 0 300px/, 'info region is not a fixed 300px sidebar');
+  assert.match(css, /\.ov-side\{[^}]*border-top:/, 'info region sits below with a top divider');
+  // Both regions still exist in the DOM (browser host + info panel).
+  assert.ok(html.includes('id="ov-web-host"'), 'browser host present');
+  assert.ok(html.includes('class="ov-side"') || html.includes("class='ov-side'"), 'info panel present');
+  // Native view bounds are clamped to the content viewport so it can't cover the header on scroll.
+  const js = read('ui/product.js');
+  assert.match(js, /Math\.max\(r\.top, m\.top\)/, 'browser bounds clamped to #shell-main viewport');
+});
+
 // ---------------------------------------------------------------------------
 // 3a. Delete button gating (running: no delete; closed: open/edit/delete)
 // ---------------------------------------------------------------------------

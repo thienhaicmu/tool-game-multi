@@ -1810,7 +1810,17 @@ renderActions();
   // over the web region would be occluded. Hide the view while a modal is open (a proven
   // interaction bug: the "New/Edit browser" URL field was unreachable under the native view).
   function modalOpen() { return !!document.querySelector('.bm-overlay:not([hidden])'); }
-  function bounds() { const r = host.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; }
+  // Report the browser host rectangle, CLAMPED to the scrollable content viewport (#shell-main).
+  // The native WebContentsView paints above HTML and does not clip to a scroll container, so
+  // clamping keeps it inside the content area — it never covers the header/tabs when Row 2 scrolls.
+  function bounds() {
+    const r = host.getBoundingClientRect();
+    const main = $('shell-main');
+    const m = main ? main.getBoundingClientRect() : { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
+    const top = Math.max(r.top, m.top), bottom = Math.min(r.bottom, m.bottom);
+    const left = Math.max(r.left, m.left), right = Math.min(r.right, m.right);
+    return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
+  }
   function reconcile() {
     const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
     const show = !!(viewIsOverview && runId && !modalOpen());
