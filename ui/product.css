@@ -598,6 +598,12 @@ body[data-mode=product] #at-panel .proto-head .btn.icon{ display:none; }
 .ov-web-overlay-in{ display:grid; gap:8px; justify-items:center; font-size:var(--t-md); }
 .ov-side{ flex:0 0 300px; overflow:auto; padding:14px 16px; border-left:1px solid var(--line); background:var(--bg); }
 .ov-side .ctx-banner{ margin-top:0; }
+/* The side panel is narrow; a 2-column key/value grid squeezes each column to ~100px and
+   truncates labels/values (e.g. "Chrome profile", target URL). Use a single column and let
+   long mono values wrap so ALL detail is visible (panel scrolls if tall). */
+.ov-side .kv-grid{ grid-template-columns:1fr; gap:2px 0; }
+.ov-side .kv2{ gap:12px; align-items:baseline; }
+.ov-side .kv2 b{ min-width:0; text-align:right; overflow-wrap:anywhere; word-break:break-word; }
 @media (max-width:1200px){ .ov-side{ flex-basis:264px; } }
 
 /* Systematic locked-feature treatment (§16/§22): dim + lock + non-interactive + note. */

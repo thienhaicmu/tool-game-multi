@@ -1670,8 +1670,11 @@ renderActions();
     $('bm-submit').textContent = mode === 'edit' ? 'Lưu' : 'Tạo & Mở';
     const err = $('bm-error'); err.hidden = true; err.textContent = '';
     $('browser-modal').hidden = false; $('bm-name').focus();
+    // WU-E.4: the in-app browser is a NATIVE view that always paints above HTML; hide it while
+    // this modal is open so its inputs (name/URL) are reachable. See overviewInAppUI.
+    document.dispatchEvent(new CustomEvent('modal-changed', { detail: { open: true } }));
   }
-  function closeModal() { $('browser-modal').hidden = true; }
+  function closeModal() { $('browser-modal').hidden = true; document.dispatchEvent(new CustomEvent('modal-changed', { detail: { open: false } })); }
   function modalError(m) { const err = $('bm-error'); err.hidden = false; err.textContent = m; }
   async function submitModal() {
     const name = $('bm-name').value.trim(); const url = $('bm-url').value.trim();
@@ -1928,11 +1931,15 @@ renderActions();
   const host = $('ov-web-host'), canvas = $('ov-canvas'), overlay = $('ov-web-overlay');
   if (!host) return;
   let viewIsOverview = (document.body.dataset.view || 'overview') === 'overview';
+  // A native WebContentsView always paints above the window's HTML, so any HTML modal/dialog
+  // over the web region would be occluded. Hide the view while a modal is open (a proven
+  // interaction bug: the "New/Edit browser" URL field was unreachable under the native view).
+  function modalOpen() { return !!document.querySelector('.bm-overlay:not([hidden])'); }
   function bounds() { const r = host.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; }
   function reconcile() {
     if (__runtimeMode !== 'inapp') { api.inappView(null, null, false).catch(function () {}); return; }
     const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
-    const show = !!(viewIsOverview && runId);
+    const show = !!(viewIsOverview && runId && !modalOpen());
     if (show) { if (canvas) canvas.style.display = 'none'; if (overlay) overlay.hidden = true; api.inappView(runId, bounds(), true).catch(function () {}); }
     else { api.inappView(runId || null, null, false).catch(function () {}); }
   }
@@ -1940,6 +1947,7 @@ renderActions();
   document.addEventListener('runtime-mode', reconcile);
   document.addEventListener('view-changed', function (e) { viewIsOverview = e.detail && e.detail.view === 'overview'; reconcile(); });
   document.addEventListener('run-selected', reconcile);
+  document.addEventListener('modal-changed', reconcile);
   if (api.onBrowsersChanged) api.onBrowsersChanged(soon);
   window.addEventListener('resize', soon);
   const main = $('shell-main'); if (main) main.addEventListener('scroll', soon, { passive: true });
