@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   licenseStatus: () => ipcRenderer.invoke('license-status'),
   licenseEntitlement: () => ipcRenderer.invoke('license-entitlement'),
   activateLicense: license => ipcRenderer.invoke('license-activate', license),
+  refreshLicense: () => ipcRenderer.invoke('license-refresh'),
   onLicenseChanged: callback => ipcRenderer.on('license-changed', (_event, status) => callback(status)),
   instanceInfo: () => ipcRenderer.invoke('instance-info'),
   listSessions: () => ipcRenderer.invoke('list-sessions'),
@@ -58,6 +59,7 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   listRuns: () => ipcRenderer.invoke('list-runs'),
   selectRun: runId => ipcRenderer.invoke('select-run', runId),
   closeRun: runId => ipcRenderer.invoke('close-run', runId),
+  reloadRun: runId => ipcRenderer.invoke('browser-reload', runId),
   onRunsChanged: callback => ipcRenderer.on('runs-changed', (_event, runs) => callback(runs)),
   // WU7 — Protocol Test Harness. Every execution IPC carries an EXPLICIT runId so a
   // send/ack binds to that browser run, never to whichever run the UI is viewing.

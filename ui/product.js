@@ -147,9 +147,33 @@ async function refreshLicenseStatus() {
   const submit = $('activation-submit');
   if (submit) submit.onclick = async () => {
     submit.disabled = true; submit.textContent = 'ĐANG XÁC MINH...';
-    try { renderLicenseStatus(await api.activateLicense(($('activation-license').value || '').trim())); }
-    catch { renderLicenseStatus({ active: false, machineId: licenseState.machineId, error: { code: 'LICENSE_INVALID_FORMAT', message: 'Kích hoạt thất bại' } }); }
+    let res;
+    try { res = await api.activateLicense(($('activation-license').value || '').trim()); }
+    catch { res = { active: false, machineId: licenseState.machineId, error: { code: 'LICENSE_INVALID_FORMAT', message: 'Kích hoạt thất bại' } }; }
+    // A successful re-activation (new key) returns to the app; a failure stays on the screen.
+    if (res && res.active) delete document.body.dataset.reactivate;
+    renderLicenseStatus(res);
     submit.disabled = false; submit.textContent = 'KÍCH HOẠT';
+  };
+  // Re-activation: an already-activated user can open the activation screen to enter a NEW key
+  // (upgrade / unlock new features). The old stored key is otherwise auto-reused with no way in.
+  const pill = $('shell-license');
+  if (pill) pill.onclick = () => {
+    if (!licenseState.active) return; // already on the activation screen when not active
+    document.body.dataset.reactivate = 'on';
+    const label = $('activation-license') && $('activation-license').closest ? $('activation-license').closest('label') : null;
+    if (label) label.hidden = false;
+    if (submit) submit.hidden = false;
+    const help = $('activation-help'); if (help) help.textContent = 'Nhập khóa mới để kích hoạt lại (đổi gói / mở tính năng mới).';
+    if ($('activation-license')) { $('activation-license').value = ''; $('activation-license').focus(); }
+  };
+  const back = $('activation-back');
+  if (back) back.onclick = async () => {
+    delete document.body.dataset.reactivate;
+    // Force re-verify the stored (still-valid) license so a cancelled/failed re-activation never
+    // leaves an already-licensed user locked out.
+    try { if (api.refreshLicense) { renderLicenseStatus(await api.refreshLicense()); return; } } catch { /* fall through */ }
+    refreshLicenseStatus();
   };
   refreshLicenseStatus();
   setInterval(refreshLicenseStatus, 60_000);
@@ -1567,7 +1591,7 @@ renderActions();
       const actions = errored
         ? `<div class="rr-actions"><button class="rr-open-btn" data-reopen="${esc(b.browserId)}">Mở lại</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
         : b.online
-        ? `<div class="rr-actions"><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
+        ? `<div class="rr-actions"><button class="rr-mini" data-reload="${esc(b.runId || '')}" title="Tải lại trang game (khi trang lỗi / chưa vào được)">Tải lại</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
         : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}"${atConc ? ' disabled title="' + esc(`Đang chạy ${running}/${maxConc} trình duyệt đồng thời.`) + '"' : ''}>Mở</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Xóa</button></div>`;
       // WU-C.3 — compact but distinctive jackpot line (always shown; "—" when unknown).
       const jpTxt = b.currentJackpot != null ? Number(b.currentJackpot).toLocaleString() : '—';
@@ -1583,6 +1607,7 @@ renderActions();
     }
     listEl.querySelectorAll('[data-open]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openBrowser(x.dataset.open); }; });
     listEl.querySelectorAll('[data-reopen]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.reopen); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } await openBrowser(x.dataset.reopen); }; });
+    listEl.querySelectorAll('[data-reload]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!x.dataset.reload || !api.reloadRun) return; const r = await api.reloadRun(x.dataset.reload); toast(r && r.ok ? 'Đang tải lại trang…' : ((r && r.error && r.error.message) || 'Không tải lại được')); }; });
     listEl.querySelectorAll('[data-close]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.close); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } }; });
     listEl.querySelectorAll('[data-edit]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openModal('edit', browsers.find((r) => r.browserId === x.dataset.edit)); }; });
     listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Xóa trình duyệt này? Dữ liệu hồ sơ vẫn được giữ trên đĩa.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast(browserErrVi(r.error)); }; });

@@ -181,6 +181,37 @@ test('Phase 4: per-run recovery state is projected to the UI and mapped to conci
   assert.match(js, /recoveryBadge\(b\.recoveryState\)/, 'badge uses the per-browser recovery state');
 });
 
+test('user can manually reload a run browser (first-load/WS error), same run + partition', () => {
+  const main = read('desktop/main.cjs');
+  const pre = read('desktop/preload.cjs');
+  const js = read('ui/product.js');
+  assert.match(main, /handle\('browser-reload'/, 'browser-reload IPC exists');
+  assert.match(main, /const wc = inappRuntime\.webContents\(id\)/, 'reloads the run\'s in-app webContents (same run/partition)');
+  assert.match(main, /wc\.loadURL\(String\(target\)\)/, 're-navigates the current URL (reliable reload for a WebContentsView)');
+  assert.match(pre, /reloadRun: runId => ipcRenderer\.invoke\('browser-reload'/, 'preload exposes reloadRun');
+  assert.match(js, /data-reload="\$\{esc\(b\.runId/, 'online browser card offers a Tải lại (reload) action');
+  assert.match(js, /api\.reloadRun\(x\.dataset\.reload\)/, 'reload button calls reloadRun');
+});
+
+test('an already-activated user can re-activate with a new key, and a failed attempt cannot lock them out', () => {
+  const main = read('desktop/main.cjs');
+  const pre = read('desktop/preload.cjs');
+  const js = read('ui/product.js');
+  const css = read('ui/product.css');
+  const html = read('ui/product.html');
+  // re-activation entry point + back button + force re-verify of the stored license
+  assert.match(js, /pill\.onclick = \(\) => \{[\s\S]*?document\.body\.dataset\.reactivate = 'on'/, 'clicking the license pill opens re-activation');
+  assert.ok(html.includes('id="activation-back"'), 'activation screen has a back button');
+  assert.match(css, /body\[data-reactivate=on\] #activation-screen\{display:grid!important\}/, 'reactivate override shows activation over the active app');
+  assert.match(main, /handle\('license-refresh'/, 'license-refresh IPC exists');
+  assert.match(main, /'license-refresh'/, 'license-refresh is an OPEN channel (usable while inactive)');
+  assert.match(pre, /refreshLicense: \(\) => ipcRenderer\.invoke\('license-refresh'\)/, 'preload exposes refreshLicense');
+  assert.match(js, /api\.refreshLicense\(\)/, 'back/cancel force re-verifies the stored license (no lockout)');
+  // safety: activate verifies before persisting, so a bad new key never overwrites the stored one
+  const guard = read('desktop/licensing/license-guard.cjs');
+  assert.match(guard, /if \(!result\.active\) \{[\s\S]*?return this\.status\(\);\s*\}\s*this\._store\.saveLicense/, 'activateAsync saves only after a successful verify');
+});
+
 test('showing a browser view focuses it (keyboard input works without a click) and focus can be recovered', () => {
   const src = read('desktop/browser/inapp-runtime.cjs');
   // showOnly focuses the newly-shown view (on transition), so a programmatic show grants keyboard focus.

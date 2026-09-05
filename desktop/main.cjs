@@ -981,7 +981,7 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
 // (status, activate, copy Machine ID, instance metadata) stay open. Fail closed:
 // while the license is still "checking" or has lapsed, status().active is false
 // and every gated call is refused.
-const LICENSE_OPEN_CHANNELS = new Set(['license-status', 'license-activate', 'copy-text', 'instance-info']);
+const LICENSE_OPEN_CHANNELS = new Set(['license-status', 'license-activate', 'license-refresh', 'copy-text', 'instance-info']);
 function licenseActive() { const s = licenseGuard && licenseGuard.status(); return Boolean(s && s.active); }
 function handle(channel, fn) {
   if (LICENSE_OPEN_CHANNELS.has(channel)) { ipcMain.handle(channel, fn); return; }
@@ -1025,6 +1025,13 @@ handle('license-status', () => licenseStatus());
 handle('license-activate', async (_event, license) => {
   if (!licenseGuard) return licenseStatus();
   return ensureProtocolSubsystem(await licenseGuard.activateAsync(String(license || '')));
+});
+// Force re-verify the STORED license. Used by the re-activation "Quay lại": a failed new-key
+// attempt sets an in-memory failure status but never overwrites the valid stored key on disk, so
+// this restores the active session without an app restart.
+handle('license-refresh', async () => {
+  if (!licenseGuard) return licenseStatus();
+  return ensureProtocolSubsystem(await licenseGuard.refreshAsync({ consumeLaunch: false }));
 });
 handle('copy-text', (_event, text) => { clipboard.writeText(String(text || '')); return true; });
 handle('open-browser', (_event, url) => openBrowserWindow(String(url)));
@@ -1139,6 +1146,25 @@ handle('select-run', (_event, runId) => {
   return { ok: true, activeRunId: runManager.activeRunId() };
 });
 handle('close-run', async (_event, runId) => { if (runManager) await runManager.closeRun(String(runId)); return { ok: true }; });
+// Manual reload of a run's in-app browser. Needed when the first load errors / the game socket
+// wasn't hooked in time (the page can look blank) and the user must reload themselves. Reloading
+// the same WebContents re-attaches instrumentation and re-injects the WS hook on the fresh load;
+// same owning run + persistent partition (no new profile).
+handle('browser-reload', (_event, runId) => {
+  const id = String(runId || '');
+  const wc = inappRuntime.webContents(id);
+  if (!wc || wc.isDestroyed()) return { ok: false, error: { code: 'RUN_NOT_FOUND', message: 'Không có trình duyệt đang mở để tải lại.' } };
+  try {
+    // Re-navigate to the current URL. This is more reliable than webContents.reload() for a
+    // WebContentsView and guarantees a fresh load (worker/iframe/WS re-created, WS hook re-injected).
+    let target = '';
+    try { target = wc.getURL(); } catch {}
+    const run = runManager && runManager.get(id);
+    if (!target || target === 'about:blank') target = (run && run.launchUrl) || target;
+    if (target) wc.loadURL(String(target)); else wc.reload();
+    return { ok: true };
+  } catch (e) { return { ok: false, error: { code: 'RELOAD_FAILED', message: String(e && e.message || e) } }; }
+});
 // Position/show the in-app browser view for the SELECTED run inside the Overview web region.
 // Renderer reports the region bounds; main owns the native view. Display+layout only — no
 // execution ownership, no protocol. When not visible, all views are hidden so the native

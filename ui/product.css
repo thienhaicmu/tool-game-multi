@@ -36,6 +36,11 @@ body[data-license=locked] #shell,
 body[data-license=locked] #legacy,
 body[data-license=locked] .proto-panel{display:none!important}
 body[data-license=active] #activation-screen{display:none!important}
+/* Re-activation: let an already-activated user open the activation screen to enter a NEW key
+   (e.g. upgrade plan / unlock new features), with a "Quay lại" button to return to the app. */
+body[data-reactivate=on] #activation-screen{display:grid!important}
+body[data-reactivate=on] #activation-back{display:inline-block}
+#shell-license{cursor:pointer}
 .activation-screen{position:fixed;inset:0;display:grid;place-items:center;background:var(--bg);z-index:9999}
 .activation-panel{width:min(560px,calc(100vw - 32px));display:grid;gap:14px;padding:22px;border:1px solid var(--line);border-radius:var(--r2);background:var(--panel);box-shadow:var(--shadow)}
 .activation-title{font-size:var(--t-lg);font-weight:800;letter-spacing:.08em;border-bottom:1px solid var(--line);padding-bottom:12px}
