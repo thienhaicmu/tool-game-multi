@@ -33,11 +33,8 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   analyzeSession: sessionId => ipcRenderer.invoke('analyze-session', sessionId),
   getResponseBody: capturedId => ipcRenderer.invoke('get-response-body', capturedId),
   getRequestDetail: capturedId => ipcRenderer.invoke('get-request-detail', capturedId),
-  connect: endpoint => ipcRenderer.invoke('cdp-connect', endpoint),
   listTargets: () => ipcRenderer.invoke('list-targets'),
   selectTarget: id => ipcRenderer.invoke('select-target', id),
-  adbListWebviews: () => ipcRenderer.invoke('adb-list-webviews'),
-  adbForwardWebview: (socket, localPort) => ipcRenderer.invoke('adb-forward-webview', socket, localPort),
   // WU-C.1 — persistent browser management (registry-backed).
   listBrowsers: () => ipcRenderer.invoke('browser-list'),
   browserCapacity: () => ipcRenderer.invoke('browser-capacity'),
@@ -57,11 +54,6 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   // positions/shows the native WebContentsView for the selected run. Display/layout only.
   runtimeMode: () => ipcRenderer.invoke('runtime-mode'),
   inappView: (runId, bounds, visible) => ipcRenderer.invoke('inapp-view', runId, bounds, visible),
-  // WU-E.1 — embedded web mirror in Tổng quan (per-run screencast + input forwarding).
-  screencastStart: (runId, opts) => ipcRenderer.invoke('screencast-start', runId, opts),
-  screencastStop: runId => ipcRenderer.invoke('screencast-stop', runId),
-  screencastInput: (runId, ev) => ipcRenderer.invoke('screencast-input', runId, ev),
-  onScreencastFrame: callback => { const l = (_e, f) => callback(f); ipcRenderer.on('screencast-frame', l); return () => ipcRenderer.removeListener('screencast-frame', l); },
   // WU-A/WU-B — browser run selection (view state) + explicit run binding.
   listRuns: () => ipcRenderer.invoke('list-runs'),
   selectRun: runId => ipcRenderer.invoke('select-run', runId),

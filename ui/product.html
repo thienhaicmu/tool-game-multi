@@ -92,11 +92,10 @@
           <div class="empty-sub">Chọn một trình duyệt và nhấn <b>Mở</b>.</div>
         </div>
         <div id="ov-body" hidden class="ov-layout">
-          <!-- WU-E.1 — embedded web surface: a live mirror of THIS browser's managed Chrome
-               page (CDP screencast + input forwarding). Same runtime; display + input only. -->
+          <!-- Embedded web surface: the selected browser's native in-app WebContentsView is
+               positioned over this region by the main process. Native display + native input. -->
           <div class="ov-web">
             <div id="ov-web-host" class="ov-web-host" tabindex="0">
-              <canvas id="ov-canvas" class="ov-canvas"></canvas>
               <div id="ov-web-overlay" class="ov-web-overlay" hidden><div class="ov-web-overlay-in"><div class="empty-ic">◴</div><div id="ov-web-overlay-text">Đang kết nối…</div></div></div>
             </div>
           </div>
@@ -172,12 +171,9 @@
   <header class="topbar">
     <div class="brand"><span class="glyph">◇</span><b>Aviator&nbsp;Diagnostics</b></div>
     <span class="tb-sep"></span>
-    <div class="group" role="group" aria-label="Connection">
-      <input id="host" class="mono" value="127.0.0.1:9222" title="CDP endpoint host:port" aria-label="CDP endpoint">
-      <button id="connect" class="btn">Connect</button>
-      <input id="url" placeholder="https://your.app" title="Launch Chrome at URL" aria-label="Launch URL">
+    <div class="group" role="group" aria-label="Open browser">
+      <input id="url" placeholder="https://your.app" title="Open a browser at URL" aria-label="Open URL">
       <button id="launch" class="btn">Launch</button>
-      <button id="adb" class="btn" title="Attach Android WebView via adb">ADB</button>
     </div>
     <span class="tb-sep"></span>
     <div class="group" role="group" aria-label="Target">

@@ -77,11 +77,13 @@ test('generic debugger is wrapped in #legacy and kept (not deleted)', () => {
   const legacy = idx('id="legacy"');
   assert.ok(legacy >= 0, '#legacy wrapper exists');
   // The generic panes live INSIDE #legacy (their markup comes after the wrapper open).
-  for (const marker of ['class="topbar"', 'intercept-bar', 'class="grid"', 'id="editor"', 'id="host"', 'id="list"', 'id="detail-tabs"']) {
+  for (const marker of ['class="topbar"', 'intercept-bar', 'class="grid"', 'id="editor"', 'id="list"', 'id="detail-tabs"']) {
     assert.ok(idx(marker) > legacy, `${marker} is inside #legacy`);
   }
   // Engine-facing controls still exist (kept for Diagnostics).
-  for (const marker of ['id="connect"', 'id="adb"', 'id="intc-toggle"']) assert.ok(idx(marker) >= 0, `${marker} retained`);
+  for (const marker of ['id="launch"', 'id="targets"', 'id="intc-toggle"']) assert.ok(idx(marker) >= 0, `${marker} retained`);
+  // External-attach (connect to arbitrary CDP / adb WebView) is removed with the single-runtime cleanup.
+  for (const marker of ['id="connect"', 'id="host"', 'id="adb"']) assert.ok(idx(marker) < 0, `${marker} removed`);
 });
 
 test('focused shell markup precedes the legacy debugger', () => {

@@ -17,9 +17,6 @@ const { InstanceManager } = require('../../desktop/instance/instance-manager.cjs
 const { BrowserRegistry } = require('../../desktop/browser-run/browser-registry.cjs');
 const { BrowserConfigStore } = require('../../desktop/browser-run/browser-config-store.cjs');
 const { BrowserRunManager, STATUS } = require('../../desktop/browser-run/browser-run-manager.cjs');
-const { ChromeLauncher, findChromeExecutable } = require('../../desktop/browser/chrome-launcher.cjs');
-const { TargetManager } = require('../../desktop/cdp/target-manager.cjs');
-const CDP = require('chrome-remote-interface');
 
 function tempBase() { return mkdtempSync(join(tmpdir(), 'wu-d2-')); }
 
@@ -64,10 +61,10 @@ test('D2-003: persistent browsers + configs survive a quit/relaunch (default lau
 });
 
 // ---------------------------------------------------------------------------
-// D2-002 — a run that never attached and whose Chrome exits must become an
-// actionable ERROR (retryable, non-terminal), carrying the precise code.
+// D2-002 — a run whose launcher fails to come up must become an actionable ERROR
+// (retryable, non-terminal), so the browser can be reopened ("Mở lại").
 // ---------------------------------------------------------------------------
-test('D2-002: early Chrome exit surfaces ERROR/CHROME_EXITED_BEFORE_CDP (retryable)', () => {
+test('D2-002: a failed run start surfaces a retryable, non-terminal ERROR', () => {
   const mgr = new BrowserRunManager({
     createLauncher: () => ({ open: async () => ({ ok: true }), close: () => {} }),
     createTargetManager: () => ({}),
@@ -75,71 +72,21 @@ test('D2-002: early Chrome exit surfaces ERROR/CHROME_EXITED_BEFORE_CDP (retryab
   });
   const run = mgr.createRun({ browserId: 'B-0001', profileDir: 'x' });
   assert.equal(run.status, STATUS.STARTING);
-  // Simulate the onExit-while-STARTING path from main.createRunLauncher.
-  mgr.failRun(run, { code: 'CHROME_EXITED_BEFORE_CDP', message: 'exited before CDP' });
+  mgr.failRun(run, { code: 'RUN_START_FAILED', message: 'failed to attach' });
   const s = mgr.summary(run);
   assert.equal(s.status, STATUS.ERROR);
-  assert.equal(s.error.code, 'CHROME_EXITED_BEFORE_CDP');
+  assert.equal(s.error.code, 'RUN_START_FAILED');
   // ERROR is NOT terminal: the browser can be closed then reopened ("Mở lại").
   assert.equal(mgr.liveRunForBrowser('B-0001').id, run.id);
 });
 
 // ---------------------------------------------------------------------------
-// D2-001 / D2-002 — assert main.cjs is actually wired for shutdown cleanup and
-// actionable early-exit (mirrors the existing "main process is wired" source test).
+// D2-001 — main.cjs is wired to tear down every managed in-app browser view on quit.
 // ---------------------------------------------------------------------------
-test('D2-001: main.cjs terminates managed Chrome on quit and reports early exit', () => {
+test('D2-001: main.cjs tears down managed browsers on quit', () => {
   const main = require('node:fs').readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
   assert.ok(/function killAllManagedBrowsers\s*\(/.test(main), 'defines killAllManagedBrowsers');
-  assert.ok(/before-quit[\s\S]{0,120}killAllManagedBrowsers\(\)/.test(main), 'before-quit kills managed Chrome');
-  assert.ok(/will-quit[\s\S]{0,80}killAllManagedBrowsers\(\)/.test(main), 'will-quit kills managed Chrome');
-  assert.ok(/CHROME_EXITED_BEFORE_CDP/.test(main), 'surfaces CHROME_EXITED_BEFORE_CDP on early exit');
-});
-
-// ---------------------------------------------------------------------------
-// REAL browser-launch smoke — actually spawns the configured Chrome, verifies the
-// CDP endpoint answers and a page target is discoverable via the real TargetManager,
-// then confirms close frees the profile for a reliable reopen. Skips ONLY if Chrome
-// is genuinely not installed (never faked).
-// ---------------------------------------------------------------------------
-test('REAL smoke: managed Chrome spawns, CDP reachable, target attaches, reopen works', { timeout: 60000 }, async (t) => {
-  const exe = findChromeExecutable();
-  if (!exe || !existsSync(exe)) { t.skip('Chrome executable not found on this machine'); return; }
-
-  const base = tempBase();
-  const profile = join(base, 'profiles', 'B-0001');
-  const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
-  const waitCdp = async (host, port) => { for (let i = 0; i < 20; i++) { try { return await CDP.List({ host, port }); } catch { await new Promise((r) => setTimeout(r, 500)); } } return null; };
-
-  let l1, l2, tm;
-  try {
-    // 1) real spawn + CDP
-    l1 = new ChromeLauncher({ profilePath: profile, env: {} });
-    const r1 = await l1.open('https://example.com');
-    assert.equal(r1.ok, true, 'launcher reports ok');
-    assert.ok(r1.pid > 0, 'has a pid');
-    const list = await waitCdp(r1.endpoint.host, r1.endpoint.port);
-    assert.ok(list && list.length, 'CDP endpoint reachable with targets');
-
-    // 2) real TargetManager attaches a page target
-    tm = new TargetManager({ host: r1.endpoint.host, port: r1.endpoint.port, pollIntervalMs: 400 });
-    const attached = await new Promise((resolve) => { tm.once('attached', ({ target }) => resolve(target)); tm.start().catch(() => {}); });
-    assert.ok(attached && attached.cdpTargetId, 'TargetManager attached a real target');
-    await tm.stop(); tm = null;
-
-    // 3) close frees the profile; reopen on the SAME profile spawns a fresh CDP endpoint
-    l1.close(); l1 = null;
-    await new Promise((r) => setTimeout(r, 2000));
-    l2 = new ChromeLauncher({ profilePath: profile, env: {} });
-    const r2 = await l2.open('https://example.com');
-    const list2 = await waitCdp(r2.endpoint.host, r2.endpoint.port);
-    assert.ok(list2 && list2.length, 'reopen on the same profile is reliable (profile was freed)');
-    assert.equal(pidAlive(r2.pid), true, 'reopened Chrome is alive');
-  } finally {
-    try { if (tm) await tm.stop(); } catch { /* ignore */ }
-    try { if (l1) l1.close(); } catch { /* ignore */ }
-    try { if (l2) l2.close(); } catch { /* ignore */ }
-    await new Promise((r) => setTimeout(r, 1500));
-    rmSync(base, { recursive: true, force: true });
-  }
+  assert.ok(/before-quit[\s\S]{0,140}killAllManagedBrowsers\(\)/.test(main), 'before-quit tears down managed browsers');
+  assert.ok(/will-quit[\s\S]{0,80}killAllManagedBrowsers\(\)/.test(main), 'will-quit tears down managed browsers');
+  assert.ok(/inappRuntime\.destroyAll\(\)/.test(main), 'destroys all in-app views on teardown');
 });

@@ -1,10 +1,6 @@
 'use strict';
 const api = window.desktopCapture || {};
 const $ = (id) => document.getElementById(id);
-// WU-E.4 — runtime mode: 'inapp' (default, native WebContentsView) or 'legacy' (external
-// Chrome + screencast, dev rollback). Controllers branch on this.
-let __runtimeMode = 'inapp';
-if (api.runtimeMode) api.runtimeMode().then((r) => { __runtimeMode = (r && r.mode) || 'inapp'; document.dispatchEvent(new CustomEvent('runtime-mode', { detail: __runtimeMode })); }).catch(() => {});
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // WU-B: the browser run this window currently controls. It is a VIEW pointer only
@@ -497,22 +493,13 @@ function toCurl(d) {
   return parts.join(' \\\n  ');
 }
 
-// ---- targets / connection ----
-function parseHostPort(s) { const m = String(s).trim().match(/^(?:https?:\/\/)?([^:/\s]+)(?::(\d+))?/); return m ? { host: m[1], port: Number(m[2] || 9222) } : { host: '127.0.0.1', port: 9222 }; }
-$('connect').onclick = async () => { const r = await api.connect(parseHostPort($('host').value)); if (r && r.error) toast(r.error.code || 'Connect failed'); };
+// ---- targets ----
 // Scope: when "All domains" is on, capture EVERYTHING fully (no redaction) — needed
 // for games whose WS/API live on sibling domains. Off = only the launched host.
 async function applyScope() { if ($('scope-all').checked) { await api.setScope([]); } else { let h = null; try { h = new URL($('url').value.trim()).hostname; } catch { /* none */ } await api.setScope(h ? [h] : []); } }
 $('scope-all').onchange = () => { applyScope(); toast($('scope-all').checked ? 'Bắt tất cả domain' : 'Chỉ bắt host game'); };
 applyScope();
 $('launch').onclick = async () => { const url = $('url').value.trim(); if (!url) return toast('Enter a URL'); await applyScope(); await api.openBrowser(url); $('chip-cap').textContent = 'Launching…'; document.dispatchEvent(new CustomEvent('instance-runtime-refresh')); };
-$('adb').onclick = async () => {
-  const r = await api.adbListWebviews();
-  if (!r || !r.ok) return toast((r && r.error && r.error.code) || 'adb unavailable');
-  if (!r.sockets.length) return toast('No WebView sockets found');
-  const res = await api.adbForwardWebview(r.sockets[0]);
-  toast(res && res.ok ? 'Attached ' + r.sockets[0] : ((res && res.error && res.error.code) || 'adb forward failed'));
-};
 api.onTargetsChanged && api.onTargetsChanged((list) => {
   const sel = $('targets'); const cur = sel.value;
   const badge = { CHROME: 'Chrome', WEBVIEW2: 'WebView2', CEF: 'CEF', ANDROID_WEBVIEW: 'Android WebView', OTHER: 'Target' };
@@ -1769,118 +1756,6 @@ renderActions();
 })();
 
 
-// ==================== WU-E.1 EMBEDDED WEB MIRROR (Tong quan) ====================
-// Live mirror of the SELECTED browser's managed-Chrome page via CDP screencast, with
-// input forwarded back to that SAME run's page session. Display + input only: it never
-// sends protocol, never changes ownership, never retargets a run. One visible browser at
-// a time (the selected B); background runs keep executing untouched.
-(function overviewWebUI() {
-  if (!api.screencastStart) return; // preload without WU-E.1 surface - inert
-  const host = $('ov-web-host'), canvas = $('ov-canvas'), overlay = $('ov-web-overlay'), overlayText = $('ov-web-overlay-text');
-  if (!host || !canvas) return;
-  const ctx = canvas.getContext('2d');
-  let activeRunId = null;      // the run we asked main to mirror
-  let viewIsOverview = (document.body.dataset.view || 'overview') === 'overview';
-  let meta = null;             // last frame metadata (deviceWidth/deviceHeight)
-  let drawn = { dx: 0, dy: 0, dw: 0, dh: 0 };
-  const img = new Image();
-  let pending = null;          // latest base64 waiting to paint
-  let startSeq = 0;
-
-  function showOverlay(text) { if (overlay) { overlay.hidden = false; if (overlayText) overlayText.textContent = text; } }
-  function hideOverlay() { if (overlay) overlay.hidden = true; }
-  function clearCanvas() { try { ctx.clearRect(0, 0, canvas.width, canvas.height); } catch (e) { /* ignore */ } }
-
-  function sizeCanvas() {
-    const w = Math.max(1, host.clientWidth), h = Math.max(1, host.clientHeight);
-    if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; if (img.complete && img.naturalWidth) paint(); }
-  }
-  function paint() {
-    const cw = canvas.width, ch = canvas.height, iw = img.naturalWidth, ih = img.naturalHeight;
-    if (!iw || !ih) return;
-    const scale = Math.min(cw / iw, ch / ih);
-    const dw = iw * scale, dh = ih * scale, dx = (cw - dw) / 2, dy = (ch - dh) / 2;
-    drawn = { dx: dx, dy: dy, dw: dw, dh: dh };
-    ctx.clearRect(0, 0, cw, ch);
-    ctx.drawImage(img, dx, dy, dw, dh);
-  }
-  img.onload = function () { hideOverlay(); paint(); if (pending) { const p = pending; pending = null; img.src = 'data:image/jpeg;base64,' + p; } };
-
-  api.onScreencastFrame(function (f) {
-    if (!f || f.runId !== activeRunId) return;         // strict per-run: ignore other runs' frames
-    meta = f.metadata || meta;
-    if (!img.complete) { pending = f.data; return; }    // coalesce: only paint the newest frame
-    img.src = 'data:image/jpeg;base64,' + f.data;
-  });
-
-  // ---- input forwarding (mouse/keyboard/wheel) -> the mirrored run's page session ----
-  function toPage(clientX, clientY) {
-    if (!meta || !drawn.dw) return null;
-    const rect = canvas.getBoundingClientRect();
-    const px = (clientX - rect.left) * (canvas.width / rect.width);
-    const py = (clientY - rect.top) * (canvas.height / rect.height);
-    if (px < drawn.dx || px > drawn.dx + drawn.dw || py < drawn.dy || py > drawn.dy + drawn.dh) return null;
-    const dw = Number(meta.deviceWidth) || drawn.dw, dh = Number(meta.deviceHeight) || drawn.dh;
-    return { x: ((px - drawn.dx) / drawn.dw) * dw, y: ((py - drawn.dy) / drawn.dh) * dh };
-  }
-  function mods(e) { return (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0); }
-  const BTN = { 0: 'left', 1: 'middle', 2: 'right' };
-  function sendInput(ev) { if (activeRunId) api.screencastInput(activeRunId, ev).catch(function () {}); }
-  function mouse(type, e) {
-    const p = toPage(e.clientX, e.clientY); if (!p) return;
-    sendInput({ kind: 'mouse', type: type, x: p.x, y: p.y, button: BTN[e.button] || 'none', buttons: e.buttons, clickCount: (type === 'mousePressed' || type === 'mouseReleased') ? (e.detail || 1) : 0, modifiers: mods(e) });
-  }
-  host.addEventListener('mousedown', function (e) { host.focus(); mouse('mousePressed', e); });
-  host.addEventListener('mouseup', function (e) { mouse('mouseReleased', e); });
-  let lastMove = 0;
-  host.addEventListener('mousemove', function (e) { const t = Date.now(); if (t - lastMove < 40) return; lastMove = t; mouse('mouseMoved', e); });
-  host.addEventListener('contextmenu', function (e) { e.preventDefault(); });
-  host.addEventListener('wheel', function (e) { const p = toPage(e.clientX, e.clientY); if (!p) return; e.preventDefault(); sendInput({ kind: 'wheel', type: 'mouseWheel', x: p.x, y: p.y, deltaX: e.deltaX, deltaY: e.deltaY, modifiers: mods(e) }); }, { passive: false });
-  function key(type, e) {
-    if (!activeRunId) return;
-    const printable = e.key && e.key.length === 1;
-    const ev = { kind: 'key', type: (printable && type === 'keyDown') ? 'keyDown' : (type === 'keyDown' ? 'rawKeyDown' : 'keyUp'), key: e.key, code: e.code, windowsVirtualKeyCode: e.keyCode, modifiers: mods(e) };
-    if (printable && type === 'keyDown') ev.text = e.key;
-    if (e.key === 'Enter' && type === 'keyDown') ev.text = '\r';
-    sendInput(ev);
-  }
-  host.addEventListener('keydown', function (e) { if (!activeRunId) return; e.preventDefault(); key('keyDown', e); });
-  host.addEventListener('keyup', function (e) { if (!activeRunId) return; e.preventDefault(); key('keyUp', e); });
-
-  // ---- lifecycle: follow the selected browser + visible view ----
-  async function startFor(runId) {
-    const seq = ++startSeq;
-    sizeCanvas();
-    showOverlay('Dang ket noi man hinh trinh duyet...');
-    for (let i = 0; i < 8; i++) {
-      const r = await api.screencastStart(runId, { maxWidth: Math.max(320, host.clientWidth), maxHeight: Math.max(240, host.clientHeight), quality: 60 }).catch(function () { return { error: { code: 'X' } }; });
-      if (seq !== startSeq) return;                 // superseded by a newer selection
-      if (r && r.ok) { activeRunId = runId; return; }
-      if (r && r.error && r.error.code !== 'SCREENCAST_TARGET_UNAVAILABLE' && r.error.code !== 'RUN_NOT_FOUND') { showOverlay('Khong mo duoc man hinh: ' + (r.error.message || r.error.code)); return; }
-      await new Promise(function (res) { setTimeout(res, 700); }); // target not attached yet - retry
-    }
-    if (seq === startSeq) showOverlay('Chua nhan duoc man hinh trinh duyet. Thu lai khi game da tai.');
-  }
-  async function stopMirror() {
-    startSeq++;
-    const prev = activeRunId; activeRunId = null; meta = null; clearCanvas();
-    if (prev) { try { await api.screencastStop(prev); } catch (e) { /* ignore */ } }
-  }
-  function reconcile() {
-    if (__runtimeMode !== 'legacy') { if (activeRunId) stopMirror(); return; } // WU-E.4 — screencast only in legacy rollback
-    const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
-    if (viewIsOverview && runId) { if (activeRunId !== runId) { stopMirror().then(function () { startFor(runId); }); } }
-    else { if (activeRunId) stopMirror(); }
-  }
-
-  document.addEventListener('runtime-mode', function () { reconcile(); });
-  document.addEventListener('view-changed', function (e) { viewIsOverview = e.detail && e.detail.view === 'overview'; reconcile(); });
-  document.addEventListener('run-selected', function () { reconcile(); });
-  if (api.onBrowsersChanged) api.onBrowsersChanged(function () { const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null; if (runId !== activeRunId) reconcile(); });
-  if (typeof ResizeObserver !== 'undefined') { let rt = null; new ResizeObserver(function () { sizeCanvas(); if (activeRunId) { clearTimeout(rt); rt = setTimeout(function () { api.screencastStart(activeRunId, { maxWidth: Math.max(320, host.clientWidth), maxHeight: Math.max(240, host.clientHeight), quality: 60 }).catch(function () {}); }, 250); } }).observe(host); }
-  window.addEventListener('beforeunload', function () { if (activeRunId) api.screencastStop(activeRunId); });
-  reconcile();
-})();
 
 
 // ==================== WU-E.1 SYSTEMATIC FEATURE-LOCK UI ====================
@@ -1928,7 +1803,7 @@ renderActions();
 // no screencast, no input forwarding — the user interacts with the native surface directly.
 (function overviewInAppUI() {
   if (!api.inappView) return; // preload without WU-E.4 surface — inert
-  const host = $('ov-web-host'), canvas = $('ov-canvas'), overlay = $('ov-web-overlay');
+  const host = $('ov-web-host'), overlay = $('ov-web-overlay');
   if (!host) return;
   let viewIsOverview = (document.body.dataset.view || 'overview') === 'overview';
   // A native WebContentsView always paints above the window's HTML, so any HTML modal/dialog
@@ -1937,14 +1812,12 @@ renderActions();
   function modalOpen() { return !!document.querySelector('.bm-overlay:not([hidden])'); }
   function bounds() { const r = host.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; }
   function reconcile() {
-    if (__runtimeMode !== 'inapp') { api.inappView(null, null, false).catch(function () {}); return; }
     const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
     const show = !!(viewIsOverview && runId && !modalOpen());
-    if (show) { if (canvas) canvas.style.display = 'none'; if (overlay) overlay.hidden = true; api.inappView(runId, bounds(), true).catch(function () {}); }
+    if (show) { if (overlay) overlay.hidden = true; api.inappView(runId, bounds(), true).catch(function () {}); }
     else { api.inappView(runId || null, null, false).catch(function () {}); }
   }
   let rt = null; const soon = () => { clearTimeout(rt); rt = setTimeout(reconcile, 60); };
-  document.addEventListener('runtime-mode', reconcile);
   document.addEventListener('view-changed', function (e) { viewIsOverview = e.detail && e.detail.view === 'overview'; reconcile(); });
   document.addEventListener('run-selected', reconcile);
   document.addEventListener('modal-changed', reconcile);

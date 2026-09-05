@@ -6,14 +6,7 @@ const { spawn } = require('node:child_process');
 const { execFile } = require('node:child_process');
 const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
-const CDP = require('chrome-remote-interface');
-const { TargetManager } = require('./cdp/target-manager.cjs');
-const { PageScreencast } = require('./cdp/screencast.cjs');
 const { InAppRuntime } = require('./browser/inapp-runtime.cjs');
-// WU-E.4 — TRUE in-app browser runtime is the DEFAULT. Set OBSERVATORY_LEGACY_CHROME=1 to
-// fall back to the external-Chrome + screencast runtime (dev rollback only).
-const USE_INAPP_RUNTIME = process.env.OBSERVATORY_LEGACY_CHROME !== '1';
-const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { InteractionTracker } = require('./cdp/interaction-tracker.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -28,7 +21,6 @@ const { resolveBounds, DEFAULTS: WIN_DEFAULTS } = require('./window-state.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 const { environmentGuardEnabled } = require('./protocol/environment-gate.cjs');
 const { InstanceManager } = require('./instance/instance-manager.cjs');
-const { ChromeLauncher } = require('./browser/chrome-launcher.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { deriveFeatureKey } = require('./licensing/feature-key.cjs');
 const { install: installSealedLoader, SEALED_BASENAMES } = require('./protocol/sealed-loader.cjs');
@@ -88,22 +80,6 @@ const appInstance = instanceStart;
 app.setPath('userData', appInstance.paths.appData);
 
 // Per-run browser profile. A persistent browser owns a STABLE profileDir (WU-C.1),
-// reused across every open. Runs with no persistent owner (Advanced Debug / external
-// attach) fall back to a runtime dir: run #1 reuses the instance profile (keeps
-// existing verification setup), others get a per-run dir. Chrome locks a profile to
-// one process, so concurrent persistent browsers each carry their own free port.
-function runProfilePath(run) {
-  if (run.profileDir) return run.profileDir; // persistent browser owns it
-  return run.ordinal === 0 ? appInstance.paths.chromeProfile : path.join(appInstance.paths.chromeProfile, 'runs', run.id);
-}
-function runLauncherEnv(run) {
-  if (!run.profileDir && run.ordinal === 0) return process.env; // legacy/advanced first run honours env overrides
-  const env = { ...process.env };
-  delete env.OBSERVATORY_CDP_PORT;     // force a fresh free port per concurrent run
-  delete env.OBSERVATORY_CHROME_PROFILE; // use this run's own profile dir, not a shared override
-  return env;
-}
-
 // ---- WU-C.4 verified entitlement snapshot (single source of truth) ----
 // The trusted, normalized entitlement is derived from the VERIFIED signed license
 // payload (LicenseGuard). It is fail-closed: when no active license, everything is
@@ -151,33 +127,8 @@ function ensureBrowserConfigStore() {
   return browserConfigStore;
 }
 function broadcastHistoryChanged(browserId) { if (shell && !shell.isDestroyed()) shell.webContents.send('browser-history-changed', { browserId: String(browserId) }); }
-function createRunLauncher(run) {
-  return new ChromeLauncher({
-    profilePath: runProfilePath(run),
-    env: runLauncherEnv(run),
-    onRuntime: (patch) => appInstance.lock.update(patch),
-    onExit: () => {
-      if (!runManager) return;
-      const r = runManager.get(run.id);
-      // WU-D.2 (D2-002): Chrome exited while the run never attached a target. This is
-      // the classic "immediate handoff" — another Chrome (a phantom from a previous
-      // session / crash) still holds this profile, so the newly spawned process quits
-      // at once and its CDP port never answers. Surface an ACTIONABLE error instead of
-      // a silent close, and free the reserved runtime slot.
-      if (r && r.status === RUN_STATUS.STARTING) {
-        releaseRunCapacity(r);
-        runManager.failRun(r, { code: 'CHROME_EXITED_BEFORE_CDP', message: 'Chrome thoát trước khi cổng điều khiển sẵn sàng. Có thể một cửa sổ Chrome cũ đang dùng hồ sơ này — hãy đóng Chrome đó rồi mở lại.' });
-        return;
-      }
-      runManager.closeRun(run.id).catch(() => {});
-    },
-  });
-}
-// WU-D.2 (D2-001): terminate every managed Chrome this app launched. Chrome is
-// spawned detached+unref'd so it survives the Electron process; without this sweep a
-// clean quit (or window-all-closed) would orphan Chrome windows that keep holding
-// their persistent profiles, and the NEXT launch's Open would hand off to the phantom
-// and fail. Synchronous + best-effort so it also runs inside before-quit.
+// Tear down every in-app browser view this app created. Best-effort + synchronous so it
+// also runs inside before-quit; idempotent.
 function killAllManagedBrowsers() {
   if (runManager) {
     for (const summary of runManager.list()) {
@@ -360,28 +311,7 @@ async function connectRunEndpointWithRetry(run, endpoint, attempt = 0) {
   return result;
 }
 
-// WU-E.1 — embedded web mirror. Resolve the top-level PAGE client for a run (the surface
-// the user sees/interacts with in Tổng quan). Prefers a real page target, else the run's
-// selected target. Never crosses runs.
-function resolvePageClient(runId) {
-  const run = runManager && runManager.get(String(runId || ''));
-  if (!run || !run.targetManager) return null;
-  const targets = run.targetManager.listTargets();
-  const pick = targets.find((t) => String(t.type).toLowerCase() === 'page')
-    || targets.find((t) => t.cdpTargetId === run.selectedTargetId)
-    || targets[0];
-  if (!pick) return null;
-  const s = run.targetManager.getSession(pick.cdpTargetId);
-  return s && s.client ? { client: s.client, targetId: pick.cdpTargetId } : null;
-}
-// One mirror at a time (the selected browser). Frames are pushed to the renderer; other
-// runs keep executing in the background with their own ownership untouched.
-const screencast = new PageScreencast({
-  resolvePageClient,
-  onFrame: ({ runId, data, metadata }) => { if (shell && !shell.isDestroyed()) shell.webContents.send('screencast-frame', { runId, data, metadata }); },
-  onError: (err) => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err); },
-});
-// WU-E.4 — in-app browser runtime: one persistent-partition WebContentsView per run, hosted
+// In-app browser runtime: one persistent-partition WebContentsView per run, hosted
 // in the product window; only the selected run's view is visible. Owns the real web/game.
 const inappRuntime = new InAppRuntime({ getHostWindow: () => shell });
 
@@ -548,10 +478,10 @@ function buildProtocolSubsystem(run) {
 function ensureRunManager() {
   if (runManager) return runManager;
   runManager = new BrowserRunManager({
-    // WU-E.4 — default to the in-app WebContentsView runtime (no external Chrome, no
-    // screencast). Legacy external Chrome + TargetManager remain behind OBSERVATORY_LEGACY_CHROME.
-    createLauncher: USE_INAPP_RUNTIME ? (run) => inappRuntime.launcher(run) : createRunLauncher,
-    createTargetManager: USE_INAPP_RUNTIME ? (_endpoint, run) => inappRuntime.targetManager(run) : (endpoint) => new TargetManager(endpoint),
+    // The in-app WebContentsView runtime: one persistent-partition view per run, instrumented
+    // via webContents.debugger. No external Chrome, no CDP port, no screencast.
+    createLauncher: (run) => inappRuntime.launcher(run),
+    createTargetManager: (_endpoint, run) => inappRuntime.targetManager(run),
     buildSubsystem: buildProtocolSubsystem,
   });
   runManager.on('run-updated', () => { broadcastRuns(); broadcastBrowsers(); });
@@ -561,7 +491,6 @@ function ensureRunManager() {
     // Chrome exit/crash, cleanup). Idempotent; never double-releases.
     const run = summary && runManager.get(summary.id);
     releaseRunCapacity(run);
-    if (screencast) screencast.onRunGone(summary && summary.id); // WU-E.1 — stop a dead mirror
     broadcastRuns(); broadcastBrowsers();
   });
   runManager.on('active-changed', () => { broadcastTargets(); broadcastRuns(); broadcastBrowsers(); });
@@ -879,15 +808,6 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
   }
 }
 
-// Manual/adb connect flows (cdp-connect, adb-forward-webview): attach an endpoint
-// that this app did not launch. Each gets its own run so evidence stays scoped.
-async function connectExternalEndpoint(endpoint = {}) {
-  ensureRunManager();
-  const run = runManager.createRun({ launchUrl: '' });
-  runManager.setActive(run.id);
-  run.cdpEndpoint = { host: endpoint.host || '127.0.0.1', port: endpoint.port || 9222 };
-  return connectRunEndpoint(run, endpoint);
-}
 
 // Tier 1 license enforcement — the real gate. The renderer only *hides* locked UI
 // via CSS, which is trivially bypassable (DevTools can flip the flag). So every
@@ -1005,11 +925,10 @@ handle('intercept-continue-modified', (_event, id, patch) => intercept.continueM
 handle('intercept-abort', (_event, id) => intercept.abort(String(id)));
 handle('get-response-body', (_event, capturedId) => capture.getResponseBody(String(capturedId)));
 handle('get-request-detail', (_event, capturedId) => { const r = capture.get(String(capturedId)); return r || { error: { code: 'REQUEST_NOT_FOUND' } }; });
-handle('cdp-connect', (_event, endpoint = {}) => connectExternalEndpoint(endpoint));
 handle('list-targets', () => { const r = activeRun(); return r && r.targetManager ? r.targetManager.listTargets() : []; });
 handle('select-target', (_event, id) => {
   const run = activeRun();
-  if (!run || !run.targetManager) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Not connected to a CDP endpoint' } };
+  if (!run || !run.targetManager) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'No target available' } };
   const session = run.targetManager.getSession(id);
   if (!session) return { ok: false, error: { code: 'TARGET_NOT_FOUND', message: 'Target is no longer available' } };
   run.selectedTargetId = String(id);
@@ -1055,18 +974,12 @@ handle('select-run', (_event, runId) => {
   return { ok: true, activeRunId: runManager.activeRunId() };
 });
 handle('close-run', async (_event, runId) => { if (runManager) await runManager.closeRun(String(runId)); return { ok: true }; });
-// WU-E.1 — embedded web mirror IPC (display + input over the run's OWN page CDP session).
-// Read/interaction only: no protocol send, no ownership change, no cross-run target.
-handle('screencast-start', async (_event, runId, opts = {}) => { const r = execRun(runId); if (r.error) return r; return screencast.start(String(runId), opts || {}); });
-handle('screencast-stop', async (_event, runId) => { if (runId != null && screencast.activeRunId() !== String(runId)) return { ok: true }; return screencast.stop(); });
-handle('screencast-input', async (_event, runId, ev = {}) => { const r = execRun(runId); if (r.error) return r; return screencast.input(String(runId), ev || {}); });
-// WU-E.4 — position/show the in-app browser view for the SELECTED run inside the Overview
-// web region. Renderer reports the region bounds; main owns the native view. Display+layout
-// only — no execution ownership, no protocol. When not visible, all views are hidden so the
-// native surface never covers other product UI (tabs/dialogs/license).
-handle('runtime-mode', () => ({ mode: USE_INAPP_RUNTIME ? 'inapp' : 'legacy' }));
+// Position/show the in-app browser view for the SELECTED run inside the Overview web region.
+// Renderer reports the region bounds; main owns the native view. Display+layout only — no
+// execution ownership, no protocol. When not visible, all views are hidden so the native
+// surface never covers other product UI (tabs/dialogs/license).
+handle('runtime-mode', () => ({ mode: 'inapp' }));
 handle('inapp-view', (_event, runId, bounds, visible) => {
-  if (!USE_INAPP_RUNTIME) return { ok: true, inapp: false };
   const id = runId != null ? String(runId) : '';
   if (visible && id && inappRuntime.has(id) && bounds && bounds.width > 0 && bounds.height > 0) {
     inappRuntime.setBounds(id, bounds);
@@ -1075,16 +988,6 @@ handle('inapp-view', (_event, runId, bounds, visible) => {
   }
   inappRuntime.hideAll();
   return { ok: true, shown: false };
-});
-handle('adb-list-webviews', async () => {
-  try { return { ok: true, sockets: await androidBridge.listWebviewSockets(process.env.OBSERVATORY_ADB || 'adb') }; }
-  catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
-});
-handle('adb-forward-webview', async (_event, socket, localPort = 9223) => {
-  try {
-    const endpoint = await androidBridge.forwardSocket(process.env.OBSERVATORY_ADB || 'adb', localPort, String(socket));
-    return await connectExternalEndpoint(endpoint);
-  } catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }
 });
 handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 // WU7 — Protocol Test Harness IPC. Every send is target-bound and gated by the

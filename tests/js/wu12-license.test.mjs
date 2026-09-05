@@ -252,7 +252,7 @@ test('capability IPC is gated in the main process, backing the CSS lock', () => 
   assert.ok(main.includes("code: 'LICENSE_REQUIRED'"), 'gated calls are refused with LICENSE_REQUIRED');
   assert.ok(/if \(!licenseActive\(\)\) return/.test(main), 'gate denies when the license is not active');
   // Every capability channel must be registered through the gate, never raw.
-  for (const channel of ['open-browser', 'protocol-execute', 'autotest-start', 'bvalidate-start', 'replay-execute', 'ws-send', 'intercept-enable', 'cdp-connect']) {
+  for (const channel of ['open-browser', 'protocol-execute', 'autotest-start', 'bvalidate-start', 'replay-execute', 'ws-send', 'intercept-enable']) {
     assert.ok(main.includes(`handle('${channel}'`), `${channel} is registered`);
     assert.ok(!main.includes(`ipcMain.handle('${channel}'`), `${channel} is not registered raw (must go through the gate)`);
   }
@@ -260,7 +260,7 @@ test('capability IPC is gated in the main process, backing the CSS lock', () => 
   const openLine = main.match(/const LICENSE_OPEN_CHANNELS = new Set\(\[([^\]]*)\]\)/);
   assert.ok(openLine, 'an explicit open-channel allowlist exists');
   for (const channel of ['license-status', 'license-activate']) assert.ok(openLine[1].includes(`'${channel}'`), `${channel} stays open`);
-  for (const channel of ['cdp-connect', 'protocol-execute', 'autotest-start']) assert.ok(!openLine[1].includes(`'${channel}'`), `${channel} is not exempt`);
+  for (const channel of ['protocol-execute', 'autotest-start']) assert.ok(!openLine[1].includes(`'${channel}'`), `${channel} is not exempt`);
 });
 
 test('main process stores license outside ephemeral instance appData', () => {

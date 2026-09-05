@@ -62,11 +62,12 @@ test('InAppRuntime: deterministic per-B partition mapping', () => {
   assert.equal(rt.partitionFor('B-0001'), new InAppRuntime({ getHostWindow: () => null }).partitionFor('B-0001'));
 });
 
-test('main.cjs defaults to the in-app runtime and tears it down on quit', () => {
+test('main.cjs uses the in-app runtime as the ONLY browser runtime and tears it down on quit', () => {
   const main = readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
-  assert.ok(/USE_INAPP_RUNTIME = process\.env\.OBSERVATORY_LEGACY_CHROME !== '1'/.test(main), 'in-app is default; legacy behind env flag');
-  assert.ok(/createLauncher: USE_INAPP_RUNTIME \? \(run\) => inappRuntime\.launcher\(run\)/.test(main), 'launcher swapped to in-app when default');
-  assert.ok(/createTargetManager: USE_INAPP_RUNTIME \? \(_endpoint, run\) => inappRuntime\.targetManager\(run\)/.test(main), 'targetManager swapped to in-app');
+  assert.ok(/createLauncher: \(run\) => inappRuntime\.launcher\(run\)/.test(main), 'launcher is the in-app runtime (unconditional)');
+  assert.ok(/createTargetManager: \(_endpoint, run\) => inappRuntime\.targetManager\(run\)/.test(main), 'targetManager is the in-app runtime (unconditional)');
   assert.ok(/handle\('inapp-view'/.test(main), 'in-app view bounds/visibility IPC exists');
   assert.ok(/inappRuntime\.destroyAll\(\)/.test(main), 'in-app views destroyed on quit');
+  // No legacy external-Chrome runtime, flag, or screencast remains.
+  assert.ok(!/USE_INAPP_RUNTIME|OBSERVATORY_LEGACY_CHROME|ChromeLauncher|PageScreencast/.test(main), 'no legacy runtime/flag/screencast');
 });
