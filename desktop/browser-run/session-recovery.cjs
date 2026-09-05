@@ -104,12 +104,15 @@ class SessionRecoveryWatchdog extends EventEmitter {
       maxAttempts: this._cfg.maxAttempts,
       actionResultUnknown: this._actionResultUnknown,
       autoIntent: this._autoIntent,
+      // Recovery reached READY on a public endpoint but did NOT auto-resume wagering — the user
+      // must continue manually. Surfaced for the UI ("Cần tiếp tục thủ công"); not a state.
+      userActionRequired: this._userActionRequired === true,
     };
   }
 
   // Manual reset (e.g. user reloaded/logged in themselves, or config changed) — converge back to
   // a single owning evaluation rather than starting a competing loop (§39).
-  reset(reason = null) { this._transition(STATE.HEALTHY, reason); this._attempts = 0; this._recoveryStartMono = null; this._actionResultUnknown = false; }
+  reset(reason = null) { this._transition(STATE.HEALTHY, reason); this._attempts = 0; this._recoveryStartMono = null; this._actionResultUnknown = false; this._userActionRequired = false; }
 
   _transition(next, reason) {
     if (next === this._state && reason === this._reason) return;
@@ -178,7 +181,10 @@ class SessionRecoveryWatchdog extends EventEmitter {
           this._transition(STATE.READY, REASON.RECOVERY_READY);
           actions.push(ACTION.MARK_READY);
           // Resume policy: only local/test endpoints may auto-resume automation (§37).
-          if (this._autoIntent) actions.push(this._isLocal() ? ACTION.RESUME_AUTOMATION : ACTION.REQUIRE_USER_ACTION);
+          if (this._autoIntent) {
+            if (this._isLocal()) { actions.push(ACTION.RESUME_AUTOMATION); this._userActionRequired = false; }
+            else { actions.push(ACTION.REQUIRE_USER_ACTION); this._userActionRequired = true; }
+          }
           this._attempts = 0; this._actionResultUnknown = false;
           break;
         }

@@ -124,6 +124,27 @@ test('resume policy: LOCAL endpoint auto-resumes, PUBLIC endpoint requires user 
   }
 });
 
+test('snapshot.userActionRequired: true after PUBLIC recovery to READY, false for local, cleared on reset', () => {
+  const pub = mk({ local: false });
+  pub.tick(healthy(0, { wsConnected: false }));
+  pub.tick(healthy(6000, { wsConnected: false }));
+  pub.tick(healthy(6500, { wsConnected: false }));
+  pub.tick(healthy(9000, { instrumentationReady: true }));
+  pub.tick(healthy(11000, { freshAviatorSinceRecovery: true }));
+  assert.equal(pub.state(), STATE.READY);
+  assert.equal(pub.snapshot().userActionRequired, true, 'public: user must continue manually');
+  pub.reset();
+  assert.equal(pub.snapshot().userActionRequired, false, 'cleared on reset (user restarted)');
+
+  const loc = mk({ local: true });
+  loc.tick(healthy(0, { wsConnected: false }));
+  loc.tick(healthy(6000, { wsConnected: false }));
+  loc.tick(healthy(6500, { wsConnected: false }));
+  loc.tick(healthy(9000, { instrumentationReady: true }));
+  loc.tick(healthy(11000, { freshAviatorSinceRecovery: true }));
+  assert.equal(loc.snapshot().userActionRequired, false, 'local: auto-resumed, no manual flag');
+});
+
 test('in-flight BET/CASHOUT with unresolved ACK stays UNKNOWN — never auto-resent', () => {
   const w = mk({ local: true });
   w.tick(healthy(0, { wsConnected: false, inflightAckPending: true }));

@@ -1495,12 +1495,33 @@ renderActions();
   let selectedBrowserId = null;
   const f2 = (n) => (n == null || !Number.isFinite(Number(n))) ? null : Number(n).toFixed(2);
 
+  // Phase 4 — map the AUTHORITATIVE per-run SessionRecoveryWatchdog state (from main) to a concise
+  // Vietnamese status. Returns null for HEALTHY/READY (normal UI) so recovery only shows when it
+  // matters. userActionRequired = public recovery reached READY but wagering was not auto-resumed.
+  function recoveryBadge(rec) {
+    if (!rec) return null;
+    if (rec.userActionRequired) return { cls: 'recover-user', text: 'Cần tiếp tục thủ công' };
+    switch (rec.state) {
+      case 'SUSPECT':
+      case 'VERIFYING': return { cls: 'recover-check', text: 'Đang kiểm tra kết nối' };
+      case 'RECOVERING':
+      case 'WAITING_PAGE': return { cls: 'recover', text: 'Đang khôi phục' };
+      case 'WAITING_AVIATOR': return { cls: 'recover', text: 'Đang vào lại game' };
+      case 'LOGIN_REQUIRED': return { cls: 'recover-login', text: 'Cần đăng nhập' };
+      case 'RECOVERY_FAILED': return { cls: 'recover-fail', text: 'Khôi phục thất bại' };
+      default: return null; // HEALTHY / READY → normal browser/game status
+    }
+  }
   // Normalized, source-real badge → Vietnamese user state (§21). Đã đóng and Tự động
   // are the most visible.
   function badge(b) {
     if (!b.online) return { cls: 'disconnected', text: 'Đã đóng' };
     if (b.runtimeStatus === 'ERROR') return { cls: 'error', text: 'Lỗi' };
     if (b.runtimeStatus === 'DISCONNECTED') return { cls: 'disconnected', text: 'Mất kết nối' };
+    // An active recovery/login/failed state takes precedence over normal running status so the
+    // user understands why the browser isn't playing normally. HEALTHY/READY → null → normal below.
+    const rb = recoveryBadge(b.recoveryState);
+    if (rb) return rb;
     // WU-D — a session terminated by the Stop-1000x kill switch is distinct from a plain stop.
     if (!b.autoRunning && b.stop1000State === 'STOPPED_1000X') return { cls: 'auto', text: 'Dừng 1000x' };
     if (b.autoRunning) return { cls: 'auto', text: 'Tự động' };

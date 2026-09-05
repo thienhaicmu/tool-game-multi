@@ -156,6 +156,31 @@ test('browser record persists the configured launch URL verbatim (path + query p
   assert.equal(reg.get(b.id).launchUrl, next, 'edited URL persisted');
 });
 
+test('Phase 4: per-run recovery state is projected to the UI and mapped to concise Vietnamese status', () => {
+  const main = read('desktop/main.cjs');
+  const mgr = read('desktop/browser-run/browser-run-manager.cjs');
+  const js = read('ui/product.js');
+  // authoritative state is projected main -> browser summary -> renderer (not re-derived in UI)
+  assert.match(mgr, /recoveryState: run\.recovery/, 'run summary carries authoritative recovery state');
+  assert.match(main, /recoveryState: rs \? rs\.recoveryState : null/, 'browser summary carries recovery state to the renderer');
+  // renderer maps each authoritative state to the required label (HEALTHY/READY -> normal UI)
+  assert.match(js, /function recoveryBadge\(rec\)/, 'renderer has a recovery->label mapper');
+  for (const [state, label] of [
+    ['VERIFYING', 'Đang kiểm tra kết nối'],
+    ['RECOVERING', 'Đang khôi phục'],
+    ['WAITING_AVIATOR', 'Đang vào lại game'],
+    ['LOGIN_REQUIRED', 'Cần đăng nhập'],
+    ['RECOVERY_FAILED', 'Khôi phục thất bại'],
+  ]) {
+    assert.ok(js.includes("'" + label + "'"), 'label present: ' + label);
+    assert.ok(js.includes(state), 'state mapped: ' + state);
+  }
+  assert.ok(js.includes('Cần tiếp tục thủ công'), 'public user-action label present');
+  assert.match(js, /userActionRequired/, 'user-action-required surfaced in UI mapping');
+  // recovery status is per-browser (fed from the per-run summary b.recoveryState), not global
+  assert.match(js, /recoveryBadge\(b\.recoveryState\)/, 'badge uses the per-browser recovery state');
+});
+
 test('showing a browser view focuses it (keyboard input works without a click) and focus can be recovered', () => {
   const src = read('desktop/browser/inapp-runtime.cjs');
   // showOnly focuses the newly-shown view (on transition), so a programmatic show grants keyboard focus.

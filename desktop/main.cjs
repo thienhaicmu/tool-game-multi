@@ -616,7 +616,11 @@ function gatherEvidence(run) {
 }
 function recoveryTick(run) {
   if (!run || !run.recovery || run.status === RUN_STATUS.CLOSED) return;
-  if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run._autoIntentLatch = true;
+  if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) {
+    run._autoIntentLatch = true;
+    // User manually restarted automation after a public "cần tiếp tục thủ công" → clear that flag.
+    try { if (run.recovery.snapshot().userActionRequired) run.recovery.reset(); } catch {}
+  }
   const ev = gatherEvidence(run);
   const { actions } = run.recovery.tick(ev);
   for (const a of actions) applyRecoveryAction(run, a, ev);
@@ -693,6 +697,8 @@ function browserSummaries() {
       stop1000Enabled: rs ? rs.stop1000Enabled : false,
       stop1000Evidence: rs ? rs.stop1000Evidence : null,
       terminationReason: rs ? rs.terminationReason : null,
+      // Part C/Phase 4 — per-run session-recovery state for the browser-centric status UI.
+      recoveryState: rs ? rs.recoveryState : null,
       error: rs ? rs.error : null,
     };
   });

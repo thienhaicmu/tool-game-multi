@@ -1,7 +1,7 @@
 {
   "name": "web-security-observatory-ui",
   "private": true,
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "Aviator round control and session automation workspace",
   "author": "Aviator Control Studio contributors",
   "type": "module",

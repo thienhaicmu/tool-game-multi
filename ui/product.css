@@ -413,6 +413,12 @@ body[data-license=checking] #run-rail, body[data-license=locked] #run-rail{ disp
 .rr-badge.wait,.rr-badge.starting{ background:var(--warn-bg); color:var(--warn); }
 .rr-badge.disconnected,.rr-badge.closed{ background:var(--elevate); color:var(--faint); }
 .rr-badge.error{ background:var(--err-bg); color:var(--err); }
+/* Phase 4 — session-recovery status (card + identity band share the badge class). */
+.rr-badge.recover-check,.wsi-state.recover-check,
+.rr-badge.recover,.wsi-state.recover,
+.rr-badge.recover-user,.wsi-state.recover-user{ background:var(--warn-bg); color:var(--warn); border-color:transparent; }
+.rr-badge.recover-login,.wsi-state.recover-login{ background:var(--info-bg); color:var(--info); border-color:transparent; }
+.rr-badge.recover-fail,.wsi-state.recover-fail{ background:var(--err-bg); color:var(--err); border-color:transparent; }
 .rr-meta{ margin-top:4px; font-size:var(--t-cap); color:var(--dim); display:flex; justify-content:space-between; gap:6px; }
 .rr-odd{ font-family:var(--f-mono); font-weight:700; color:var(--text); }
 .rr-host{ font-size:var(--t-cap); color:var(--faint); margin-top:3px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
