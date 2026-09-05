@@ -1,6 +1,10 @@
 'use strict';
 const api = window.desktopCapture || {};
 const $ = (id) => document.getElementById(id);
+// WU-E.4 — runtime mode: 'inapp' (default, native WebContentsView) or 'legacy' (external
+// Chrome + screencast, dev rollback). Controllers branch on this.
+let __runtimeMode = 'inapp';
+if (api.runtimeMode) api.runtimeMode().then((r) => { __runtimeMode = (r && r.mode) || 'inapp'; document.dispatchEvent(new CustomEvent('runtime-mode', { detail: __runtimeMode })); }).catch(() => {});
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 // WU-B: the browser run this window currently controls. It is a VIEW pointer only
@@ -1860,11 +1864,13 @@ renderActions();
     if (prev) { try { await api.screencastStop(prev); } catch (e) { /* ignore */ } }
   }
   function reconcile() {
+    if (__runtimeMode !== 'legacy') { if (activeRunId) stopMirror(); return; } // WU-E.4 — screencast only in legacy rollback
     const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
     if (viewIsOverview && runId) { if (activeRunId !== runId) { stopMirror().then(function () { startFor(runId); }); } }
     else { if (activeRunId) stopMirror(); }
   }
 
+  document.addEventListener('runtime-mode', function () { reconcile(); });
   document.addEventListener('view-changed', function (e) { viewIsOverview = e.detail && e.detail.view === 'overview'; reconcile(); });
   document.addEventListener('run-selected', function () { reconcile(); });
   if (api.onBrowsersChanged) api.onBrowsersChanged(function () { const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null; if (runId !== activeRunId) reconcile(); });
@@ -1910,4 +1916,34 @@ renderActions();
   document.addEventListener('entitlement-change', function (ev) { apply(ev.detail || {}); });
   document.addEventListener('view-changed', function () { if (typeof entitlementState !== 'undefined' && entitlementState) apply(entitlementState); });
   if (typeof entitlementState !== 'undefined' && entitlementState) apply(entitlementState);
+})();
+
+// ==================== WU-E.4 TRUE IN-APP BROWSER VIEW (Tổng quan) ====================
+// In 'inapp' mode the web/game is a native Electron WebContentsView owned by main. The
+// renderer only reports the Overview web-region bounds so main positions/shows the selected
+// run's view there (and hides all views on other tabs / when offline). Display+layout only:
+// no screencast, no input forwarding — the user interacts with the native surface directly.
+(function overviewInAppUI() {
+  if (!api.inappView) return; // preload without WU-E.4 surface — inert
+  const host = $('ov-web-host'), canvas = $('ov-canvas'), overlay = $('ov-web-overlay');
+  if (!host) return;
+  let viewIsOverview = (document.body.dataset.view || 'overview') === 'overview';
+  function bounds() { const r = host.getBoundingClientRect(); return { x: r.left, y: r.top, width: r.width, height: r.height }; }
+  function reconcile() {
+    if (__runtimeMode !== 'inapp') { api.inappView(null, null, false).catch(function () {}); return; }
+    const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
+    const show = !!(viewIsOverview && runId);
+    if (show) { if (canvas) canvas.style.display = 'none'; if (overlay) overlay.hidden = true; api.inappView(runId, bounds(), true).catch(function () {}); }
+    else { api.inappView(runId || null, null, false).catch(function () {}); }
+  }
+  let rt = null; const soon = () => { clearTimeout(rt); rt = setTimeout(reconcile, 60); };
+  document.addEventListener('runtime-mode', reconcile);
+  document.addEventListener('view-changed', function (e) { viewIsOverview = e.detail && e.detail.view === 'overview'; reconcile(); });
+  document.addEventListener('run-selected', reconcile);
+  if (api.onBrowsersChanged) api.onBrowsersChanged(soon);
+  window.addEventListener('resize', soon);
+  const main = $('shell-main'); if (main) main.addEventListener('scroll', soon, { passive: true });
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(soon).observe(host);
+  window.addEventListener('beforeunload', function () { api.inappView(null, null, false).catch(function () {}); });
+  reconcile();
 })();

@@ -9,6 +9,10 @@ const { normalizeCaptureEvent } = require('./event-contract.cjs');
 const CDP = require('chrome-remote-interface');
 const { TargetManager } = require('./cdp/target-manager.cjs');
 const { PageScreencast } = require('./cdp/screencast.cjs');
+const { InAppRuntime } = require('./browser/inapp-runtime.cjs');
+// WU-E.4 — TRUE in-app browser runtime is the DEFAULT. Set OBSERVATORY_LEGACY_CHROME=1 to
+// fall back to the external-Chrome + screencast runtime (dev rollback only).
+const USE_INAPP_RUNTIME = process.env.OBSERVATORY_LEGACY_CHROME !== '1';
 const androidBridge = require('./cdp/android-bridge.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { InteractionTracker } = require('./cdp/interaction-tracker.cjs');
@@ -175,11 +179,13 @@ function createRunLauncher(run) {
 // their persistent profiles, and the NEXT launch's Open would hand off to the phantom
 // and fail. Synchronous + best-effort so it also runs inside before-quit.
 function killAllManagedBrowsers() {
-  if (!runManager) return;
-  for (const summary of runManager.list()) {
-    const r = runManager.get(summary.id);
-    if (r && r.launcher && r.launcher.close) { try { r.launcher.close(); } catch { /* already gone */ } }
+  if (runManager) {
+    for (const summary of runManager.list()) {
+      const r = runManager.get(summary.id);
+      if (r && r.launcher && r.launcher.close) { try { r.launcher.close(); } catch { /* already gone */ } }
+    }
   }
+  try { inappRuntime.destroyAll(); } catch { /* WU-E.4 — tear down in-app views on quit */ }
 }
 // WU-E.1B — on app quit, GRACEFULLY close managed Chrome (so cookies/login flush to disk)
 // with a BOUNDED overall timeout, then force-kill any straggler. Preserves D2-001: nothing
@@ -375,6 +381,9 @@ const screencast = new PageScreencast({
   onFrame: ({ runId, data, metadata }) => { if (shell && !shell.isDestroyed()) shell.webContents.send('screencast-frame', { runId, data, metadata }); },
   onError: (err) => { if (shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', err); },
 });
+// WU-E.4 — in-app browser runtime: one persistent-partition WebContentsView per run, hosted
+// in the product window; only the selected run's view is visible. Owns the real web/game.
+const inappRuntime = new InAppRuntime({ getHostWindow: () => shell });
 
 // Shared correlator: holds RAW evidence (unredacted) for all attached targets and
 // resolves response bodies through each request's OWN target client. With multiple
@@ -539,8 +548,10 @@ function buildProtocolSubsystem(run) {
 function ensureRunManager() {
   if (runManager) return runManager;
   runManager = new BrowserRunManager({
-    createLauncher: createRunLauncher,
-    createTargetManager: (endpoint) => new TargetManager(endpoint),
+    // WU-E.4 — default to the in-app WebContentsView runtime (no external Chrome, no
+    // screencast). Legacy external Chrome + TargetManager remain behind OBSERVATORY_LEGACY_CHROME.
+    createLauncher: USE_INAPP_RUNTIME ? (run) => inappRuntime.launcher(run) : createRunLauncher,
+    createTargetManager: USE_INAPP_RUNTIME ? (_endpoint, run) => inappRuntime.targetManager(run) : (endpoint) => new TargetManager(endpoint),
     buildSubsystem: buildProtocolSubsystem,
   });
   runManager.on('run-updated', () => { broadcastRuns(); broadcastBrowsers(); });
@@ -1049,6 +1060,22 @@ handle('close-run', async (_event, runId) => { if (runManager) await runManager.
 handle('screencast-start', async (_event, runId, opts = {}) => { const r = execRun(runId); if (r.error) return r; return screencast.start(String(runId), opts || {}); });
 handle('screencast-stop', async (_event, runId) => { if (runId != null && screencast.activeRunId() !== String(runId)) return { ok: true }; return screencast.stop(); });
 handle('screencast-input', async (_event, runId, ev = {}) => { const r = execRun(runId); if (r.error) return r; return screencast.input(String(runId), ev || {}); });
+// WU-E.4 — position/show the in-app browser view for the SELECTED run inside the Overview
+// web region. Renderer reports the region bounds; main owns the native view. Display+layout
+// only — no execution ownership, no protocol. When not visible, all views are hidden so the
+// native surface never covers other product UI (tabs/dialogs/license).
+handle('runtime-mode', () => ({ mode: USE_INAPP_RUNTIME ? 'inapp' : 'legacy' }));
+handle('inapp-view', (_event, runId, bounds, visible) => {
+  if (!USE_INAPP_RUNTIME) return { ok: true, inapp: false };
+  const id = runId != null ? String(runId) : '';
+  if (visible && id && inappRuntime.has(id) && bounds && bounds.width > 0 && bounds.height > 0) {
+    inappRuntime.setBounds(id, bounds);
+    inappRuntime.showOnly(id);
+    return { ok: true, shown: true };
+  }
+  inappRuntime.hideAll();
+  return { ok: true, shown: false };
+});
 handle('adb-list-webviews', async () => {
   try { return { ok: true, sockets: await androidBridge.listWebviewSockets(process.env.OBSERVATORY_ADB || 'adb') }; }
   catch (err) { return { ok: false, error: err instanceof CdpError ? err.toJSON() : { code: 'CDP_ENDPOINT_UNAVAILABLE', message: String(err) } }; }

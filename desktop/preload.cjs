@@ -53,6 +53,10 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   browserHistory: (browserId, options) => ipcRenderer.invoke('browser-history-list', browserId, options),
   browserStats: browserId => ipcRenderer.invoke('browser-history-stats', browserId),
   onBrowserHistoryChanged: callback => ipcRenderer.on('browser-history-changed', (_event, payload) => callback(payload)),
+  // WU-E.4 — true in-app browser runtime: report the Overview web-region bounds so main
+  // positions/shows the native WebContentsView for the selected run. Display/layout only.
+  runtimeMode: () => ipcRenderer.invoke('runtime-mode'),
+  inappView: (runId, bounds, visible) => ipcRenderer.invoke('inapp-view', runId, bounds, visible),
   // WU-E.1 — embedded web mirror in Tổng quan (per-run screencast + input forwarding).
   screencastStart: (runId, opts) => ipcRenderer.invoke('screencast-start', runId, opts),
   screencastStop: runId => ipcRenderer.invoke('screencast-stop', runId),

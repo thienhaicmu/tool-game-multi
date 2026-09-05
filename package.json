@@ -1,61 +1,11 @@
 {
   "name": "web-security-observatory-ui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Aviator round control and session automation workspace",
   "author": "Aviator Control Studio contributors",
   "type": "module",
   "main": "desktop/main.cjs",
-  "scripts": {
-    "start": "electron .",
-    "dev": "electron .",
-    "test": "node --test --test-concurrency=1 \"tests/js/**/*.test.mjs\"",
-    "seal": "node tools/seal-modules.mjs",
-    "dist": "node tools/seal-modules.mjs && electron-builder --win nsis --x64",
-    "dist:dir": "node tools/seal-modules.mjs && electron-builder --win dir --x64",
-    "license:keypair": "node tools/license-generator/generate-keypair.mjs",
-    "license:generate": "node tools/license-generator/generate-license.mjs",
-    "license:generator": "electron tools/license-generator/ui-main.cjs",
-    "license:generator:dist": "electron-builder --config tools/license-generator/electron-builder.json --win nsis --x64"
-  },
-  "build": {
-    "appId": "com.websecurityobservatory.desktop",
-    "productName": "Aviator Control Studio",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "desktop/**/*",
-      "!desktop/protocol/aviator.cjs",
-      "!desktop/protocol/harness.cjs",
-      "!desktop/protocol/auto-runner.cjs",
-      "!desktop/protocol/amount-validator.cjs",
-      "!desktop/protocol/round-observer.cjs",
-      "!desktop/protocol/protocol-context.cjs",
-      "ui/**/*",
-      "package.json"
-    ],
-    "win": {
-      "icon": "build/aviator-icon.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true
-    }
-  },
-  "devDependencies": {
-    "electron": "^36.9.5",
-    "electron-builder": "^26.15.3"
-  },
   "dependencies": {
     "chrome-remote-interface": "^0.34.0"
   }
