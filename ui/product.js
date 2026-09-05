@@ -1673,7 +1673,11 @@ renderActions();
     } else {
       const r = await api.createBrowser({ name, url });
       if (r && r.error) return modalError(browserErrVi(r.error));
-      selectedBrowserId = r.browserId; closeModal();
+      closeModal();
+      // Focus the Overview on the browser we just created & opened, so its configured URL is what
+      // the user sees (not whichever browser was previously selected). select() reconciles the
+      // view pointer -> currentRunId follows this run as soon as it connects.
+      select(r.browserId);
     }
   }
   const newBtn = $('rr-new');

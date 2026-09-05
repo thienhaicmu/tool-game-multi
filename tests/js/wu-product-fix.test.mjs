@@ -76,6 +76,26 @@ test('Overview is a TWO-ROW layout (browser full width, info below) — not side
   assert.match(js, /Math\.max\(r\.top, m\.top\)/, 'browser bounds clamped to #shell-main viewport');
 });
 
+test('Overview uses a single document-scroll model so ALL lower info is reachable (no cramped inner scrollbox)', () => {
+  const css = read('ui/product.css');
+  // The content grows and the outer container scrolls; the info row takes natural height.
+  assert.match(css, /#view-overview\{[^}]*min-height:\s*100%/, 'overview grows with content (min-height, not fixed height)');
+  assert.match(css, /\.ov-layout\{[^}]*min-height:\s*100%/, 'ov-layout grows with content');
+  assert.match(css, /\.ov-side\{[^}]*overflow:\s*visible/, 'info row is in document flow (not an internal scrollbox)');
+  assert.doesNotMatch(css, /\.ov-side\{[^}]*overflow-y:\s*auto/, 'info row does not own a competing inner scroll');
+  // #shell-main is the established scroll owner.
+  assert.match(css, /#shell-main\{[^}]*overflow:\s*auto/, '#shell-main owns vertical scrolling');
+});
+
+test('creating a browser focuses the Overview on the NEW browser (configured URL is what the user sees)', () => {
+  const js = read('ui/product.js');
+  // After a successful create, submitModal selects the newly created browser so the view pointer
+  // (currentRunId) follows it — otherwise the Overview keeps showing the previously selected run.
+  const submit = js.slice(js.indexOf('async function submitModal'), js.indexOf('async function submitModal') + 1000);
+  assert.match(submit, /await api\.createBrowser/, 'create path present');
+  assert.match(submit, /select\(r\.browserId\)/, 'the new browser is selected after create');
+});
+
 // ---------------------------------------------------------------------------
 // 3a. Delete button gating (running: no delete; closed: open/edit/delete)
 // ---------------------------------------------------------------------------
@@ -114,6 +134,26 @@ test('BrowserRegistry.remove retains the on-disk profile directory', () => {
   assert.ok(fs.existsSync(b.profileDir), 'profile directory still on disk after delete');
   assert.equal(fs.readFileSync(marker, 'utf8'), 'session-token', 'profile data (cookies) preserved');
   assert.ok(!reg.get(b.id), 'record gone from registry');
+});
+
+test('browser record persists the configured launch URL verbatim (path + query preserved) and edits update it', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'wvpt-url-'));
+  const reg = new BrowserRegistry({
+    filePath: path.join(root, 'browser-registry.json'),
+    profilesRoot: path.join(root, 'browser-profiles'),
+    entitlement: () => ({ maxBrowsers: null }),
+    now: () => 1_700_000_000_000,
+  });
+  reg.load();
+  const target = 'https://v.hitclub.chat/path/deep?a=hitclub&b=2#frag';
+  const b = reg.create({ name: 'URL', launchUrl: target }).browser;
+  assert.equal(b.launchUrl, target, 'create persists the URL verbatim (query + fragment kept)');
+  assert.equal(reg.get(b.id).launchUrl, target, 'persisted + reloadable');
+  // edit to a new URL
+  const next = 'https://other.example/x?y=1';
+  const up = reg.update(b.id, { launchUrl: next });
+  assert.equal(up.browser.launchUrl, next, 'update changes the configured URL');
+  assert.equal(reg.get(b.id).launchUrl, next, 'edited URL persisted');
 });
 
 test('delete code path performs no storage/profile destruction', () => {
