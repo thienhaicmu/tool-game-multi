@@ -44,6 +44,25 @@ test('confirmed stale (silence persists past verify window) triggers exactly-onc
   assert.equal(w.attempts(), 1);
 });
 
+test('renderer failure (render-process-gone / unresponsive) is strong evidence → recovery', () => {
+  const w = mk();
+  w.tick(healthy(100000, { rendererAlive: false }));           // VERIFYING (RENDERER_STALE)
+  const r = w.tick(healthy(106000, { rendererAlive: false }));
+  assert.equal(r.state, STATE.RECOVERING);
+  assert.ok(r.actions.includes(ACTION.PAUSE_AUTOMATION));
+});
+
+test('traffic stale while genuinely RUNNING (auto) is evidence; not while idle', () => {
+  // idle (no autoIntent) with old lastAviator → NOT stale
+  const idle = mk();
+  let r = idle.tick(healthy(200000, { autoIntent: false, lastAviatorMono: 100000 }));
+  assert.equal(r.state, STATE.HEALTHY);
+  // running + no aviator beyond threshold → stale
+  const run = mk();
+  r = run.tick(healthy(200000, { autoIntent: true, observerStatus: 'RUNNING', lastAviatorMono: 100000 }));
+  assert.equal(run.reason(), 'AVIATOR_TRAFFIC_STALE');
+});
+
 test('WS close is strong evidence → verify then recover; reload used when still on host', () => {
   const w = mk();
   w.tick(healthy(100000, { wsConnected: false }));            // -> VERIFYING (WS_CLOSED)
@@ -54,11 +73,21 @@ test('WS close is strong evidence → verify then recover; reload used when stil
   assert.equal(r.state, STATE.WAITING_PAGE);
 });
 
-test('redirect away navigates to the configured URL (not a reload)', () => {
+test('a host change ALONE (legitimate redirect, game still healthy) does NOT recover', () => {
   const w = mk();
-  w.tick(healthy(100000, { onConfiguredHost: false }));       // VERIFYING (PAGE_REDIRECTED)
-  w.tick(healthy(106000, { onConfiguredHost: false }));       // RECOVERING
-  const r = w.tick(healthy(106500, { onConfiguredHost: false }));
+  // site rotated to a sibling domain but WS/game is fine → must stay HEALTHY (no false recovery)
+  let r = w.tick(healthy(100000, { onConfiguredHost: false, wsConnected: true }));
+  assert.equal(r.state, STATE.HEALTHY);
+  r = w.tick(healthy(120000, { onConfiguredHost: false, wsConnected: true }));
+  assert.equal(r.state, STATE.HEALTHY);
+  assert.deepEqual(r.actions, []);
+});
+
+test('a redirect that LOSES the game (off-host + WS down) recovers via NAVIGATE_CONFIGURED', () => {
+  const w = mk();
+  w.tick(healthy(100000, { onConfiguredHost: false, wsConnected: false }));   // VERIFYING (WS_CLOSED)
+  w.tick(healthy(106000, { onConfiguredHost: false, wsConnected: false }));   // RECOVERING
+  const r = w.tick(healthy(106500, { onConfiguredHost: false, wsConnected: false }));
   assert.ok(r.actions.includes(ACTION.NAVIGATE_CONFIGURED));
   assert.ok(!r.actions.includes(ACTION.RELOAD));
 });

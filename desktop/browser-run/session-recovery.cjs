@@ -205,7 +205,11 @@ class SessionRecoveryWatchdog extends EventEmitter {
   _detectStale(ev, now) {
     if (ev.rendererAlive === false) return REASON.RENDERER_STALE;
     if (ev.wsConnected === false) return REASON.WS_CLOSED;
-    if (ev.onConfiguredHost === false) return REASON.PAGE_REDIRECTED;
+    // NOTE: a host change alone is NOT staleness. Gambling sites legitimately redirect across
+    // sibling domains (e.g. .chat -> .bike) while the game/WS stays healthy — treating that as a
+    // "lost page" caused a false recovery in live testing. Redirects that actually lose the game
+    // are caught by WS_CLOSED / login below; onConfiguredHost is used only to choose the recovery
+    // ACTION (reload vs navigate-to-configured), never as a trigger.
     if (ev.workerLost === true) return REASON.WORKER_LOST;
     // Protocol silence ONLY counts when automation is actively expecting rounds and enough time
     // has passed that it exceeds a normal between-round pause — never on a healthy quiet gap.

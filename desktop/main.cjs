@@ -584,14 +584,21 @@ function currentRunUrl(run) {
   try { if (wc && !wc.isDestroyed()) return wc.getURL() || run._currentUrl || ''; } catch {}
   return run._currentUrl || '';
 }
-function sameHost(a, b) { try { return new URL(a).hostname === new URL(b).hostname; } catch { return false; } }
+function hostOf(u) { try { return new URL(u).hostname; } catch { return ''; } }
 function gatherEvidence(run) {
   const wc = inappRuntime.webContents(run.id);
   const alive = !!(wc && !wc.isDestroyed()) && !run._rendererGone && !run._unresponsive;
   const url = currentRunUrl(run);
+  const curHost = hostOf(url);
   const autoRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
   const autoState = (run.autoRunner && run.autoRunner.snapshot && run.autoRunner.snapshot().state) || '';
   const started = run._recoveryStartMono || null;
+  // Establish/refresh the "session host" while the game is healthy (WS up). A legitimate
+  // cross-domain redirect (site rotates .chat -> .bike) is thus recognised as the SAME game,
+  // not a lost page. onConfiguredHost is false only when we're off the last-healthy host (e.g.
+  // bounced to a login/lobby wall after losing the socket) — used only to pick the recovery action.
+  if (run._wsConnected === true && curHost) run._sessionHost = curHost;
+  const onHost = !run._sessionHost ? true : (curHost ? curHost === run._sessionHost : true);
   return {
     monoNow: perfNow(),
     autoIntent: autoRunning || run._autoIntentLatch === true,
@@ -600,7 +607,7 @@ function gatherEvidence(run) {
     lastAviatorMono: run._lastAviatorMono != null ? run._lastAviatorMono : null,
     wsConnected: run._wsConnected !== false,
     rendererAlive: alive,
-    onConfiguredHost: run.launchUrl ? (url ? sameHost(url, run.launchUrl) : true) : true,
+    onConfiguredHost: onHost,
     loginDetected: /(?:^|[\/.?#])(login|signin|sign-in|auth|dangnhap)(?:[\/.?#]|$)/i.test(url),
     instrumentationReady: started != null && run._pageLoadedMono != null && run._pageLoadedMono > started && run._wsConnected === true,
     freshAviatorSinceRecovery: started != null && run._lastAviatorMono != null && run._lastAviatorMono > started,
