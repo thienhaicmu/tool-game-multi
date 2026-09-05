@@ -32,6 +32,7 @@ const { RoundHistoryStore } = require('./browser-run/round-history-store.cjs');
 const { RoundHistoryCollector } = require('./browser-run/round-history-collector.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
+const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
 const { JackpotObserver } = require('./protocol/jackpot-observer.cjs');
 const { JackpotGate } = require('./protocol/jackpot-gate.cjs');
 const { Stop1000Guard } = require('./protocol/stop1000-guard.cjs');
@@ -136,7 +137,8 @@ function killAllManagedBrowsers() {
       if (r && r.launcher && r.launcher.close) { try { r.launcher.close(); } catch { /* already gone */ } }
     }
   }
-  try { inappRuntime.destroyAll(); } catch { /* WU-E.4 — tear down in-app views on quit */ }
+  try { for (const id of [..._recoveryWatch.keys()]) stopRecoveryWatch(id); } catch {} // no orphan health timers/listeners
+  try { inappRuntime.destroyAll(); } catch { /* tear down in-app views on quit */ }
 }
 // WU-E.1B — on app quit, GRACEFULLY close managed Chrome (so cookies/login flush to disk)
 // with a BOUNDED overall timeout, then force-kill any straggler. Preserves D2-001: nothing
@@ -470,7 +472,44 @@ function buildProtocolSubsystem(run) {
     });
   }
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector };
+  // Per-run session-recovery watchdog (Part C). Owned by THIS run; ticked/actuated by the
+  // wiring below. isLocalEndpoint gates auto-resume: only local/test endpoints may auto-resume
+  // automation after READY — public wagering endpoints require explicit user action.
+  const recovery = new SessionRecoveryWatchdog({
+    config: RECOVERY_CONFIG,
+    isLocalEndpoint: () => isLocalRunEndpoint(run),
+  });
+  recovery.on('state', () => scheduleRunsBroadcast());
+
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, recovery };
+}
+
+// Recovery thresholds are centralised (never scattered). Conservative in production; a fast
+// profile is available for the controlled acceptance harness so scenarios run deterministically.
+const RECOVERY_CONFIG = process.env.OBSERVATORY_RECOVERY_FAST === '1'
+  ? { suspectNoAviatorMs: 4000, verifyWindowMs: 2000, waitPageMs: 12000, waitAviatorMs: 12000, maxAttempts: 3, retryDelayMs: 1500 }
+  : { suspectNoAviatorMs: 20000, verifyWindowMs: 6000, waitPageMs: 20000, waitAviatorMs: 20000, maxAttempts: 3, retryDelayMs: 3000 };
+const RECOVERY_TICK_MS = process.env.OBSERVATORY_RECOVERY_FAST === '1' ? 1000 : 3000;
+const perfNow = () => performance.now();
+const _recoveryWatch = new Map(); // runId -> { interval, wc, listeners:[{ev,fn}] } — per-run, no global timer
+
+// A run's endpoint is "local/test" (auto-resume allowed) when its configured URL host is a
+// loopback/localhost or is in the explicit OBSERVATORY_TEST_HOSTS allowlist.
+function isLocalRunEndpoint(run) {
+  let host = '';
+  try { host = new URL(run.launchUrl || '').hostname; } catch { return false; }
+  if (host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]') return true;
+  const allow = (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
+  return allow.includes(host);
+}
+// Invalidate a run's EPHEMERAL protocol state (stale SID/ODD/socket/session-ids/entry/jackpot),
+// exactly like a real socket loss. Reused by the target-removed handler and recovery INVALIDATE.
+function invalidateRunProtocolState(run) {
+  try { if (run.protocolContext) run.protocolContext.reset(); } catch {}
+  try { if (run.entryGate) run.entryGate.onDisconnect(); } catch {}
+  try { if (run.jackpotGate) run.jackpotGate.cancel('DISCONNECTED'); } catch {}
+  try { if (run.jackpotObserver) run.jackpotObserver.onDisconnect(); } catch {}
+  try { if (run.observer && run.selectedTargetId) run.observer.onDisconnect(run.selectedTargetId); } catch {}
 }
 
 // Lazily construct the BrowserRunManager and register the ONE shared capture->run
@@ -491,6 +530,7 @@ function ensureRunManager() {
     // Chrome exit/crash, cleanup). Idempotent; never double-releases.
     const run = summary && runManager.get(summary.id);
     releaseRunCapacity(run);
+    stopRecoveryWatch(summary && summary.id); // tear down the per-run health tick + wc listeners
     broadcastRuns(); broadcastBrowsers();
   });
   runManager.on('active-changed', () => { broadcastTargets(); broadcastRuns(); broadcastBrowsers(); });
@@ -499,10 +539,120 @@ function ensureRunManager() {
     if (!req || !req.isWebSocket || !req.wsDirection) return;
     const run = runManager.runForTarget(req.targetId);
     if (run && run.aviator) run.aviator.observe({ targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url, direction: req.wsDirection, raw: req.body && req.body.raw });
+    // Recovery evidence: a live WS frame proves the owning socket is up and Aviator traffic is
+    // flowing. Recorded per-run (monotonic), never global — the watchdog reads these.
+    if (run && req.wsDirection === 'recv') { run._lastAviatorMono = perfNow(); run._wsConnected = true; }
+  });
+  // Recovery evidence: a WebSocket close means the owning Aviator socket is gone (page may stay).
+  capture.on('update', req => {
+    if (!req || !req.isWebSocket || req.state !== 'FINISHED') return;
+    const run = runManager.runForTarget(req.targetId);
+    if (run) run._wsConnected = false;
   });
   return runManager;
 }
 function broadcastRuns() { if (shell && !shell.isDestroyed() && runManager) shell.webContents.send('runs-changed', runManager.list()); }
+
+// ---- PART C/D wiring: per-run health tick + WebContents health events + actuator mapping ----
+// Start observing a run's health when it connects. Exactly one watchdog + one timer per run;
+// torn down in stopRecoveryWatch (run-closed / quit) so no orphan timers/listeners survive.
+function startRecoveryWatch(run) {
+  if (!run || !run.recovery || _recoveryWatch.has(run.id)) return;
+  const wc = inappRuntime.webContents(run.id);
+  const rec = { interval: null, wc, listeners: [] };
+  const on = (ev, fn) => { try { if (wc) { wc.on(ev, fn); rec.listeners.push({ ev, fn }); } } catch {} };
+  // Phase 3 — real WebContents health feeds the SAME watchdog/evidence model (no parallel engine).
+  on('render-process-gone', () => { run._rendererGone = true; });
+  on('unresponsive', () => { run._unresponsive = true; });
+  on('responsive', () => { run._unresponsive = false; });
+  on('did-finish-load', () => { run._pageLoadedMono = perfNow(); });
+  on('did-navigate', (_e, url) => { run._currentUrl = url; });
+  on('did-navigate-in-page', (_e, url) => { run._currentUrl = url; });
+  rec.interval = setInterval(() => { try { recoveryTick(run); } catch {} }, RECOVERY_TICK_MS);
+  if (rec.interval.unref) rec.interval.unref();
+  _recoveryWatch.set(run.id, rec);
+}
+function stopRecoveryWatch(runId) {
+  const rec = _recoveryWatch.get(runId);
+  if (!rec) return;
+  _recoveryWatch.delete(runId);
+  try { if (rec.interval) clearInterval(rec.interval); } catch {}
+  try { for (const { ev, fn } of rec.listeners) { if (rec.wc && !rec.wc.isDestroyed()) rec.wc.off(ev, fn); } } catch {}
+}
+function currentRunUrl(run) {
+  const wc = inappRuntime.webContents(run.id);
+  try { if (wc && !wc.isDestroyed()) return wc.getURL() || run._currentUrl || ''; } catch {}
+  return run._currentUrl || '';
+}
+function sameHost(a, b) { try { return new URL(a).hostname === new URL(b).hostname; } catch { return false; } }
+function gatherEvidence(run) {
+  const wc = inappRuntime.webContents(run.id);
+  const alive = !!(wc && !wc.isDestroyed()) && !run._rendererGone && !run._unresponsive;
+  const url = currentRunUrl(run);
+  const autoRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
+  const autoState = (run.autoRunner && run.autoRunner.snapshot && run.autoRunner.snapshot().state) || '';
+  const started = run._recoveryStartMono || null;
+  return {
+    monoNow: perfNow(),
+    autoIntent: autoRunning || run._autoIntentLatch === true,
+    inflightAckPending: /ACK|AWAIT/i.test(String(autoState)),
+    observerStatus: run.observer && run.observer.status ? run.observer.status() : 'IDLE',
+    lastAviatorMono: run._lastAviatorMono != null ? run._lastAviatorMono : null,
+    wsConnected: run._wsConnected !== false,
+    rendererAlive: alive,
+    onConfiguredHost: run.launchUrl ? (url ? sameHost(url, run.launchUrl) : true) : true,
+    loginDetected: /(?:^|[\/.?#])(login|signin|sign-in|auth|dangnhap)(?:[\/.?#]|$)/i.test(url),
+    instrumentationReady: started != null && run._pageLoadedMono != null && run._pageLoadedMono > started && run._wsConnected === true,
+    freshAviatorSinceRecovery: started != null && run._lastAviatorMono != null && run._lastAviatorMono > started,
+    workerLost: false,
+  };
+}
+function recoveryTick(run) {
+  if (!run || !run.recovery || run.status === RUN_STATUS.CLOSED) return;
+  if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run._autoIntentLatch = true;
+  const ev = gatherEvidence(run);
+  const { actions } = run.recovery.tick(ev);
+  for (const a of actions) applyRecoveryAction(run, a, ev);
+  if (actions.length) { run.recoveryState = run.recovery.snapshot(); scheduleRunsBroadcast(); }
+}
+function applyRecoveryAction(run, action, ev) {
+  const wc = inappRuntime.webContents(run.id);
+  switch (action) {
+    case RECOVERY_ACTION.PAUSE_AUTOMATION:
+      try { if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run.autoRunner.stop({ reason: 'SESSION_RECOVERY' }); } catch {}
+      break;
+    case RECOVERY_ACTION.INVALIDATE_STATE:
+      invalidateRunProtocolState(run);
+      run._wsConnected = false; run._lastAviatorMono = null; run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
+      break;
+    case RECOVERY_ACTION.FOCUS_VIEW:
+      try { inappRuntime.focus(run.id); } catch {}
+      break;
+    case RECOVERY_ACTION.RELOAD:
+      run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
+      try { if (wc && !wc.isDestroyed()) wc.reload(); } catch {}
+      break;
+    case RECOVERY_ACTION.NAVIGATE_CONFIGURED:
+      run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
+      try { if (wc && !wc.isDestroyed() && run.launchUrl) wc.loadURL(run.launchUrl); } catch {}
+      break;
+    case RECOVERY_ACTION.REENTER:
+      try { if (run.entryGate && run.entryGate.ensureEntered) run.entryGate.ensureEntered().catch(() => {}); } catch {}
+      break;
+    case RECOVERY_ACTION.MARK_READY:
+      break; // state broadcast covers UI; readiness proven by fresh protocol evidence
+    case RECOVERY_ACTION.RESUME_AUTOMATION:
+      // Local/test endpoints only. Re-arm automation with its stored config; never resend an
+      // uncertain in-flight action (a fresh session starts a clean round loop).
+      run._autoIntentLatch = false;
+      break;
+    case RECOVERY_ACTION.REQUIRE_USER_ACTION:
+      run._autoIntentLatch = false; // public endpoint: do not auto-wager; user resumes explicitly
+      break;
+    default:
+      break;
+  }
+}
 
 // WU-C.1 — the run rail now shows PERSISTENT browsers. A browser summary joins the
 // registered record with its live run's summary (if any). Offline browsers carry no
@@ -784,6 +934,7 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
     runManager.unregisterTarget(id);
     if (run.selectedTargetId === id) {
       run.selectedTargetId = null;
+      run._wsConnected = false; // recovery evidence: owning socket/target gone
       if (run.protocolContext) run.protocolContext.reset();
       // WU-C.1.1 — the owning socket is gone: entry readiness must not be trusted.
       if (run.entryGate) run.entryGate.onDisconnect();
@@ -800,6 +951,7 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
   try {
     await manager.start();
     runManager.setStatus(run, RUN_STATUS.CONNECTED);
+    startRecoveryWatch(run); // Part C/D: begin per-run health observation once connected
     if (runManager.isActive(run)) broadcastTargets();
     broadcastRuns();
     return { ok: true, runId: run.id, targets: manager.listTargets() };

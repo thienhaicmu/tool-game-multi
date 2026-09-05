@@ -136,3 +136,36 @@ test('recovery is per-run isolated instances (no shared/global state)', () => {
   assert.equal(b.state(), STATE.HEALTHY, 'B unaffected by A recovery');
   assert.notEqual(a.state(), STATE.HEALTHY);
 });
+
+// --- wiring guards (source-level): the watchdog is owned per-run, ticked on the run lifecycle,
+// fed real evidence, and mapped to actuators — never a global timer / global execution state. ---
+import { readFileSync as _rf } from 'node:fs';
+import { fileURLToPath as _f } from 'node:url';
+import path2 from 'node:path';
+const ROOT2 = path2.resolve(path2.dirname(_f(import.meta.url)), '..', '..');
+const rd2 = (p) => _rf(path2.join(ROOT2, p), 'utf8');
+
+test('wiring: watchdog is per-run, started/stopped with the run lifecycle (no orphan timers)', () => {
+  const main = rd2('desktop/main.cjs');
+  assert.match(main, /recovery = new SessionRecoveryWatchdog/, 'one watchdog per run subsystem');
+  assert.match(main, /startRecoveryWatch\(run\)/, 'health tick starts when the run connects');
+  assert.match(main, /stopRecoveryWatch\(summary && summary\.id\)/, 'tick torn down on run-closed');
+  assert.match(main, /setInterval\(\(\) => \{ try \{ recoveryTick\(run\)/, 'per-run interval (not a global loop)');
+  assert.match(main, /for \(const id of \[\.\.\._recoveryWatch\.keys\(\)\]\) stopRecoveryWatch/, 'all ticks torn down on quit');
+  const mgr = rd2('desktop/browser-run/browser-run-manager.cjs');
+  assert.match(mgr, /run\.recovery = subsystem\.recovery/, 'watchdog assigned onto the run');
+  assert.match(mgr, /recoveryState: run\.recovery/, 'recovery state exposed per-run (view-only)');
+});
+
+test('wiring: evidence + actuators mapped to the current runtime (reuse, no second engine)', () => {
+  const main = rd2('desktop/main.cjs');
+  // evidence
+  assert.match(main, /run\._lastAviatorMono = perfNow\(\)/, 'records last aviator frame time per run');
+  assert.match(main, /run\._wsConnected = false/, 'records WS close as evidence');
+  assert.match(main, /render-process-gone|unresponsive/, 'renderer health feeds the same model');
+  // actuators reuse existing mechanisms
+  assert.match(main, /run\.autoRunner\.stop\(\{ reason: 'SESSION_RECOVERY' \}\)/, 'pauses existing AutoRunner');
+  assert.match(main, /invalidateRunProtocolState\(run\)/, 'invalidates stale protocol state');
+  assert.match(main, /run\.entryGate\.ensureEntered\(\)/, 'reuses AviatorEntryGate for re-entry');
+  assert.match(main, /wc\.loadURL\(run\.launchUrl\)/, 'navigates to the configured URL when the page is lost');
+});

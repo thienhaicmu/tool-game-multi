@@ -95,6 +95,7 @@ class BrowserRunManager extends EventEmitter {
     run.jackpotObserver = subsystem.jackpotObserver || null;
     run.jackpotGate = subsystem.jackpotGate || null;
     run.stop1000 = subsystem.stop1000 || null;   // WU-D per-run Auto session kill switch
+    run.recovery = subsystem.recovery || null;    // Part C per-run session-recovery watchdog
 
     this._runs.set(id, run);
     this._order.push(id);
@@ -263,6 +264,8 @@ class BrowserRunManager extends EventEmitter {
       stop1000Enabled: !!(run.stop1000 && run.stop1000.enabled && run.stop1000.enabled()),
       stop1000Evidence: run.stop1000 && run.stop1000.evidence ? run.stop1000.evidence() : null,
       terminationReason: run.autoRunner && run.autoRunner.snapshot ? (run.autoRunner.snapshot().terminationReason || null) : null,
+      // Part C — per-run session-recovery health (view-only; ownership is structural, never the UI selection).
+      recoveryState: run.recovery && run.recovery.snapshot ? run.recovery.snapshot() : null,
       error: run.error || null,
     };
   }
