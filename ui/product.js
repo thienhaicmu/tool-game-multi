@@ -895,6 +895,31 @@ renderActions();
   const ATC = window.AutoTestConfig;
   let snap = null, env = { allowed: false, host: '' }, configValid = true, sequenceIndex = 0, sequenceRunning = false;
   let selectedDay = localTodayKey();
+  // Per-run Jackpot-gate projection (view-only). While an Auto request waits on THIS
+  // run's jackpot threshold the AutoRunner has NOT started yet (snap.running is false),
+  // so without this the panel would show "Chưa chạy" + START and look like the auto was
+  // lost on a profile switch. We read the OWNING run's authoritative gate state from the
+  // per-run summary so it survives selection changes. It never changes betting behavior.
+  let gate = { state: 'IDLE', threshold: null, jackpot: null };
+  function gateWaiting() { return gate.state === 'WAITING'; }
+  // Is the CURRENTLY-VIEWED run running or waiting on its jackpot? Row editing / add-row
+  // must key off THIS (per-run) truth — never the panel-global sequenceRunning flag, which
+  // otherwise leaks one run's "running" state onto whatever browser you switch to view.
+  function viewedActive() { const running = !!(snap && snap.running); return running || (gateWaiting() && !running); }
+  function gateThresholdNote() {
+    const t = gate.threshold != null ? Number(gate.threshold).toLocaleString() : '—';
+    const j = gate.jackpot != null ? Number(gate.jackpot).toLocaleString() : '—';
+    return `Đang chờ jackpot ≥ ${t} (hiện tại: ${j})`;
+  }
+  function applyRunsForGate(runs) {
+    const r = Array.isArray(runs) ? runs.find((x) => x && x.id === currentRunId) : null;
+    const next = r
+      ? { state: r.jackpotGateState || 'IDLE', threshold: r.jackpotThreshold, jackpot: r.currentJackpot }
+      : { state: 'IDLE', threshold: null, jackpot: null };
+    const changed = next.state !== gate.state || next.threshold !== gate.threshold || next.jackpot !== gate.jackpot;
+    gate = next;
+    if (changed && !$('at-panel').hidden) render();
+  }
 
   function testRows() { return [...document.querySelectorAll('#at-test-rows .at-test-row')]; }
   function renumberRows() { testRows().forEach((row, i) => { row.dataset.index = String(i); row.querySelector('.at-row-number').textContent = String(i + 1); }); }
@@ -1029,7 +1054,14 @@ renderActions();
   // The single Auto CTA: label/action by state (WU11.1), gated by context/env/config.
   function renderCta() {
     const running = !!(snap && snap.running);
-    const c = (window.AppShell ? window.AppShell.autoCta(snap ? snap.state : 'IDLE', running) : { action: 'start', label: '▶ BẮT ĐẦU TỰ ĐỘNG', note: '', cls: 'primary' });
+    // A jackpot-gated Auto that is WAITING is "active": the AutoRunner hasn't started
+    // (running=false) but the session is live and Stop must cancel the wait. Show a Stop
+    // CTA so a profile switch never makes it look like the auto was lost (view-only).
+    const waitingJp = gateWaiting() && !running;
+    const active = running || waitingJp;
+    const c = waitingJp
+      ? { action: 'stop', label: '■ DỪNG CHỜ JACKPOT', note: gateThresholdNote(), cls: 'danger' }
+      : (window.AppShell ? window.AppShell.autoCta(snap ? snap.state : 'IDLE', running) : { action: 'start', label: '▶ BẮT ĐẦU TỰ ĐỘNG', note: '', cls: 'primary' });
     const cta = $('at-cta');
     cta.textContent = c.label;
     cta.className = 'cta ' + c.cls;
@@ -1043,23 +1075,30 @@ renderActions();
     }
     // Disable reason (§5) — license/context/config.
     let reason = '';
-    if (!running) {
+    if (!active) {
       if (!autoLicensed) reason = '🔒 Gói của bạn chưa có tính năng Chạy tự động.';
       else if (!protoCtxReady()) reason = 'Chờ đăng nhập & vào game…';
       else if (!configValid) reason = 'Hãy sửa các ô đang báo lỗi.';
     }
-    cta.disabled = !running && reason !== '';
+    cta.disabled = !active && reason !== '';
     $('at-cta-reason').textContent = reason;
-    testRows().forEach((row) => row.querySelectorAll('input,button').forEach((el) => { el.disabled = running || sequenceRunning; }));
-    testRows().forEach((row, i) => row.classList.toggle('active', sequenceRunning && i === sequenceIndex));
+    // Disable row editing only for the run being VIEWED (per-run), not a global flag — so a
+    // background run's auto never freezes another browser's config rows.
+    testRows().forEach((row) => row.querySelectorAll('input,button').forEach((el) => { el.disabled = active; }));
+    testRows().forEach((row, i) => row.classList.toggle('active', active && sequenceRunning && i === sequenceIndex));
     // Sidebar running indicator (§8).
-    const nav = document.querySelector('#shell-nav [data-view=auto]'); if (nav) nav.classList.toggle('running', running);
+    const nav = document.querySelector('#shell-nav [data-view=auto]'); if (nav) nav.classList.toggle('running', active);
   }
 
   function render() {
     if (!snap) return;
-    setChip(snap.state);
-    const si = statusInfo(snap.state, snap.config ? snap.config.roundCount : null, snap.terminationReason);
+    // While THIS run waits on its jackpot threshold, show the wait explicitly instead of
+    // the AutoRunner's IDLE "Chưa chạy" (which reads like the auto was lost after a switch).
+    const waitingJp = gateWaiting() && !(snap && snap.running);
+    setChip(waitingJp ? 'WAITING_ROUND' : snap.state);
+    const si = waitingJp
+      ? { text: '⏳ Đang chờ Jackpot…', cls: 'st-run' }
+      : statusInfo(snap.state, snap.config ? snap.config.roundCount : null, snap.terminationReason);
     const statusEl = $('at-status');
     statusEl.textContent = si.text;
     statusEl.className = 'at-status ' + si.cls;
@@ -1139,10 +1178,13 @@ renderActions();
       render();
     }
   });
+  // Track THIS run's Jackpot-gate state from the coalesced per-run summaries so a
+  // waiting-jackpot Auto shows as running (with a Stop) even after switching profiles.
+  api.onRunsChanged && api.onRunsChanged((runs) => applyRunsForGate(runs));
 
   // Live validation as the tester types (§6). aid/eid are not inputs anymore.
   addTestRow();
-  $('at-add-row').onclick = () => { if (!sequenceRunning) { addTestRow(); validateConfigUI(); } };
+  $('at-add-row').onclick = () => { if (!viewedActive()) { addTestRow(); validateConfigUI(); } };
   // WU-C.3 — Jackpot gate config (default OFF -> unchanged Auto behavior).
   const jpWaitBox = $('at-jp-wait');
   if (jpWaitBox) jpWaitBox.onchange = () => { const cfg = $('at-jp-config'); if (cfg) cfg.hidden = !jpWaitBox.checked; };
@@ -1196,7 +1238,8 @@ renderActions();
     snap = r; render();
   }
   async function stopRun() { sequenceRunning = false; const r = await api.autotestStop(currentRunId); if (r && !r.error) { snap = r; render(); } }
-  $('at-cta').onclick = () => { (snap && snap.running) ? stopRun() : startRun(); };
+  // Stop also serves a waiting-jackpot session (autotest-stop cancels THIS run's gate).
+  $('at-cta').onclick = () => { ((snap && snap.running) || gateWaiting()) ? stopRun() : startRun(); };
 
   // WU-D — apply a browser's persisted operating config to the Auto form fields.
   async function loadBrowserConfig() {
@@ -1214,7 +1257,14 @@ renderActions();
     if (cfg.jackpotThreshold != null && $('at-jp-min')) $('at-jp-min').value = cfg.jackpotThreshold;
     if ($('at-stop1000')) $('at-stop1000').checked = !!cfg.stopAutoAt1000x;
   }
-  async function openAuto() { await refreshEnv(); await loadBrowserConfig(); try { snap = await api.autotestSnapshot(currentRunId); } catch { snap = null; } validateConfigUI(); render(); }
+  async function openAuto() {
+    await refreshEnv(); await loadBrowserConfig();
+    try { snap = await api.autotestSnapshot(currentRunId); } catch { snap = null; }
+    // Seed THIS run's jackpot-gate state so switching back to a waiting run shows the
+    // wait immediately (don't rely on the next coalesced runs push).
+    try { if (api.listRuns) applyRunsForGate(await api.listRuns()); } catch { /* ignore */ }
+    validateConfigUI(); render();
+  }
   $('at-toggle').onclick = async () => { const p = $('at-panel'); p.hidden = !p.hidden; if (!p.hidden) await openAuto(); };
   $('at-close').onclick = () => { $('at-panel').hidden = true; };
   $('at-panel').addEventListener('shell:activate', openAuto); // WU11 nav hook
