@@ -9,191 +9,170 @@
 <body>
   <header class="topbar">
     <div class="brand">Aviator <span>Analytics</span></div>
-    <div class="badge badge-passive" title="This product only observes traffic. It never sends protocol actions.">PASSIVE · OBSERVE-ONLY</div>
-    <div id="db-info" class="db-info" title="Stored in SQLite (source of truth)">DB: — rounds · — events</div>
+    <div class="badge badge-passive" title="Chỉ quan sát dữ liệu — không gửi lệnh.">CHỈ QUAN SÁT</div>
+    <div id="status-chip" class="status-chip">● Sẵn sàng</div>
     <nav class="tabs">
-      <button class="tab active" data-tab="live">LIVE</button>
-      <button class="tab" data-tab="weblog">WEB LOG</button>
-      <button class="tab" data-tab="rounds">ROUNDS</button>
-      <button class="tab" data-tab="report">REPORT</button>
-      <button class="tab" data-tab="data">DATA</button>
+      <button class="tab active" data-tab="home">HOME</button>
+      <button class="tab" data-tab="report">BÁO CÁO</button>
+      <button class="tab" data-tab="history">LỊCH SỬ</button>
+      <button class="tab" data-tab="advanced">NÂNG CAO</button>
     </nav>
   </header>
 
   <main class="layout">
     <aside class="sidebar">
-      <div class="panel-title">Browsers</div>
+      <div class="panel-title">Trình duyệt</div>
       <div id="browser-list" class="browser-list"></div>
       <form id="create-form" class="create-form">
-        <input id="create-name" type="text" placeholder="Profile name" autocomplete="off" />
+        <input id="create-name" type="text" placeholder="Tên hồ sơ" autocomplete="off" />
         <input id="create-url" type="url" placeholder="https://website…" autocomplete="off" />
-        <button type="submit">+ Add profile</button>
+        <button type="submit">+ Thêm hồ sơ</button>
         <div id="create-error" class="form-error"></div>
       </form>
     </aside>
 
-    <section class="main" id="view-live">
-      <div class="live-head">
-        <div class="live-id">
-          <div id="live-name" class="live-name">No profile selected</div>
-          <div id="live-meta" class="live-meta"></div>
+    <!-- HOME: browser-first, Control-like -->
+    <section class="main" id="view-home">
+      <div class="home-head">
+        <div>
+          <div id="home-name" class="live-name">Chưa chọn hồ sơ</div>
+          <div id="home-meta" class="live-meta"></div>
         </div>
-        <div class="live-status">
-          <span class="chip" id="chip-capture">Capture: —</span>
-          <span class="chip" id="chip-ws">WS: —</span>
+        <div class="home-actions">
+          <button id="home-open" class="btn-primary">MỞ TRÌNH DUYỆT</button>
+          <button id="home-report" class="btn-ghost">XEM BÁO CÁO ›</button>
         </div>
+      </div>
+
+      <div class="home-status">
+        <span class="chip" id="chip-web">Website: —</span>
+        <span class="chip" id="chip-capture">Thu thập: —</span>
       </div>
 
       <div class="live-metrics">
-        <div class="metric"><div class="metric-label">Current SID</div><div id="m-sid" class="metric-value">—</div></div>
-        <div class="metric"><div class="metric-label">Current ODD</div><div id="m-odd" class="metric-value">—</div></div>
-        <div class="metric"><div class="metric-label">Current Jackpot</div><div id="m-jp" class="metric-value">—</div></div>
-        <div class="metric"><div class="metric-label">Events (buffer)</div><div id="m-count" class="metric-value">0</div></div>
+        <div class="metric"><div class="metric-label">SID hiện tại</div><div id="m-sid" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">ODD hiện tại</div><div id="m-odd" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Jackpot hiện tại</div><div id="m-jp" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Số vòng đã lưu</div><div id="m-rounds" class="metric-value">0</div></div>
       </div>
 
       <div id="browser-view-slot" class="browser-view-slot">
-        <div class="slot-hint">Open a profile to load the website here. Log in and enter Aviator manually — Analytics only observes.</div>
+        <div class="slot-hint">Mở hồ sơ để tải website. Đăng nhập và vào game như bình thường — Analytics chỉ quan sát và tự động thu thập dữ liệu.</div>
       </div>
 
-      <div class="events">
-        <div class="panel-title">Recent Protocol Events <span class="muted">(last 200, in-memory)</span></div>
-        <div class="events-table-wrap">
-          <table class="events-table">
-            <thead><tr><th>Time</th><th>Dir</th><th>CMD</th><th>Type</th><th>SID</th><th>ODD</th><th>Jackpot</th></tr></thead>
-            <tbody id="events-body"></tbody>
-          </table>
-        </div>
-      </div>
+      <div id="home-recent" class="home-recent"></div>
     </section>
 
-    <section class="main hidden" id="view-rounds">
-      <div class="rounds-head">
-        <div class="panel-title">Rounds <span class="muted" id="rounds-total"></span></div>
-        <div class="rounds-pager">
-          <button id="rounds-prev">‹ Prev</button>
-          <span id="rounds-page" class="muted">—</span>
-          <button id="rounds-next">Next ›</button>
-        </div>
-      </div>
-      <div class="events-table-wrap rounds-wrap">
-        <table class="events-table">
-          <thead><tr><th>#</th><th>SID</th><th>Start</th><th>End</th><th>Duration</th><th>Max Odd</th><th>JP Open</th><th>JP End</th><th>Completeness</th></tr></thead>
-          <tbody id="rounds-body"></tbody>
-        </table>
-      </div>
-    </section>
-    <section class="main hidden" id="view-weblog">
-      <div class="filter-bar wl-filter">
-        <label>Type
-          <select id="wl-type"><option value="">All</option><option>Document</option><option>XHR</option><option>Fetch</option><option>WebSocket</option><option>Script</option><option>Stylesheet</option><option>Image</option><option>Font</option><option>Media</option><option>Other</option></select>
-        </label>
-        <label>Method <input id="wl-method" type="text" placeholder="GET…" style="width:70px" /></label>
-        <label>Status
-          <select id="wl-status"><option value="">All</option><option>2xx</option><option>3xx</option><option>4xx</option><option>5xx</option><option>Failed</option></select>
-        </label>
-        <label>Host <input id="wl-host" type="text" placeholder="host" style="width:150px" /></label>
-        <label>URL contains <input id="wl-url" type="text" placeholder="text" style="width:150px" /></label>
-        <label>WS dir
-          <select id="wl-wsdir"><option value="">Any</option><option>SEND</option><option>RECV</option></select>
-        </label>
-        <label>CMD <input id="wl-cmd" type="number" placeholder="—" style="width:80px" /></label>
-        <label class="chk"><input id="wl-hasodd" type="checkbox" /> Has ODD</label>
-        <label class="chk"><input id="wl-hasjp" type="checkbox" /> Has JP</label>
-        <button id="wl-apply">Search</button>
-      </div>
-      <div class="rounds-head">
-        <div class="panel-title">Web Log <span class="muted" id="wl-total"></span></div>
-        <div class="rounds-pager">
-          <button id="wl-prev">‹ Prev</button><span id="wl-page" class="muted">—</span><button id="wl-next">Next ›</button>
-        </div>
-      </div>
-      <div class="events-table-wrap rounds-wrap">
-        <table class="events-table">
-          <thead><tr><th>Time</th><th>Type</th><th>Method</th><th>Status</th><th>Host</th><th>URL / Path</th><th>Dur</th><th>Size</th><th>CMD</th><th>SID</th></tr></thead>
-          <tbody id="wl-body"></tbody>
-        </table>
-      </div>
-    </section>
-
+    <!-- REPORT: jackpot-first -->
     <section class="main hidden" id="view-report">
       <div class="filter-bar">
-        <label>Time
+        <label>Khoảng thời gian
           <select id="f-time">
-            <option value="">All</option>
-            <option value="15m">Last 15m</option><option value="30m">Last 30m</option>
-            <option value="1h">Last 1h</option><option value="3h">Last 3h</option><option value="6h">Last 6h</option>
-            <option value="12h">Last 12h</option><option value="24h">Last 24h</option>
-            <option value="today">Today</option><option value="7d">7 days</option><option value="30d">30 days</option>
+            <option value="">Tất cả</option>
+            <option value="1h">1 giờ</option><option value="3h">3 giờ</option><option value="6h">6 giờ</option>
+            <option value="12h">12 giờ</option><option value="24h">24 giờ</option>
+            <option value="today">Hôm nay</option><option value="7d">7 ngày</option><option value="30d">30 ngày</option>
           </select>
         </label>
-        <label>Last N
-          <select id="f-lastn"><option value="">All</option><option>10</option><option>20</option><option>50</option><option>100</option><option>200</option><option>500</option><option>1000</option><option>5000</option><option>10000</option></select>
+        <label>Số vòng gần nhất
+          <select id="f-lastn"><option value="">Tất cả</option><option>20</option><option>50</option><option>100</option><option>200</option><option>500</option><option>1000</option><option>5000</option></select>
         </label>
-        <label>Completeness
-          <select id="f-completeness"><option value="COMPLETE">Complete only</option><option value="ALL">Include partial</option></select>
-        </label>
-        <label>JP basis
-          <select id="f-jpbasis">
-            <option value="JACKPOT_AT_OPEN">At open</option><option value="JACKPOT_AT_LOCK">At lock</option>
-            <option value="JACKPOT_AT_FIRST_ODD">At first odd</option><option value="JACKPOT_AT_END">At end</option>
-            <option value="JACKPOT_MIN">Min</option><option value="JACKPOT_MAX">Max</option><option value="JACKPOT_AVG">Avg</option><option value="JACKPOT_DELTA">Delta</option>
-          </select>
-        </label>
-        <label>JP min <input id="f-jpmin" type="number" step="any" placeholder="—" /></label>
-        <label>JP max <input id="f-jpmax" type="number" step="any" placeholder="—" /></label>
-        <label>Hour <input id="f-hourfrom" type="number" min="0" max="23" placeholder="0" style="width:52px" />–<input id="f-hourto" type="number" min="0" max="23" placeholder="23" style="width:52px" /></label>
-        <button id="f-apply">Apply</button>
+        <label>Giờ <input id="f-hourfrom" type="number" min="0" max="23" placeholder="0" style="width:50px" />–<input id="f-hourto" type="number" min="0" max="23" placeholder="23" style="width:50px" /></label>
+        <span class="jp-config">
+          <label>Jackpot theo
+            <select id="f-jpbasis">
+              <option value="JACKPOT_AT_OPEN">Lúc mở vòng</option><option value="JACKPOT_AT_LOCK">Lúc khóa</option>
+              <option value="JACKPOT_AT_FIRST_ODD">ODD đầu</option><option value="JACKPOT_AT_END">Lúc kết thúc</option>
+              <option value="JACKPOT_AVG">Trung bình</option><option value="JACKPOT_MAX">Cao nhất</option><option value="JACKPOT_MIN">Thấp nhất</option><option value="JACKPOT_DELTA">Chênh lệch</option>
+            </select>
+          </label>
+        </span>
+        <button id="f-apply">Áp dụng</button>
       </div>
-
       <div class="matched-line">
-        <span id="m-matched">Matched: —</span>
-        <span id="m-candidate" class="muted">Candidate: —</span>
-        <span id="m-missing" class="muted">Missing JP basis: —</span>
-        <span id="m-browserwarn" class="warn hidden">Select one browser for streak/gap/rolling</span>
+        <span id="m-matched">Số vòng: —</span>
+        <span id="m-jpbasis" class="muted"></span>
+        <span id="m-missing" class="muted">Thiếu Jackpot: —</span>
+        <span id="m-browserwarn" class="warn hidden">Chọn một trình duyệt để xem chuỗi / khoảng cách</span>
       </div>
-
       <nav class="subtabs">
-        <button class="subtab active" data-sub="overview">Overview</button>
-        <button class="subtab" data-sub="distribution">ODD Distribution</button>
-        <button class="subtab" data-sub="timing">Timing</button>
+        <button class="subtab active" data-sub="overview">Tổng quan</button>
+        <button class="subtab" data-sub="odd">ODD</button>
         <button class="subtab" data-sub="jackpot">Jackpot</button>
-        <button class="subtab" data-sub="time">Time</button>
-        <button class="subtab" data-sub="rolling">Rolling</button>
-        <button class="subtab" data-sub="streakgap">Streaks &amp; Gaps</button>
-        <button class="subtab" data-sub="network">Network / API</button>
+        <button class="subtab" data-sub="time">Thời gian</button>
+        <button class="subtab" data-sub="timing">Tốc độ ODD</button>
+        <button class="subtab" data-sub="streakgap">Chuỗi &amp; Khoảng cách</button>
       </nav>
       <div id="analytics-panel" class="analytics-panel"></div>
     </section>
 
-    <section class="main hidden" id="view-data">
-      <div class="panel-title">Database</div>
-      <div class="cards" id="data-cards"></div>
-      <div class="section-h">Export &amp; Backup</div>
-      <div class="data-actions">
-        <button id="d-export-rounds">Export filtered rounds (CSV)</button>
-        <button id="d-export-round">Export selected round (JSON)</button>
-        <button id="d-export-raw">Export raw events (JSONL)</button>
-        <button id="d-export-weblog">Export web log (CSV)</button>
-        <button id="d-backup">Backup database</button>
+    <!-- HISTORY -->
+    <section class="main hidden" id="view-history">
+      <div class="rounds-head">
+        <div class="panel-title">Lịch sử vòng <span class="muted" id="rounds-total"></span></div>
+        <div class="rounds-pager"><button id="rounds-prev">‹ Trước</button><span id="rounds-page" class="muted">—</span><button id="rounds-next">Sau ›</button></div>
       </div>
-      <div class="muted" style="margin-top:8px">Round JSON exports the round last opened in ROUNDS. Rounds CSV / raw / web-log exports use the current REPORT / browser filter.</div>
-      <div id="data-result" class="data-result"></div>
+      <div class="events-table-wrap rounds-wrap">
+        <table class="events-table">
+          <thead><tr><th>#</th><th>Thời gian</th><th>SID</th><th>Max ODD</th><th>Jackpot mở</th><th>Jackpot kết</th><th>Thời lượng</th><th>Trạng thái</th></tr></thead>
+          <tbody id="rounds-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <!-- ADVANCED -->
+    <section class="main hidden" id="view-advanced">
+      <nav class="subtabs">
+        <button class="subtab active" data-adv="weblog">Nhật ký kỹ thuật</button>
+        <button class="subtab" data-adv="network">Mạng / API</button>
+        <button class="subtab" data-adv="data">Dữ liệu</button>
+      </nav>
+      <div id="adv-weblog" class="adv-panel">
+        <div class="filter-bar wl-filter">
+          <label>Loại
+            <select id="wl-type"><option value="">Tất cả</option><option>Document</option><option>XHR</option><option>Fetch</option><option>WebSocket</option><option>Script</option><option>Stylesheet</option><option>Image</option><option>Font</option><option>Media</option><option>Other</option></select>
+          </label>
+          <label>Method <input id="wl-method" type="text" placeholder="GET…" style="width:64px" /></label>
+          <label>Status <select id="wl-status"><option value="">Tất cả</option><option>2xx</option><option>3xx</option><option>4xx</option><option>5xx</option><option>Failed</option></select></label>
+          <label>Host <input id="wl-host" type="text" placeholder="host" style="width:130px" /></label>
+          <label>URL <input id="wl-url" type="text" placeholder="chứa…" style="width:130px" /></label>
+          <label>WS <select id="wl-wsdir"><option value="">Bất kỳ</option><option>SEND</option><option>RECV</option></select></label>
+          <label>CMD <input id="wl-cmd" type="number" placeholder="—" style="width:74px" /></label>
+          <label class="chk"><input id="wl-hasodd" type="checkbox" /> ODD</label>
+          <label class="chk"><input id="wl-hasjp" type="checkbox" /> JP</label>
+          <button id="wl-apply">Tìm</button>
+        </div>
+        <div class="rounds-head"><div class="panel-title">Nhật ký <span class="muted" id="wl-total"></span></div><div class="rounds-pager"><button id="wl-prev">‹</button><span id="wl-page" class="muted">—</span><button id="wl-next">›</button></div></div>
+        <div class="events-table-wrap rounds-wrap">
+          <table class="events-table">
+            <thead><tr><th>Thời gian</th><th>Loại</th><th>Method</th><th>Status</th><th>Host</th><th>URL</th><th>Dur</th><th>Size</th><th>CMD</th><th>SID</th></tr></thead>
+            <tbody id="wl-body"></tbody>
+          </table>
+        </div>
+      </div>
+      <div id="adv-network" class="adv-panel hidden"><div id="network-panel"></div></div>
+      <div id="adv-data" class="adv-panel hidden">
+        <div class="panel-title">Cơ sở dữ liệu</div>
+        <div class="cards" id="data-cards"></div>
+        <div class="section-h">Xuất &amp; Sao lưu</div>
+        <div class="data-actions">
+          <button id="d-export-rounds">Xuất vòng đã lọc (CSV)</button>
+          <button id="d-export-round">Xuất vòng đã chọn (JSON)</button>
+          <button id="d-export-raw">Xuất sự kiện thô (JSONL)</button>
+          <button id="d-export-weblog">Xuất nhật ký (CSV)</button>
+          <button id="d-backup">Sao lưu dữ liệu</button>
+        </div>
+        <div id="data-result" class="data-result"></div>
+      </div>
     </section>
   </main>
 
   <div id="detail-drawer" class="detail-drawer hidden">
-    <div class="detail-head">
-      <div class="detail-title" id="detail-title">Round</div>
-      <button id="detail-close">✕</button>
-    </div>
+    <div class="detail-head"><div class="detail-title" id="detail-title">Vòng</div><button id="detail-close">✕</button></div>
     <div class="detail-body" id="detail-body"></div>
   </div>
-
   <div id="weblog-drawer" class="detail-drawer hidden">
-    <div class="detail-head">
-      <div class="detail-title" id="wl-detail-title">Request</div>
-      <button id="wl-detail-close">✕</button>
-    </div>
+    <div class="detail-head"><div class="detail-title" id="wl-detail-title">Request</div><button id="wl-detail-close">✕</button></div>
     <div class="detail-body" id="wl-detail-body"></div>
   </div>
 
