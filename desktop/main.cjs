@@ -762,16 +762,48 @@ function applyRecoveryAction(run, action, ev) {
     case RECOVERY_ACTION.MARK_READY:
       break; // state broadcast covers UI; readiness proven by fresh protocol evidence
     case RECOVERY_ACTION.RESUME_AUTOMATION:
-      // Local/test endpoints only. Re-arm automation with its stored config; never resend an
-      // uncertain in-flight action (a fresh session starts a clean round loop).
-      run._autoIntentLatch = false;
+      // Local/test endpoints only. Resume the SAME paused Auto execution (same autoExecutionId +
+      // recoveryCount) through the normal AutoRunner round logic; never resend an uncertain
+      // in-flight action (a fresh generation starts a clean round loop, no immediate blind BET).
+      resumePausedAuto(run);
       break;
     case RECOVERY_ACTION.REQUIRE_USER_ACTION:
-      run._autoIntentLatch = false; // public endpoint: do not auto-wager; user resumes explicitly
+      // Public endpoint: recovery restored AVIATOR_READY but must NOT auto-wager. Preserve the
+      // paused execution (do not terminalize) and require an explicit user resume.
+      run._autoIntentLatch = false;
+      try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: 'AUTO_REQUIRE_USER_ACTION', autoExecutionId: (run.autoRunner && run.autoRunner.autoExecutionId) ? run.autoRunner.autoExecutionId() : null }); } catch { /* best effort */ }
       break;
     default:
       break;
   }
+}
+
+// Resume a SESSION_RECOVERY-paused Auto execution on an authorized LOCAL/TEST endpoint once
+// recovery has reached READY (fresh authoritative server Aviator evidence already confirmed by
+// the watchdog). Reuses AutoRunner's resumeExecutionId seam so the SAME logical execution
+// continues — no new autoExecutionId, no terminal History row for the pause, and no blind resend
+// of any in-flight wager (start() begins a clean round loop that bets only on the next authoritative
+// ROUND_OPEN via normal eligibility). Public wagering endpoints never reach here (REQUIRE_USER_ACTION).
+function resumePausedAuto(run) {
+  run._autoIntentLatch = false;
+  const ar = run && run.autoRunner;
+  if (!ar || (ar.isRunning && ar.isRunning())) return;
+  // Only a genuine recovery pause is resumable — a manual/terminal stop is not pausedForRecovery.
+  if (!(ar.pausedForRecovery && ar.pausedForRecovery())) return;
+  const execId = ar.autoExecutionId ? ar.autoExecutionId() : null;
+  if (!execId) return;
+  const cfg = run._runConfig || (ar.snapshot ? ar.snapshot().config : null);
+  if (!cfg) return;
+  const recoveryCount = ar.recoveryCount ? ar.recoveryCount() : undefined;
+  try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: 'AUTO_RESUME_REQUESTED', autoExecutionId: execId, recoveryCount }); } catch { /* best effort */ }
+  const res = ar.start(String(run.selectedTargetId || ''), cfg, { resumeExecutionId: execId, recoveryCount });
+  if (res && res.error) {
+    try { runDiag(run).log({ level: 'ERROR', category: 'RECOVERY', event: 'AUTO_RESUME_FAILED', autoExecutionId: execId, errorCode: res.error.code }); } catch { /* best effort */ }
+    return;
+  }
+  // Re-arm the Stop-1000x kill switch from the same snapshot config (parity with a normal start).
+  if (run.stop1000) run.stop1000.arm(cfg);
+  try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: 'AUTO_RESUMED', autoExecutionId: execId, recoveryCount }); } catch { /* best effort */ }
 }
 
 // WU-C.1 — the run rail now shows PERSISTENT browsers. A browser summary joins the
@@ -1455,7 +1487,14 @@ handle('autotest-start', async (_event, runId, config = {}) => {
     effectiveConfig.betDelayMaxMs = 1000;
   }
   run._runConfig = effectiveConfig;
-  const res = run.autoRunner.start(String(run.selectedTargetId || ''), effectiveConfig);
+  // Execution continuity (§11): if this run's AutoRunner is merely PAUSED for session recovery
+  // (e.g. a public endpoint that recovered to AVIATOR_READY and required a manual resume), keep
+  // the SAME logical execution identity instead of minting a new one. A fresh/terminal start is
+  // not pausedForRecovery, so it mints a new id as before.
+  const resumeOpts = (run.autoRunner.pausedForRecovery && run.autoRunner.pausedForRecovery() && run.autoRunner.autoExecutionId && run.autoRunner.autoExecutionId())
+    ? { resumeExecutionId: run.autoRunner.autoExecutionId(), recoveryCount: run.autoRunner.recoveryCount ? run.autoRunner.recoveryCount() : undefined }
+    : {};
+  const res = run.autoRunner.start(String(run.selectedTargetId || ''), effectiveConfig, resumeOpts);
   if (res.error) return res;
   // WU-D — arm the Stop-1000x session kill switch from the snapshot config. It watches
   // THIS run's authoritative odd and terminates only THIS run's Auto at >= 1000x.

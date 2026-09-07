@@ -43,6 +43,7 @@ const REASON = Object.freeze({
   RECOVERY_READY: 'RECOVERY_READY',
   RECOVERY_FAILED: 'RECOVERY_FAILED',
   FOCUS_RESTORED: 'FOCUS_RESTORED',
+  POST_LOGIN_RECOVERY: 'POST_LOGIN_RECOVERY',
 });
 
 const ACTION = Object.freeze({
@@ -201,8 +202,17 @@ class SessionRecoveryWatchdog extends EventEmitter {
         break;
       }
       case STATE.LOGIN_REQUIRED: {
-        // Do NOT loop reloads. If the user logs in and protocol returns, re-evaluate.
-        if (!ev.loginDetected && ev.onConfiguredHost && ev.freshAviatorSinceRecovery && ev.wsConnected) this._transition(STATE.HEALTHY, REASON.FRESH_TRAFFIC_CONFIRMED);
+        // Do NOT loop reloads while the wall is up. Once the user has logged in and the login
+        // wall is GONE, that alone is NOT proof Aviator is ready (§7): converge into the SAME
+        // post-page recovery pipeline (WAITING_PAGE → REENTER → WAITING_AVIATOR → READY) so this
+        // run's own socket is driven back into Aviator via entryGate.ensureEntered() and we wait
+        // for FRESH authoritative server evidence before ANY resume policy is applied (§8/§14).
+        // We do not duplicate the enter here — the state machine only requests the intent; the
+        // BrowserRun wiring performs ensureEntered() when WAITING_PAGE emits REENTER.
+        if (!ev.loginDetected && ev.onConfiguredHost) {
+          this._transition(STATE.WAITING_PAGE, REASON.POST_LOGIN_RECOVERY);
+          this._waitStart = now;
+        }
         break;
       }
       case STATE.RECOVERY_FAILED:

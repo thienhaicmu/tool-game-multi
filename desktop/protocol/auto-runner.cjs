@@ -228,16 +228,26 @@ class AutoRunner extends EventEmitter {
 
     this._config = v.config;
     this._targetId = targetId != null ? String(targetId) : null;
-    this._attempted = 0;
-    this._usedSids = new Set();
-    this._history = [];
+    const resuming = opts && opts.resumeExecutionId;
+    // Progress continuity (§2/§7): a recovery RESUME continues the SAME logical execution, so the
+    // budget-consumption counter (_attempted — consecutive non-completed rounds toward roundCount,
+    // reset on each threshold cashout, see _afterRound) and the finalized-round accounting
+    // (_history, for whole-execution completed totals) carry forward. The per-round SID dedup set
+    // also carries forward so a stale/in-flight SID that reappears after reconnect is NEVER re-bet
+    // (no replay of an unknown in-flight action, §3/§12). A genuinely NEW execution resets them.
+    // NOTE: the AutoRunner instance persists across a SESSION_RECOVERY pause, so "preserve" here
+    // simply means "do not reset on resume" — no cross-instance handoff is required.
+    this._attempted = resuming ? this._attempted : 0;
+    this._usedSids = resuming ? this._usedSids : new Set();
+    this._history = resuming ? this._history : [];
     this._active = null;
     this._running = true;
     this._terminationReason = null;
-    const resuming = opts && opts.resumeExecutionId;
     this._autoExecutionId = resuming ? String(opts.resumeExecutionId) : this._newExecId();
     this._recoveryCount = resuming && Number.isFinite(Number(opts.recoveryCount)) ? Number(opts.recoveryCount) : 0;
-    this._startedAtMs = this._wallNow();
+    // Preserve the ORIGINAL execution start time across recovery so the terminal History row spans
+    // the whole execution (§6); a fresh start stamps a new start time.
+    this._startedAtMs = (resuming && this._startedAtMs != null) ? this._startedAtMs : this._wallNow();
     this._executionFinalized = false;
     this._pausedForRecovery = false;
     this._stopReason = null;
