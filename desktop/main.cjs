@@ -147,6 +147,48 @@ function runDiag(run) {
   const base = ensureDiagnosticLog();
   return { log: (e) => { try { base.log({ browserId: run.browserId, runId: run.id, ...e }); } catch { /* best effort */ } } };
 }
+
+// ---- WU-PROFILE-DATA-LIFECYCLE, Part B: automatic 48h retention ----
+// Temporary operational evidence (History / Auto executions / diagnostics) expires after
+// exactly 48 hours by its own persisted lifecycle timestamp. Registry / config / profile
+// session storage / license are NEVER auto-expired (§14). Cleanup is GLOBAL (all browsers);
+// only explicit profile deletion is scoped to one browserId (§18).
+const RETENTION_MS = 48 * 60 * 60 * 1000;
+const RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000; // periodic sweep while the app stays open
+let _retentionTimer = null;
+let _retentionRunning = false;
+function runRetentionCleanup(reason = 'periodic') {
+  if (_retentionRunning) return; // never overlap sweeps
+  _retentionRunning = true;
+  const log = ensureDiagnosticLog();
+  const now = Date.now();
+  const summary = { reason, history: null, autoExec: null, diagnostics: null };
+  try { log.log({ level: 'INFO', category: 'APP', event: 'RETENTION_CLEANUP_STARTED', reason, maxAgeHours: 48 }); } catch { /* best effort */ }
+  try {
+    // History: only terminal round records carry endedAt, so an active/unclosed execution
+    // (never persisted until finalized) can never be removed by retention (§19/§29).
+    try { summary.history = ensureRoundHistoryStore().purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.history = { error: String(e && e.message || e) }; }
+    try { summary.autoExec = ensureAutoExecutionStore().purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.autoExec = { error: String(e && e.message || e) }; }
+    // Diagnostics purge writes NO per-record diagnostics (no cleanup recursion, §23).
+    try { summary.diagnostics = log.purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.diagnostics = { error: String(e && e.message || e) }; }
+    try {
+      if (summary.history && summary.history.deleted) log.log({ level: 'INFO', category: 'HISTORY', event: 'RETENTION_HISTORY_DELETED', deleted: summary.history.deleted, kept: summary.history.kept });
+      if (summary.autoExec && summary.autoExec.deleted) log.log({ level: 'INFO', category: 'HISTORY', event: 'RETENTION_AUTO_EXEC_DELETED', deleted: summary.autoExec.deleted });
+      if (summary.diagnostics && summary.diagnostics.dropped) log.log({ level: 'INFO', category: 'APP', event: 'RETENTION_DIAGNOSTICS_DELETED', dropped: summary.diagnostics.dropped });
+      log.log({ level: 'INFO', category: 'APP', event: 'RETENTION_CLEANUP_COMPLETED', reason });
+    } catch { /* best effort */ }
+    if (roundHistoryStore || autoExecutionStore) { try { broadcastBrowsers(); } catch { /* best effort */ } }
+  } catch (e) {
+    try { log.log({ level: 'ERROR', category: 'APP', event: 'RETENTION_CLEANUP_FAILED', message: String(e && e.message || e) }); } catch { /* best effort */ }
+  } finally { _retentionRunning = false; }
+  return summary;
+}
+function startRetentionSchedule() {
+  runRetentionCleanup('startup'); // §17/§30 — run on startup, no UI/profile selection needed
+  if (_retentionTimer) return;
+  _retentionTimer = setInterval(() => { try { runRetentionCleanup('periodic'); } catch { /* best effort */ } }, RETENTION_INTERVAL_MS);
+  if (_retentionTimer.unref) _retentionTimer.unref();
+}
 // WU-D — per-browser operating config store (Auto settings). Loaded once; a corrupt
 // file is reported (never silently overwritten). Migration runs on load.
 function ensureBrowserConfigStore() {
@@ -820,17 +862,80 @@ async function createPersistentBrowser({ name, url } = {}) {
   const opened = await openPersistentBrowser(res.browser.id);
   return { ok: opened.ok, browserId: res.browser.id, runId: opened.runId, error: opened.error };
 }
-// Delete a persistent browser record (conservative: profile dir is retained). Refuse
-// while a live run exists — Close is not Delete.
+// WU-PROFILE-DATA-LIFECYCLE, Part A — deleting a profile deletes ALL data exclusively
+// owned by it. Ordered transaction (§3/§6): finalize+dispose runtime → cancel per-run async
+// work (closeRun tears down timers/WebContentsView + releases capacity) → clear the profile's
+// Electron session storage → delete owned persistent stores → remove the Registry record LAST.
+// The Registry record is removed only after owned data is gone, so a mid-way failure never
+// leaves the record pointing at half-deleted data (§11). Scoped to exactly one browserId (§18).
 async function deletePersistentBrowser(browserId) {
+  const bid = String(browserId || '');
   ensureRunManager(); ensureBrowserRegistry();
-  if (runManager.liveRunForBrowser(String(browserId || ''))) return { ok: false, error: { code: 'BROWSER_ALREADY_RUNNING', message: 'Close the browser before deleting it.' } };
-  const res = browserRegistry.remove(String(browserId || ''));
-  // WU-D — drop the deleted identity's operating config (best-effort). History and
-  // profile directory are intentionally RETAINED (conservative WU-C.1 delete policy).
-  if (!res.error) { try { ensureBrowserConfigStore(); browserConfigStore.remove(String(browserId || '')); } catch { /* best-effort */ } }
+  const log = ensureDiagnosticLog();
+  if (!bid || !browserRegistry.get(bid)) return { ok: false, error: { code: 'BROWSER_NOT_FOUND', message: 'No such browser.' } };
+  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DELETE_REQUESTED', browserId: bid }); } catch { /* best effort */ }
+
+  // 1) Safely dispose any live runtime for this profile FIRST (§6). closeRun finalizes an
+  // active Auto execution, cancels next-BET/jackpot/recovery timers via quiesce, disposes the
+  // WebContentsView, and releases the runtime-capacity slot. Never touches another browser.
+  const liveRun = runManager.liveRunForBrowser(bid);
+  if (liveRun) {
+    try { finalizeAutoExecutionForRun(liveRun, 'RUN_CLOSED'); } catch { /* best effort */ }
+    try { await runManager.closeRun(liveRun.id); } catch { /* best effort */ }
+    try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_RUNTIME_DISPOSED', browserId: bid, runId: liveRun.id }); } catch { /* best effort */ }
+  }
+
+  // 2) Delete owned persistent data. Aggregate failures — do NOT report success while
+  // important owned data remains (§11), and do NOT remove the Registry record if it failed.
+  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_STARTED', browserId: bid }); } catch { /* best effort */ }
+  const failures = [];
+  // 2a) Electron persistent session storage for this profile (cookies/localStorage/IndexedDB/
+  // Cache/Service Workers). Cleared only AFTER the WebContents is disposed (§5). Best-effort:
+  // a storage-clear failure does not block record deletion but is reported.
+  try { await clearProfileSessionStorage(bid); } catch (e) { failures.push({ store: 'session', message: String(e && e.message || e) }); }
+  // 2b) Round history (per-browser file).
+  try { const r = ensureRoundHistoryStore().removeBrowser(bid); if (r && r.error) failures.push({ store: 'history', ...r.error }); } catch (e) { failures.push({ store: 'history', message: String(e && e.message || e) }); }
+  // 2c) Auto execution history (per-browser file).
+  try { const r = ensureAutoExecutionStore().removeBrowser(bid); if (r && r.error) failures.push({ store: 'autoExec', ...r.error }); } catch (e) { failures.push({ store: 'autoExec', message: String(e && e.message || e) }); }
+  // 2d) Diagnostics (shared store: remove only THIS browser's records, §8).
+  try { log.purgeBrowser(bid); } catch (e) { failures.push({ store: 'diagnostics', message: String(e && e.message || e) }); }
+  // 2e) Operating config (per-browser entry).
+  try { ensureBrowserConfigStore(); const r = browserConfigStore.remove(bid); if (r && r.error) failures.push({ store: 'config', ...r.error }); } catch (e) { failures.push({ store: 'config', message: String(e && e.message || e) }); }
+  // 2f) Vestigial registry profile directory (external-Chrome era). Remove if present.
+  try { removeProfileDirIfPresent(bid); } catch (e) { failures.push({ store: 'profileDir', message: String(e && e.message || e) }); }
+
+  if (failures.length) {
+    try { log.log({ level: 'ERROR', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_FAILED', browserId: bid, failures }); } catch { /* best effort */ }
+    broadcastBrowsers();
+    return { ok: false, error: { code: 'PROFILE_DATA_DELETE_FAILED', message: 'Some profile data could not be deleted.', failures } };
+  }
+
+  // 3) Remove the identity record LAST (no orphan data referencing it remains).
+  const res = browserRegistry.remove(bid);
+  if (res.error) { try { log.log({ level: 'ERROR', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_FAILED', browserId: bid, stage: 'registry', failures: [res.error] }); } catch { /* best effort */ } broadcastBrowsers(); return { ok: false, error: res.error }; }
+  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_COMPLETED', browserId: bid }); } catch { /* best effort */ }
   broadcastBrowsers();
-  return res.error ? { ok: false, error: res.error } : { ok: true, profileRetained: res.profileRetained };
+  return { ok: true, deleted: true, browserId: bid };
+}
+
+// Clear a persistent browser's Electron session storage (§5). Resolved through the SAME
+// partition the in-app runtime uses (persist:aviator-<browserId>) — no filesystem path
+// guessing. Awaits so the caller knows storage is actually gone before reporting success.
+async function clearProfileSessionStorage(browserId) {
+  const { session } = require('electron');
+  const partition = inappRuntime.partitionFor(browserId);
+  const sess = session.fromPartition(partition);
+  if (!sess) return;
+  await sess.clearStorageData(); // cookies, localStorage, IndexedDB, cache, service workers, etc.
+  try { await sess.clearCache(); } catch { /* best effort */ }
+}
+
+// Remove the registry's per-browser profile directory if it exists on disk (best-effort).
+function removeProfileDirIfPresent(browserId) {
+  const rec = browserRegistry.get(browserId);
+  const dir = rec && rec.profileDir;
+  if (!dir || !path.isAbsolute(String(dir))) return; // never delete a relative/guessed path
+  try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ }
 }
 // Persistent session store (cookies) — independent of launching Chrome, so a
 // login survives reconnects on Chrome / WebView / WebView2 / CEF alike.
@@ -1064,6 +1169,9 @@ app.whenReady().then(() => {
     callback({ path: path.join(__dirname, '..', 'ui', pathname) });
   });
   createWindow(); app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
+  // WU-PROFILE-DATA-LIFECYCLE §17/§30 — automatic 48h retention runs on startup and then
+  // periodically, independent of any UI action or selected profile.
+  try { startRetentionSchedule(); } catch { /* best effort */ }
 });
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 let _gracefulQuitDone = false;

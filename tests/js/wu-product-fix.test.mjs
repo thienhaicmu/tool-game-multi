@@ -105,9 +105,12 @@ test('delete action is offered only for a closed browser, never a running one', 
   assert.match(js, /data-open="[\s\S]{0,400}?data-del="[\s\S]{0,40}?>Xóa</, 'offline card offers open ... delete');
   // The running action row is edit + close ONLY (no delete control in that branch).
   assert.match(js, /data-edit="\$\{esc\(b\.browserId\)\}">Sửa<\/button><button class="rr-mini danger" data-close="\$\{esc\(b\.browserId\)\}">Đóng<\/button><\/div>`/, 'running card is edit + close only');
-  // A running/connected browser must be blocked from deletion at the main layer too.
+  // WU-PROFILE-DATA-LIFECYCLE §6 — deleting a profile with a live run must be SAFE: the
+  // main layer disposes the runtime (closeRun tears down timers/view + releases capacity)
+  // BEFORE deleting data, rather than refusing. (The UI still only surfaces delete on the
+  // offline card; the main-layer dispose is defensive depth.)
   const main = read('desktop/main.cjs');
-  assert.match(main, /liveRunForBrowser[\s\S]{0,90}BROWSER_ALREADY_RUNNING/, 'delete blocked while running');
+  assert.match(main, /liveRunForBrowser[\s\S]{0,400}closeRun/, 'delete safely disposes a live run before deleting');
 });
 
 // ---------------------------------------------------------------------------
@@ -222,13 +225,18 @@ test('showing a browser view focuses it (keyboard input works without a click) a
   assert.match(src, /focus\(runId\)\s*\{[\s\S]*?wc\.focus\(\)/, 'explicit focus(runId) recovery method exists');
 });
 
-test('delete code path performs no storage/profile destruction', () => {
-  const registrySrc = read('desktop/browser-run/browser-registry.cjs');
+// WU-PROFILE-DATA-LIFECYCLE §3/§4/§5 — deleting a profile now deletes ALL data it owns.
+// (This deliberately supersedes the earlier conservative "retain everything" policy.)
+test('delete code path deletes owned data (history/auto-exec/diagnostics/config) + session storage', () => {
   const mainSrc = read('desktop/main.cjs');
-  for (const src of [registrySrc, mainSrc]) {
-    assert.doesNotMatch(src, /clearStorageData/, 'no clearStorageData in delete path');
-  }
-  // deletePersistentBrowser must not recursively remove the profile directory.
-  const del = mainSrc.slice(mainSrc.indexOf('function deletePersistentBrowser'), mainSrc.indexOf('function deletePersistentBrowser') + 700);
-  assert.doesNotMatch(del, /rmSync|rmdirSync|fs\.rm\(|rimraf/, 'delete does not remove profile directory');
+  const start = mainSrc.indexOf('async function deletePersistentBrowser');
+  const del = mainSrc.slice(start, start + 4200);
+  assert.match(del, /removeBrowser\(bid\)/, 'removes per-browser history + auto-exec');
+  assert.match(del, /purgeBrowser\(bid\)/, 'removes this browser\'s diagnostic records');
+  assert.match(del, /browserConfigStore\.remove\(bid\)/, 'removes operating config');
+  assert.match(del, /clearProfileSessionStorage\(bid\)/, 'clears Electron session storage (cookies/localStorage/...)');
+  assert.match(del, /browserRegistry\.remove\(bid\)/, 'removes the identity record last');
+  // Session storage is cleared via the SAME partition the runtime uses (no path guessing).
+  assert.match(mainSrc, /clearStorageData/, 'delete clears profile session storage');
+  assert.match(mainSrc, /partitionFor\(browserId\)/, 'session resolved through the runtime partition');
 });

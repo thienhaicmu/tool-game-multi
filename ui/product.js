@@ -1664,7 +1664,7 @@ renderActions();
     listEl.querySelectorAll('[data-reload]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!x.dataset.reload || !api.reloadRun) return; const r = await api.reloadRun(x.dataset.reload); toast(r && r.ok ? 'Đang tải lại trang…' : ((r && r.error && r.error.message) || 'Không tải lại được')); }; });
     listEl.querySelectorAll('[data-close]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); const b = browsers.find((r) => r.browserId === x.dataset.close); if (b && b.runId) { try { await api.closeRun(b.runId); } catch { /* ignore */ } } }; });
     listEl.querySelectorAll('[data-edit]').forEach((x) => { x.onclick = (e) => { e.stopPropagation(); openModal('edit', browsers.find((r) => r.browserId === x.dataset.edit)); }; });
-    listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Xóa trình duyệt này? Dữ liệu hồ sơ vẫn được giữ trên đĩa.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast(browserErrVi(r.error)); }; });
+    listEl.querySelectorAll('[data-del]').forEach((x) => { x.onclick = async (e) => { e.stopPropagation(); if (!window.confirm('Xóa hồ sơ này?\nToàn bộ lịch sử, cấu hình và dữ liệu liên quan của hồ sơ này cũng sẽ bị xóa. Bạn sẽ cần đăng nhập lại nếu tạo hồ sơ mới.')) return; const r = await api.deleteBrowser(x.dataset.del); if (r && r.error) toast(browserErrVi(r.error)); }; });
   }
 
   function select(browserId) { selectedBrowserId = browserId; render(); reconcile(); }
@@ -1744,6 +1744,7 @@ renderActions();
     if (code === 'BROWSER_LIMIT_REACHED') return 'Đã đạt giới hạn số hồ sơ theo bản quyền của bạn.';
     if (code === 'BROWSER_RUNTIME_LIMIT_REACHED') return 'Đã đạt giới hạn số trình duyệt chạy đồng thời theo bản quyền.';
     if (code === 'BROWSER_ALREADY_RUNNING') return 'Trình duyệt này đang chạy.';
+    if (code === 'PROFILE_DATA_DELETE_FAILED') return 'Không thể xóa toàn bộ dữ liệu hồ sơ. Vui lòng thử lại.';
     return err.message || code || 'Đã xảy ra lỗi.';
   }
 

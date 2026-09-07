@@ -2,6 +2,7 @@
 
 const fsDefault = require('node:fs');
 const path = require('node:path');
+const { lifecycleMs } = require('./round-history-store.cjs');
 
 // ---------------------------------------------------------------------------
 // AutoExecutionHistoryStore — WU-AUTO-RUNTIME-HARDENING, Part A.
@@ -92,6 +93,46 @@ class AutoExecutionHistoryStore {
   }
 
   count(browserId) { const l = this._ensureLoaded(browserId); return l.error ? 0 : l.data.executions.length; }
+
+  // WU-PROFILE-DATA-LIFECYCLE §4 — delete ALL of a browser's Auto execution history.
+  removeBrowser(browserId) {
+    const bid = String(browserId);
+    this._cache.delete(bid); this._corrupt.delete(bid);
+    if (!this._dir) return { ok: true, removed: false };
+    try { this._fs.unlinkSync(this._fileFor(bid)); return { ok: true, removed: true }; }
+    catch (e) { if (e && e.code === 'ENOENT') return { ok: true, removed: false }; return err('AUTO_EXECUTION_HISTORY_DELETE_FAILED', String(e && e.message || e), { browserId: bid }); }
+  }
+
+  // WU-PROFILE-DATA-LIFECYCLE §15/§19 — automatic 48h retention. Persisted execution
+  // records are terminal (only written on executionFinalized), so retention never touches
+  // a live/active execution. Expiry uses endedAt (fallback startedAt); missing/invalid/
+  // future timestamps are KEPT; corrupt files skipped.
+  purgeExpired({ now = Date.now(), maxAgeMs } = {}) {
+    const cutoff = now - Number(maxAgeMs);
+    const out = { browsers: 0, deleted: 0, kept: 0, malformed: 0, files: 0 };
+    if (!this._dir || !Number.isFinite(Number(maxAgeMs))) return out;
+    let names = [];
+    try { names = this._fs.readdirSync(this._dir); } catch { return out; }
+    for (const name of names) {
+      if (!name.endsWith('.json') || name.endsWith('.tmp')) continue;
+      const bid = name.slice(0, -5);
+      const loaded = this._ensureLoaded(bid);
+      if (loaded.error) continue;
+      const data = loaded.data;
+      const before = data.executions.length;
+      const kept = [];
+      for (const r of data.executions) {
+        const ts = lifecycleMs(r.endedAt, r.startedAt);
+        if (ts == null) { out.malformed++; kept.push(r); continue; }
+        if (ts > now) { kept.push(r); continue; }
+        if (ts <= cutoff) { out.deleted++; continue; }
+        kept.push(r);
+      }
+      out.browsers++; out.kept += kept.length;
+      if (kept.length !== before) { data.executions = kept; try { this._persist(bid, data); out.files++; } catch { /* best-effort */ } }
+    }
+    return out;
+  }
 }
 
 module.exports = { AutoExecutionHistoryStore, SCHEMA_VERSION, DEFAULT_MAX_PER_BROWSER };

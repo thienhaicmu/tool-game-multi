@@ -219,6 +219,58 @@ class DiagnosticLog {
     this._size = 0;
   }
 
+  // Rewrite every diagnostic file keeping only the records for which keep(rec) is true.
+  // Unparseable lines are KEPT (never mass-dropped on a parse glitch). An emptied ARCHIVE
+  // file is unlinked; the ACTIVE file is left in place (possibly empty). Returns dropped
+  // count. This method itself writes NO diagnostic records (avoids cleanup recursion, §23).
+  _rewrite(keep) {
+    let dropped = 0;
+    if (!this._dir) return dropped;
+    const active = this.activeFile();
+    for (const file of this.files()) {
+      let raw;
+      try { raw = this._fs.readFileSync(file, 'utf8'); } catch { continue; }
+      const lines = raw.split('\n').filter((l) => l.length);
+      const kept = [];
+      for (const line of lines) {
+        let rec = null;
+        try { rec = JSON.parse(line); } catch { kept.push(line); continue; } // malformed -> keep
+        if (keep(rec)) kept.push(line); else dropped++;
+      }
+      if (kept.length === lines.length) continue; // unchanged
+      if (kept.length === 0 && file !== active) { try { this._fs.unlinkSync(file); } catch { /* best effort */ } continue; }
+      const body = kept.length ? kept.join('\n') + '\n' : '';
+      try {
+        const tmp = file + '.tmp';
+        this._fs.writeFileSync(tmp, body, 'utf8');
+        this._fs.renameSync(tmp, file);
+      } catch { /* best effort */ }
+    }
+    this._size = null; // active-file size cache is stale after rewrite
+    return dropped;
+  }
+
+  // §8 — remove only THIS browser's diagnostic records from the shared store; B2 untouched.
+  purgeBrowser(browserId) {
+    const bid = String(browserId);
+    const dropped = this._rewrite((rec) => String(rec.browserId) !== bid);
+    return { ok: true, dropped };
+  }
+
+  // §16 — automatic 48h retention. Drop records whose timestamp is at least maxAgeMs old.
+  // Missing/invalid/future timestamps are KEPT (§20). Works alongside size-based rotation.
+  purgeExpired({ now = this._now(), maxAgeMs } = {}) {
+    if (!Number.isFinite(Number(maxAgeMs))) return { ok: true, dropped: 0 };
+    const cutoff = now - Number(maxAgeMs);
+    const dropped = this._rewrite((rec) => {
+      const ms = Date.parse(rec.ts);
+      if (!Number.isFinite(ms)) return true;   // missing/invalid -> keep
+      if (ms > now) return true;                // future -> keep
+      return ms > cutoff;                       // keep only younger than maxAgeMs
+    });
+    return { ok: true, dropped };
+  }
+
   retentionPolicy() {
     return {
       directory: this._dir,
