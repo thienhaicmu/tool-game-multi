@@ -83,7 +83,9 @@ async function selectBrowser(id) {
   await api.browser.select(id);
   renderBrowsers();
   if (currentTab === 'rounds') { roundsOffset = 0; loadRounds(); }
-  else if (currentTab === 'analytics') loadAnalytics();
+  else if (currentTab === 'report') loadAnalytics();
+  else if (currentTab === 'weblog') { wlOffset = 0; loadWebLog(); }
+  else if (currentTab === 'data') loadData();
   else reportViewBounds();
   const summary = await api.live.getSummary(id);
   renderLive(summary);
@@ -128,14 +130,16 @@ function switchTab(name) {
   currentTab = name;
   for (const t of document.querySelectorAll('.tab')) t.classList.toggle('active', t.dataset.tab === name);
   $('view-live').classList.toggle('hidden', name !== 'live');
+  $('view-weblog').classList.toggle('hidden', name !== 'weblog');
   $('view-rounds').classList.toggle('hidden', name !== 'rounds');
-  $('view-analytics').classList.toggle('hidden', name !== 'analytics');
+  $('view-report').classList.toggle('hidden', name !== 'report');
   $('view-data').classList.toggle('hidden', name !== 'data');
   // Hide the native in-app view unless on LIVE so it doesn't cover tables.
   if (selectedId) api.browser.view(selectedId, { x: 0, y: 0, width: 0, height: 0 }, name === 'live');
   if (name === 'live') reportViewBounds();
+  if (name === 'weblog') loadWebLog();
   if (name === 'rounds') loadRounds();
-  if (name === 'analytics') loadAnalytics();
+  if (name === 'report') loadAnalytics();
   if (name === 'data') loadData();
 }
 
@@ -145,7 +149,10 @@ async function loadData() {
   const info = await api.db.info();
   const cards = [
     ['Schema version', info.schemaVersion], ['DB size', info.sizeBytes == null ? '—' : (info.sizeBytes / 1e6).toFixed(2) + ' MB'],
-    ['Capture sessions', info.sessions], ['Raw events', info.rawEvents], ['Rounds', info.rounds],
+    ['Capture sessions', info.sessions], ['Network requests', info.networkRequests], ['Network responses', info.networkResponses],
+    ['Response bodies', info.networkBodies], ['Body bytes', info.responseBodyBytes == null ? '—' : (info.responseBodyBytes / 1e6).toFixed(2) + ' MB'],
+    ['WS connections', info.wsConnections], ['WS events', info.wsEvents],
+    ['Protocol events', info.rawEvents], ['Rounds', info.rounds],
     ['ODD samples', info.oddSamples], ['Jackpot samples', info.jackpotSamples],
   ];
   $('data-cards').innerHTML = cards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div><div class="c-sub">${l === 'Schema version' ? escapeHtml(info.dbPath) : ''}</div></div>`).join('');
@@ -156,6 +163,7 @@ function dataResult(r, kind) {
   if (kind === 'csv') $('data-result').textContent = `Exported ${r.rows} rounds → ${r.path}`;
   else if (kind === 'json') $('data-result').textContent = `Exported round ${r.roundId} → ${r.path}`;
   else if (kind === 'jsonl') $('data-result').textContent = `Exported ${r.lines} raw events → ${r.path}`;
+  else if (kind === 'weblog') $('data-result').textContent = `Exported ${r.rows} web-log rows → ${r.path}`;
   else if (kind === 'backup') $('data-result').textContent = `Backup written → ${r.path}\nintegrity_check = ${r.integrity}`;
 }
 $('d-export-rounds').addEventListener('click', async () => dataResult(await api.export.rounds(buildFilter()), 'csv'));
@@ -164,6 +172,7 @@ $('d-export-round').addEventListener('click', async () => {
   dataResult(await api.export.roundDetail(lastOpenedRoundId), 'json');
 });
 $('d-export-raw').addEventListener('click', async () => dataResult(await api.export.rawEvents({ browserId: selectedId || null }), 'jsonl'));
+$('d-export-weblog').addEventListener('click', async () => dataResult(await api.export.webLog({ browserId: selectedId || null }), 'weblog'));
 $('d-backup').addEventListener('click', async () => dataResult(await api.backup.database(), 'backup'));
 
 // ---------------- rounds ----------------
@@ -304,6 +313,7 @@ async function renderAnalytics() {
     if (currentSub === 'time') return renderTime(await api.stats.hourly(filter));
     if (currentSub === 'rolling') return renderRolling(await api.stats.rolling(filter, 2, 100));
     if (currentSub === 'streakgap') return renderStreakGap(await api.stats.streaks(filter), await api.stats.gaps(filter));
+    if (currentSub === 'network') return renderNetworkReport(await api.network.overview(netFilter()), await api.network.endpoints(netFilter()), await api.network.hosts(netFilter()));
   } catch (e) { panel.innerHTML = `<div class="disabled-note">Query failed: ${escapeHtml(String(e))}</div>`; }
 }
 
@@ -399,6 +409,125 @@ function renderStreakGap(streaks, gaps) {
 
 function disabledNote(r) { $('analytics-panel').innerHTML = `<div class="disabled-note">${escapeHtml(r.message || 'Unavailable')}</div>`; }
 function bail(r) { $('analytics-panel').innerHTML = `<div class="disabled-note">${escapeHtml((r.error && r.error.message) || 'Query error')}</div>`; }
+
+// ---------------- network report (REPORT › Network/API) ----------------
+function netFilter() {
+  const f = buildFilter();
+  return { browserId: f.browserId || null, timeFromMs: f.timeFromMs != null ? f.timeFromMs : null, timeToMs: f.timeToMs != null ? f.timeToMs : null };
+}
+function renderNetworkReport(ov, eps, hosts) {
+  if (ov.error) return bail(ov);
+  setMatched({ matchedRounds: ov.totalRequests, totalCandidateRounds: ov.totalRequests, missingJackpotBasis: 0, jackpotBasis: '' });
+  $('m-matched').textContent = `Requests: ${ov.totalRequests}`;
+  $('m-candidate').textContent = `WS frames: ${ov.wsFrames}`;
+  $('m-missing').textContent = '';
+  const cards = [
+    ['Total requests', ov.totalRequests], ['Req / min', ov.requestsPerMinute == null ? '—' : ov.requestsPerMinute.toFixed(1)],
+    ['XHR', ov.xhrCount], ['Fetch', ov.fetchCount], ['Documents', ov.documentCount],
+    ['WS SEND (website)', ov.wsSendCount], ['WS RECV', ov.wsRecvCount],
+    ['2xx', ov.status['2xx']], ['4xx', ov.status['4xx']], ['5xx', ov.status['5xx']], ['Failed', ov.status.failed],
+    ['Median dur', ov.durationMedianMs == null ? '—' : Math.round(ov.durationMedianMs) + 'ms'], ['P95 dur', ov.durationP95Ms == null ? '—' : Math.round(ov.durationP95Ms) + 'ms'],
+  ];
+  let html = '<div class="section-h">Observed network activity</div><div class="cards">' + cards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('') + '</div>';
+  html += '<div class="section-h">Top endpoints</div><table class="atable"><thead><tr><th>Endpoint</th><th>Count</th><th>2xx-3xx</th><th>4xx</th><th>5xx</th><th>Failed</th><th>Median</th><th>P95</th></tr></thead><tbody>';
+  for (const e of (eps.endpoints || [])) html += `<tr><td>${escapeHtml(e.key)}</td><td>${e.count}</td><td>${e.success}</td><td>${e.c4xx}</td><td>${e.c5xx}</td><td>${e.failures}</td><td>${e.medianDurationMs == null ? '—' : Math.round(e.medianDurationMs) + 'ms'}</td><td>${e.p95DurationMs == null ? '—' : Math.round(e.p95DurationMs) + 'ms'}</td></tr>`;
+  html += '</tbody></table>';
+  html += '<div class="section-h">Top hosts</div><table class="atable"><thead><tr><th>Host</th><th>Requests</th><th>XHR/Fetch</th><th>Errors</th><th>Mean dur</th></tr></thead><tbody>';
+  for (const h of (hosts.hosts || [])) html += `<tr><td>${escapeHtml(h.host)}</td><td>${h.requestCount}</td><td>${h.xhrFetchCount}</td><td>${h.errorCount}</td><td>${h.meanDurationMs == null ? '—' : Math.round(h.meanDurationMs) + 'ms'}</td></tr>`;
+  html += '</tbody></table>';
+  $('analytics-panel').innerHTML = html;
+}
+
+// ---------------- WEB LOG ----------------
+const WL_PAGE = 100;
+let wlOffset = 0, wlTotal = 0;
+function wlFilter() {
+  const f = { browserId: selectedId || null };
+  if ($('wl-type').value) f.resourceType = $('wl-type').value;
+  const m = $('wl-method').value.trim(); if (m) f.method = m;
+  if ($('wl-status').value) f.statusFamily = $('wl-status').value;
+  const host = $('wl-host').value.trim(); if (host) f.host = host;
+  const url = $('wl-url').value.trim(); if (url) f.urlContains = url;
+  if ($('wl-wsdir').value) f.wsDirection = $('wl-wsdir').value;
+  const cmd = $('wl-cmd').value.trim(); if (cmd) f.cmd = Number(cmd);
+  if ($('wl-hasodd').checked) f.hasOdd = true;
+  if ($('wl-hasjp').checked) f.hasJackpot = true;
+  return f;
+}
+async function loadWebLog() {
+  const res = await api.webLog.query(wlFilter(), { limit: WL_PAGE, offset: wlOffset });
+  wlTotal = res.total || 0;
+  renderWebLog(res.rows || []);
+  $('wl-total').textContent = `(${wlTotal})`;
+  const from = wlTotal === 0 ? 0 : wlOffset + 1, to = Math.min(wlOffset + WL_PAGE, wlTotal);
+  $('wl-page').textContent = `${from}–${to}`;
+  $('wl-prev').disabled = wlOffset <= 0;
+  $('wl-next').disabled = wlOffset + WL_PAGE >= wlTotal;
+}
+function shortUrl(u, host) { if (!u) return '—'; try { const x = new URL(u); return x.pathname + (x.search ? x.search.slice(0, 24) : ''); } catch { return u.slice(0, 60); } }
+function renderWebLog(rows) {
+  const body = $('wl-body');
+  body.innerHTML = '';
+  if (!rows.length) { body.innerHTML = '<tr><td colspan="10" class="muted" style="padding:12px">No captured traffic for this filter.</td></tr>'; return; }
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    const typeCls = r.kind === 'WS' ? 'dir-' + (r.direction || 'RECV') : '';
+    tr.innerHTML =
+      `<td>${fmtTime(tsIso(r.ts))}</td>` +
+      `<td class="${typeCls}">${escapeHtml(r.type)}${r.kind === 'WS' && r.direction === 'SEND' ? ' <span class="wsend">website</span>' : ''}</td>` +
+      `<td>${escapeHtml(r.method || '')}</td>` +
+      `<td>${r.status == null ? '' : r.status}</td>` +
+      `<td>${escapeHtml(r.host ? hostOf(r.host) : '')}</td>` +
+      `<td class="mono">${escapeHtml(shortUrl(r.url, r.host))}</td>` +
+      `<td>${r.duration == null ? '—' : Math.round(r.duration) + 'ms'}</td>` +
+      `<td>${r.size == null ? '—' : r.size}</td>` +
+      `<td>${fmtNum(r.cmd)}</td>` +
+      `<td>${fmtNum(r.sid)}</td>`;
+    tr.onclick = () => openWebLogDetail(r.kind, r.id);
+    body.appendChild(tr);
+  }
+}
+function hostOf(u) { try { return new URL(u).host; } catch { return u; } }
+$('wl-apply').addEventListener('click', () => { wlOffset = 0; loadWebLog(); });
+$('wl-prev').addEventListener('click', () => { if (wlOffset > 0) { wlOffset = Math.max(0, wlOffset - WL_PAGE); loadWebLog(); } });
+$('wl-next').addEventListener('click', () => { if (wlOffset + WL_PAGE < wlTotal) { wlOffset += WL_PAGE; loadWebLog(); } });
+$('wl-detail-close').addEventListener('click', () => $('weblog-drawer').classList.add('hidden'));
+
+async function openWebLogDetail(kind, id) {
+  const d = await api.webLog.detail(kind, id);
+  if (!d || d.error) return;
+  if (d.kind === 'WS') return renderWsDetail(d);
+  const req = d.request, resp = d.response, bodyRow = d.body;
+  $('wl-detail-title').textContent = `${req.method || ''} ${hostOf(req.url)}`;
+  let html = section('General', kv([
+    ['URL', req.url], ['Method', req.method], ['Status', resp ? (resp.status + ' ' + (resp.status_text || '')) : '—'],
+    ['Type', req.resource_type], ['Host', req.host], ['Protocol', resp ? resp.protocol : '—'],
+    ['Duration', resp && resp.duration_ms != null ? resp.duration_ms + 'ms' : '—'], ['Size', resp && resp.encoded_data_length != null ? resp.encoded_data_length : '—'],
+    ['Remote', resp ? (resp.remote_ip || '') + (resp.remote_port ? ':' + resp.remote_port : '') : '—'],
+  ]));
+  html += section('Request headers', jsonBlock(req.request_headers));
+  if (req.request_body) html += section('Request payload', preBlock(req.request_body));
+  html += section('Response headers', jsonBlock(resp ? resp.response_headers : null));
+  html += section('Response body', bodyRow ? (bodyRow.capture_status === 'CAPTURED' ? preBlock(bodyRow.body) : `<div class="muted">${escapeHtml(bodyRow.capture_status)}${bodyRow.capture_error ? ' — ' + escapeHtml(bodyRow.capture_error) : ''}${bodyRow.body_size != null ? ' (' + bodyRow.body_size + ' bytes)' : ''}</div>`) : '<div class="muted">No body record.</div>');
+  html += `<div class="muted" style="margin-top:8px">Passive evidence only — no replay / resend / edit.</div>`;
+  $('wl-detail-body').innerHTML = html;
+  $('weblog-drawer').classList.remove('hidden');
+}
+async function renderWsDetail(d) {
+  const ev = d.event, conn = d.connection;
+  $('wl-detail-title').textContent = `WS ${ev.direction}${ev.direction === 'SEND' ? ' (website)' : ''}`;
+  let html = section('WebSocket frame', kv([
+    ['Direction', ev.direction === 'SEND' ? 'WEBSITE SEND' : 'RECV (server)'], ['Time', fmtTime(tsIso(ev.timestamp_ms))],
+    ['CMD', fmtNum(ev.cmd)], ['Type', ev.event_type], ['SID', fmtNum(ev.sid)], ['ODD', ev.odd == null ? '—' : fmtOdd(ev.odd)], ['Jackpot', fmtNum(ev.jackpot)],
+    ['Payload size', ev.payload_size], ['Parse', ev.parse_status],
+  ]));
+  if (conn) html += section('Connection', kv([['URL', conn.url], ['Opened', fmtTime(tsIso(conn.opened_at_ms))], ['Closed', fmtTime(tsIso(conn.closed_at_ms))], ['SEND frames', conn.send_count], ['RECV frames', conn.recv_count]]));
+  html += section('Raw payload', preBlock(ev.payload));
+  $('wl-detail-body').innerHTML = html;
+  $('weblog-drawer').classList.remove('hidden');
+}
+function jsonBlock(jsonStr) { if (!jsonStr) return '<div class="muted">—</div>'; try { return preBlock(JSON.stringify(JSON.parse(jsonStr), null, 2)); } catch { return preBlock(jsonStr); } }
+function preBlock(text) { if (text == null) return '<div class="muted">—</div>'; let t = String(text); try { if (/^\s*[[{]/.test(t)) t = JSON.stringify(JSON.parse(t), null, 2); } catch {} return `<pre class="rawpre">${escapeHtml(t.slice(0, 20000))}</pre>`; }
 
 function tsIso(ms) { return ms == null ? null : new Date(ms).toISOString(); }
 

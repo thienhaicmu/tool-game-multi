@@ -29,8 +29,19 @@ const { AnalyticsPersistence } = require('./analytics/persistence.cjs');
 const { AnalyticsQueryEngine, normalizeFilter } = require('./analytics/query/analytics-query-engine.cjs');
 const { FilterError } = require('./analytics/query/analytics-filter.cjs');
 const exporter = require('./analytics/export/exporter.cjs');
+const { WebLogQuery, NetworkReport, normalizeNetworkFilter } = require('./analytics/query/web-log-query.cjs');
 
 const PRODUCT_NAME = 'Aviator Analytics';
+
+// ---- renderer scheme MUST be privileged, registered BEFORE app 'ready' ----
+// The renderer is served over the custom 'analytics-app' scheme. Unless the scheme
+// is registered as a standard, secure origin, its origin does NOT satisfy the page's
+// CSP `'self'`, so Chromium refuses to load analytics.css AND analytics.js — the app
+// renders unstyled (dark text on default background, native controls). Registering it
+// privileged makes 'self' match and the stylesheet + script load normally.
+protocol.registerSchemesAsPrivileged([
+  { scheme: 'analytics-app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
+]);
 
 // ---- product identity + userData isolation (distinct from Control) ----
 // Setting the app name BEFORE app-ready reroutes getPath('userData') to
@@ -50,6 +61,8 @@ let runtime = null;
 let store = null;
 let persistence = null;
 let engine = null;
+let webLog = null;
+let netReport = null;
 
 function analyticsRoot() { return path.join(ANALYTICS_USERDATA, 'analytics'); }
 
@@ -61,6 +74,8 @@ function ensureStore() {
   try { store.reconcileOnStartup(); } catch { /* reconciliation best-effort; DB still usable */ }
   persistence = new AnalyticsPersistence({ store });
   engine = new AnalyticsQueryEngine({ store });
+  webLog = new WebLogQuery({ store });
+  netReport = new NetworkReport({ store });
   return store;
 }
 
@@ -195,6 +210,24 @@ function registerIpc() {
   ipcMain.handle('analytics-stats-streaks', stat((spec) => engine.streaks(spec)));
   ipcMain.handle('analytics-stats-gaps', stat((spec) => engine.gaps(spec)));
   ipcMain.handle('analytics-stats-lastn', stat((spec) => engine.lastNSnapshot(spec)));
+
+  // ---- WEB LOG (read-only; no replay/resend/edit/intercept) ----
+  const guard = (fn) => (_e, ...args) => { ensureRuntime(); try { return fn(...args); } catch (err) { return { error: { code: 'WEBLOG_QUERY_FAILED', message: String(err && err.message || err) } }; } };
+  ipcMain.handle('analytics-weblog-query', guard((filter, page) => webLog.query(filter || {}, page || {})));
+  ipcMain.handle('analytics-weblog-detail', guard((kind, id) => webLog.detail(String(kind), id)));
+  ipcMain.handle('analytics-weblog-summary', guard((filter) => webLog.summary(filter || {})));
+  ipcMain.handle('analytics-weblog-ws-connection', guard((id) => webLog.wsConnection(id)));
+  ipcMain.handle('analytics-weblog-ws-frames', guard((id, opts) => webLog.wsFrames(id, opts || {})));
+  ipcMain.handle('analytics-net-overview', guard((filter) => netReport.overview(filter || {})));
+  ipcMain.handle('analytics-net-endpoints', guard((filter) => netReport.endpoints(filter || {})));
+  ipcMain.handle('analytics-net-hosts', guard((filter) => netReport.hosts(filter || {})));
+  ipcMain.handle('analytics-net-timeline', guard((filter, granularity) => netReport.timeline(filter || {}, typeof granularity === 'string' ? granularity : '5m')));
+  ipcMain.handle('analytics-export-weblog', async (_e, filter) => {
+    ensureRuntime();
+    const out = await chooseSave('aviator-weblog.csv', [{ name: 'CSV', extensions: ['csv'] }]);
+    if (!out) return { canceled: true };
+    try { return exporter.exportWebLogCsv(webLog, normalizeNetworkFilter(filter || {}), out); } catch (err) { return { error: { code: 'EXPORT_FAILED', message: String(err && err.message || err) } }; }
+  });
 }
 
 function clampNum(v, def, lo, hi) { const n = Number(v); if (!Number.isFinite(n)) return def; return Math.max(lo, Math.min(hi, n)); }

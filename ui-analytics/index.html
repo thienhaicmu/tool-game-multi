@@ -13,8 +13,9 @@
     <div id="db-info" class="db-info" title="Stored in SQLite (source of truth)">DB: — rounds · — events</div>
     <nav class="tabs">
       <button class="tab active" data-tab="live">LIVE</button>
+      <button class="tab" data-tab="weblog">WEB LOG</button>
       <button class="tab" data-tab="rounds">ROUNDS</button>
-      <button class="tab" data-tab="analytics">ANALYTICS</button>
+      <button class="tab" data-tab="report">REPORT</button>
       <button class="tab" data-tab="data">DATA</button>
     </nav>
   </header>
@@ -81,7 +82,40 @@
         </table>
       </div>
     </section>
-    <section class="main hidden" id="view-analytics">
+    <section class="main hidden" id="view-weblog">
+      <div class="filter-bar wl-filter">
+        <label>Type
+          <select id="wl-type"><option value="">All</option><option>Document</option><option>XHR</option><option>Fetch</option><option>WebSocket</option><option>Script</option><option>Stylesheet</option><option>Image</option><option>Font</option><option>Media</option><option>Other</option></select>
+        </label>
+        <label>Method <input id="wl-method" type="text" placeholder="GET…" style="width:70px" /></label>
+        <label>Status
+          <select id="wl-status"><option value="">All</option><option>2xx</option><option>3xx</option><option>4xx</option><option>5xx</option><option>Failed</option></select>
+        </label>
+        <label>Host <input id="wl-host" type="text" placeholder="host" style="width:150px" /></label>
+        <label>URL contains <input id="wl-url" type="text" placeholder="text" style="width:150px" /></label>
+        <label>WS dir
+          <select id="wl-wsdir"><option value="">Any</option><option>SEND</option><option>RECV</option></select>
+        </label>
+        <label>CMD <input id="wl-cmd" type="number" placeholder="—" style="width:80px" /></label>
+        <label class="chk"><input id="wl-hasodd" type="checkbox" /> Has ODD</label>
+        <label class="chk"><input id="wl-hasjp" type="checkbox" /> Has JP</label>
+        <button id="wl-apply">Search</button>
+      </div>
+      <div class="rounds-head">
+        <div class="panel-title">Web Log <span class="muted" id="wl-total"></span></div>
+        <div class="rounds-pager">
+          <button id="wl-prev">‹ Prev</button><span id="wl-page" class="muted">—</span><button id="wl-next">Next ›</button>
+        </div>
+      </div>
+      <div class="events-table-wrap rounds-wrap">
+        <table class="events-table">
+          <thead><tr><th>Time</th><th>Type</th><th>Method</th><th>Status</th><th>Host</th><th>URL / Path</th><th>Dur</th><th>Size</th><th>CMD</th><th>SID</th></tr></thead>
+          <tbody id="wl-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="main hidden" id="view-report">
       <div class="filter-bar">
         <label>Time
           <select id="f-time">
@@ -126,6 +160,7 @@
         <button class="subtab" data-sub="time">Time</button>
         <button class="subtab" data-sub="rolling">Rolling</button>
         <button class="subtab" data-sub="streakgap">Streaks &amp; Gaps</button>
+        <button class="subtab" data-sub="network">Network / API</button>
       </nav>
       <div id="analytics-panel" class="analytics-panel"></div>
     </section>
@@ -138,9 +173,10 @@
         <button id="d-export-rounds">Export filtered rounds (CSV)</button>
         <button id="d-export-round">Export selected round (JSON)</button>
         <button id="d-export-raw">Export raw events (JSONL)</button>
+        <button id="d-export-weblog">Export web log (CSV)</button>
         <button id="d-backup">Backup database</button>
       </div>
-      <div class="muted" style="margin-top:8px">Round JSON exports the round last opened in ROUNDS. Rounds CSV / raw export use the current ANALYTICS filter (browser + filters).</div>
+      <div class="muted" style="margin-top:8px">Round JSON exports the round last opened in ROUNDS. Rounds CSV / raw / web-log exports use the current REPORT / browser filter.</div>
       <div id="data-result" class="data-result"></div>
     </section>
   </main>
@@ -151,6 +187,14 @@
       <button id="detail-close">✕</button>
     </div>
     <div class="detail-body" id="detail-body"></div>
+  </div>
+
+  <div id="weblog-drawer" class="detail-drawer hidden">
+    <div class="detail-head">
+      <div class="detail-title" id="wl-detail-title">Request</div>
+      <button id="wl-detail-close">✕</button>
+    </div>
+    <div class="detail-body" id="wl-detail-body"></div>
   </div>
 
   <script src="analytics.js"></script>

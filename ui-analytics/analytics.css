@@ -138,6 +138,11 @@ body { display: flex; flex-direction: column; }
 .sg-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
 .section-h { font-size: 12px; font-weight: 700; margin: 4px 0 8px; color: var(--text); }
 .disabled-note { color: var(--send); padding: 20px; text-align: center; }
+.wl-filter label.chk { flex-direction: row; align-items: center; gap: 4px; color: var(--text); }
+.mono { font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; }
+.wsend { color: var(--send); font-size: 10px; font-weight: 700; }
+.rawpre { background: #0a0e12; border: 1px solid var(--line); border-radius: 6px; padding: 8px; overflow: auto;
+  max-height: 340px; font-family: "Cascadia Code", Consolas, monospace; font-size: 11px; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .data-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .data-actions button { background: var(--panel-2); border: 1px solid var(--accent); color: var(--text);
   padding: 9px 14px; border-radius: 8px; cursor: pointer; font-weight: 600; }
