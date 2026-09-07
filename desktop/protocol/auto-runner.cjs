@@ -147,6 +147,9 @@ class AutoRunner extends EventEmitter {
     // Part E — pending delayed-bet handle (one per BrowserRun; never global).
     this._pendingBet = null;
     this._betScheduleSeq = 0;
+    // Stop-1000x take-profit: when set, the session terminates (with this reason) as soon
+    // as the in-flight 1000x cashout resolves — instead of continuing to the next round.
+    this._pendingStopMeta = null;
     // WU-D: how the LAST session terminated — kept distinct so a Stop-1000x kill
     // switch, a manual Stop and a normal N-round completion are never confused.
     this._terminationReason = null;
@@ -279,6 +282,35 @@ class AutoRunner extends EventEmitter {
     }
     this._emit();
     return { ok: true, state: this._state };
+  }
+
+  // Stop-1000x TAKE-PROFIT stop. Unlike a plain stop(), if the current round still has an
+  // OPEN server-accepted bet (not yet cashed out), this CASHES IT OUT at the 1000x odd to
+  // secure the win, and terminates the session only once that cashout resolves — recording
+  // its authoritative result (ACK -> WIN, timeout/failure -> UNKNOWN; never fabricated).
+  // If the round was already cashed out at stopOdd (or we are between rounds), there is
+  // nothing to close, so this is a plain terminal stop (no wager sent). Exactly-once: the
+  // guard's fired-latch + the _cashoutSent flag prevent any duplicate cashout.
+  stopAt1000x(meta = {}) {
+    if (!this._running) return { error: { code: 'AUTO_TEST_NOT_RUNNING', message: 'No test run is active' } };
+    const reason = 'STOPPED_1000X_REACHED';
+    const r = this._active;
+    const cur = this._observer && this._observer.currentRound ? this._observer.currentRound() : null;
+    const openBet = r && r.betResult === 'ACK' && !r._cashoutSent && r.result == null
+      && cur && String(cur.sid) === String(r.sid) && cur.currentOdd != null;
+    if (openBet) {
+      // Arm the terminal-after-cashout latch, then send the cashout at the authoritative odd.
+      this._pendingStopMeta = { reason, errorCode: (meta && meta.errorCode) || null };
+      r._cashoutSent = true;
+      r.triggerOdd = cur.currentOdd;                 // authoritative 1000x odd that triggered (§16)
+      r.triggerAtMono = this._now();
+      this._diagLog('WARN', 'CASHOUT', 'STOP_1000X_CASHOUT', { sid: r.sid, odd: r.triggerOdd });
+      this._state = STATE.CASHOUT_SENDING; this._emit();
+      this._sendCashout(r);
+      return { ok: true, cashout: true };
+    }
+    // No open bet to secure → plain terminal stop (also cancels any pending next-round bet).
+    return this.stop({ reason, errorCode: meta && meta.errorCode });
   }
 
   // Public terminal finalize for host-driven terminal conditions the runner can't
@@ -596,6 +628,18 @@ class AutoRunner extends EventEmitter {
   }
 
   _afterRound(result) {
+    // Stop-1000x take-profit: the 1000x cashout just resolved (with `result`). Terminate the
+    // session now instead of continuing — the round's own authoritative result is already
+    // recorded by _finalize; the session closes with the STOP_1000X reason + stopOdd.
+    if (this._pendingStopMeta) {
+      const meta = this._pendingStopMeta; this._pendingStopMeta = null;
+      this._running = false;
+      this._terminationReason = meta.reason;
+      this._state = STATE.STOPPED;
+      this._captureStopOdd();
+      this._finalizeExecution(meta.reason, { errorCode: meta.errorCode });
+      return;
+    }
     if (!this._running) { this._state = STATE.STOPPED; return; }
     // Part E — when the next-round delay is enabled, the NEXT bet must wait for the
     // authoritative next ROUND_OPEN (not fire immediately). WAITING_NEXT_ROUND owns that.

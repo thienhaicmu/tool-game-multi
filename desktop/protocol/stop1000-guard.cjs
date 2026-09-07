@@ -98,10 +98,14 @@ class Stop1000Guard extends EventEmitter {
       reason: REASON,
     };
     // Terminate the ENTIRE Auto session for THIS run, exactly once, with a distinct
-    // terminal reason. AutoRunner latches off (needs a fresh start() to run again),
+    // terminal reason. If the current round still has an OPEN bet, this CASHES IT OUT at
+    // 1000x to secure the win, then stops once the cashout resolves; otherwise it is a
+    // plain terminal stop. AutoRunner latches off (needs a fresh start() to run again),
     // so next ROUND_OPEN / ROUND_END / delayed ACK cannot restart it.
-    try { if (this._autoRunner && this._autoRunner.stop) this._autoRunner.stop({ reason: REASON, stop1000: true }); }
-    catch { /* stop is best-effort; the latch + event still record the terminal fact */ }
+    try {
+      if (this._autoRunner && this._autoRunner.stopAt1000x) this._autoRunner.stopAt1000x({ reason: REASON, stop1000: true, observedOdd: odd });
+      else if (this._autoRunner && this._autoRunner.stop) this._autoRunner.stop({ reason: REASON, stop1000: true });
+    } catch { /* stop is best-effort; the latch + event still record the terminal fact */ }
     this.emit('stop1000', this.evidence());
     this.emit('state', this.state());
   }
