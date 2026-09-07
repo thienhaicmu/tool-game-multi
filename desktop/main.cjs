@@ -33,6 +33,7 @@ const { RoundHistoryCollector } = require('./browser-run/round-history-collector
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
+const { looksLikeLoginUrl } = require('./browser-run/login-signal.cjs');
 const { JackpotObserver } = require('./protocol/jackpot-observer.cjs');
 const { JackpotGate } = require('./protocol/jackpot-gate.cjs');
 const { Stop1000Guard } = require('./protocol/stop1000-guard.cjs');
@@ -608,7 +609,7 @@ function gatherEvidence(run) {
     wsConnected: run._wsConnected !== false,
     rendererAlive: alive,
     onConfiguredHost: onHost,
-    loginDetected: /(?:^|[\/.?#])(login|signin|sign-in|auth|dangnhap)(?:[\/.?#]|$)/i.test(url),
+    loginDetected: looksLikeLoginUrl(url),
     instrumentationReady: started != null && run._pageLoadedMono != null && run._pageLoadedMono > started && run._wsConnected === true,
     freshAviatorSinceRecovery: started != null && run._lastAviatorMono != null && run._lastAviatorMono > started,
     workerLost: false,
@@ -1205,6 +1206,13 @@ handle('autotest-start', async (_event, runId, config = {}) => {
   // WU-C.4 — feature entitlement (main-process authority; renderer cannot bypass).
   const ent = currentEntitlement();
   if (!ent.features.autoRun) return featureDenied('autoRun', 'Tính năng Chạy tự động không có trong giấy phép hiện tại.');
+  // §14 — login gate BEFORE entry. If THIS run's page is a login/auth wall and the run is
+  // not already in the game, do NOT drive it in (no cmd 100000 sent, no reload loop) — surface
+  // a clear LOGIN_REQUIRED instead of a generic entry timeout. A page/HTTP 200 is NOT login
+  // (§5); the positive proof of entry stays the run's own fresh server round evidence below.
+  if (run.entryGate && !(run.entryGate.isEntered && run.entryGate.isEntered()) && looksLikeLoginUrl(currentRunUrl(run))) {
+    return { error: { code: 'LOGIN_REQUIRED', message: 'Cần đăng nhập — hãy đăng nhập vào game trước khi Chạy tự động.' } };
+  }
   // WU-C.1.1 — Aviator entry prerequisite: ensure THIS run's socket is in the game
   // before any bet. No BET (cmd 100002) is possible until entry is authoritatively
   // confirmed by the run's own server round evidence. Never sends through another run.

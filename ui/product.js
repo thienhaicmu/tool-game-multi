@@ -1229,9 +1229,11 @@ renderActions();
       const code = String(r.error.code || '');
       // Cancellations (user STOP / disconnect) are benign, not scary errors.
       const benign = code === 'JACKPOT_GATE_CANCELLED' || code === 'AVIATOR_ENTRY_DISCONNECTED';
+      const login = code === 'LOGIN_REQUIRED';
       const entry = code.indexOf('AVIATOR_ENTRY') === 0;
       const jp = code.indexOf('JACKPOT') === 0 || code === 'INVALID_JACKPOT_THRESHOLD';
-      $('at-cfg-err').textContent = benign ? '' : ((entry ? 'Vào game thất bại — ' : jp ? 'Jackpot gate — ' : '') + `${code}: ${r.error.message || ''}`);
+      // §14 — a login wall is a clear, non-scary instruction ("Cần đăng nhập"), not an error dump.
+      $('at-cfg-err').textContent = benign ? '' : login ? (r.error.message || 'Cần đăng nhập') : ((entry ? 'Vào game thất bại — ' : jp ? 'Jackpot gate — ' : '') + `${code}: ${r.error.message || ''}`);
       renderCta();
       return;
     }

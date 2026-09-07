@@ -164,6 +164,26 @@ test('login wall → LOGIN_REQUIRED and does NOT loop reloads', () => {
   assert.equal(r.state, STATE.LOGIN_REQUIRED);
 });
 
+// REGRESSION (§16/§20/§36): a login wall detected DURING verification must first pause
+// automation and invalidate stale state — otherwise a still-running AutoRunner could resume
+// wagering the instant login returns, with no re-entry / fresh-protocol gate.
+test('login wall during VERIFY pauses automation and invalidates state before LOGIN_REQUIRED', () => {
+  const w = mk();
+  w.tick(healthy(0, { wsConnected: false }));                                  // -> VERIFYING (WS_CLOSED)
+  const r = w.tick(healthy(3000, { wsConnected: false, loginDetected: true })); // inside verify window
+  assert.equal(r.state, STATE.LOGIN_REQUIRED, 'goes straight to LOGIN_REQUIRED (no wasted reload)');
+  assert.ok(r.actions.includes(ACTION.PAUSE_AUTOMATION), 'AutoRunner is paused first (§16)');
+  assert.ok(r.actions.includes(ACTION.INVALIDATE_STATE), 'stale protocol state invalidated (§31)');
+});
+
+test('login wall during VERIFY with an unresolved wager ACK marks the result UNKNOWN (no resend)', () => {
+  const w = mk();
+  w.tick(healthy(0, { wsConnected: false, inflightAckPending: true }));
+  const r = w.tick(healthy(3000, { wsConnected: false, loginDetected: true, inflightAckPending: true }));
+  assert.equal(r.state, STATE.LOGIN_REQUIRED);
+  assert.equal(w.actionResultUnknown(), true, 'in-flight ACK stays UNKNOWN across the login wall (§30)');
+});
+
 test('bounded retries → RECOVERY_FAILED (no infinite reload)', () => {
   const w = mk();
   w.tick(healthy(0, { wsConnected: false }));

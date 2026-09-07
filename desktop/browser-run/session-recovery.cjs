@@ -154,7 +154,11 @@ class SessionRecoveryWatchdog extends EventEmitter {
           this._transition(STATE.HEALTHY, REASON.FRESH_TRAFFIC_CONFIRMED);
           break;
         }
-        if (ev.loginDetected) { this._transition(STATE.LOGIN_REQUIRED, REASON.LOGIN_REQUIRED); break; }
+        // A login wall confirmed during verification is a genuine interruption of a
+        // (possibly running) session. Pause automation and invalidate stale protocol
+        // state FIRST (§16/§20/§36) — otherwise a still-running AutoRunner could resume
+        // wagering the moment login returns, with no re-entry/fresh-protocol gate.
+        if (ev.loginDetected) { this._haltForInterrupt(ev, actions); this._transition(STATE.LOGIN_REQUIRED, REASON.LOGIN_REQUIRED); break; }
         if (now - this._verifyStart >= this._cfg.verifyWindowMs) {
           // Confirmed stale → begin exactly-one recovery attempt.
           this._beginRecovery(ev, now, actions);
@@ -226,14 +230,21 @@ class SessionRecoveryWatchdog extends EventEmitter {
     return null;
   }
 
-  _beginRecovery(ev, now, actions) {
-    this._attempts += 1;
-    this._recoveryStartMono = now;
+  // Safety prelude shared by every path that interrupts a (possibly running) session —
+  // confirmed staleness AND a login wall alike. Pause automation and invalidate stale
+  // transient state BEFORE any navigation/re-entry, and mark an unresolved wager UNKNOWN.
+  _haltForInterrupt(ev, actions) {
     // If a wager ACK was unresolved when we went stale, the result is UNKNOWN — never resend, never
     // infer win/loss (§30). Surface it; the wiring layer marks the AutoRunner action UNKNOWN.
     if (ev.inflightAckPending) this._actionResultUnknown = true;
     actions.push(ACTION.PAUSE_AUTOMATION);   // stop automation before navigation (§29)
     actions.push(ACTION.INVALIDATE_STATE);   // drop stale SID/ODD/socket/session ids (§31)
+  }
+
+  _beginRecovery(ev, now, actions) {
+    this._attempts += 1;
+    this._recoveryStartMono = now;
+    this._haltForInterrupt(ev, actions);
     this._transition(STATE.RECOVERING, this._reason);
   }
 
