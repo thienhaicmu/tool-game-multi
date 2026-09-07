@@ -58,6 +58,22 @@ test('diagnostics: purgeBrowser drops only B1 records from the shared store', ()
   assert.equal(all.filter((r) => r.browserId === 'B2').length, 1, 'B2 records kept');
 });
 
+test('diagnostics: purge removes operational browser records but keeps delete-audit trail (§8/§23)', () => {
+  const dir = tmpDir();
+  const log = new DiagnosticLog({ dir });
+  // Operational records are tagged with the indexed browserId ...
+  log.log({ category: CATEGORY.BET, event: 'BET_INTENT', browserId: 'B1' });
+  log.log({ category: CATEGORY.WEBSOCKET, event: 'WS_CLOSE', browserId: 'B1' });
+  log.purgeBrowser('B1');
+  // ... the post-delete AUDIT event references the id via a NON-indexed meta field, so it
+  // survives the purge and never re-introduces a record keyed to the deleted browserId.
+  log.log({ category: CATEGORY.BROWSER_RUN, event: 'PROFILE_DATA_DELETE_COMPLETED', deletedBrowserId: 'B1' });
+  const recs = log.files().flatMap((f) => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean)).map((l) => JSON.parse(l));
+  assert.equal(recs.filter((r) => r.browserId === 'B1').length, 0, 'no operational B1 records remain');
+  assert.equal(recs.filter((r) => r.event === 'PROFILE_DATA_DELETE_COMPLETED').length, 1, 'audit event retained');
+  assert.equal(recs.find((r) => r.event === 'PROFILE_DATA_DELETE_COMPLETED').meta.deletedBrowserId, 'B1');
+});
+
 // ===========================================================================
 // 48-HOUR RETENTION — boundaries (§12/§21/§28)
 // ===========================================================================

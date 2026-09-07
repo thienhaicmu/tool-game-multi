@@ -873,7 +873,11 @@ async function deletePersistentBrowser(browserId) {
   ensureRunManager(); ensureBrowserRegistry();
   const log = ensureDiagnosticLog();
   if (!bid || !browserRegistry.get(bid)) return { ok: false, error: { code: 'BROWSER_NOT_FOUND', message: 'No such browser.' } };
-  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DELETE_REQUESTED', browserId: bid }); } catch { /* best effort */ }
+  // Delete-lifecycle AUDIT events (§23) reference the profile via `deletedBrowserId` (meta),
+  // NOT the indexed `browserId`. That way the diagnostics purge below removes every OPERATIONAL
+  // record owned by this browser (§8) while the deletion audit trail survives un-attributed —
+  // and the post-purge COMPLETED event never re-introduces a record keyed to the deleted id.
+  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DELETE_REQUESTED', deletedBrowserId: bid }); } catch { /* best effort */ }
 
   // 1) Safely dispose any live runtime for this profile FIRST (§6). closeRun finalizes an
   // active Auto execution, cancels next-BET/jackpot/recovery timers via quiesce, disposes the
@@ -882,12 +886,12 @@ async function deletePersistentBrowser(browserId) {
   if (liveRun) {
     try { finalizeAutoExecutionForRun(liveRun, 'RUN_CLOSED'); } catch { /* best effort */ }
     try { await runManager.closeRun(liveRun.id); } catch { /* best effort */ }
-    try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_RUNTIME_DISPOSED', browserId: bid, runId: liveRun.id }); } catch { /* best effort */ }
+    try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_RUNTIME_DISPOSED', deletedBrowserId: bid, runId: liveRun.id }); } catch { /* best effort */ }
   }
 
   // 2) Delete owned persistent data. Aggregate failures — do NOT report success while
   // important owned data remains (§11), and do NOT remove the Registry record if it failed.
-  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_STARTED', browserId: bid }); } catch { /* best effort */ }
+  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_STARTED', deletedBrowserId: bid }); } catch { /* best effort */ }
   const failures = [];
   // 2a) Electron persistent session storage for this profile (cookies/localStorage/IndexedDB/
   // Cache/Service Workers). Cleared only AFTER the WebContents is disposed (§5). Best-effort:
@@ -905,15 +909,15 @@ async function deletePersistentBrowser(browserId) {
   try { removeProfileDirIfPresent(bid); } catch (e) { failures.push({ store: 'profileDir', message: String(e && e.message || e) }); }
 
   if (failures.length) {
-    try { log.log({ level: 'ERROR', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_FAILED', browserId: bid, failures }); } catch { /* best effort */ }
+    try { log.log({ level: 'ERROR', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_FAILED', deletedBrowserId: bid, failures }); } catch { /* best effort */ }
     broadcastBrowsers();
     return { ok: false, error: { code: 'PROFILE_DATA_DELETE_FAILED', message: 'Some profile data could not be deleted.', failures } };
   }
 
   // 3) Remove the identity record LAST (no orphan data referencing it remains).
   const res = browserRegistry.remove(bid);
-  if (res.error) { try { log.log({ level: 'ERROR', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_FAILED', browserId: bid, stage: 'registry', failures: [res.error] }); } catch { /* best effort */ } broadcastBrowsers(); return { ok: false, error: res.error }; }
-  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_COMPLETED', browserId: bid }); } catch { /* best effort */ }
+  if (res.error) { try { log.log({ level: 'ERROR', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_FAILED', deletedBrowserId: bid, stage: 'registry', failures: [res.error] }); } catch { /* best effort */ } broadcastBrowsers(); return { ok: false, error: res.error }; }
+  try { log.log({ level: 'INFO', category: 'BROWSER_RUN', event: 'PROFILE_DATA_DELETE_COMPLETED', deletedBrowserId: bid }); } catch { /* best effort */ }
   broadcastBrowsers();
   return { ok: true, deleted: true, browserId: bid };
 }
