@@ -127,8 +127,115 @@ CREATE INDEX idx_odd_samples_round ON round_odd_samples(round_id, sequence);
 CREATE INDEX idx_jp_samples_round ON round_jackpot_samples(round_id, sequence);
 `;
 
+// v2 — passive Web/network collection. Raw HTTP + WebSocket evidence becomes a
+// first-class layer; protocol events gain provenance back to the raw WS frame.
+const SCHEMA_V2 = `
+CREATE TABLE network_requests (
+  id                       INTEGER PRIMARY KEY,
+  capture_session_id       INTEGER NOT NULL REFERENCES capture_sessions(id),
+  browser_id               TEXT NOT NULL,
+  target_id                TEXT,
+  session_id               TEXT,
+  request_id               TEXT,
+  loader_id                TEXT,
+  timestamp_ms             INTEGER NOT NULL,
+  monotonic_ms             REAL,
+  resource_type            TEXT,
+  method                   TEXT,
+  url                      TEXT,
+  scheme                   TEXT,
+  host                     TEXT,
+  path                     TEXT,
+  request_headers          TEXT,   -- JSON
+  request_body             TEXT,
+  initiator_type           TEXT,
+  redirect_from_request_id INTEGER,
+  created_at_ms            INTEGER NOT NULL
+);
+
+CREATE TABLE network_responses (
+  id                  INTEGER PRIMARY KEY,
+  network_request_id  INTEGER NOT NULL REFERENCES network_requests(id),
+  timestamp_ms        INTEGER,
+  status              INTEGER,
+  status_text         TEXT,
+  mime_type           TEXT,
+  protocol            TEXT,
+  response_headers    TEXT,   -- JSON
+  remote_ip           TEXT,
+  remote_port         INTEGER,
+  from_disk_cache     INTEGER,
+  from_service_worker INTEGER,
+  encoded_data_length INTEGER,
+  timing_json         TEXT,
+  failed              INTEGER NOT NULL DEFAULT 0,
+  failure_reason      TEXT,
+  duration_ms         INTEGER,
+  created_at_ms       INTEGER NOT NULL
+);
+
+CREATE TABLE network_bodies (
+  id                 INTEGER PRIMARY KEY,
+  network_request_id INTEGER NOT NULL REFERENCES network_requests(id),
+  body               TEXT,
+  base64_encoded     INTEGER NOT NULL DEFAULT 0,
+  body_size          INTEGER,
+  capture_status     TEXT NOT NULL,   -- CAPTURED | SKIPPED_TOO_LARGE | SKIPPED_TYPE | UNAVAILABLE | FAILED
+  capture_error      TEXT,
+  created_at_ms      INTEGER NOT NULL
+);
+
+CREATE TABLE ws_connections (
+  id                 INTEGER PRIMARY KEY,
+  capture_session_id INTEGER NOT NULL REFERENCES capture_sessions(id),
+  browser_id         TEXT NOT NULL,
+  target_id          TEXT,
+  request_id         TEXT,
+  url                TEXT,
+  opened_at_ms       INTEGER,
+  closed_at_ms       INTEGER,
+  close_status       TEXT,
+  send_count         INTEGER NOT NULL DEFAULT 0,
+  recv_count         INTEGER NOT NULL DEFAULT 0,
+  created_at_ms      INTEGER NOT NULL
+);
+
+CREATE TABLE raw_ws_events (
+  id                 INTEGER PRIMARY KEY,
+  ws_connection_id   INTEGER REFERENCES ws_connections(id),
+  capture_session_id INTEGER NOT NULL REFERENCES capture_sessions(id),
+  browser_id         TEXT NOT NULL,
+  direction          TEXT NOT NULL,   -- SEND (website) | RECV (server)
+  timestamp_ms       INTEGER NOT NULL,
+  monotonic_ms       REAL,
+  opcode             INTEGER,
+  payload            TEXT,
+  payload_size       INTEGER,
+  parse_status       TEXT,
+  cmd                INTEGER,
+  event_type         TEXT,
+  sid                TEXT,
+  odd                REAL,
+  jackpot            REAL,
+  created_at_ms      INTEGER NOT NULL
+);
+
+ALTER TABLE raw_protocol_events ADD COLUMN source_ws_event_id INTEGER;
+
+CREATE INDEX idx_netreq_browser_time  ON network_requests(browser_id, timestamp_ms);
+CREATE INDEX idx_netreq_session_time  ON network_requests(capture_session_id, timestamp_ms);
+CREATE INDEX idx_netreq_host          ON network_requests(host, timestamp_ms);
+CREATE INDEX idx_netreq_reqid         ON network_requests(capture_session_id, request_id);
+CREATE INDEX idx_netresp_req          ON network_responses(network_request_id);
+CREATE INDEX idx_netbody_req          ON network_bodies(network_request_id);
+CREATE INDEX idx_rawws_browser_time   ON raw_ws_events(browser_id, timestamp_ms);
+CREATE INDEX idx_rawws_conn           ON raw_ws_events(ws_connection_id, id);
+CREATE INDEX idx_wsconn_session       ON ws_connections(capture_session_id);
+`;
+
 const MIGRATIONS = [
   { version: 1, up: (db) => { db.exec(SCHEMA_V1); } },
+  { version: 2, up: (db) => { db.exec(SCHEMA_V2); } },
 ];
 
 const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

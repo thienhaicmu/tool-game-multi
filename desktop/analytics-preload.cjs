@@ -32,10 +32,24 @@ contextBridge.exposeInMainWorld('analytics', {
   db: {
     info: () => ipcRenderer.invoke('analytics-db-info'),
   },
+  webLog: {
+    query: (filter, page) => ipcRenderer.invoke('analytics-weblog-query', filter, page),
+    detail: (kind, id) => ipcRenderer.invoke('analytics-weblog-detail', kind, id),
+    summary: (filter) => ipcRenderer.invoke('analytics-weblog-summary', filter),
+    wsConnection: (id) => ipcRenderer.invoke('analytics-weblog-ws-connection', id),
+    wsFrames: (id, opts) => ipcRenderer.invoke('analytics-weblog-ws-frames', id, opts),
+  },
+  network: {
+    overview: (filter) => ipcRenderer.invoke('analytics-net-overview', filter),
+    endpoints: (filter) => ipcRenderer.invoke('analytics-net-endpoints', filter),
+    hosts: (filter) => ipcRenderer.invoke('analytics-net-hosts', filter),
+    timeline: (filter, granularity) => ipcRenderer.invoke('analytics-net-timeline', filter, granularity),
+  },
   export: {
     rounds: (filter) => ipcRenderer.invoke('analytics-export-rounds', filter),
     roundDetail: (roundId) => ipcRenderer.invoke('analytics-export-round-detail', roundId),
     rawEvents: (opts) => ipcRenderer.invoke('analytics-export-raw', opts),
+    webLog: (filter) => ipcRenderer.invoke('analytics-export-weblog', filter),
   },
   backup: {
     database: () => ipcRenderer.invoke('analytics-backup-db'),

@@ -4,6 +4,8 @@ const { openDatabase, LATEST_VERSION, currentVersion } = require('./database.cjs
 const { CaptureSessionRepo } = require('./repositories/capture-session-repo.cjs');
 const { RawEventRepo } = require('./repositories/raw-event-repo.cjs');
 const { RoundRepo } = require('./repositories/round-repo.cjs');
+const { NetworkRepo } = require('./repositories/network-repo.cjs');
+const { WsRepo } = require('./repositories/ws-repo.cjs');
 const { THRESHOLDS, thresholdKey, columnsFor } = require('../thresholds.cjs');
 
 // ---------------------------------------------------------------------------
@@ -19,6 +21,8 @@ class AnalyticsStore {
     this.sessions = new CaptureSessionRepo(this.db, now);
     this.raw = new RawEventRepo(this.db, now);
     this.rounds = new RoundRepo(this.db, now);
+    this.network = new NetworkRepo(this.db, now);
+    this.ws = new WsRepo(this.db, now);
   }
 
   schemaVersion() { return currentVersion(this.db); }
@@ -38,6 +42,12 @@ class AnalyticsStore {
       sessions: this.sessions.count(),
       oddSamples: this.db.prepare('SELECT COUNT(*) AS n FROM round_odd_samples').get().n,
       jackpotSamples: this.db.prepare('SELECT COUNT(*) AS n FROM round_jackpot_samples').get().n,
+      networkRequests: this.network.count(),
+      networkResponses: this.network.responseCount(),
+      networkBodies: this.network.bodyCount(),
+      responseBodyBytes: this.network.bodyBytes(),
+      wsConnections: this.ws.connectionCount(),
+      wsEvents: this.ws.eventCount(),
       schemaVersion: this.schemaVersion(),
     };
   }

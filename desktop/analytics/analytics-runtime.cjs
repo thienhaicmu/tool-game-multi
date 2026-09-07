@@ -183,23 +183,40 @@ class AnalyticsRuntime extends EventEmitter {
   }
 
   // ---- shared-capture routing (passive) ----
+  // Routes ALL captured evidence (HTTP + WebSocket) to the owning browser by
+  // targetId. Persistence is the source of truth (best-effort, never blocks live
+  // capture). The live UI only consumes WS protocol frames.
   _onCaptureRequest(req) {
-    if (!req || !req.isWebSocket || !req.wsDirection) return;
+    if (!req) return;
     const bid = this._targetIndex.get(String(req.targetId));
     if (!bid) return;                         // unknown owner -> ignore (never cross-route)
     const run = this._runs.get(bid);
-    if (!run || !run.liveState) return;
-    const raw = req.body && req.body.raw;
-    const at = this._now();
-    // Persist FIRST (source of truth) so a renderer failure cannot lose capture (§8/§23).
-    if (this._persistence) { try { this._persistence.onFrame(bid, { direction: req.wsDirection, raw, at, wsConnectionId: req.id, targetId: req.targetId }); } catch { /* persistence failure must not stop live capture */ } }
-    run.liveState.observeFrame({ direction: req.wsDirection, raw, at, targetId: req.targetId });
+    if (!run) return;
+    const p = this._persistence;
+    if (req.isWebSocket && req.wsDirection) {           // WS data frame
+      const raw = req.body && req.body.raw;
+      const at = this._now();
+      if (p) { try { p.onWsFrame(bid, { direction: req.wsDirection, raw, at, targetId: req.targetId, cdpRequestId: req.cdpRequestId, cdpSessionId: req.cdpSessionId }); } catch { /* never stop capture */ } }
+      if (run.liveState) run.liveState.observeFrame({ direction: req.wsDirection, raw, at, targetId: req.targetId });
+    } else if (req.isWebSocket) {                        // WS connection opened
+      if (p) { try { p.onWsCreated(bid, req); } catch { /* best effort */ } }
+    } else {                                             // HTTP/XHR/fetch/document request
+      if (p) { try { p.onHttpRequest(bid, req); } catch { /* best effort */ } }
+    }
   }
   _onCaptureUpdate(req) {
-    if (!req || !req.isWebSocket || req.state !== 'FINISHED' || req.wsDirection) return; // connection close only
+    if (!req) return;
     const bid = this._targetIndex.get(String(req.targetId));
     const run = bid && this._runs.get(bid);
-    if (run && run.liveState) run.liveState.onDisconnect();
+    if (!run) return;
+    const p = this._persistence;
+    if (req.isWebSocket && !req.wsDirection && req.state === 'FINISHED') {   // WS connection closed
+      if (p) { try { p.onWsClosed(bid, req); } catch { /* best effort */ } }
+      if (run.liveState) run.liveState.onDisconnect();
+    } else if (!req.isWebSocket && (req.state === 'BODY_AVAILABLE' || req.state === 'FINISHED' || req.state === 'FAILED')) {
+      // Terminal HTTP: persist response + body (passive body fetch via the owning target's client).
+      if (p) { p.onHttpFinalize(bid, req, () => this._capture.getResponseBody(req.id)).catch(() => {}); }
+    }
   }
 
   // PASSIVE CDP capture: subscribe a target's own client to Network + WebSocket

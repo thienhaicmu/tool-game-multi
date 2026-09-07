@@ -102,4 +102,25 @@ function exportRawEventsJsonl(store, { captureSessionId = null, browserId = null
   return { ok: true, path: outPath, lines };
 }
 
-module.exports = { exportRoundsCsv, exportRoundDetailJson, exportRawEventsJsonl, roundCsvHeader, csvCell, EXPORT_SCHEMA_VERSION };
+// Web Log CSV — paged from the WebLogQuery engine (bounded memory), newest first.
+const WEBLOG_CSV_HEADER = ['timestamp', 'kind', 'type', 'method', 'status', 'host', 'url', 'durationMs', 'size', 'id'];
+function exportWebLogCsv(webLog, spec, outPath) {
+  const fd = fs.openSync(outPath, 'w');
+  let rows = 0;
+  try {
+    fs.writeSync(fd, WEBLOG_CSV_HEADER.join(',') + '\r\n');
+    const page = 5000; let offset = 0;
+    for (;;) {
+      const res = webLog.query(spec, { limit: page, offset });
+      for (const r of res.rows) {
+        fs.writeSync(fd, csvLine([r.ts != null ? new Date(r.ts).toISOString() : '', r.kind, r.type, r.method, r.status, r.host, r.url, r.duration, r.size, r.id]));
+        rows++;
+      }
+      offset += res.rows.length;
+      if (res.rows.length < page || offset >= res.total) break;
+    }
+  } finally { fs.closeSync(fd); }
+  return { ok: true, path: outPath, rows };
+}
+
+module.exports = { exportRoundsCsv, exportRoundDetailJson, exportRawEventsJsonl, exportWebLogCsv, roundCsvHeader, csvCell, EXPORT_SCHEMA_VERSION };

@@ -12,12 +12,12 @@ class RawEventRepo {
         (capture_session_id, browser_id, ws_connection_id, direction, origin,
          wall_timestamp_ms, monotonic_timestamp_ms, opcode, raw_payload,
          parse_status, parse_error, cmd, event_type, sid, odd, jackpot,
-         source_target_id, source_session_id, created_at_ms)
+         source_target_id, source_session_id, source_ws_event_id, created_at_ms)
        VALUES
         (@captureSessionId, @browserId, @wsConnectionId, @direction, @origin,
          @wallTimestampMs, @monotonicTimestampMs, @opcode, @rawPayload,
          @parseStatus, @parseError, @cmd, @eventType, @sid, @odd, @jackpot,
-         @sourceTargetId, @sourceSessionId, @createdAtMs)`
+         @sourceTargetId, @sourceSessionId, @sourceWsEventId, @createdAtMs)`
     );
   }
 
@@ -41,6 +41,7 @@ class RawEventRepo {
       jackpot: Number.isFinite(e.jackpot) ? e.jackpot : null,
       sourceTargetId: e.sourceTargetId != null ? String(e.sourceTargetId) : null,
       sourceSessionId: e.sourceSessionId != null ? String(e.sourceSessionId) : null,
+      sourceWsEventId: e.sourceWsEventId != null ? Number(e.sourceWsEventId) : null,
       createdAtMs: this._now(),
     };
     const info = this._insert.run(row);
