@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self';" />
+  <title>Aviator Analytics</title>
+  <link rel="stylesheet" href="analytics.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">Aviator <span>Analytics</span></div>
+    <div class="badge badge-passive" title="This product only observes traffic. It never sends protocol actions.">PASSIVE · OBSERVE-ONLY</div>
+    <div id="db-info" class="db-info" title="Stored in SQLite (source of truth)">DB: — rounds · — events</div>
+    <nav class="tabs">
+      <button class="tab active" data-tab="live">LIVE</button>
+      <button class="tab" data-tab="rounds">ROUNDS</button>
+      <button class="tab" data-tab="analytics">ANALYTICS</button>
+      <button class="tab" data-tab="data">DATA</button>
+    </nav>
+  </header>
+
+  <main class="layout">
+    <aside class="sidebar">
+      <div class="panel-title">Browsers</div>
+      <div id="browser-list" class="browser-list"></div>
+      <form id="create-form" class="create-form">
+        <input id="create-name" type="text" placeholder="Profile name" autocomplete="off" />
+        <input id="create-url" type="url" placeholder="https://website…" autocomplete="off" />
+        <button type="submit">+ Add profile</button>
+        <div id="create-error" class="form-error"></div>
+      </form>
+    </aside>
+
+    <section class="main" id="view-live">
+      <div class="live-head">
+        <div class="live-id">
+          <div id="live-name" class="live-name">No profile selected</div>
+          <div id="live-meta" class="live-meta"></div>
+        </div>
+        <div class="live-status">
+          <span class="chip" id="chip-capture">Capture: —</span>
+          <span class="chip" id="chip-ws">WS: —</span>
+        </div>
+      </div>
+
+      <div class="live-metrics">
+        <div class="metric"><div class="metric-label">Current SID</div><div id="m-sid" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Current ODD</div><div id="m-odd" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Current Jackpot</div><div id="m-jp" class="metric-value">—</div></div>
+        <div class="metric"><div class="metric-label">Events (buffer)</div><div id="m-count" class="metric-value">0</div></div>
+      </div>
+
+      <div id="browser-view-slot" class="browser-view-slot">
+        <div class="slot-hint">Open a profile to load the website here. Log in and enter Aviator manually — Analytics only observes.</div>
+      </div>
+
+      <div class="events">
+        <div class="panel-title">Recent Protocol Events <span class="muted">(last 200, in-memory)</span></div>
+        <div class="events-table-wrap">
+          <table class="events-table">
+            <thead><tr><th>Time</th><th>Dir</th><th>CMD</th><th>Type</th><th>SID</th><th>ODD</th><th>Jackpot</th></tr></thead>
+            <tbody id="events-body"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="main hidden" id="view-rounds">
+      <div class="rounds-head">
+        <div class="panel-title">Rounds <span class="muted" id="rounds-total"></span></div>
+        <div class="rounds-pager">
+          <button id="rounds-prev">‹ Prev</button>
+          <span id="rounds-page" class="muted">—</span>
+          <button id="rounds-next">Next ›</button>
+        </div>
+      </div>
+      <div class="events-table-wrap rounds-wrap">
+        <table class="events-table">
+          <thead><tr><th>#</th><th>SID</th><th>Start</th><th>End</th><th>Duration</th><th>Max Odd</th><th>JP Open</th><th>JP End</th><th>Completeness</th></tr></thead>
+          <tbody id="rounds-body"></tbody>
+        </table>
+      </div>
+    </section>
+    <section class="main hidden" id="view-analytics">
+      <div class="filter-bar">
+        <label>Time
+          <select id="f-time">
+            <option value="">All</option>
+            <option value="15m">Last 15m</option><option value="30m">Last 30m</option>
+            <option value="1h">Last 1h</option><option value="3h">Last 3h</option><option value="6h">Last 6h</option>
+            <option value="12h">Last 12h</option><option value="24h">Last 24h</option>
+            <option value="today">Today</option><option value="7d">7 days</option><option value="30d">30 days</option>
+          </select>
+        </label>
+        <label>Last N
+          <select id="f-lastn"><option value="">All</option><option>10</option><option>20</option><option>50</option><option>100</option><option>200</option><option>500</option><option>1000</option><option>5000</option><option>10000</option></select>
+        </label>
+        <label>Completeness
+          <select id="f-completeness"><option value="COMPLETE">Complete only</option><option value="ALL">Include partial</option></select>
+        </label>
+        <label>JP basis
+          <select id="f-jpbasis">
+            <option value="JACKPOT_AT_OPEN">At open</option><option value="JACKPOT_AT_LOCK">At lock</option>
+            <option value="JACKPOT_AT_FIRST_ODD">At first odd</option><option value="JACKPOT_AT_END">At end</option>
+            <option value="JACKPOT_MIN">Min</option><option value="JACKPOT_MAX">Max</option><option value="JACKPOT_AVG">Avg</option><option value="JACKPOT_DELTA">Delta</option>
+          </select>
+        </label>
+        <label>JP min <input id="f-jpmin" type="number" step="any" placeholder="—" /></label>
+        <label>JP max <input id="f-jpmax" type="number" step="any" placeholder="—" /></label>
+        <label>Hour <input id="f-hourfrom" type="number" min="0" max="23" placeholder="0" style="width:52px" />–<input id="f-hourto" type="number" min="0" max="23" placeholder="23" style="width:52px" /></label>
+        <button id="f-apply">Apply</button>
+      </div>
+
+      <div class="matched-line">
+        <span id="m-matched">Matched: —</span>
+        <span id="m-candidate" class="muted">Candidate: —</span>
+        <span id="m-missing" class="muted">Missing JP basis: —</span>
+        <span id="m-browserwarn" class="warn hidden">Select one browser for streak/gap/rolling</span>
+      </div>
+
+      <nav class="subtabs">
+        <button class="subtab active" data-sub="overview">Overview</button>
+        <button class="subtab" data-sub="distribution">ODD Distribution</button>
+        <button class="subtab" data-sub="timing">Timing</button>
+        <button class="subtab" data-sub="jackpot">Jackpot</button>
+        <button class="subtab" data-sub="time">Time</button>
+        <button class="subtab" data-sub="rolling">Rolling</button>
+        <button class="subtab" data-sub="streakgap">Streaks &amp; Gaps</button>
+      </nav>
+      <div id="analytics-panel" class="analytics-panel"></div>
+    </section>
+
+    <section class="main hidden" id="view-data">
+      <div class="panel-title">Database</div>
+      <div class="cards" id="data-cards"></div>
+      <div class="section-h">Export &amp; Backup</div>
+      <div class="data-actions">
+        <button id="d-export-rounds">Export filtered rounds (CSV)</button>
+        <button id="d-export-round">Export selected round (JSON)</button>
+        <button id="d-export-raw">Export raw events (JSONL)</button>
+        <button id="d-backup">Backup database</button>
+      </div>
+      <div class="muted" style="margin-top:8px">Round JSON exports the round last opened in ROUNDS. Rounds CSV / raw export use the current ANALYTICS filter (browser + filters).</div>
+      <div id="data-result" class="data-result"></div>
+    </section>
+  </main>
+
+  <div id="detail-drawer" class="detail-drawer hidden">
+    <div class="detail-head">
+      <div class="detail-title" id="detail-title">Round</div>
+      <button id="detail-close">✕</button>
+    </div>
+    <div class="detail-body" id="detail-body"></div>
+  </div>
+
+  <script src="analytics.js"></script>
+</body>
+</html>

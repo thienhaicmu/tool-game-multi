@@ -9,9 +9,13 @@
   "scripts": {
     "start": "electron .",
     "dev": "electron .",
+    "dev:control": "electron .",
+    "dev:analytics": "electron desktop/analytics-main.cjs",
     "test": "node --test --test-concurrency=1 \"tests/js/**/*.test.mjs\"",
     "seal": "node tools/seal-modules.mjs",
     "dist": "node tools/seal-modules.mjs && electron-builder --win nsis --x64",
+    "dist:control": "node tools/seal-modules.mjs && electron-builder --win nsis --x64",
+    "dist:analytics": "electron-builder --config electron-builder.analytics.json --win nsis --x64",
     "dist:dir": "node tools/seal-modules.mjs && electron-builder --win dir --x64",
     "license:keypair": "node tools/license-generator/generate-keypair.mjs",
     "license:generate": "node tools/license-generator/generate-license.mjs",
@@ -57,6 +61,7 @@
     "electron-builder": "^26.15.3"
   },
   "dependencies": {
+    "better-sqlite3": "^13.0.3",
     "chrome-remote-interface": "^0.34.0"
   }
 }
