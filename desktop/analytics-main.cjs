@@ -30,6 +30,7 @@ const { AnalyticsQueryEngine, normalizeFilter } = require('./analytics/query/ana
 const { FilterError } = require('./analytics/query/analytics-filter.cjs');
 const exporter = require('./analytics/export/exporter.cjs');
 const { WebLogQuery, NetworkReport, normalizeNetworkFilter } = require('./analytics/query/web-log-query.cjs');
+const { JackpotReport } = require('./analytics/query/jackpot-report.cjs');
 
 const PRODUCT_NAME = 'Aviator Analytics';
 
@@ -63,6 +64,7 @@ let persistence = null;
 let engine = null;
 let webLog = null;
 let netReport = null;
+let jackpotReport = null;
 
 function analyticsRoot() { return path.join(ANALYTICS_USERDATA, 'analytics'); }
 
@@ -76,6 +78,7 @@ function ensureStore() {
   engine = new AnalyticsQueryEngine({ store });
   webLog = new WebLogQuery({ store });
   netReport = new NetworkReport({ store });
+  jackpotReport = new JackpotReport({ store });
   return store;
 }
 
@@ -222,6 +225,21 @@ function registerIpc() {
   ipcMain.handle('analytics-net-endpoints', guard((filter) => netReport.endpoints(filter || {})));
   ipcMain.handle('analytics-net-hosts', guard((filter) => netReport.hosts(filter || {})));
   ipcMain.handle('analytics-net-timeline', guard((filter, granularity) => netReport.timeline(filter || {}, typeof granularity === 'string' ? granularity : '5m')));
+
+  // ---- JACKPOT-FIRST report (read-only; validated round filter + jackpot config) ----
+  const jr = (fn) => (_e, filter, jpConfig, ...args) => {
+    ensureRuntime();
+    let spec; try { spec = normalizeFilter(filter || {}); } catch (err) { return { error: { code: err instanceof FilterError ? err.code : 'INVALID_FILTER', message: String(err && err.message || err) } }; }
+    try { return fn(spec, jpConfig || {}, ...args); } catch (err) { return { error: { code: 'REPORT_QUERY_FAILED', message: String(err && err.message || err) } }; }
+  };
+  ipcMain.handle('analytics-jr-overview', jr((spec, jp) => jackpotReport.overview(spec, jp)));
+  ipcMain.handle('analytics-jr-lastn', jr((spec, jp) => jackpotReport.lastNByJackpot(spec, jp)));
+  ipcMain.handle('analytics-jr-odd', jr((spec, jp) => jackpotReport.oddMatrix(spec, jp)));
+  ipcMain.handle('analytics-jr-time', jr((spec, jp) => jackpotReport.timeByHour(spec, jp)));
+  ipcMain.handle('analytics-jr-timing', jr((spec, jp, stat) => jackpotReport.timing(spec, jp, typeof stat === 'string' ? stat : 'median')));
+  ipcMain.handle('analytics-jr-streak', jr((spec, jp) => jackpotReport.streak(spec, jp)));
+  ipcMain.handle('analytics-jr-gap', jr((spec, jp) => jackpotReport.gap(spec, jp)));
+  ipcMain.handle('analytics-jr-delta', jr((spec, jp) => jackpotReport.delta(spec, jp)));
   ipcMain.handle('analytics-export-weblog', async (_e, filter) => {
     ensureRuntime();
     const out = await chooseSave('aviator-weblog.csv', [{ name: 'CSV', extensions: ['csv'] }]);

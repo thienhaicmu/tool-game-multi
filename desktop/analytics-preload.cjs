@@ -45,6 +45,16 @@ contextBridge.exposeInMainWorld('analytics', {
     hosts: (filter) => ipcRenderer.invoke('analytics-net-hosts', filter),
     timeline: (filter, granularity) => ipcRenderer.invoke('analytics-net-timeline', filter, granularity),
   },
+  report: {
+    overview: (filter, jp) => ipcRenderer.invoke('analytics-jr-overview', filter, jp),
+    lastN: (filter, jp) => ipcRenderer.invoke('analytics-jr-lastn', filter, jp),
+    odd: (filter, jp) => ipcRenderer.invoke('analytics-jr-odd', filter, jp),
+    time: (filter, jp) => ipcRenderer.invoke('analytics-jr-time', filter, jp),
+    timing: (filter, jp, stat) => ipcRenderer.invoke('analytics-jr-timing', filter, jp, stat),
+    streak: (filter, jp) => ipcRenderer.invoke('analytics-jr-streak', filter, jp),
+    gap: (filter, jp) => ipcRenderer.invoke('analytics-jr-gap', filter, jp),
+    delta: (filter, jp) => ipcRenderer.invoke('analytics-jr-delta', filter, jp),
+  },
   export: {
     rounds: (filter) => ipcRenderer.invoke('analytics-export-rounds', filter),
     roundDetail: (roundId) => ipcRenderer.invoke('analytics-export-round-detail', roundId),
