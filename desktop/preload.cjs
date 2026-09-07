@@ -51,6 +51,12 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   browserHistory: (browserId, options) => ipcRenderer.invoke('browser-history-list', browserId, options),
   browserStats: browserId => ipcRenderer.invoke('browser-history-stats', browserId),
   onBrowserHistoryChanged: callback => ipcRenderer.on('browser-history-changed', (_event, payload) => callback(payload)),
+  // Part A — per-browser Auto EXECUTION history (terminal stopReason + ODD lúc dừng).
+  browserAutoExecutions: (browserId, options) => ipcRenderer.invoke('browser-auto-executions', browserId, options),
+  // Part C — background diagnostics (Advanced): info / open folder / clear.
+  diagnosticsInfo: () => ipcRenderer.invoke('diagnostics-info'),
+  diagnosticsOpenFolder: () => ipcRenderer.invoke('diagnostics-open-folder'),
+  diagnosticsClear: () => ipcRenderer.invoke('diagnostics-clear'),
   // WU-E.4 — true in-app browser runtime: report the Overview web-region bounds so main
   // positions/shows the native WebContentsView for the selected run. Display/layout only.
   runtimeMode: () => ipcRenderer.invoke('runtime-mode'),

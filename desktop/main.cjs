@@ -30,6 +30,9 @@ const { RuntimeCapacity } = require('./browser-run/runtime-capacity.cjs');
 const { normalizeEntitlement, deniedEntitlement } = require('./licensing/entitlements.cjs');
 const { RoundHistoryStore } = require('./browser-run/round-history-store.cjs');
 const { RoundHistoryCollector } = require('./browser-run/round-history-collector.cjs');
+const { AutoExecutionHistoryStore } = require('./browser-run/auto-execution-history-store.cjs');
+const { AutoExecutionCollector } = require('./browser-run/auto-execution-collector.cjs');
+const { DiagnosticLog } = require('./diagnostics/diagnostic-log.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
@@ -58,6 +61,9 @@ let runManager = null;
 let browserRegistry = null;
 // WU-C.2: persistent per-browser round history, separate from registry + runtime.
 let roundHistoryStore = null;
+// Part A/C — Auto execution history + background diagnostics (per-instance, lazy).
+let autoExecutionStore = null;
+let diagnosticLog = null;
 // WU-D: persistent per-browser user operating configuration (Auto settings),
 // separate from registry (identity) and history (evidence).
 let browserConfigStore = null;
@@ -119,6 +125,27 @@ function ensureRoundHistoryStore() {
   if (roundHistoryStore) return roundHistoryStore;
   roundHistoryStore = new RoundHistoryStore({ dir: path.join(appInstance.paths.root, 'history') });
   return roundHistoryStore;
+}
+// Part A — persistent per-browser Auto EXECUTION history (terminal stopReason + stopOdd),
+// distinct from per-round history above.
+function ensureAutoExecutionStore() {
+  if (autoExecutionStore) return autoExecutionStore;
+  autoExecutionStore = new AutoExecutionHistoryStore({ dir: path.join(appInstance.paths.root, 'auto-executions') });
+  return autoExecutionStore;
+}
+// Part C — hidden/background diagnostic log. One bounded JSONL store per instance,
+// under the instance root so it is isolated per profile and cleaned with it.
+function ensureDiagnosticLog() {
+  if (diagnosticLog) return diagnosticLog;
+  diagnosticLog = new DiagnosticLog({ dir: path.join(appInstance.paths.root, 'diagnostics') });
+  try { diagnosticLog.log({ level: 'INFO', category: 'APP', event: 'DIAGNOSTICS_STARTED', sessionId }); } catch { /* best effort */ }
+  return diagnosticLog;
+}
+// A per-run child logger that stamps browserId/runId onto every record (structural
+// correlation, never UI selection). Safe no-op if diagnostics are unavailable.
+function runDiag(run) {
+  const base = ensureDiagnosticLog();
+  return { log: (e) => { try { base.log({ browserId: run.browserId, runId: run.id, ...e }); } catch { /* best effort */ } } };
 }
 // WU-D — per-browser operating config store (Auto settings). Loaded once; a corrupt
 // file is reported (never silently overwritten). Migration runs on load.
@@ -415,8 +442,9 @@ function buildProtocolSubsystem(run) {
     setTimeout(() => { observerDirty = false; toActive('observer-update', observer.snapshot()); }, 120);
   });
 
-  // Automated round runner, bound to this run's observer + harness.
-  const autoRunner = new C.AutoRunner({ roundTracker: aviator, observer, harness, getTargetUrl, environmentGuard: protocolEnvironmentGuard });
+  // Automated round runner, bound to this run's observer + harness. A per-run diagnostic
+  // logger (Part C) stamps browserId/runId onto every AutoRunner event for post-mortem.
+  const autoRunner = new C.AutoRunner({ roundTracker: aviator, observer, harness, getTargetUrl, environmentGuard: protocolEnvironmentGuard, diag: runDiag(run) });
   let autoDirty = false;
   autoRunner.on('update', () => {
     if (runManager && autoRunner.isRunning()) runManager.setStatus(run, RUN_STATUS.AUTO_RUNNING);
@@ -466,10 +494,18 @@ function buildProtocolSubsystem(run) {
   // attaches have no persistent owner). Attribution is structural (run.browserId),
   // never the UI's active/selected browser.
   let historyCollector = null;
+  let autoExecutionCollector = null;
   if (run.browserId) {
     ensureRoundHistoryStore();
     historyCollector = new RoundHistoryCollector({
       store: roundHistoryStore, browserId: run.browserId, runId: run.id, autoRunner,
+      onPersisted: (bid) => { broadcastHistoryChanged(bid); scheduleRunsBroadcast(); },
+    });
+    // Part A — persist ONE terminal record per Auto execution (stopReason + stopOdd),
+    // attributed structurally to this run's persistent browser.
+    ensureAutoExecutionStore();
+    autoExecutionCollector = new AutoExecutionCollector({
+      store: autoExecutionStore, browserId: run.browserId, runId: run.id, autoRunner,
       onPersisted: (bid) => { broadcastHistoryChanged(bid); scheduleRunsBroadcast(); },
     });
   }
@@ -481,9 +517,17 @@ function buildProtocolSubsystem(run) {
     config: RECOVERY_CONFIG,
     isLocalEndpoint: () => isLocalRunEndpoint(run),
   });
-  recovery.on('state', () => scheduleRunsBroadcast());
+  recovery.on('state', (ev) => {
+    scheduleRunsBroadcast();
+    // Part C/§29 — full recovery chain captured for post-mortem (state transitions + reason).
+    try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: 'RECOVERY_STATE', stateBefore: ev && ev.from, stateAfter: ev && ev.to, reason: ev && ev.reason, attempts: ev && ev.attempts }); } catch { /* best effort */ }
+    // A terminal recovery failure ends any active Auto execution with RECOVERY_FAILED (§58).
+    if (ev && ev.to === 'RECOVERY_FAILED') finalizeAutoExecutionForRun(run, 'RECOVERY_FAILED');
+    // A confirmed login wall that terminates the session records LOGIN_REQUIRED (§59).
+    else if (ev && ev.to === 'LOGIN_REQUIRED') { try { runDiag(run).log({ level: 'WARN', category: 'LOGIN', event: 'LOGIN_REQUIRED' }); } catch { /* best effort */ } }
+  });
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, recovery };
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, recovery };
 }
 
 // Recovery thresholds are centralised (never scattered). Conservative in production; a fast
@@ -549,7 +593,28 @@ function ensureRunManager() {
   capture.on('update', req => {
     if (!req || !req.isWebSocket || req.state !== 'FINISHED') return;
     const run = runManager.runForTarget(req.targetId);
-    if (run) run._wsConnected = false;
+    if (run) {
+      run._wsConnected = false;
+      // Part C/§31 — WS close as a bounded edge event (never per-frame ODD dumps).
+      try { runDiag(run).log({ level: 'WARN', category: 'WEBSOCKET', event: 'WS_CLOSE', url: req.url }); } catch { /* best effort */ }
+    }
+  });
+  // Part C/§30 — HTTP failure diagnostics (safe host/path only; status/error/duration).
+  // Bounded to failures so healthy high-volume traffic is not persisted.
+  capture.on('update', req => {
+    try {
+      if (!req || req.isWebSocket || req.state !== 'FINISHED') return;
+      const status = req.status != null ? Number(req.status) : null;
+      const failed = req.failed === true || req.errorText || (status != null && status >= 400);
+      if (!failed) return;
+      const run = runManager.runForTarget(req.targetId);
+      if (!run) return;
+      runDiag(run).log({
+        level: 'WARN', category: 'HTTP', event: 'HTTP_ERROR',
+        method: req.method, url: req.url, status, networkError: req.errorText || null,
+        resourceType: req.resourceType || req.type || null,
+      });
+    } catch { /* best effort */ }
   });
   return runManager;
 }
@@ -1006,6 +1071,10 @@ app.on('before-quit', event => {
   if (_gracefulQuitDone) return; // second pass (after our async shutdown) → allow quit
   event.preventDefault();
   if (importTimer) clearInterval(importTimer);
+  // Part A/23 — close any active Auto executions with APP_CLOSED (captures the
+  // authoritative stopOdd if still valid) before we tear down browsers.
+  try { if (runManager) for (const s of runManager.list()) { const run = runManager.get(s.id); if (run) finalizeAutoExecutionForRun(run, 'APP_CLOSED'); } } catch { /* best effort */ }
+  try { if (diagnosticLog) diagnosticLog.log({ level: 'INFO', category: 'APP', event: 'APP_QUIT' }); } catch { /* best effort */ }
   (async () => {
     // WU-E.1B — flush managed Chrome profiles (cookies/login) gracefully, bounded; then
     // WU-D.2 (D2-001) journal import still runs. shutdownAllManagedBrowsers force-kills any
@@ -1119,6 +1188,13 @@ handle('browser-delete', (_event, browserId) => deletePersistentBrowser(String(b
 // truth; the renderer can never write a result). Attribution is by persistent browserId.
 handle('browser-history-list', (_event, browserId, options = {}) => { if (!currentEntitlement().features.roundHistory) return []; ensureRoundHistoryStore(); return roundHistoryStore.list(String(browserId || ''), options || {}); });
 handle('browser-history-stats', (_event, browserId) => { if (!currentEntitlement().features.roundHistory) return { browserId: String(browserId || ''), licensed: false, totalRounds: 0, wins: 0, losses: 0, unknown: 0, resolvedWinRate: null, totalBet: null, betUnknownCount: 0, totalPayout: null, netResult: null, payoutAvailable: false, highestObservedOdd: null, lastSid: null, lastPlayedAt: null }; ensureRoundHistoryStore(); return roundHistoryStore.stats(String(browserId || '')); });
+// Part A — per-browser Auto EXECUTION history (terminal stopReason + ODD lúc dừng).
+handle('browser-auto-executions', (_event, browserId, options = {}) => { if (!currentEntitlement().features.roundHistory) return []; ensureAutoExecutionStore(); return autoExecutionStore.list(String(browserId || ''), options || {}); });
+// Part C — background diagnostics: export bundle, open folder, clear. No secrets are
+// ever persisted, so export never leaks credentials (see redaction tests).
+handle('diagnostics-info', () => { ensureDiagnosticLog(); return { ...diagnosticLog.retentionPolicy(), totalBytes: diagnosticLog.totalBytes(), files: diagnosticLog.files() }; });
+handle('diagnostics-open-folder', () => { ensureDiagnosticLog(); try { require('electron').shell.openPath(diagnosticLog.retentionPolicy().directory); return { ok: true }; } catch (e) { return { error: { code: 'DIAGNOSTICS_OPEN_FAILED', message: String(e && e.message || e) } }; } });
+handle('diagnostics-clear', () => { ensureDiagnosticLog(); try { diagnosticLog.clear(); return { ok: true }; } catch (e) { return { error: { code: 'DIAGNOSTICS_CLEAR_FAILED', message: String(e && e.message || e) } }; } });
 // WU-D — per-browser operating configuration (Auto settings). The store owns only
 // user-entered config; it holds NO runtime truth and NO license authority. A saved
 // waitForJackpot:true is a REQUEST — autotest-start still enforces features.jackpotGate.
@@ -1147,7 +1223,21 @@ handle('select-run', (_event, runId) => {
   if (!runManager || !runManager.setActive(String(runId))) return { ok: false, error: { code: 'RUN_NOT_FOUND', message: 'Browser run not found' } };
   return { ok: true, activeRunId: runManager.activeRunId() };
 });
-handle('close-run', async (_event, runId) => { if (runManager) await runManager.closeRun(String(runId)); return { ok: true }; });
+// Part A — close an active Auto EXECUTION with an accurate terminal reason BEFORE the
+// subsystem is quiesced (quiesce's plain stop() would otherwise label it USER_STOP).
+// Idempotent + best-effort: a finished/never-started execution is a no-op.
+function finalizeAutoExecutionForRun(run, reason) {
+  try {
+    const ar = run && run.autoRunner;
+    if (ar && ar.finalizeExecution && ar.autoExecutionId && ar.autoExecutionId()) ar.finalizeExecution(reason);
+  } catch { /* terminal best-effort */ }
+}
+handle('close-run', async (_event, runId) => {
+  const run = runManager && runManager.get(String(runId));
+  if (run) finalizeAutoExecutionForRun(run, 'RUN_CLOSED');
+  if (runManager) await runManager.closeRun(String(runId));
+  return { ok: true };
+});
 // Manual reload of a run's in-app browser. Needed when the first load errors / the game socket
 // wasn't hooked in time (the page can look blank) and the user must reload themselves. Reloading
 // the same WebContents re-attaches instrumentation and re-injects the WS hook on the fresh load;
@@ -1243,8 +1333,17 @@ handle('autotest-start', async (_event, runId, config = {}) => {
   }
   // WU-D — snapshot the effective execution config for THIS run (§8.3): later UI edits
   // to the Auto form do not mutate an already-running session's behavior.
-  run._runConfig = { ...(config || {}) };
-  const res = run.autoRunner.start(String(run.selectedTargetId || ''), config || {});
+  const effectiveConfig = { ...(config || {}) };
+  // Part E — next-round random BET delay (0..1000ms). Enabled for authorized LOCAL/
+  // TEST/DEV-owned endpoints unless the caller already specified a policy. Public
+  // wagering endpoints are unaffected unless explicitly configured by the caller.
+  if (isLocalRunEndpoint(run) && effectiveConfig.nextRoundBetDelay == null && effectiveConfig.betDelayMaxMs == null) {
+    effectiveConfig.nextRoundBetDelay = true;
+    effectiveConfig.betDelayMinMs = 0;
+    effectiveConfig.betDelayMaxMs = 1000;
+  }
+  run._runConfig = effectiveConfig;
+  const res = run.autoRunner.start(String(run.selectedTargetId || ''), effectiveConfig);
   if (res.error) return res;
   // WU-D — arm the Stop-1000x session kill switch from the snapshot config. It watches
   // THIS run's authoritative odd and terminates only THIS run's Auto at >= 1000x.
