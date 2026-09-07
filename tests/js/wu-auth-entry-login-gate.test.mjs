@@ -75,7 +75,7 @@ test('wiring: autotest-start gates on login BEFORE Aviator entry (no cmd100000 i
   const main = rd('desktop/main.cjs');
   const startIdx = main.indexOf("handle('autotest-start'");
   assert.ok(startIdx > 0, 'autotest-start handler exists');
-  const body = main.slice(startIdx, startIdx + 1600);
+  const body = main.slice(startIdx, startIdx + 3200);
   const loginIdx = body.indexOf('LOGIN_REQUIRED');
   const gateCallIdx = body.indexOf('looksLikeLoginUrl(currentRunUrl(run))');
   const entryIdx = body.indexOf('entryGate.ensureEntered()');

@@ -12,9 +12,14 @@
 })(typeof window !== 'undefined' ? window : null, function () {
   'use strict';
 
+  // STRICT: accept ONLY a plain decimal literal. Mirrors desktop/protocol/numeric.cjs so the
+  // UI rejects the same footguns as the main authority — ''/whitespace, scientific (1e3), hex
+  // (0x10), trailing garbage (12abc), NaN/Infinity — instead of silently coercing them.
+  const DEC_RE = /^[+-]?(?:\d+(?:\.\d+)?|\.\d+)$/;
   function toNum(v) {
     const s = String(v == null ? '' : v).trim();
     if (s === '') return null;
+    if (!DEC_RE.test(s)) return NaN;
     const n = Number(s);
     return Number.isFinite(n) ? n : NaN;
   }
@@ -25,7 +30,7 @@
     const errors = {};
     const rc = toNum(raw.rounds);
     if (rc == null) errors.rounds = 'Required';
-    else if (!Number.isInteger(rc) || rc < 1) errors.rounds = 'Whole number ≥ 1';
+    else if (!Number.isInteger(rc) || rc < 1 || !Number.isSafeInteger(rc)) errors.rounds = 'Whole number ≥ 1';
 
     const amt = toNum(raw.amount);
     if (amt == null) errors.amount = 'Required';

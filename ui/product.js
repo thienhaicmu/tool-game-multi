@@ -1188,7 +1188,9 @@ renderActions();
   // WU-C.3 — Jackpot gate config (default OFF -> unchanged Auto behavior).
   const jpWaitBox = $('at-jp-wait');
   if (jpWaitBox) jpWaitBox.onchange = () => { const cfg = $('at-jp-config'); if (cfg) cfg.hidden = !jpWaitBox.checked; };
-  function parseJp(v) { const s = String(v == null ? '' : v).replace(/[,\s_]/g, ''); if (s === '') return null; const n = Number(s); return Number.isFinite(n) && n >= 0 ? n : null; }
+  // Jackpot threshold: strip thousands separators (deliberate for big numbers), then STRICT
+  // parse — reject scientific/hex/garbage/NaN so "" never becomes 0 and "1e9" is not accepted.
+  function parseJp(v) { const s = String(v == null ? '' : v).replace(/[,\s_]/g, ''); if (s === '') return null; if (!/^\d+(?:\.\d+)?$/.test(s)) return null; const n = Number(s); return Number.isFinite(n) && n >= 0 ? n : null; }
   $('at-day-filter').onchange = () => { selectedDay = $('at-day-filter').value || ''; render(); };
   $('at-day-today').onclick = () => { selectedDay = (snap && snap.currentDay) || localTodayKey(); render(); };
   $('at-day-all').onclick = () => { selectedDay = ''; render(); };

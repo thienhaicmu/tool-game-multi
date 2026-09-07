@@ -34,6 +34,7 @@ const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs')
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
 const { looksLikeLoginUrl } = require('./browser-run/login-signal.cjs');
+const { parseStrict } = require('./protocol/numeric.cjs');
 const { JackpotObserver } = require('./protocol/jackpot-observer.cjs');
 const { JackpotGate } = require('./protocol/jackpot-gate.cjs');
 const { Stop1000Guard } = require('./protocol/stop1000-guard.cjs');
@@ -368,10 +369,10 @@ function unsealProtocolClasses() {
   const { RoundTracker } = require('./protocol/aviator.cjs');
   const { ProtocolHarness } = require('./protocol/harness.cjs');
   const { RoundObserver } = require('./protocol/round-observer.cjs');
-  const { AutoRunner } = require('./protocol/auto-runner.cjs');
+  const { AutoRunner, validateConfig } = require('./protocol/auto-runner.cjs');
   const { AmountValidator } = require('./protocol/amount-validator.cjs');
   const { ProtocolContext } = require('./protocol/protocol-context.cjs');
-  protocolClasses = { RoundTracker, ProtocolHarness, RoundObserver, AutoRunner, AmountValidator, ProtocolContext };
+  protocolClasses = { RoundTracker, ProtocolHarness, RoundObserver, AutoRunner, AmountValidator, ProtocolContext, validateConfig };
   return protocolClasses;
 }
 
@@ -1206,6 +1207,20 @@ handle('autotest-start', async (_event, runId, config = {}) => {
   // WU-C.4 — feature entitlement (main-process authority; renderer cannot bypass).
   const ent = currentEntitlement();
   if (!ent.features.autoRun) return featureDenied('autoRun', 'Tính năng Chạy tự động không có trong giấy phép hiện tại.');
+  // INVALID INPUT MUST NOT START EXECUTION — validate the config (and the jackpot threshold,
+  // if waiting) BEFORE any side-effect. A bad roundCount/amount/stopOdd must be rejected here,
+  // never after entering Aviator (no cmd 100000, no jackpot wait) just to discover it later.
+  const C = unsealProtocolClasses();
+  const cfgCheck = C.validateConfig(config || {});
+  if (cfgCheck.error) return { error: cfgCheck.error };
+  let jackpotThreshold = null;
+  if (config && config.waitForJackpot) {
+    // WU-C.4 — Jackpot Gate requires the signed jackpotGate (which implies jackpotLive).
+    if (!ent.features.jackpotLive || !ent.features.jackpotGate) return featureDenied('jackpotGate', 'Tính năng Chờ Jackpot không có trong giấy phép hiện tại.');
+    const t = parseStrict(config.jackpotThreshold, { min: 0 }); // strict: no ''→0, no scientific/NaN
+    if (t.error) return { error: { code: 'INVALID_JACKPOT_THRESHOLD', message: 'Enter a valid minimum jackpot (a number >= 0).' } };
+    jackpotThreshold = t.value;
+  }
   // §14 — login gate BEFORE entry. If THIS run's page is a login/auth wall and the run is
   // not already in the game, do NOT drive it in (no cmd 100000 sent, no reload loop) — surface
   // a clear LOGIN_REQUIRED instead of a generic entry timeout. A page/HTTP 200 is NOT login
@@ -1222,15 +1237,9 @@ handle('autotest-start', async (_event, runId, config = {}) => {
   }
   // WU-C.3 — optional Jackpot gate AFTER entry: automated betting is released only
   // once THIS run's own authoritative jackpot reaches the configured threshold.
-  if (config && config.waitForJackpot) {
-    // WU-C.4 — Jackpot Gate requires the signed jackpotGate (which implies jackpotLive).
-    if (!ent.features.jackpotLive || !ent.features.jackpotGate) return featureDenied('jackpotGate', 'Tính năng Chờ Jackpot không có trong giấy phép hiện tại.');
-    const t = Number(config.jackpotThreshold);
-    if (!Number.isFinite(t) || t < 0) return { error: { code: 'INVALID_JACKPOT_THRESHOLD', message: 'Enter a valid minimum jackpot (a number >= 0).' } };
-    if (run.jackpotGate) {
-      const jg = await run.jackpotGate.ensureThreshold(t);
-      if (jg && jg.error) return { error: jg.error };
-    }
+  if (config && config.waitForJackpot && run.jackpotGate) {
+    const jg = await run.jackpotGate.ensureThreshold(jackpotThreshold);
+    if (jg && jg.error) return { error: jg.error };
   }
   // WU-D — snapshot the effective execution config for THIS run (§8.3): later UI edits
   // to the Auto form do not mutate an already-running session's behavior.

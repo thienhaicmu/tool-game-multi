@@ -3,6 +3,7 @@
 const EventEmitter = require('node:events');
 const { performance } = require('node:perf_hooks');
 const { CMD } = require('./aviator.cjs');
+const { parseStrict } = require('./numeric.cjs');
 
 // ---------------------------------------------------------------------------
 // AutoRunner — automated round runner.
@@ -39,16 +40,20 @@ function autoHostAllowed(host, extra = []) {
 }
 
 function validateConfig(cfg = {}) {
-  const rc = Number(cfg.roundCount);
-  if (!Number.isInteger(rc) || rc < 1) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'roundCount must be an integer >= 1' } };
-  const amt = Number(cfg.amount);
-  if (!Number.isFinite(amt) || amt <= 0) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'amount must be > 0' } };
-  const so = Number(cfg.stopOdd);
-  if (!Number.isFinite(so) || so <= 0) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'stopOdd must be > 0' } };
-  const aid = cfg.aid == null ? 1 : Number(cfg.aid);
-  const eid = cfg.eid == null ? 1 : Number(cfg.eid);
-  if (!Number.isInteger(aid) || aid < 0 || !Number.isInteger(eid) || eid < 0) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'aid/eid must be non-negative integers' } };
-  return { config: { roundCount: rc, amount: amt, stopOdd: so, aid, eid, betAckTimeoutMs: Number(cfg.betAckTimeoutMs) || 8000, cashoutAckTimeoutMs: Number(cfg.cashoutAckTimeoutMs) || 8000 } };
+  // STRICT parsing (no silent coercion): rejects ''/whitespace→0, scientific/hex strings,
+  // trailing garbage, NaN/Infinity, and (for counts) precision-losing huge integers. This is
+  // the main-process authority — it never trusts an already-coerced renderer payload (§layers).
+  const rc = parseStrict(cfg.roundCount, { integer: true, min: 1 });
+  if (rc.error) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'roundCount must be a whole number >= 1' } };
+  const amt = parseStrict(cfg.amount, { gt: 0 });
+  if (amt.error) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'amount must be a number > 0' } };
+  const so = parseStrict(cfg.stopOdd, { gt: 0 });
+  if (so.error) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'stopOdd must be a number > 0' } };
+  // aid/eid are session context (default 1); they are NOT user-editable in the product.
+  const aid = cfg.aid == null ? { value: 1 } : parseStrict(cfg.aid, { integer: true, min: 0 });
+  const eid = cfg.eid == null ? { value: 1 } : parseStrict(cfg.eid, { integer: true, min: 0 });
+  if (aid.error || eid.error) return { error: { code: 'INVALID_AUTO_TEST_CONFIG', message: 'aid/eid must be non-negative integers' } };
+  return { config: { roundCount: rc.value, amount: amt.value, stopOdd: so.value, aid: aid.value, eid: eid.value, betAckTimeoutMs: Number(cfg.betAckTimeoutMs) || 8000, cashoutAckTimeoutMs: Number(cfg.cashoutAckTimeoutMs) || 8000 } };
 }
 
 class AutoRunner extends EventEmitter {

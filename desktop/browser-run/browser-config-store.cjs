@@ -2,6 +2,7 @@
 
 const fsDefault = require('node:fs');
 const path = require('node:path');
+const { parseStrict } = require('../protocol/numeric.cjs');
 
 // ---------------------------------------------------------------------------
 // BrowserConfigStore — WU-D. Per-PersistentBrowser USER OPERATING CONFIGURATION,
@@ -30,12 +31,16 @@ const SCHEMA_VERSION = 1;
 // The exact whitelist of persisted operating-config fields, with validators and
 // defaults. Any key NOT in this list is rejected/ignored — this is the structural
 // guarantee that runtime truth and license authority can never leak into config.
+// Numeric fields use STRICT parsing (desktop/protocol/numeric.cjs) so a persisted config can
+// never carry ''/whitespace silently coerced to 0, a scientific/hex string, or a
+// precision-losing huge integer. allowNull keeps the "unset" state (null) legal.
+const num = (opts) => ({ valid: (v) => !parseStrict(v, opts).error, coerce: (v) => parseStrict(v, opts).value });
 const FIELDS = Object.freeze({
-  amount: { def: null, valid: (v) => v === null || (Number.isFinite(Number(v)) && Number(v) > 0), coerce: (v) => (v === null ? null : Number(v)) },
-  roundCount: { def: 1, valid: (v) => Number.isInteger(Number(v)) && Number(v) >= 1, coerce: (v) => Number(v) },
-  stopOdd: { def: null, valid: (v) => v === null || (Number.isFinite(Number(v)) && Number(v) > 0), coerce: (v) => (v === null ? null : Number(v)) },
+  amount: { def: null, ...num({ gt: 0, allowNull: true }) },
+  roundCount: { def: 1, ...num({ integer: true, min: 1 }) },
+  stopOdd: { def: null, ...num({ gt: 0, allowNull: true }) },
   waitForJackpot: { def: false, valid: (v) => typeof v === 'boolean', coerce: (v) => v === true },
-  jackpotThreshold: { def: null, valid: (v) => v === null || (Number.isFinite(Number(v)) && Number(v) >= 0), coerce: (v) => (v === null ? null : Number(v)) },
+  jackpotThreshold: { def: null, ...num({ min: 0, allowNull: true }) },
   stopAutoAt1000x: { def: false, valid: (v) => typeof v === 'boolean', coerce: (v) => v === true },
 });
 const FIELD_KEYS = Object.freeze(Object.keys(FIELDS));
