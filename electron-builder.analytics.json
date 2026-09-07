@@ -1,0 +1,42 @@
+{
+  "appId": "com.aviatoranalytics.desktop",
+  "productName": "Aviator Analytics",
+  "directories": {
+    "output": "release-analytics"
+  },
+  "files": [
+    "desktop/analytics-main.cjs",
+    "desktop/analytics-preload.cjs",
+    "desktop/analytics/**/*",
+    "desktop/browser/inapp-runtime.cjs",
+    "desktop/cdp/capture.cjs",
+    "desktop/cdp/errors.cjs",
+    "desktop/browser-run/browser-registry.cjs",
+    "desktop/protocol/frame-classify.cjs",
+    "desktop/protocol/jackpot-observer.cjs",
+    "ui-analytics/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "desktop/analytics-main.cjs",
+    "version": "0.1.0"
+  },
+  "artifactName": "Aviator Analytics Setup ${version}.${ext}",
+  "npmRebuild": false,
+  "buildDependenciesFromSource": false,
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true
+  }
+}

@@ -18,6 +18,7 @@ node_modules/
 pytest-cache-files-*/
 dist-electron/
 release/
+release-analytics/
 release2/
 release3/
 release4/
