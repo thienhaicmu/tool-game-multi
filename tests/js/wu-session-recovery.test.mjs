@@ -229,8 +229,10 @@ test('wiring: watchdog is per-run, started/stopped with the run lifecycle (no or
 
 test('wiring: evidence + actuators mapped to the current runtime (reuse, no second engine)', () => {
   const main = rd2('desktop/main.cjs');
-  // evidence
-  assert.match(main, /run\._lastAviatorMono = perfNow\(\)/, 'records last aviator frame time per run');
+  // evidence — §1: raw recv WS traffic (any frame) vs CLASSIFIED Aviator freshness are DISTINCT.
+  assert.match(main, /run\._lastWsRecvMono = perfNow\(\)/, 'records last ANY recv WS traffic per run');
+  assert.match(main, /run\._lastAviatorFrameMono = perfNow\(\)/, 'records last CLASSIFIED aviator frame time per run');
+  assert.match(main, /AVIATOR_EVIDENCE_CMDS\.has\(ev\.cmd\) \|\| ev\.jp != null/, 'aviator freshness is classified server evidence only (not lobby chatter)');
   assert.match(main, /run\._wsConnected = false/, 'records WS close as evidence');
   assert.match(main, /render-process-gone|unresponsive/, 'renderer health feeds the same model');
   // actuators reuse existing mechanisms

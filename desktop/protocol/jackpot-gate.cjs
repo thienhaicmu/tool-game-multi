@@ -59,7 +59,7 @@ class JackpotGate extends EventEmitter {
   // Cancel a pending wait. Later jackpot updates must NOT release it (§38/§39/§40).
   cancel(reason = 'CANCELLED') {
     const p = this._pending;
-    if (p && !p.done) { p.done = true; this._pending = null; this._setState(STATE.IDLE); p.resolve({ error: { code: 'JACKPOT_GATE_CANCELLED', message: String(reason) } }); return; }
+    if (p && !p.done) { p.done = true; this._pending = null; this._setState(STATE.IDLE); p.resolve({ error: { code: 'JACKPOT_GATE_CANCELLED', message: String(reason), reason: String(reason) } }); return; }
     this._setState(STATE.IDLE);
   }
   onDisconnect() { this.cancel('DISCONNECTED'); }

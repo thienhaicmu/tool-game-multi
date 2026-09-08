@@ -99,8 +99,19 @@ function renderHome(s) {
   $('home-name').textContent = s.displayName || s.browserId;
   $('home-meta').textContent = `${s.browserId} · ${s.configuredUrl || ''}`;
   $('chip-web').textContent = 'Website: ' + (s.open ? 'Đã mở' : 'Đã đóng');
-  $('chip-capture').textContent = 'Thu thập: ' + (s.open ? '● ĐANG THU THẬP' : 'Tạm dừng');
-  $('chip-capture').classList.toggle('on', !!s.open);
+  // Collection status reflects the ACTUAL Aviator context, not merely whether the browser is
+  // open (WU-CONTEXT §9). "ĐANG THU THẬP" only when authoritative Aviator evidence is flowing;
+  // otherwise the user is told to (re)enter the game while the passive collector stays attached.
+  const ctx = s.aviatorContext;
+  let captureText = 'Tạm dừng';
+  let capturing = false;
+  if (s.open) {
+    if (ctx === 'AVIATOR_ACTIVE') { captureText = '● ĐANG THU THẬP'; capturing = true; }
+    else if (ctx === 'AVIATOR_VERIFYING') { captureText = 'ĐANG KIỂM TRA GAME'; }
+    else { captureText = 'CẦN VÀO LẠI GAME'; } // AVIATOR_CONTEXT_LOST or AVIATOR_UNKNOWN (not in game yet)
+  }
+  $('chip-capture').textContent = 'Thu thập: ' + captureText;
+  $('chip-capture').classList.toggle('on', capturing);
   $('m-sid').textContent = fmtNum(s.currentSid); $('m-odd').textContent = fmtOdd(s.currentOdd); $('m-jp').textContent = fmtNum(s.currentJackpot);
   $('home-open').textContent = s.open ? 'TRÌNH DUYỆT ĐANG MỞ' : 'MỞ TRÌNH DUYỆT';
 }

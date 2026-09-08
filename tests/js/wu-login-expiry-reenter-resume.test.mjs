@@ -152,6 +152,6 @@ test('wiring: REQUIRE_USER_ACTION preserves the pause (no resume) and logs it', 
 
 test('wiring: freshness is generation-scoped (fresh Aviator frame strictly after recovery start)', () => {
   const main = rd('desktop/main.cjs');
-  assert.match(main, /freshAviatorSinceRecovery: started != null && run\._lastAviatorMono != null && run\._lastAviatorMono > started/, 'old ODD/SID cannot satisfy a new generation');
+  assert.match(main, /freshAviatorSinceRecovery: started != null && run\._lastAviatorFrameMono != null && run\._lastAviatorFrameMono > started/, 'old ODD/SID cannot satisfy a new generation (classified aviator freshness)');
   assert.match(main, /run\.entryGate\.ensureEntered\(\)/, 'REENTER reuses the existing AviatorEntryGate (no duplicate cmd100000 sender)');
 });

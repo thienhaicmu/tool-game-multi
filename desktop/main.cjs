@@ -38,6 +38,7 @@ const { DiagnosticLog } = require('./diagnostics/diagnostic-log.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
+const { AviatorContextTracker, ACTION: CTX_ACTION, AVIATOR_EVIDENCE_CMDS } = require('./protocol/aviator-context.cjs');
 const { looksLikeLoginUrl } = require('./browser-run/login-signal.cjs');
 const { parseStrict } = require('./protocol/numeric.cjs');
 const { JackpotObserver } = require('./protocol/jackpot-observer.cjs');
@@ -537,6 +538,20 @@ function buildProtocolSubsystem(run) {
   const jackpotGate = new JackpotGate({ observer: jackpotObserver });
   jackpotGate.on('state', () => scheduleRunsBroadcast());
 
+  // Aviator-CONTEXT freshness (§1): the ONLY authoritative Aviator server evidence is a
+  // classified recv round-lifecycle/ODD frame or a Jackpot (eI.jp) frame. This is DISTINCT
+  // from lastWsRecvMono (any recv WS traffic, set in the capture router) — lobby/website
+  // chatter must never read as Aviator freshness. Drives the per-run AviatorContextTracker.
+  aviator.on('frame', (ev) => {
+    if (!ev || ev.direction !== 'recv') return;
+    if (AVIATOR_EVIDENCE_CMDS.has(ev.cmd) || ev.jp != null) run._lastAviatorFrameMono = perfNow();
+  });
+  // WU-CONTEXT — per-run "browser healthy but Aviator context lost" tracker (§2). Owned by
+  // THIS run; ticked/actuated by the wiring below. It handles the lobby-kick case the session
+  // watchdog misses (page/login/WS healthy, Aviator-classified frames silent).
+  const aviatorContext = new AviatorContextTracker({ config: CONTEXT_CONFIG });
+  aviatorContext.on('state', () => scheduleRunsBroadcast());
+
   // WU-D — Stop-1000x Auto session kill switch. Reads THIS run's OWN authoritative
   // odd (RoundObserver), not AutoRunner's per-round listener, so it can still observe
   // 1000x after a per-round cashout. Terminates only THIS run's AutoRunner. Isolated.
@@ -573,7 +588,10 @@ function buildProtocolSubsystem(run) {
   // automation after READY — public wagering endpoints require explicit user action.
   const recovery = new SessionRecoveryWatchdog({
     config: RECOVERY_CONFIG,
-    isLocalEndpoint: () => isLocalRunEndpoint(run),
+    // FULL AUTO RECOVERY — the watchdog's RESUME_AUTOMATION vs REQUIRE_USER_ACTION choice is driven
+    // by this policy. In the authorized environment it resolves true, so a recovery-to-READY resumes
+    // the SAME paused execution automatically (§6). The pure state machine is unchanged.
+    isLocalEndpoint: () => autoResumeAllowed(run),
   });
   recovery.on('state', (ev) => {
     scheduleRunsBroadcast();
@@ -600,7 +618,7 @@ function buildProtocolSubsystem(run) {
   // PAUSE emits no executionFinalized, so it stays on the current row (same autoExecutionId).
   autoRunner.on('executionFinalized', (rec) => { try { autoSequence.onExecutionFinalized(rec); } catch { /* outer-loop best-effort */ } });
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery };
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery, aviatorContext };
 }
 
 // Recovery thresholds are centralised (never scattered). Conservative in production; a fast
@@ -609,6 +627,11 @@ const RECOVERY_CONFIG = process.env.OBSERVATORY_RECOVERY_FAST === '1'
   ? { suspectNoAviatorMs: 4000, verifyWindowMs: 2000, waitPageMs: 12000, waitAviatorMs: 12000, maxAttempts: 3, retryDelayMs: 1500 }
   : { suspectNoAviatorMs: 20000, verifyWindowMs: 6000, waitPageMs: 20000, waitAviatorMs: 20000, maxAttempts: 3, retryDelayMs: 3000 };
 const RECOVERY_TICK_MS = process.env.OBSERVATORY_RECOVERY_FAST === '1' ? 1000 : 3000;
+// Aviator-context thresholds (§2/§3). freshMs MUST exceed a normal between-round gap so quiet
+// pauses never read as loss. Conservative in production; fast profile for the acceptance harness.
+const CONTEXT_CONFIG = process.env.OBSERVATORY_RECOVERY_FAST === '1'
+  ? { freshMs: 4000, verifyWindowMs: 2000, maxReentryAttempts: 3 }
+  : { freshMs: 20000, verifyWindowMs: 6000, maxReentryAttempts: 3 };
 const perfNow = () => performance.now();
 const _recoveryWatch = new Map(); // runId -> { interval, wc, listeners:[{ev,fn}] } — per-run, no global timer
 
@@ -620,6 +643,17 @@ function isLocalRunEndpoint(run) {
   if (host === '127.0.0.1' || host === 'localhost' || host === '::1' || host === '[::1]') return true;
   const allow = (process.env.OBSERVATORY_TEST_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
   return allow.includes(host);
+}
+// FULL AUTO RECOVERY (environment policy). This is an OWNED/AUTHORIZED dev-test environment where
+// the required product behavior is that a RECOVERABLE interruption (Aviator context-loss, WS/page
+// recovery, re-entry) never downgrades to a manual "continue" step: once the user pressed START the
+// Auto intent stays active until an EXISTING legitimate terminal condition. So auto-resume after a
+// recovery-to-READY is allowed for ANY endpoint by default. The prior endpoint-based user-action
+// gate remains available as an explicit opt-out (OBSERVATORY_REQUIRE_USER_RESUME=1) — it never
+// weakens the in-flight-action / stale-SID safety, which is enforced independently by AutoRunner.
+function autoResumeAllowed(run) {
+  if (process.env.OBSERVATORY_REQUIRE_USER_RESUME === '1') return isLocalRunEndpoint(run);
+  return true;
 }
 // Invalidate a run's EPHEMERAL protocol state (stale SID/ODD/socket/session-ids/entry/jackpot),
 // exactly like a real socket loss. Reused by the target-removed handler and recovery INVALIDATE.
@@ -658,9 +692,11 @@ function ensureRunManager() {
     if (!req || !req.isWebSocket || !req.wsDirection) return;
     const run = runManager.runForTarget(req.targetId);
     if (run && run.aviator) run.aviator.observe({ targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url, direction: req.wsDirection, raw: req.body && req.body.raw });
-    // Recovery evidence: a live WS frame proves the owning socket is up and Aviator traffic is
-    // flowing. Recorded per-run (monotonic), never global — the watchdog reads these.
-    if (run && req.wsDirection === 'recv') { run._lastAviatorMono = perfNow(); run._wsConnected = true; }
+    // Recovery evidence: a live recv WS frame proves the owning socket is up and SOME traffic is
+    // flowing (§1: lastWsRecvMono = ANY recv WS traffic, incl. lobby/website chatter). Recorded
+    // per-run (monotonic), never global. Aviator-CLASSIFIED freshness (lastAviatorFrameMono) is
+    // tracked separately from the classified frame stream — lobby chatter is NOT Aviator freshness.
+    if (run && req.wsDirection === 'recv') { run._lastWsRecvMono = perfNow(); run._wsConnected = true; }
   });
   // Recovery evidence: a WebSocket close means the owning Aviator socket is gone (page may stay).
   capture.on('update', req => {
@@ -744,27 +780,37 @@ function gatherEvidence(run) {
     autoIntent: autoRunning || run._autoIntentLatch === true,
     inflightAckPending: /ACK|AWAIT/i.test(String(autoState)),
     observerStatus: run.observer && run.observer.status ? run.observer.status() : 'IDLE',
-    lastAviatorMono: run._lastAviatorMono != null ? run._lastAviatorMono : null,
+    lastAviatorMono: run._lastAviatorFrameMono != null ? run._lastAviatorFrameMono : null,
     wsConnected: run._wsConnected !== false,
     rendererAlive: alive,
     onConfiguredHost: onHost,
     loginDetected: looksLikeLoginUrl(url),
     instrumentationReady: started != null && run._pageLoadedMono != null && run._pageLoadedMono > started && run._wsConnected === true,
-    freshAviatorSinceRecovery: started != null && run._lastAviatorMono != null && run._lastAviatorMono > started,
+    freshAviatorSinceRecovery: started != null && run._lastAviatorFrameMono != null && run._lastAviatorFrameMono > started,
     workerLost: false,
   };
 }
 function recoveryTick(run) {
   if (!run || !run.recovery || run.status === RUN_STATUS.CLOSED) return;
-  if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) {
+  const autoRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
+  // §4 — an active Auto INTENT is not only a running AutoRunner. A JackpotGate that is actively
+  // waiting (the WAITING_JACKPOT phase runs BEFORE autoRunner.start()) is an equally authoritative
+  // intent, as is a recovery-paused execution awaiting resume. Latch any of them.
+  const jackpotWaiting = !!(run.jackpotGate && run.jackpotGate.isWaiting && run.jackpotGate.isWaiting());
+  const pausedForRecovery = !!(run.autoRunner && run.autoRunner.pausedForRecovery && run.autoRunner.pausedForRecovery());
+  if (autoRunning || jackpotWaiting || pausedForRecovery) {
     run._autoIntentLatch = true;
     // User manually restarted automation after a public "cần tiếp tục thủ công" → clear that flag.
-    try { if (run.recovery.snapshot().userActionRequired) run.recovery.reset(); } catch {}
+    try { if (autoRunning && run.recovery.snapshot().userActionRequired) run.recovery.reset(); } catch {}
   }
   const ev = gatherEvidence(run);
   const { actions } = run.recovery.tick(ev);
   for (const a of actions) applyRecoveryAction(run, a, ev);
   if (actions.length) { run.recoveryState = run.recovery.snapshot(); scheduleRunsBroadcast(); }
+  // WU-CONTEXT — the Aviator-context tracker runs ONLY while the session watchdog is otherwise
+  // HEALTHY (renderer/WS/login failures are the watchdog's domain; this handles the healthy-page
+  // lobby-kick the watchdog misses). This ordering guarantees the two never fight over one run.
+  aviatorContextTick(run);
 }
 function applyRecoveryAction(run, action, ev) {
   const wc = inappRuntime.webContents(run.id);
@@ -774,7 +820,7 @@ function applyRecoveryAction(run, action, ev) {
       break;
     case RECOVERY_ACTION.INVALIDATE_STATE:
       invalidateRunProtocolState(run);
-      run._wsConnected = false; run._lastAviatorMono = null; run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
+      run._wsConnected = false; run._lastAviatorFrameMono = null; run._lastWsRecvMono = null; run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
       break;
     case RECOVERY_ACTION.FOCUS_VIEW:
       try { inappRuntime.focus(run.id); } catch {}
@@ -835,6 +881,95 @@ function resumePausedAuto(run) {
   // Re-arm the Stop-1000x kill switch from the same snapshot config (parity with a normal start).
   if (run.stop1000) run.stop1000.arm(cfg);
   try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: 'AUTO_RESUMED', autoExecutionId: execId, recoveryCount }); } catch { /* best effort */ }
+}
+
+// WU-CONTEXT — evaluate the "browser healthy but Aviator context lost" tracker for ONE run.
+// Deliberately deferred while the session watchdog is doing its own job (any non-HEALTHY state):
+// renderer/WS/login recovery takes priority and this must never compete with it (§3).
+function aviatorContextTick(run) {
+  if (!run || !run.aviatorContext || run.status === RUN_STATUS.CLOSED) return;
+  let recState = 'HEALTHY';
+  try { recState = run.recovery && run.recovery.state ? run.recovery.state() : 'HEALTHY'; } catch { recState = 'HEALTHY'; }
+  if (recState !== 'HEALTHY') { run.aviatorContextState = run.aviatorContext.state(); return; }
+  const now = perfNow();
+  const wc = inappRuntime.webContents(run.id);
+  const alive = !!(wc && !wc.isDestroyed()) && !run._rendererGone && !run._unresponsive;
+  const url = currentRunUrl(run);
+  const wsConnected = run._wsConnected !== false;
+  const pageHealthy = alive && wsConnected && !looksLikeLoginUrl(url);
+  const autoRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
+  const jackpotWaiting = !!(run.jackpotGate && run.jackpotGate.isWaiting && run.jackpotGate.isWaiting());
+  const pausedForRecovery = !!(run.autoRunner && run.autoRunner.pausedForRecovery && run.autoRunner.pausedForRecovery());
+  // §4 — an active reason to expect Aviator: running Auto, a waiting Jackpot gate, a paused
+  // execution awaiting resume, or an in-flight context re-entry. NOT derived solely from isRunning().
+  const hasIntent = autoRunning || jackpotWaiting || pausedForRecovery || run._ctxReentryInFlight === true;
+  const ev = {
+    now,
+    lastAviatorMono: run._lastAviatorFrameMono != null ? run._lastAviatorFrameMono : null,
+    lastWsRecvMono: run._lastWsRecvMono != null ? run._lastWsRecvMono : null,
+    pageHealthy,
+    hasIntent,
+    reentryInFlight: run._ctxReentryInFlight === true,
+  };
+  const { actions, state } = run.aviatorContext.tick(ev);
+  const changed = run.aviatorContextState !== state;
+  run.aviatorContextState = state;
+  for (const a of actions) applyAviatorContextAction(run, a, ev);
+  if (changed || actions.length) scheduleRunsBroadcast();
+}
+
+function applyAviatorContextAction(run, action, ev) {
+  switch (action) {
+    case CTX_ACTION.REENTER: {
+      // §5 — verified: login OK + renderer healthy + page healthy + AVIATOR_CONTEXT_LOST.
+      // Re-enter WITHOUT a full website reload and WITHOUT tearing down the Jackpot wait.
+      const wasRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
+      if (wasRunning) { try { run.autoRunner.stop({ reason: 'SESSION_RECOVERY' }); } catch { /* best effort */ } }
+      run._ctxReentryInFlight = true;
+      run._ctxResumeAfterReentry = wasRunning;   // WAITING_ROUND resumes the SAME execution once ACTIVE
+      try { runDiag(run).log({ level: 'WARN', category: 'RECOVERY', event: 'AVIATOR_CONTEXT_LOST_REENTER', autoExecutionId: (run.autoRunner && run.autoRunner.autoExecutionId) ? run.autoRunner.autoExecutionId() : null }); } catch { /* best effort */ }
+      // Invalidate ONLY entry readiness so ensureEntered requires FRESH server evidence (§5 invariant:
+      // cmd100000 SENT != ENTERED). Never invalidate the Jackpot gate/observer here — the WAITING_JACKPOT
+      // wait must survive with its SAME configured threshold (§6).
+      try { if (run.entryGate) run.entryGate.onDisconnect(); } catch { /* best effort */ }
+      const done = () => { run._ctxReentryInFlight = false; try { if (run.aviatorContext) run.aviatorContext.reentryFinished(); } catch { /* best effort */ } };
+      try {
+        if (run.entryGate && run.entryGate.ensureEntered) {
+          run.entryGate.ensureEntered().then((res) => { done(); if (res && res.ready) onAviatorReentered(run); }).catch(() => done());
+        } else { done(); }
+      } catch { done(); }
+      break;
+    }
+    case CTX_ACTION.ESCALATE_FULL_RECOVERY:
+      // §5 fallback — bounded light re-entry exhausted. Hand off to the existing session-recovery
+      // watchdog by marking the owning socket lost; its proven WS_CLOSED → invalidate → reload/
+      // navigate → REENTER → fresh-evidence pipeline takes over (and a WAITING_JACKPOT wait is
+      // re-armed inside startAutoExecution after the DISCONNECTED cancel).
+      try { runDiag(run).log({ level: 'WARN', category: 'RECOVERY', event: 'AVIATOR_CONTEXT_ESCALATE_FULL_RECOVERY' }); } catch { /* best effort */ }
+      run._wsConnected = false;
+      run._ctxReentryInFlight = false;
+      try { if (run.aviatorContext) run.aviatorContext.reset(); } catch { /* best effort */ }
+      break;
+    default:
+      break;
+  }
+}
+
+// Fresh authoritative Aviator evidence arrived after a light context re-entry.
+function onAviatorReentered(run) {
+  // WAITING_JACKPOT: nothing to do — the still-pending JackpotGate wait (never cancelled on the
+  // light path) resumes itself once fresh jackpot frames flow (§6). Only a paused Auto EXECUTION
+  // (WAITING_ROUND) needs an explicit resume, and only under the same local/public policy the
+  // session watchdog uses — public wagering endpoints require an explicit user resume (§7).
+  if (!run._ctxResumeAfterReentry) return;
+  run._ctxResumeAfterReentry = false;
+  const ar = run.autoRunner;
+  if (!ar || !(ar.pausedForRecovery && ar.pausedForRecovery())) return;
+  // FULL AUTO RECOVERY — resume the SAME paused execution automatically (§6). Only the explicit
+  // OBSERVATORY_REQUIRE_USER_RESUME opt-out keeps the legacy manual-continue behavior.
+  if (autoResumeAllowed(run)) { resumePausedAuto(run); return; }
+  run._autoIntentLatch = false;
+  try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: 'AVIATOR_CONTEXT_REQUIRE_USER_ACTION', autoExecutionId: ar.autoExecutionId ? ar.autoExecutionId() : null }); } catch { /* best effort */ }
 }
 
 // WU-C.1 — the run rail now shows PERSISTENT browsers. A browser summary joins the
@@ -1483,6 +1618,32 @@ function autoSnapshot(run) {
 // sender. `opts.sequenceNext` marks an outer-loop next-row start: it is unconditionally a
 // NEW execution (never resumeExecutionId); only the FIRST/user path preserves recovery
 // resume continuity (§11). Returns { ok, autoExecutionId, snapshot } | { error }.
+// §6 — bounded wait for Aviator to be genuinely re-entered after a full session recovery that
+// cancelled a pending Jackpot wait. Resolves { ok:true } on fresh authoritative entry evidence,
+// or { ok:false, error } if recovery terminally fails / login is required / the run closes / times
+// out. It never sends anything — the session watchdog owns the re-entry; this only awaits the result.
+function waitForAviatorReentry(run, timeoutMs) {
+  const cap = Number.isFinite(Number(timeoutMs)) ? Number(timeoutMs) : (process.env.OBSERVATORY_RECOVERY_FAST === '1' ? 60000 : 180000);
+  return new Promise((resolve) => {
+    const entered = () => !!(run.entryGate && run.entryGate.isEntered && run.entryGate.isEntered());
+    if (entered()) return resolve({ ok: true });
+    let done = false;
+    const finish = (r) => { if (done) return; done = true; try { clearInterval(iv); } catch { /* noop */ } try { clearTimeout(to); } catch { /* noop */ } try { if (run.entryGate && run.entryGate.off) run.entryGate.off('entered', onEntered); } catch { /* noop */ } resolve(r); };
+    const onEntered = () => finish({ ok: true });
+    try { if (run.entryGate && run.entryGate.on) run.entryGate.on('entered', onEntered); } catch { /* noop */ }
+    const iv = setInterval(() => {
+      if (run.status === RUN_STATUS.CLOSED) return finish({ ok: false, error: { code: 'RUN_CLOSED', message: 'Run closed during Aviator re-entry' } });
+      let rs = null; try { rs = run.recovery && run.recovery.state ? run.recovery.state() : null; } catch { rs = null; }
+      if (rs === 'RECOVERY_FAILED') return finish({ ok: false, error: { code: 'RECOVERY_FAILED', message: 'Session recovery failed during Aviator re-entry' } });
+      if (rs === 'LOGIN_REQUIRED') return finish({ ok: false, error: { code: 'LOGIN_REQUIRED', message: 'Cần đăng nhập — hãy đăng nhập vào game trước khi Chạy tự động.' } });
+      if (entered()) return finish({ ok: true });
+    }, process.env.OBSERVATORY_RECOVERY_FAST === '1' ? 250 : 1000);
+    if (iv.unref) iv.unref();
+    const to = setTimeout(() => finish({ ok: false, error: { code: 'AVIATOR_REENTRY_TIMEOUT', message: 'Aviator was not re-entered in time after recovery' } }), cap);
+    if (to.unref) to.unref();
+  });
+}
+
 async function startAutoExecution(run, config = {}, opts = {}) {
   // WU-C.4 — feature entitlement (main-process authority; renderer cannot bypass).
   const ent = currentEntitlement();
@@ -1511,9 +1672,25 @@ async function startAutoExecution(run, config = {}, opts = {}) {
     if (gate && gate.error) return { error: gate.error };
   }
   // WU-C.3 — optional Jackpot gate AFTER entry.
+  // §6 — WAITING_JACKPOT must survive an Aviator-context loss. On the healthy-page light re-entry
+  // path the gate is never cancelled (its wait simply keeps running). On the full-recovery path
+  // (WS actually closed) the gate is cancelled with reason DISCONNECTED — that must NOT abandon the
+  // user's Auto request: wait for Aviator to be re-entered, then RE-ARM the SAME threshold. A user
+  // STOP (reason STOPPED) or any other error still aborts. The comparator/business rule is unchanged.
   if (config && config.waitForJackpot && run.jackpotGate) {
-    const jg = await run.jackpotGate.ensureThreshold(jackpotThreshold);
-    if (jg && jg.error) return { error: jg.error };
+    for (;;) {
+      const jg = await run.jackpotGate.ensureThreshold(jackpotThreshold);
+      if (jg && jg.ready) break;
+      if (jg && jg.error) {
+        if (jg.error.code === 'JACKPOT_GATE_CANCELLED' && jg.error.reason === 'DISCONNECTED') {
+          const re = await waitForAviatorReentry(run);
+          if (re && re.ok) continue;                 // re-arm ensureThreshold with the SAME threshold
+          return { error: (re && re.error) || jg.error };
+        }
+        return { error: jg.error };
+      }
+      break;
+    }
   }
   // WU-D — snapshot the effective execution config for THIS run (§8.3).
   const effectiveConfig = { ...(config || {}) };

@@ -82,6 +82,7 @@ class BrowserRunManager extends EventEmitter {
       aviator: null, protocolContext: null, observer: null,
       harness: null, autoRunner: null, amountValidator: null, entryGate: null,
       jackpotObserver: null, jackpotGate: null, stop1000: null, autoSequence: null,
+      recovery: null, aviatorContext: null,
     };
     run.launcher = this._createLauncher(run);
     const subsystem = this._buildSubsystem(run) || {};
@@ -97,6 +98,7 @@ class BrowserRunManager extends EventEmitter {
     run.stop1000 = subsystem.stop1000 || null;   // WU-D per-run Auto session kill switch
     run.autoSequence = subsystem.autoSequence || null; // WU-AUTO-SEQUENCE per-run multi-row sequence owner
     run.recovery = subsystem.recovery || null;    // Part C per-run session-recovery watchdog
+    run.aviatorContext = subsystem.aviatorContext || null; // WU-CONTEXT per-run Aviator-context tracker
 
     this._runs.set(id, run);
     this._order.push(id);
@@ -270,6 +272,8 @@ class BrowserRunManager extends EventEmitter {
       terminationReason: run.autoRunner && run.autoRunner.snapshot ? (run.autoRunner.snapshot().terminationReason || null) : null,
       // Part C — per-run session-recovery health (view-only; ownership is structural, never the UI selection).
       recoveryState: run.recovery && run.recovery.snapshot ? run.recovery.snapshot() : null,
+      // WU-CONTEXT — per-run "browser healthy but Aviator context lost" state (view-only).
+      aviatorContextState: run.aviatorContext && run.aviatorContext.state ? run.aviatorContext.state() : 'AVIATOR_UNKNOWN',
       error: run.error || null,
     };
   }

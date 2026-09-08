@@ -3,6 +3,7 @@
 const EventEmitter = require('node:events');
 const { classifyFrame, CMD } = require('../protocol/frame-classify.cjs');
 const { JackpotObserver } = require('../protocol/jackpot-observer.cjs');
+const { deriveState, STATE: CTX_STATE, DEFAULTS: CTX_DEFAULTS, AVIATOR_EVIDENCE_CMDS } = require('../protocol/aviator-context.cjs');
 
 // ---------------------------------------------------------------------------
 // AnalyticsLiveState — M2 passive live view for ONE Analytics browser profile.
@@ -24,7 +25,7 @@ const DEFAULT_MAX_EVENTS = 200;
 const WS_STATUS = Object.freeze({ IDLE: 'IDLE', CONNECTED: 'CONNECTED', DISCONNECTED: 'DISCONNECTED' });
 
 class AnalyticsLiveState extends EventEmitter {
-  constructor({ browserId, maxEvents = DEFAULT_MAX_EVENTS, now } = {}) {
+  constructor({ browserId, maxEvents = DEFAULT_MAX_EVENTS, now, contextConfig } = {}) {
     super();
     this.browserId = browserId != null ? String(browserId) : null;
     this._maxEvents = Math.max(1, Number(maxEvents) || DEFAULT_MAX_EVENTS);
@@ -34,6 +35,13 @@ class AnalyticsLiveState extends EventEmitter {
     this._currentSid = null;    // from recv ROUND_OPEN / ROUND_SNAPSHOT
     this._currentOdd = null;    // from recv ODD / ROUND_END
     this._wsStatus = WS_STATUS.IDLE;
+    // §1/§9 — two DISTINCT passive freshness signals. lastWsRecvMono = ANY recv WS traffic
+    // (incl. lobby/website chatter → the page is still alive). lastAviatorFrameMono = ONLY
+    // classified authoritative Aviator server evidence (round lifecycle / ODD / Jackpot). Lobby
+    // chatter must never refresh Aviator freshness. Both feed the passive context state.
+    this._lastWsRecvMono = null;
+    this._lastAviatorFrameMono = null;
+    this._contextCfg = { ...CTX_DEFAULTS, ...(contextConfig || {}) };
     // Reuse the approved recv-only, unsealed JackpotObserver. It listens to a
     // 'frame' event; we feed it a minimal adapter emitter (no RoundTracker, so no
     // sealed/action graph is pulled in).
@@ -54,7 +62,13 @@ class AnalyticsLiveState extends EventEmitter {
 
     // Round truth transitions are RECV-authoritative only. A website SEND frame is
     // stored as evidence but NEVER mutates sid/odd (and never triggers any action).
-    if (direction === 'RECV') this._applyRecv(cls);
+    if (direction === 'RECV') {
+      this._applyRecv(cls);
+      // §1 — freshness signals (recv only). ANY recv traffic keeps lastWsRecvMono fresh; only
+      // classified Aviator server evidence (round/ODD/jackpot) refreshes lastAviatorFrameMono.
+      this._lastWsRecvMono = at;
+      if (AVIATOR_EVIDENCE_CMDS.has(cls.cmd) || cls.jp != null) this._lastAviatorFrameMono = at;
+    }
 
     // Jackpot authority (recv-only) is enforced inside JackpotObserver itself.
     this._frameBus.emit('frame', { direction: direction === 'SEND' ? 'send' : 'recv', jp: cls.jp, cmd: cls.cmd, sid: cls.sid });
@@ -103,6 +117,8 @@ class AnalyticsLiveState extends EventEmitter {
     this._currentSid = null;
     this._currentOdd = null;
     this._wsStatus = WS_STATUS.DISCONNECTED;
+    this._lastWsRecvMono = null;
+    this._lastAviatorFrameMono = null;
     try { this._jackpot.onDisconnect(); } catch { /* best effort */ }
     this.emit('update', null);
   }
@@ -111,18 +127,35 @@ class AnalyticsLiveState extends EventEmitter {
   currentOdd() { return this._currentOdd; }
   currentJackpot() { return this._jackpot.current(); }
   wsStatus() { return this._wsStatus; }
+
+  // §9 — passive Aviator-context health, derived from the two freshness signals. Strictly
+  // observational: the collector stays attached; this never sends or re-enters anything.
+  // pageHealthy = the socket is connected AND non-Aviator traffic is still flowing (lobby is
+  // alive) — that is exactly the "browser healthy but Aviator context lost" corroboration.
+  aviatorContext() {
+    const now = this._now();
+    const lastWsRecvFresh = this._lastWsRecvMono != null && (now - this._lastWsRecvMono) <= this._contextCfg.freshMs;
+    const pageHealthy = this._wsStatus === WS_STATUS.CONNECTED && lastWsRecvFresh;
+    return deriveState({ now, lastAviatorMono: this._lastAviatorFrameMono, lastWsRecvMono: this._lastWsRecvMono, pageHealthy, hasIntent: true }, this._contextCfg);
+  }
   recentEvents(limit) {
     if (limit == null) return this._events.map((e) => ({ ...e }));
     return this._events.slice(-Math.max(0, Number(limit) || 0)).map((e) => ({ ...e }));
   }
 
   snapshot({ events = true, eventsLimit } = {}) {
+    const aviatorContext = this.aviatorContext();
+    // §9 — after CONFIRMED context loss, do NOT present frozen SID/ODD/Jackpot as current live
+    // values. They become unavailable (null → "—" in the UI) until fresh Aviator evidence returns.
+    // Historical (DB) rounds are a separate path and are never touched here.
+    const lost = aviatorContext === CTX_STATE.CONTEXT_LOST;
     return {
       browserId: this.browserId,
       wsStatus: this._wsStatus,
-      currentSid: this._currentSid,
-      currentOdd: this._currentOdd,
-      currentJackpot: this._jackpot.current(),
+      aviatorContext,
+      currentSid: lost ? null : this._currentSid,
+      currentOdd: lost ? null : this._currentOdd,
+      currentJackpot: lost ? null : this._jackpot.current(),
       jackpotObservedAt: this._jackpot.snapshot().jackpotObservedAt,
       eventCount: this._events.length,
       events: events ? this.recentEvents(eventsLimit) : undefined,
