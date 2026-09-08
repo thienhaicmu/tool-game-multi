@@ -1,5 +1,7 @@
 'use strict';
 
+const { runEnterAviatorHandshake } = require('../protocol/aviator-entry-descriptor.cjs');
+
 // CDP has NO command to inject a WebSocket frame, so resending a captured frame
 // means calling `.send()` on the page's own live socket. We install a tiny hook
 // that tracks sockets as they are constructed, with a send-wrapper fallback for
@@ -119,6 +121,16 @@ class WsReplay {
     } catch (e) {
       return { ok: false, error: { code: 'PROTOCOL_SEND_FAILED', message: String(e && e.message || e) } };
     }
+  }
+
+  // Semantic recovery operation: run the sealed lobby→Aviator ENTER handshake (game-act POST →
+  // lobbyPlugin 10002 → aviatorPlugin 100000) through this run's OWN authenticated page context.
+  // descriptor = the run's LEARNED, validated game-act descriptor (never caller-supplied). This
+  // reuses the run's resolveClient; the handshake logic + baked frames live in the shared seam.
+  async enterAviator(ctx, descriptor) {
+    if (!ctx || !ctx.targetId) return { error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for entry' } };
+    const client = this._resolveClient(ctx.targetId);
+    return runEnterAviatorHandshake(client, ctx.cdpSessionId || undefined, descriptor, ctx.host);
   }
 
   async sendProtocol(ctx, payload) {

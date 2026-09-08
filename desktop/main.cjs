@@ -37,6 +37,7 @@ const { AutoSequenceController } = require('./browser-run/auto-sequence-controll
 const { DiagnosticLog } = require('./diagnostics/diagnostic-log.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
+const { parseGameActDescriptor, isGameActUrl } = require('./protocol/aviator-entry-descriptor.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
 const { AviatorContextTracker, ACTION: CTX_ACTION, AVIATOR_EVIDENCE_CMDS } = require('./protocol/aviator-context.cjs');
 const { looksLikeLoginUrl } = require('./browser-run/login-signal.cjs');
@@ -525,7 +526,10 @@ function buildProtocolSubsystem(run) {
   // its OWN socket context (the enter request rides only this run's connection).
   const entryGate = new AviatorEntryGate({
     roundTracker: aviator,
-    send: (ctx, wire) => wsReplay.sendProtocol(ctx, wire),
+    // LIVE-PROVEN full handshake (game-act → 10002 → 100000). descriptor is THIS run's learned,
+    // validated game-act (never caller-supplied); the gate still confirms only on fresh server evidence.
+    enterAviator: (ctx, descriptor) => wsReplay.enterAviator(ctx, descriptor),
+    getDescriptor: () => run._aviatorEntryDescriptor || null,
     getContext: () => { const tid = run.selectedTargetId; return tid != null ? aviator.socketContext(tid) : null; },
   });
   entryGate.on('state', () => scheduleRunsBroadcast());
@@ -713,6 +717,20 @@ function ensureRunManager() {
     // per-run (monotonic), never global. Aviator-CLASSIFIED freshness (lastAviatorFrameMono) is
     // tracked separately from the classified frame stream — lobby chatter is NOT Aviator freshness.
     if (run && req.wsDirection === 'recv') { run._lastWsRecvMono = perfNow(); run._wsConnected = true; }
+  });
+  // Learn the Aviator entry descriptor (game-act URL + game_id) from the site's OWN game-act POST.
+  // Per-run, in-memory, never persisted, never caller-supplied; refreshed by any later genuine
+  // game-act. Enables the full re-entry handshake after a silent lobby kick (the site's original
+  // entry sent this before lobbyPlugin 10002 + aviatorPlugin 100000). Only the validated minimum
+  // {gameActUrl, gameId} is retained — no headers/cookies/auth.
+  capture.on('request', req => {
+    if (!req || req.isWebSocket || String(req.method || '').toUpperCase() !== 'POST' || !isGameActUrl(req.url)) return;
+    const run = runManager.runForTarget(req.targetId);
+    if (!run) return;
+    const d = parseGameActDescriptor(req.url, req.body && req.body.raw);
+    if (!d) return;
+    run._aviatorEntryDescriptor = d;
+    try { runDiag(run).log({ level: 'INFO', category: 'AVIATOR_ENTRY', event: 'ENTRY_DESCRIPTOR_LEARNED', meta: { host: hostOf(d.gameActUrl), gameId: d.gameId } }); } catch { /* best effort */ }
   });
   // Recovery evidence: a WebSocket close means the owning Aviator socket is gone (page may stay).
   capture.on('update', req => {

@@ -7,6 +7,7 @@ const { AVIATOR_EVIDENCE_CMDS } = require('../protocol/aviator-context.cjs');
 const { EntryOnlyTransport } = require('./entry-only-transport.cjs');
 const { AnalyticsAviatorEntryGate } = require('./analytics-aviator-entry.cjs');
 const { AnalyticsContextRecovery, STATE: RECOVERY_STATE } = require('./analytics-context-recovery.cjs');
+const { parseGameActDescriptor, isGameActUrl } = require('../protocol/aviator-entry-descriptor.cjs');
 const { looksLikeLoginUrl } = require('../browser-run/login-signal.cjs');
 
 // The single Aviator ENTER cmd (client-originated). Kept as a literal here only to RECOGNISE
@@ -111,6 +112,7 @@ class AnalyticsRuntime extends EventEmitter {
       liveState: new AnalyticsLiveState({ browserId: id, now: this._now, contextConfig: RECOVERY_CONFIG }),
       aviatorWsCtx: null,        // { targetId, cdpSessionId, host } of the socket carrying Aviator evidence
       aviatorWsKey: null,        // §12 exact wsKey of that owning socket — matched on WS-close by identity
+      _aviatorEntryDescriptor: null, // learned { gameActUrl, gameId } from the site's own game-act POST
       wsHostByKey: new Map(),    // wsKey -> host (from webSocketCreated) for entry targeting
       recoveryTick: null,        // per-run tick timer
     };
@@ -123,7 +125,8 @@ class AnalyticsRuntime extends EventEmitter {
     // same proven pure AviatorContextTracker Control uses. No BET/CASHOUT/replay/AutoRunner exists here.
     const transport = new EntryOnlyTransport({ resolveClient: (tid) => this.clientForTarget(tid) });
     run.entryGate = new AnalyticsAviatorEntryGate({
-      sendEntry: (ctx) => transport.sendEntry(ctx),
+      sendEntry: (ctx, descriptor) => transport.sendEntry(ctx, descriptor),
+      getDescriptor: () => run._aviatorEntryDescriptor || null,
       getContext: () => run.aviatorWsCtx,
       now: this._now,
       timeoutMs: ENTRY_CONFIRM_TIMEOUT_MS,
@@ -319,6 +322,13 @@ class AnalyticsRuntime extends EventEmitter {
       try { run.wsHostByKey.set(wsKeyOf(req.targetId, req.cdpSessionId, req.cdpRequestId), hostOf(req.url)); } catch { /* best effort */ }
       if (p) { try { p.onWsCreated(bid, req); } catch { /* best effort */ } }
     } else {                                             // HTTP/XHR/fetch/document request
+      // Learn the sealed ENTER descriptor (game-act URL + game_id) from the site's OWN game-act POST.
+      // Per-browser, in-memory, never persisted, never caller-supplied; refreshed by any later genuine
+      // game-act. Only the validated minimum {gameActUrl, gameId} is kept (no headers/cookies/auth).
+      if (String(req.method || '').toUpperCase() === 'POST' && isGameActUrl(req.url)) {
+        const d = parseGameActDescriptor(req.url, req.body && req.body.raw);
+        if (d) { run._aviatorEntryDescriptor = d; this.emit('recovery-diag', { browserId: bid, event: 'ENTRY_DESCRIPTOR_LEARNED', host: hostOf(d.gameActUrl), gameId: d.gameId }); }
+      }
       if (p) { try { p.onHttpRequest(bid, req); } catch { /* best effort */ } }
     }
   }

@@ -32,7 +32,17 @@ class AviatorEntryGate extends EventEmitter {
   constructor(deps = {}) {
     super();
     this._aviator = deps.roundTracker || null;
-    this._send = deps.send || (async () => ({ ok: false, error: { code: 'AVIATOR_ENTRY_NO_SEND', message: 'No send seam configured' } }));
+    // Entry seam. The LIVE-PROVEN entry is the full lobby→Aviator handshake (game-act POST →
+    // lobbyPlugin 10002 → aviatorPlugin 100000), owned by enterAviator(ctx, descriptor). A bare
+    // cmd100000 SEND is NOT sufficient from a real lobby (proven live). Legacy `send` is kept only
+    // as a single-frame fallback for older callers/tests; descriptor is ignored on that path.
+    this._enter = typeof deps.enterAviator === 'function'
+      ? deps.enterAviator
+      : (typeof deps.send === 'function'
+        ? (ctx) => deps.send(ctx, this._buildEnterWire(ctx))
+        : async () => ({ ok: false, error: { code: 'AVIATOR_ENTRY_NO_SEND', message: 'No entry transport configured' } }));
+    // Learned, validated game-act descriptor for THIS run (or null). NEVER caller-supplied.
+    this._getDescriptor = typeof deps.getDescriptor === 'function' ? deps.getDescriptor : () => null;
     // getContext must resolve THIS run's own socket context (or null). No fallback.
     this._getContext = deps.getContext || (() => null);
     this._timeoutMs = Number(deps.timeoutMs || 10000);
@@ -89,8 +99,10 @@ class AviatorEntryGate extends EventEmitter {
     this._pending = pending;
     this.emit('state', this.state()); // ENTERING
 
-    const wire = this._buildEnterWire(ctx);
-    Promise.resolve(this._send(ctx, wire)).then((res) => {
+    // ONE entry ATTEMPT = the full ordered handshake (game-act → 10002 → 100000). The three steps
+    // are a single unit: partial-step failures fail the attempt (bounded retry/escalation applies).
+    const descriptor = this._getDescriptor();
+    Promise.resolve(this._enter(ctx, descriptor)).then((res) => {
       if (pending.done) return;
       if (!res || !res.ok) { pending.settle({ error: (res && res.error) || { code: 'AVIATOR_ENTRY_SEND_FAILED', message: 'Enter request failed' } }); return; }
       this._sentCount++; pending.sent = 1;

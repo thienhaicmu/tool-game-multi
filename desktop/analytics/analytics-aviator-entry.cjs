@@ -30,6 +30,9 @@ class AnalyticsAviatorEntryGate extends EventEmitter {
     super();
     this._sendEntry = typeof deps.sendEntry === 'function' ? deps.sendEntry : async () => ({ error: { code: 'ANALYTICS_ENTRY_NO_TRANSPORT', message: 'No entry transport configured' } });
     this._getContext = typeof deps.getContext === 'function' ? deps.getContext : () => null;
+    // Learned, validated game-act descriptor for THIS browser (or null). NEVER caller-supplied;
+    // the runtime learns it from the site's own game-act POST. Forwarded to the sealed transport.
+    this._getDescriptor = typeof deps.getDescriptor === 'function' ? deps.getDescriptor : () => null;
     this._now = typeof deps.now === 'function' ? deps.now : () => Date.now();
     this._timeoutMs = Number(deps.timeoutMs || DEFAULTS.timeoutMs);
     this._generation = 0;
@@ -81,7 +84,10 @@ class AnalyticsAviatorEntryGate extends EventEmitter {
       return promise;
     }
 
-    Promise.resolve(this._sendEntry(ctx)).then((res) => {
+    // ONE attempt = the full sealed handshake (game-act → 10002 → 100000). descriptor is the run's
+    // learned game-act; if none/invalid, the transport fails the attempt (bounded retry applies).
+    const descriptor = this._getDescriptor();
+    Promise.resolve(this._sendEntry(ctx, descriptor)).then((res) => {
       if (pending.done) return;
       if (!res || !res.ok) { pending.settle({ error: (res && res.error) || { code: 'ANALYTICS_ENTRY_SEND_FAILED', message: 'Enter request failed' } }); return; }
       this._sentCount++; pending.sent = true; this._lastSendMono = this._now();
