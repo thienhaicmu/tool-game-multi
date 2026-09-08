@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, protocol, net, dialog, safeStorage, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, net, dialog, safeStorage, clipboard, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { randomUUID } = require('node:crypto');
@@ -18,6 +18,7 @@ const { Timeline } = require('./timeline.cjs');
 // sealed ciphertext and are required lazily inside initProtocolSubsystem(), only
 // after a valid license unlocks the seal key. Do NOT require them here.
 const { resolveBounds, DEFAULTS: WIN_DEFAULTS } = require('./window-state.cjs');
+const { normalizeWindowBounds } = require('./window-bounds.cjs');
 const { CdpError } = require('./cdp/errors.cjs');
 const { environmentGuardEnabled } = require('./protocol/environment-gate.cjs');
 const { InstanceManager } = require('./instance/instance-manager.cjs');
@@ -293,6 +294,20 @@ function windowStatePath() { return appInstance.paths.windowState; }
 function loadWindowState() { try { return JSON.parse(fs.readFileSync(windowStatePath(), 'utf8')); } catch { return null; } }
 function saveWindowState() { try { if (shell && !shell.isDestroyed() && !shell.isMinimized()) fs.writeFileSync(windowStatePath(), JSON.stringify(shell.getBounds()), 'utf8'); } catch { /* best effort */ } }
 
+// Resolve the BrowserWindow bounds against the ACTUAL current display work area so the
+// window always opens fully on-screen and correctly sized — no first-open overflow, no
+// manual maximize/restore. Saved bounds from a bigger/other/disconnected monitor recover
+// safely: getDisplayMatching picks the best available display for the saved rect (or the
+// primary display when position is unknown), and normalizeWindowBounds clamps to its
+// workArea. DPI-safe (workArea is already in DIP; no pixel-ratio math).
+function fitToCurrentDisplay(saved) {
+  const hasPos = saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.y));
+  const display = hasPos
+    ? screen.getDisplayMatching({ x: Math.round(saved.x), y: Math.round(saved.y), width: Math.round(saved.width), height: Math.round(saved.height) })
+    : screen.getPrimaryDisplay();
+  return normalizeWindowBounds({ saved, workArea: display.workArea, defaults: WIN_DEFAULTS });
+}
+
 function migrateLegacyInstanceLicense() {
   const licensePath = path.join(baseUserDataPath, 'license.dat');
   if (fs.existsSync(licensePath)) return;
@@ -325,8 +340,8 @@ function createWindow() {
       if (shell && !shell.isDestroyed()) shell.webContents.send('license-changed', status);
     }).catch(() => {});
   }
-  const bounds = resolveBounds(loadWindowState());
-  shell = new BrowserWindow({ ...bounds, minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
+  const bounds = fitToCurrentDisplay(resolveBounds(loadWindowState()));
+  shell = new BrowserWindow({ ...bounds, backgroundColor: '#f4f6f8', webPreferences: { preload: path.join(__dirname, 'preload.cjs'), contextIsolation: true, sandbox: true, webviewTag: true } });
   shell.on('close', saveWindowState);
   const journalPath = path.join(appInstance.paths.sessions, sessionId + '.jsonl');
   journal = new EventJournal(journalPath);

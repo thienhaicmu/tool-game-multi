@@ -16,9 +16,15 @@
 // the two products never share a writable data root or a persistent partition.
 // ===========================================================================
 
-const { app, BrowserWindow, ipcMain, protocol, dialog } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, dialog, screen } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+
+const { normalizeWindowBounds } = require('./window-bounds.cjs');
+
+// Preferred window size + minimums (identical policy to Control; only the numbers differ).
+// Never exceeds the current work area — normalizeWindowBounds clamps size AND minimums.
+const WIN_DEFAULTS = Object.freeze({ width: 1280, height: 860, minWidth: 940, minHeight: 600 });
 
 const { InAppRuntime } = require('./browser/inapp-runtime.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -113,13 +119,32 @@ function ensureRuntime() {
   return runtime;
 }
 
+// ---- window bounds persistence + current-display fit (mirrors Control) ----
+function windowStatePath() { return path.join(ANALYTICS_USERDATA, 'window-state.json'); }
+function loadWindowState() { try { return JSON.parse(fs.readFileSync(windowStatePath(), 'utf8')); } catch { return null; } }
+function saveWindowState() { try { if (shell && !shell.isDestroyed() && !shell.isMinimized()) fs.writeFileSync(windowStatePath(), JSON.stringify(shell.getBounds()), 'utf8'); } catch { /* best effort */ } }
+
+// Resolve BrowserWindow bounds against the ACTUAL current display work area so the window
+// always opens fully on-screen and correctly sized — no first-open overflow, no manual
+// maximize/restore. Stale bounds from another/disconnected monitor recover safely.
+// DPI-safe (workArea is already in DIP).
+function fitToCurrentDisplay(saved) {
+  const hasPos = saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.y));
+  const display = hasPos
+    ? screen.getDisplayMatching({ x: Math.round(saved.x), y: Math.round(saved.y), width: Math.round(saved.width), height: Math.round(saved.height) })
+    : screen.getPrimaryDisplay();
+  return normalizeWindowBounds({ saved, workArea: display.workArea, defaults: WIN_DEFAULTS });
+}
+
 function createWindow() {
+  const bounds = fitToCurrentDisplay(loadWindowState());
   shell = new BrowserWindow({
-    width: 1280, height: 860, minWidth: 940, minHeight: 600,
+    ...bounds,
     backgroundColor: '#0f1419',
     title: PRODUCT_NAME,
     webPreferences: { preload: path.join(__dirname, 'analytics-preload.cjs'), contextIsolation: true, sandbox: true },
   });
+  shell.on('close', saveWindowState);
   ensureRuntime();
   shell.loadURL('analytics-app://ui/index.html');
 }
