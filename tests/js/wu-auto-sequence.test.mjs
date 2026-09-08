@@ -295,6 +295,43 @@ test('SEQ (real) recovery preserves execution id, not confused with next-row', a
   assert.notEqual(runner.autoExecutionId(), idA, 'row 2 minted a NEW execution id');
 });
 
+// ITEM 1 — a MID-sequence row (#2..#N) retains the SAME SESSION_RECOVERY behavior. Proves
+// sequenceNext:true does NOT disable recovery: recovery resume runs through resumePausedAuto
+// (autoRunner.start with resumeExecutionId) — never through startAutoExecution — so the paused
+// row keeps its id and index, and only its genuine completion advances to the next row.
+test('SEQ (real) row #2 recovery keeps execId=B and index; C3 only after C2 completes', async () => {
+  const C1 = { roundCount: 1, amount: 5000, stopOdd: 2 };
+  const C2 = { roundCount: 1, amount: 10000, stopOdd: 2 };
+  const C3 = { roundCount: 1, amount: 15000, stopOdd: 2 };
+  const { ctrl, feed, advance, runner, finalized } = makeReal();
+  await ctrl.start([C1, C2, C3]);
+  const idA = runner.autoExecutionId();
+  // Row 1 (C1) completes → advance to row 2 (C2), NEW id = B.
+  await playLose(feed, 100); await advance();
+  assert.equal(ctrl.index(), 1, 'on row #2 (C2)');
+  const idB = runner.autoExecutionId();
+  assert.notEqual(idB, idA, 'C2 minted a new execution id B');
+  // SESSION_RECOVERY while C2 is active. Emits NO executionFinalized (recovery pause branch).
+  runner.stop({ reason: 'SESSION_RECOVERY' });
+  assert.equal(runner.pausedForRecovery(), true);
+  assert.equal(ctrl.index(), 1, 'recovery pause did NOT advance the sequence');
+  assert.equal(finalized.length, 1, 'no terminal record for a recovery pause (only C1 finalized so far)');
+  // Resume C2 exactly as resumePausedAuto does: same id via resumeExecutionId, cfg = run._runConfig (C2).
+  runner.start('T', C2, { resumeExecutionId: idB }); await flush();
+  assert.equal(runner.autoExecutionId(), idB, 'resume preserved execution id B (sequenceNext did NOT disable recovery)');
+  assert.equal(ctrl.index(), 1, 'still on row #2 after resume');
+  // C2 now completes normally → only NOW advance to row 3 (C3), NEW id = C.
+  await playLose(feed, 200); await advance();
+  assert.equal(ctrl.index(), 2, 'advanced to row #3 only after C2 genuinely completed');
+  const idC = runner.autoExecutionId();
+  assert.notEqual(idC, idB, 'C3 minted a new execution id C (B != C)');
+  assert.notEqual(idC, idA);
+  // C3 completes → sequence done, no loop-back.
+  await playLose(feed, 300); await advance();
+  assert.equal(ctrl.isRunning(), false, 'sequence complete');
+  assert.deepEqual(finalized.map((r) => r.autoExecutionId), [idA, idB, idC], 'exactly three terminal records: A, B, C');
+});
+
 // TEST 15 (real) — roundCount / win-reset / BET / CASHOUT semantics unchanged inside a sequenced row.
 test('SEQ (real) win resets _attempted within a row; row still terminates on a later loss', async () => {
   const { ctrl, feed, advance, betCount, cashCount, finalized } = makeReal();
