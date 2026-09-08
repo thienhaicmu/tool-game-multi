@@ -62,6 +62,14 @@ test('REPORT is jackpot-first: persistent JP basis config + 5 simplified perspec
   assert.ok(js.includes('api.report.overview') && js.includes('api.report.odd') && js.includes('api.report.gap'));
 });
 
+test('global Jackpot Range filter is present and propagated (half-open, basis-aligned)', () => {
+  assert.ok(html.includes('id="f-jprange"'), 'Jackpot Range selector present in the global filter bar');
+  assert.ok(js.includes('const JP_RANGES'), 'UI defines the authoritative JP ranges');
+  // The filter must carry the selected basis + half-open range bounds so the predicate column matches the report bucketing.
+  assert.ok(js.includes('f.jackpotBasis') && js.includes('jackpotRangeMin'), 'buildFilter sends basis + range');
+  assert.ok(js.includes('if (rng.max != null) f.jackpotRangeMax'), 'open-ended bucket omits the upper bound');
+});
+
 test('centralized number formatter (format.js / AFmt) is loaded before the app', () => {
   assert.ok(/<script src="format\.js">/.test(html), 'format.js script tag present');
   assert.ok(html.indexOf('format.js') < html.indexOf('analytics.js'), 'format.js loads before analytics.js');

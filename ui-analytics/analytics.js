@@ -139,8 +139,21 @@ api.live.onUpdate((s) => { if (s && s.browserId === selectedId && currentTab ===
 api.live.onBrowsersChanged((list) => { browsers = list; renderBrowsers(); });
 
 // ---------- REPORT (jackpot-first) ----------
+// Authoritative Jackpot ranges — HALF-OPEN [min, max); final bucket open-ended (max=null).
+// Mirrors the backend DEFAULT_JP_RANGES (a drift guard test asserts they stay identical), so the
+// UI range selection filters on exactly the same boundaries the report buckets by.
+const JP_RANGES = [
+  { label: '0–100', min: 0, max: 100 }, { label: '100–200', min: 100, max: 200 }, { label: '200–300', min: 200, max: 300 },
+  { label: '300–500', min: 300, max: 500 }, { label: '500–750', min: 500, max: 750 }, { label: '750–1,000', min: 750, max: 1000 },
+  { label: '1,000–2,000', min: 1000, max: 2000 }, { label: '≥2,000', min: 2000, max: null },
+];
+function populateJpRanges() {
+  const sel = $('f-jprange'); if (!sel || sel.options.length > 1) return;
+  for (let i = 0; i < JP_RANGES.length; i++) { const r = JP_RANGES[i]; const o = document.createElement('option'); o.value = String(i); o.textContent = r.label; sel.appendChild(o); }
+}
 for (const st of document.querySelectorAll('#view-report .subtab')) st.addEventListener('click', () => { currentSub = st.dataset.sub; for (const s of document.querySelectorAll('#view-report .subtab')) s.classList.toggle('active', s === st); renderReport(); });
 $('f-apply').addEventListener('click', () => loadReport());
+function selectedRange() { const v = $('f-jprange').value; if (v === '') return null; const r = JP_RANGES[Number(v)]; return r || null; }
 function buildFilter() {
   const f = { browserId: selectedId || null };
   const preset = $('f-time').value; const now = Date.now();
@@ -150,15 +163,21 @@ function buildFilter() {
   const ln = $('f-lastn').value; if (ln) f.lastNRounds = Number(ln);
   const hf = $('f-hourfrom').value, ht = $('f-hourto').value;
   if (hf !== '') f.hourFrom = Number(hf); if (ht !== '') f.hourTo = Number(ht);
+  // The range predicate filters on the SELECTED basis column, so the filter's basis MUST equal the
+  // report's basis (jpConfig). Otherwise the range would filter one column while bucketing another.
+  f.jackpotBasis = $('f-jpbasis').value;
+  const rng = selectedRange();
+  if (rng) { f.jackpotRangeMin = rng.min; if (rng.max != null) f.jackpotRangeMax = rng.max; }  // half-open; open-ended omits max
   return f;
 }
 function jpConfig() { return { basis: $('f-jpbasis').value }; }
 async function loadReport() { await renderReport(); }
 function setMatched(summary) {
   if (!summary) return;
-  $('m-matched').textContent = `Số vòng: ${summary.matchedRounds != null ? summary.matchedRounds : '—'}`;
-  $('m-jpbasis').textContent = 'Jackpot: ' + jpBasisLabel(summary.jackpotBasis);
-  $('m-missing').textContent = `Thiếu Jackpot: ${summary.missingJackpotBasis != null ? summary.missingJackpotBasis : '—'}`;
+  $('m-matched').textContent = `Số vòng: ${summary.matchedRounds != null ? cnt(summary.matchedRounds) : '—'}`;
+  const rng = selectedRange();
+  $('m-jpbasis').textContent = 'Jackpot: ' + jpBasisLabel(summary.jackpotBasis) + (rng ? ' · ' + rng.label : '');
+  $('m-missing').textContent = `Thiếu Jackpot: ${summary.missingJackpotBasis != null ? cnt(summary.missingJackpotBasis) : '—'}`;
 }
 function jpBasisLabel(b) { return ({ JACKPOT_AT_OPEN: 'Lúc mở', JACKPOT_AT_LOCK: 'Lúc khóa', JACKPOT_AT_FIRST_ODD: 'ODD đầu', JACKPOT_AT_END: 'Lúc kết thúc', JACKPOT_AVG: 'TB', JACKPOT_MAX: 'Max', JACKPOT_MIN: 'Min', JACKPOT_DELTA: 'Chênh lệch' }[b] || b || ''); }
 async function renderReport() {
@@ -421,4 +440,5 @@ $('d-export-weblog').onclick = async () => dataResult(await api.export.webLog({ 
 $('d-backup').onclick = async () => dataResult(await api.backup.database(), 'backup');
 
 // ---------- boot ----------
+populateJpRanges();
 refreshBrowsers().then(() => refreshHome());

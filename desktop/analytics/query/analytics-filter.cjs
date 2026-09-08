@@ -58,6 +58,14 @@ function normalizeFilter(raw = {}) {
   spec.jackpotMax = numOrNull(f.jackpotMax);
   if (spec.jackpotMin != null && spec.jackpotMax != null && spec.jackpotMin > spec.jackpotMax) throw new FilterError('jackpotMin must be <= jackpotMax');
 
+  // AUTHORITATIVE GLOBAL JACKPOT RANGE — HALF-OPEN [min, max) on the SELECTED basis column.
+  // Distinct from the legacy inclusive jackpotMin/Max: the range filter must match the report's
+  // half-open bucket boundaries exactly (no double counting), and the final bucket is open-ended
+  // (max = null → only the lower bound applies). NULL basis rounds are excluded (see buildWhere).
+  spec.jackpotRangeMin = numOrNull(f.jackpotRangeMin);
+  spec.jackpotRangeMax = numOrNull(f.jackpotRangeMax);
+  if (spec.jackpotRangeMin != null && spec.jackpotRangeMax != null && spec.jackpotRangeMin > spec.jackpotRangeMax) throw new FilterError('jackpotRangeMin must be <= jackpotRangeMax');
+
   spec.maxOddMin = numOrNull(f.maxOddMin);
   spec.maxOddMax = numOrNull(f.maxOddMax);
   if (spec.maxOddMin != null && spec.maxOddMax != null && spec.maxOddMin > spec.maxOddMax) throw new FilterError('maxOddMin must be <= maxOddMax');
@@ -127,6 +135,15 @@ function buildWhere(spec, { includeAnalytic = true, alias = 'r' } = {}) {
       where.push(`${col} IS NOT NULL`);
       if (spec.jackpotMin != null) { where.push(`${col} >= ?`); params.push(spec.jackpotMin); }
       if (spec.jackpotMax != null) { where.push(`${col} <= ?`); params.push(spec.jackpotMax); }
+    }
+    // Global Jackpot Range — HALF-OPEN [min, max) on the selected basis; NULL basis excluded so
+    // a range never coerces a missing value to 0 (§2/§7). Upper bound is EXCLUSIVE; a null max is
+    // the open-ended final bucket. This matches JackpotReport's inRange() bucket membership exactly.
+    if (spec.jackpotRangeMin != null || spec.jackpotRangeMax != null) {
+      const col = `${a}.${basisColumn(spec)}`;
+      where.push(`${col} IS NOT NULL`);
+      if (spec.jackpotRangeMin != null) { where.push(`${col} >= ?`); params.push(spec.jackpotRangeMin); }
+      if (spec.jackpotRangeMax != null) { where.push(`${col} < ?`); params.push(spec.jackpotRangeMax); }
     }
   }
   return { clause: where.length ? 'WHERE ' + where.join(' AND ') : '', params };

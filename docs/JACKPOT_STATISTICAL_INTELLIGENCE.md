@@ -163,10 +163,14 @@ last-N / hour / **Jackpot basis**.
 Target normal-user structure (Jackpot-first, 5 sections): **Tổng quan → Jackpot → ODD →
 Thời gian → Chuỗi / Xu hướng**.
 
-Global filter bar (existing, extended): Thời gian, Số vòng gần nhất, Giờ, **Jackpot Basis**;
-Jackpot-**Range** as a global filter is a deferred backend addition (§10). Query semantics
-(from source): time filter first, then hour/browser, then Last-N over the qualifying,
-deterministically-ordered population.
+Global filter bar (implemented): Thời gian, Số vòng gần nhất, Giờ, **Jackpot Basis**,
+**Jackpot Range**. The range is an authoritative HALF-OPEN `[min, max)` predicate on the
+**selected basis** column (`jackpotRangeMin/Max` in
+[analytics-filter.cjs](../desktop/analytics/query/analytics-filter.cjs)), applied inside
+`buildWhere` so it propagates to every report perspective via `_load(spec)`. NULL basis
+rounds are excluded (never coerced to 0). Query semantics (from source): time → hour/browser
+→ **Jackpot Range on the selected basis** → deterministic order → Last-N over the qualifying
+population (Last-N is applied AFTER the range).
 
 Language guard (enforced by test): no `dự đoán / vòng tiếp theo / nên cược / tín hiệu /
 jackpot nóng|lạnh`. Only descriptive terms (`tỷ lệ quan sát`, `phân phối`, `xu hướng`,
@@ -174,9 +178,8 @@ jackpot nóng|lạnh`. Only descriptive terms (`tỷ lệ quan sát`, `phân ph�
 
 ## 10. Deferred items (not in this WU)
 
-1. **Merge is landed** (Tốc độ ODD → metric inside Thời gian). Jackpot-**Range** *filter*
-   (a global range selector) needs a `jackpotRange` predicate in
-   [analytics-filter.cjs](../desktop/analytics/query/analytics-filter.cjs) — deferred.
+1. **Landed:** the Tốc độ ODD → Thời gian merge AND the global Jackpot-**Range** filter
+   (half-open `[min,max)`, basis-aligned, propagated to all report perspectives).
 2. Contingency (χ²/Cramér's V), rank correlation, distribution tests — backend stats,
    deferred with cell-count / assumption guards.
 3. Any forward predictive model — deferred; requires the §5 leakage guard enforced in code
