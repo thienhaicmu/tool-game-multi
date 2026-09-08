@@ -81,7 +81,7 @@ class BrowserRunManager extends EventEmitter {
       // protocol subsystem (assigned below)
       aviator: null, protocolContext: null, observer: null,
       harness: null, autoRunner: null, amountValidator: null, entryGate: null,
-      jackpotObserver: null, jackpotGate: null, stop1000: null,
+      jackpotObserver: null, jackpotGate: null, stop1000: null, autoSequence: null,
     };
     run.launcher = this._createLauncher(run);
     const subsystem = this._buildSubsystem(run) || {};
@@ -95,6 +95,7 @@ class BrowserRunManager extends EventEmitter {
     run.jackpotObserver = subsystem.jackpotObserver || null;
     run.jackpotGate = subsystem.jackpotGate || null;
     run.stop1000 = subsystem.stop1000 || null;   // WU-D per-run Auto session kill switch
+    run.autoSequence = subsystem.autoSequence || null; // WU-AUTO-SEQUENCE per-run multi-row sequence owner
     run.recovery = subsystem.recovery || null;    // Part C per-run session-recovery watchdog
 
     this._runs.set(id, run);
@@ -217,6 +218,9 @@ class BrowserRunManager extends EventEmitter {
   // Stop this run's protocol activity without touching shared resources. Only THIS
   // run's runners are stopped and only THIS run's harness waiters are resolved.
   _quiesceSubsystem(run) {
+    // WU-AUTO-SEQUENCE — end any in-flight multi-row sequence FIRST so a stop/finalize below
+    // can never schedule a next row on a disposing run.
+    try { if (run.autoSequence && run.autoSequence.stop) run.autoSequence.stop('DISPOSED'); } catch { /* ignore */ }
     try { if (run.stop1000 && run.stop1000.disarm) run.stop1000.disarm(); } catch { /* ignore */ }
     try { if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run.autoRunner.stop(); } catch { /* ignore */ }
     try { if (run.amountValidator && run.amountValidator.isRunning && run.amountValidator.isRunning()) run.amountValidator.stop(); } catch { /* ignore */ }

@@ -32,6 +32,7 @@ const { RoundHistoryStore } = require('./browser-run/round-history-store.cjs');
 const { RoundHistoryCollector } = require('./browser-run/round-history-collector.cjs');
 const { AutoExecutionHistoryStore } = require('./browser-run/auto-execution-history-store.cjs');
 const { AutoExecutionCollector } = require('./browser-run/auto-execution-collector.cjs');
+const { AutoSequenceController } = require('./browser-run/auto-sequence-controller.cjs');
 const { DiagnosticLog } = require('./diagnostics/diagnostic-log.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
@@ -492,7 +493,7 @@ function buildProtocolSubsystem(run) {
     if (runManager && autoRunner.isRunning()) runManager.setStatus(run, RUN_STATUS.AUTO_RUNNING);
     scheduleRunsBroadcast();
     if (autoDirty) return; autoDirty = true;
-    setTimeout(() => { autoDirty = false; toActive('autotest-update', autoRunner.snapshot()); }, 100);
+    setTimeout(() => { autoDirty = false; toActive('autotest-update', autoSnapshot(run)); }, 100);
   });
 
   // Separate bet-amount server-validation mode (bet-only; sends the EXACT value).
@@ -569,7 +570,22 @@ function buildProtocolSubsystem(run) {
     else if (ev && ev.to === 'LOGIN_REQUIRED') { try { runDiag(run).log({ level: 'WARN', category: 'LOGIN', event: 'LOGIN_REQUIRED' }); } catch { /* best effort */ } }
   });
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, recovery };
+  // WU-AUTO-SEQUENCE — per-run owner of a user-defined MULTI-ROW Auto Run sequence.
+  // Runs each configured row as its OWN AutoRunner execution (new autoExecutionId), in
+  // order, once each, then stops. Bound structurally to THIS run's start orchestration +
+  // runId, so a renderer browser-selection change can never retarget the sequence. Only a
+  // NORMAL terminal completion advances; every other terminal reason stops it.
+  const autoSequence = new AutoSequenceController({
+    ownerRunId: run.id,
+    diag: runDiag(run),
+    isRunValid: () => run.status !== RUN_STATUS.CLOSED && !run._rendererGone,
+    startExecution: (cfg, o) => startAutoExecution(run, cfg, { sequenceNext: !(o && o.first) }),
+  });
+  // Advance the sequence ONLY on the authoritative terminal EXECUTION record. A recovery
+  // PAUSE emits no executionFinalized, so it stays on the current row (same autoExecutionId).
+  autoRunner.on('executionFinalized', (rec) => { try { autoSequence.onExecutionFinalized(rec); } catch { /* outer-loop best-effort */ } });
+
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery };
 }
 
 // Recovery thresholds are centralised (never scattered). Conservative in production; a fast
@@ -1435,15 +1451,28 @@ handle('observer-config', (_event, runId, patch = {}) => { const o = viewRun(run
 // WU10 — automated runner IPC. Execution binds to an EXPLICIT run so multiple runs
 // may run their AutoRunner concurrently and UI switching never retargets a run.
 handle('autotest-environment', (_event, runId, targetId) => { const run = viewRun(runId); return run.autoRunner.environmentFor(String(targetId || run.selectedTargetId || '')); });
-handle('autotest-start', async (_event, runId, config = {}) => {
-  const r = execRun(runId); if (r.error) return r;
-  const run = r.run;
+// WU-AUTO-SEQUENCE — the Auto snapshot exposed to the renderer merges the AutoRunner's
+// own execution snapshot with the OUTER multi-row sequence state (index/total/active),
+// so the panel can show "Đang chạy lượt X / N". The sequence block is display-only.
+function autoSnapshot(run) {
+  const base = run && run.autoRunner && run.autoRunner.snapshot ? run.autoRunner.snapshot() : {};
+  const sequence = run && run.autoSequence && run.autoSequence.snapshot ? run.autoSequence.snapshot() : null;
+  return { ...base, sequence };
+}
+
+// WU-AUTO-SEQUENCE — the legitimate SINGLE-execution start orchestration, shared by the
+// user's first row (autotest-start IPC) AND every subsequent sequence row (via the
+// AutoSequenceController). It runs the SAME gates every time — entitlement, strict config
+// validation, login gate, Aviator entry, optional Jackpot gate — so a later row never
+// bypasses a gate just because an earlier row succeeded, and never duplicates the entry
+// sender. `opts.sequenceNext` marks an outer-loop next-row start: it is unconditionally a
+// NEW execution (never resumeExecutionId); only the FIRST/user path preserves recovery
+// resume continuity (§11). Returns { ok, autoExecutionId, snapshot } | { error }.
+async function startAutoExecution(run, config = {}, opts = {}) {
   // WU-C.4 — feature entitlement (main-process authority; renderer cannot bypass).
   const ent = currentEntitlement();
   if (!ent.features.autoRun) return featureDenied('autoRun', 'Tính năng Chạy tự động không có trong giấy phép hiện tại.');
-  // INVALID INPUT MUST NOT START EXECUTION — validate the config (and the jackpot threshold,
-  // if waiting) BEFORE any side-effect. A bad roundCount/amount/stopOdd must be rejected here,
-  // never after entering Aviator (no cmd 100000, no jackpot wait) just to discover it later.
+  // INVALID INPUT MUST NOT START EXECUTION — strict validate BEFORE any side-effect.
   const C = unsealProtocolClasses();
   const cfgCheck = C.validateConfig(config || {});
   if (cfgCheck.error) return { error: cfgCheck.error };
@@ -1456,63 +1485,76 @@ handle('autotest-start', async (_event, runId, config = {}) => {
     jackpotThreshold = t.value;
   }
   // §14 — login gate BEFORE entry. If THIS run's page is a login/auth wall and the run is
-  // not already in the game, do NOT drive it in (no cmd 100000 sent, no reload loop) — surface
-  // a clear LOGIN_REQUIRED instead of a generic entry timeout. A page/HTTP 200 is NOT login
-  // (§5); the positive proof of entry stays the run's own fresh server round evidence below.
+  // not already in the game, surface a clear LOGIN_REQUIRED instead of driving it in.
   if (run.entryGate && !(run.entryGate.isEntered && run.entryGate.isEntered()) && looksLikeLoginUrl(currentRunUrl(run))) {
     return { error: { code: 'LOGIN_REQUIRED', message: 'Cần đăng nhập — hãy đăng nhập vào game trước khi Chạy tự động.' } };
   }
-  // WU-C.1.1 — Aviator entry prerequisite: ensure THIS run's socket is in the game
-  // before any bet. No BET (cmd 100002) is possible until entry is authoritatively
-  // confirmed by the run's own server round evidence. Never sends through another run.
+  // WU-C.1.1 — Aviator entry prerequisite: ensure THIS run's socket is in the game before
+  // any bet. Never sends through another run.
   if (run.entryGate) {
     const gate = await run.entryGate.ensureEntered();
     if (gate && gate.error) return { error: gate.error };
   }
-  // WU-C.3 — optional Jackpot gate AFTER entry: automated betting is released only
-  // once THIS run's own authoritative jackpot reaches the configured threshold.
+  // WU-C.3 — optional Jackpot gate AFTER entry.
   if (config && config.waitForJackpot && run.jackpotGate) {
     const jg = await run.jackpotGate.ensureThreshold(jackpotThreshold);
     if (jg && jg.error) return { error: jg.error };
   }
-  // WU-D — snapshot the effective execution config for THIS run (§8.3): later UI edits
-  // to the Auto form do not mutate an already-running session's behavior.
+  // WU-D — snapshot the effective execution config for THIS run (§8.3).
   const effectiveConfig = { ...(config || {}) };
-  // Part E — next-round random BET delay (0..1000ms). Enabled for authorized LOCAL/
-  // TEST/DEV-owned endpoints unless the caller already specified a policy. Public
-  // wagering endpoints are unaffected unless explicitly configured by the caller.
+  // Part E — next-round random BET delay (0..1000ms) for authorized LOCAL/TEST endpoints.
   if (isLocalRunEndpoint(run) && effectiveConfig.nextRoundBetDelay == null && effectiveConfig.betDelayMaxMs == null) {
     effectiveConfig.nextRoundBetDelay = true;
     effectiveConfig.betDelayMinMs = 0;
     effectiveConfig.betDelayMaxMs = 1000;
   }
   run._runConfig = effectiveConfig;
-  // Execution continuity (§11): if this run's AutoRunner is merely PAUSED for session recovery
-  // (e.g. a public endpoint that recovered to AVIATOR_READY and required a manual resume), keep
-  // the SAME logical execution identity instead of minting a new one. A fresh/terminal start is
-  // not pausedForRecovery, so it mints a new id as before.
-  const resumeOpts = (run.autoRunner.pausedForRecovery && run.autoRunner.pausedForRecovery() && run.autoRunner.autoExecutionId && run.autoRunner.autoExecutionId())
+  // Execution continuity (§11): only the user/first path resumes a recovery-PAUSED execution
+  // (same autoExecutionId). A sequence next-row start is a genuinely NEW execution, so it never
+  // resumes — it mints a fresh autoExecutionId as required.
+  const resumeOpts = (!opts.sequenceNext && run.autoRunner.pausedForRecovery && run.autoRunner.pausedForRecovery() && run.autoRunner.autoExecutionId && run.autoRunner.autoExecutionId())
     ? { resumeExecutionId: run.autoRunner.autoExecutionId(), recoveryCount: run.autoRunner.recoveryCount ? run.autoRunner.recoveryCount() : undefined }
     : {};
   const res = run.autoRunner.start(String(run.selectedTargetId || ''), effectiveConfig, resumeOpts);
   if (res.error) return res;
-  // WU-D — arm the Stop-1000x session kill switch from the snapshot config. It watches
-  // THIS run's authoritative odd and terminates only THIS run's Auto at >= 1000x.
+  // WU-D — arm the Stop-1000x session kill switch from the snapshot config.
   if (run.stop1000) run.stop1000.arm(run._runConfig);
-  return run.autoRunner.snapshot();
+  return { ok: true, autoExecutionId: res.autoExecutionId, snapshot: autoSnapshot(run) };
+}
+
+handle('autotest-start', async (_event, runId, config = {}) => {
+  const r = execRun(runId); if (r.error) return r;
+  const run = r.run;
+  // WU-AUTO-SEQUENCE — a START runs the user's configured ROWS as one sequence (each row is a
+  // separate execution, run once, in order). The renderer sends the full ordered row snapshot
+  // in config.sequence; a legacy single-config payload (no sequence) is a one-row sequence.
+  // Validate EVERY row up front so an invalid row rejects the whole START before any side effect.
+  const rows = Array.isArray(config && config.sequence) && config.sequence.length ? config.sequence : [config || {}];
+  const C = unsealProtocolClasses();
+  for (const row of rows) { const chk = C.validateConfig(row || {}); if (chk.error) return { error: chk.error }; }
+  // The controller snapshots the rows (immutable), binds to THIS run, and starts row 0 through
+  // the shared orchestration above. The first row's start result (error or snapshot) is returned;
+  // advancement to rows 2..N is owned by the controller on each NORMAL executionFinalized.
+  const res = await run.autoSequence.start(rows);
+  if (res && res.error) return res;
+  return autoSnapshot(run);
 });
 handle('autotest-stop', (_event, runId) => {
   const r = execRun(runId); if (r.error) return r;
   const run = r.run;
+  // WU-AUTO-SEQUENCE — STOP ends the WHOLE sequence. Disarm the controller FIRST (bumps its
+  // generation) so neither this stop's finalize emit nor any queued next-row fire can start a
+  // further row. Race-safe: USER_STOP → NO_NEXT_ROW.
+  if (run.autoSequence) run.autoSequence.stop('USER_STOP');
   // Cancel a pending Jackpot wait so a later jackpot update can never start Auto (§38).
   const wasWaiting = !!(run.jackpotGate && run.jackpotGate.isWaiting());
   if (run.jackpotGate) run.jackpotGate.cancel('STOPPED');
   if (run.stop1000) run.stop1000.disarm();
   const res = run.autoRunner.stop();
-  if (res.error && wasWaiting) return run.autoRunner.snapshot(); // stopped while gate-waiting
-  return res.error ? res : run.autoRunner.snapshot();
+  if (res.error && wasWaiting) return autoSnapshot(run); // stopped while gate-waiting
+  return res.error ? res : autoSnapshot(run);
 });
-handle('autotest-snapshot', (_event, runId) => viewRun(runId).autoRunner.snapshot());
+handle('autotest-snapshot', (_event, runId) => autoSnapshot(viewRun(runId)));
 // WU10.2 — bet-amount server-validation IPC (bet-only), bound to an EXPLICIT run.
 handle('bvalidate-environment', (_event, runId, targetId) => { const run = viewRun(runId); return run.amountValidator.environmentFor(String(targetId || run.selectedTargetId || '')); });
 handle('bvalidate-start', (_event, runId, config = {}) => { const r = execRun(runId); if (r.error) return r; const res = r.run.amountValidator.start(String(r.run.selectedTargetId || ''), config || {}); return res.error ? res : r.run.amountValidator.snapshot(); });

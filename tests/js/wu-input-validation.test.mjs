@@ -136,7 +136,8 @@ test('b-Test parseAmount preserves intentional invalid values (0, negative, out-
 // ---- source guard: invalid config must be rejected BEFORE entry/jackpot side-effects ----
 test('wiring: autotest-start validates config BEFORE the entry gate (no entry on bad config)', () => {
   const main = rd('desktop/main.cjs');
-  const i = main.indexOf("handle('autotest-start'");
+  // WU-AUTO-SEQUENCE — validation-before-entry lives in the shared startAutoExecution().
+  const i = main.indexOf('async function startAutoExecution');
   const body = main.slice(i, i + 3200);
   const validateIdx = body.indexOf('C.validateConfig(config');
   const jpParseIdx = body.indexOf("parseStrict(config.jackpotThreshold");

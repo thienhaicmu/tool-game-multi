@@ -128,10 +128,18 @@ test('product.js sources aid/eid from protoCtx (never hardcoded field)', () => {
   assert.ok(/aid: protoCtx\.aid, eid: protoCtx\.eid/.test(js), 'Amount Check uses session context');
 });
 
-test('auto run completion waits for the user instead of starting the next session', () => {
+// WU-AUTO-SEQUENCE — multi-row sequencing is owned by the MAIN process, not the renderer.
+// The renderer completion handler must therefore NEVER drive the next execution itself
+// (no start call, no synthetic CTA click); it only mirrors main's authoritative sequence
+// state and clears its flag when the WHOLE sequence is done (not on an intermediate row).
+test('auto run completion is main-owned; renderer never self-starts the next execution', () => {
   const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
-  const completedBlock = js.match(/if \(sequenceRunning && s && s\.state === 'COMPLETED'\) \{([\s\S]*?)\n    \}/);
+  const completedBlock = js.match(/if \(sequenceRunning && s && s\.state === 'COMPLETED'[\s\S]*?\n    \}/);
   assert.ok(completedBlock, 'completion handler exists');
-  assert.ok(/sequenceRunning = false/.test(completedBlock[1]), 'completion stops the sequence');
-  assert.ok(!/startCurrentRow/.test(completedBlock[1]), 'completion does not auto-start another session');
+  const body = completedBlock[0];
+  assert.ok(/sequenceRunning = false/.test(body), 'completion clears the renderer sequence flag');
+  // Only clears when main reports the sequence is no longer active (final row completed).
+  assert.ok(/s\.sequence && s\.sequence\.active/.test(body), 'clears only when the main-side sequence is inactive');
+  // The renderer must not restart execution itself — advancement is main-owned.
+  assert.ok(!/startCurrentRow|startSequence|startRun\(|\.click\(\)/.test(body), 'renderer does not auto-start the next session');
 });

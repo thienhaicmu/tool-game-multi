@@ -905,7 +905,7 @@ renderActions();
   // Is the CURRENTLY-VIEWED run running or waiting on its jackpot? Row editing / add-row
   // must key off THIS (per-run) truth — never the panel-global sequenceRunning flag, which
   // otherwise leaks one run's "running" state onto whatever browser you switch to view.
-  function viewedActive() { const running = !!(snap && snap.running); return running || (gateWaiting() && !running); }
+  function viewedActive() { const running = !!(snap && (snap.running || (snap.sequence && snap.sequence.active))); return running || (gateWaiting() && !running); }
   function gateThresholdNote() {
     const t = gate.threshold != null ? Number(gate.threshold).toLocaleString() : '—';
     const j = gate.jackpot != null ? Number(gate.jackpot).toLocaleString() : '—';
@@ -1053,7 +1053,10 @@ renderActions();
   }
   // The single Auto CTA: label/action by state (WU11.1), gated by context/env/config.
   function renderCta() {
-    const running = !!(snap && snap.running);
+    // WU-AUTO-SEQUENCE — a multi-row sequence is "running" during the brief inter-row gap
+    // too (AutoRunner momentarily not running while main starts the next row), so the CTA
+    // stays "DỪNG TỰ ĐỘNG" and STOP ends the WHOLE sequence.
+    const running = !!(snap && (snap.running || (snap.sequence && snap.sequence.active)));
     // A jackpot-gated Auto that is WAITING is "active": the AutoRunner hasn't started
     // (running=false) but the session is live and Stop must cancel the wait. Show a Stop
     // CTA so a profile switch never makes it look like the auto was lost (view-only).
@@ -1099,6 +1102,12 @@ renderActions();
     const si = waitingJp
       ? { text: '⏳ Đang chờ Jackpot…', cls: 'st-run' }
       : statusInfo(snap.state, snap.config ? snap.config.roundCount : null, snap.terminationReason);
+    // WU-AUTO-SEQUENCE — when the user configured multiple rows, prefix the running status
+    // with the sequence position ("Lượt 2 / 5 · …"). Display-only; main owns advancement.
+    const seq = snap.sequence;
+    if (seq && seq.total > 1 && (seq.active || snap.running)) {
+      si.text = `Lượt ${Math.min((seq.index || 0) + 1, seq.total)} / ${seq.total} · ${si.text}`;
+    }
     const statusEl = $('at-status');
     statusEl.textContent = si.text;
     statusEl.className = 'at-status ' + si.cls;
@@ -1173,7 +1182,14 @@ renderActions();
   });
   api.onAutotestUpdate && api.onAutotestUpdate(async (s) => {
     snap = s; if (!$('at-panel').hidden) render();
-    if (sequenceRunning && s && s.state === 'COMPLETED') {
+    // WU-AUTO-SEQUENCE — mirror main's authoritative sequence position so the active-row
+    // highlight tracks the row actually executing (renderer never owns advancement).
+    if (s && s.sequence && s.sequence.active) sequenceIndex = s.sequence.index || 0;
+    // main owns multi-row advancement; the renderer flag only mirrors it.
+    // Clear it ONLY when the whole sequence is finished (final row COMPLETED and the main-side
+    // sequence is no longer active) — never on an intermediate row completion (which would flip
+    // the CTA mid-sequence).
+    if (sequenceRunning && s && s.state === 'COMPLETED' && !(s.sequence && s.sequence.active)) {
       sequenceRunning = false;
       render();
     }
@@ -1199,12 +1215,24 @@ renderActions();
   async function startRun() {
     if (!validateConfigUI() || !protoCtxReady()) return;
     sequenceIndex = 0; sequenceRunning = true;
-    await startCurrentRow();
+    await startSequence();
   }
-  async function startCurrentRow() {
-    const v = ATC ? ATC.validate(rawFields()) : { ok: true, config: rawFields() };
-    if (!v.ok) { sequenceRunning = false; validateConfigUI(); return; }
-    // WU-C.3 — snapshot the Jackpot gate config at START (locked for this session).
+  // WU-AUTO-SEQUENCE — build the ordered, IMMUTABLE row snapshot (top → bottom = execution
+  // order) and hand it to main in ONE autotest-start call. Main owns advancement bound to
+  // the ORIGINAL run id, so later UI edits/add/remove and browser-selection changes never
+  // mutate or retarget the in-flight sequence. Each row runs as its own execution, once.
+  async function startSequence() {
+    // Validate EVERY configured row up front — a single bad row aborts START.
+    const configs = [];
+    for (const row of testRows()) {
+      const v = ATC ? ATC.validate(rawFields(row)) : { ok: true, config: rawFields(row) };
+      if (!v.ok) { sequenceRunning = false; validateConfigUI(); return; }
+      configs.push(v.config);
+    }
+    if (!configs.length) { sequenceRunning = false; return; }
+    // WU-C.3 — snapshot the Jackpot gate config at START (locked for this session). The
+    // session toggles (jackpot wait, Stop-1000x) apply to EVERY row of the sequence; per-row
+    // fields are only rounds/amount/stopOdd.
     const jpWait = !!($('at-jp-wait') && $('at-jp-wait').checked);
     let jpMin = null;
     if (jpWait) {
@@ -1214,17 +1242,20 @@ renderActions();
     }
     // WU-D — Stop-1000x session kill switch (default OFF). Distinct from stopOdd.
     const stop1000 = !!($('at-stop1000') && $('at-stop1000').checked);
-    const cfg = { ...v.config, waitForJackpot: jpWait, jackpotThreshold: jpMin, stopAutoAt1000x: stop1000 };
-    // WU-D — persist this browser's operating config so it restores on next open. This
+    const sequence = configs.map((c) => ({ ...c, waitForJackpot: jpWait, jackpotThreshold: jpMin, stopAutoAt1000x: stop1000 }));
+    // WU-D — persist the FIRST row's operating config so it restores on next open. This
     // is a saved REQUEST only; main still enforces license features at execution time.
     if (currentBrowserId && api.browserConfigSet) {
-      try { api.browserConfigSet(currentBrowserId, { amount: Number(v.config.amount), roundCount: Number(v.config.roundCount), stopOdd: Number(v.config.stopOdd), waitForJackpot: jpWait, jackpotThreshold: jpMin, stopAutoAt1000x: stop1000 }); } catch { /* best-effort */ }
+      const c0 = configs[0];
+      try { api.browserConfigSet(currentBrowserId, { amount: Number(c0.amount), roundCount: Number(c0.roundCount), stopOdd: Number(c0.stopOdd), waitForJackpot: jpWait, jackpotThreshold: jpMin, stopAutoAt1000x: stop1000 }); } catch { /* best-effort */ }
     }
     // WU-C.1.1 — START AUTO first ensures Aviator entry, then (if enabled) the Jackpot
     // gate. AUTO RUNNING only appears once the AutoRunner has actually started.
     const cta = $('at-cta'); const note = $('at-cta-note');
     if (cta) cta.disabled = true; if (note) note.textContent = jpWait ? 'Đang chuẩn bị (vào game · chờ jackpot)…' : 'Đang vào game (Aviator)…';
-    const r = await api.autotestStart(currentRunId, cfg);
+    // The first array element doubles as the legacy single-config payload; `sequence` carries
+    // the full ordered snapshot main will run.
+    const r = await api.autotestStart(currentRunId, { ...sequence[0], sequence });
     if (cta) cta.disabled = false;
     if (r && r.error) {
       sequenceRunning = false;
@@ -1243,7 +1274,7 @@ renderActions();
   }
   async function stopRun() { sequenceRunning = false; const r = await api.autotestStop(currentRunId); if (r && !r.error) { snap = r; render(); } }
   // Stop also serves a waiting-jackpot session (autotest-stop cancels THIS run's gate).
-  $('at-cta').onclick = () => { ((snap && snap.running) || gateWaiting()) ? stopRun() : startRun(); };
+  $('at-cta').onclick = () => { ((snap && (snap.running || (snap.sequence && snap.sequence.active))) || gateWaiting()) ? stopRun() : startRun(); };
 
   // WU-D — apply a browser's persisted operating config to the Auto form fields.
   async function loadBrowserConfig() {

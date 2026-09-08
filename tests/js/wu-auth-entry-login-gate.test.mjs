@@ -73,13 +73,15 @@ test('wiring: recovery evidence and the Auto-start gate share the ONE login dete
 
 test('wiring: autotest-start gates on login BEFORE Aviator entry (no cmd100000 into a login wall)', () => {
   const main = rd('desktop/main.cjs');
-  const startIdx = main.indexOf("handle('autotest-start'");
-  assert.ok(startIdx > 0, 'autotest-start handler exists');
+  // WU-AUTO-SEQUENCE — the Auto start orchestration (shared by the first row and every
+  // sequence row) lives in startAutoExecution(); assert the gate ordering there.
+  const startIdx = main.indexOf('async function startAutoExecution');
+  assert.ok(startIdx > 0, 'startAutoExecution orchestration exists');
   const body = main.slice(startIdx, startIdx + 3200);
   const loginIdx = body.indexOf('LOGIN_REQUIRED');
   const gateCallIdx = body.indexOf('looksLikeLoginUrl(currentRunUrl(run))');
   const entryIdx = body.indexOf('entryGate.ensureEntered()');
-  assert.ok(gateCallIdx > 0, 'the login gate is present in autotest-start');
+  assert.ok(gateCallIdx > 0, 'the login gate is present in the Auto start orchestration');
   assert.ok(loginIdx > 0 && loginIdx < entryIdx, 'LOGIN_REQUIRED returned before entry');
   assert.ok(gateCallIdx < entryIdx, 'login check runs BEFORE entryGate.ensureEntered()');
   // guarded by not-already-entered so an in-game run is never blocked by a stale URL
