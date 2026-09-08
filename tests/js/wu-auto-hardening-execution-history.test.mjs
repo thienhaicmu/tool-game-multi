@@ -87,6 +87,7 @@ test('stopReasonLabelVi maps the canonical reasons; unknown falls back safely', 
   assert.equal(stopReasonLabelVi('ROUND_TARGET_COMPLETED'), 'Hoàn thành số vòng');
   assert.equal(stopReasonLabelVi('LOGIN_REQUIRED'), 'Cần đăng nhập');
   assert.equal(stopReasonLabelVi('RECOVERY_FAILED'), 'Khôi phục thất bại');
+  assert.equal(stopReasonLabelVi('SEQUENCE_WIN_RESET'), 'Thắng — quay lại lượt 1');
   assert.equal(stopReasonLabelVi('WAT'), 'Không xác định');
 });
 

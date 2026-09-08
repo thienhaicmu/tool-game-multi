@@ -38,7 +38,12 @@ const STOP_REASON = Object.freeze({
   STOP_1000X_REACHED: 'STOP_1000X_REACHED', SESSION_RECOVERY: 'SESSION_RECOVERY',
   LOGIN_REQUIRED: 'LOGIN_REQUIRED', RECOVERY_FAILED: 'RECOVERY_FAILED',
   AUTO_ERROR: 'AUTO_ERROR', RUN_CLOSED: 'RUN_CLOSED', APP_CLOSED: 'APP_CLOSED',
-  LICENSE_BLOCKED: 'LICENSE_BLOCKED', UNKNOWN: 'UNKNOWN',
+  LICENSE_BLOCKED: 'LICENSE_BLOCKED',
+  // The current LƯỢT execution ended cleanly because one of its rounds was an authoritative WIN
+  // (RESULT.COMPLETED) and the AutoSequenceController is resetting the sequence to row 0 (§WIN-RESET).
+  // This is NOT a failure: the winning ROUND stays COMPLETED in round history; this only labels the
+  // EXECUTION's terminal record so it is never misread as USER_STOP / UNKNOWN / a losing completion.
+  SEQUENCE_WIN_RESET: 'SEQUENCE_WIN_RESET', UNKNOWN: 'UNKNOWN',
 });
 
 function normalizeStopReason(internal) {
@@ -53,6 +58,7 @@ function normalizeStopReason(internal) {
     case 'RUN_CLOSED': return STOP_REASON.RUN_CLOSED;
     case 'APP_CLOSED': return STOP_REASON.APP_CLOSED;
     case 'LICENSE_BLOCKED': return STOP_REASON.LICENSE_BLOCKED;
+    case 'SEQUENCE_WIN_RESET': return STOP_REASON.SEQUENCE_WIN_RESET;
     case '': return null;
     default: return STOP_REASON[internal] || STOP_REASON.UNKNOWN;
   }

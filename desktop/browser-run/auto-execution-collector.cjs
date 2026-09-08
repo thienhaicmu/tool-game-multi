@@ -26,6 +26,9 @@ const STOP_REASON_LABEL_VI = Object.freeze({
   RUN_CLOSED: 'Đã đóng trình duyệt',
   APP_CLOSED: 'Đã đóng ứng dụng',
   LICENSE_BLOCKED: 'Giấy phép bị khóa',
+  // A round WIN ended this LƯỢT so the sequence restarts at LƯỢT 1 — a legitimate win outcome,
+  // never a failure/unknown (the winning round itself stays COMPLETED in round history).
+  SEQUENCE_WIN_RESET: 'Thắng — quay lại lượt 1',
   UNKNOWN: 'Không xác định',
 });
 

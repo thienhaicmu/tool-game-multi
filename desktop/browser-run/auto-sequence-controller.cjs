@@ -38,6 +38,10 @@ class AutoSequenceController {
     // owning run's legitimate start orchestration (entry/login/jackpot gates + AutoRunner
     // .start) — the SAME path the first row uses. Never resumes (a NEW execution per row).
     this._startExecution = typeof deps.startExecution === 'function' ? deps.startExecution : async () => ({ error: { code: 'AUTO_SEQUENCE_NO_START', message: 'no start orchestration bound' } });
+    // stopExecution(reason) => cleanly terminates the CURRENTLY running AutoRunner execution
+    // with a semantic terminal reason (used only by the WIN reset, before launching row 0). It
+    // must NOT fabricate a losing round result — the winning ROUND is already COMPLETED in history.
+    this._stopExecution = typeof deps.stopExecution === 'function' ? deps.stopExecution : () => {};
     this._isRunValid = typeof deps.isRunValid === 'function' ? deps.isRunValid : () => true;
     this._scheduler = deps.scheduler || { setTimeout: (fn) => setTimeout(fn, 0), clearTimeout: (h) => clearTimeout(h) };
     this._diag = deps.diag || null;
@@ -50,6 +54,12 @@ class AutoSequenceController {
     this._advancedIds = new Set(); // idempotency: finalized ids already advanced/handled
     this._pending = null;        // scheduled next-row timer handle
     this._lastReason = null;
+    // WIN-RESET (§WIN) — an authoritative round WIN (RESULT.COMPLETED) in the CURRENT LƯỢT
+    // resets the sequence to row 0. These track the identity/idempotency the reset needs:
+    this._currentExecId = null;  // autoExecutionId of the row currently executing (set on each start)
+    this._winHandledIds = new Set();  // winning execution ids already turned into a reset (dedup, §5)
+    this._winConsumedIds = new Set(); // executions terminated BY a win reset — their terminal
+                                      // executionFinalized must never advance/stop the sequence (§6/§7)
   }
 
   isRunning() { return this._running; }
@@ -76,6 +86,9 @@ class AutoSequenceController {
     this._index = 0;
     this._running = true;
     this._advancedIds = new Set();
+    this._winHandledIds = new Set();
+    this._winConsumedIds = new Set();
+    this._currentExecId = null;
     this._lastReason = null;
     this._log('INFO', 'AUTO_SEQUENCE_START', { total: this._rows.length, ownerRunId: this._ownerRunId });
     // `first: true` lets the host keep the existing recovery-resume continuity for the FIRST
@@ -87,6 +100,8 @@ class AutoSequenceController {
       this._running = false;
       this._rows = [];
       this._log('WARN', 'AUTO_SEQUENCE_START_FAILED', { errorCode: res.error.code });
+    } else if (res && res.autoExecutionId != null) {
+      this._currentExecId = String(res.autoExecutionId);
     }
     return res;
   }
@@ -110,6 +125,14 @@ class AutoSequenceController {
     if (!this._running) return;
     const id = rec && rec.autoExecutionId != null ? String(rec.autoExecutionId) : null;
     const reason = rec && rec.stopReason;
+    // §6/§7 — a terminal record for an execution ALREADY consumed by a WIN reset must never
+    // advance NOR stop the sequence. This covers both the SEQUENCE_WIN_RESET finalize we trigger
+    // ourselves and any late/stale finalize (even a ROUND_TARGET_COMPLETED) from that old
+    // execution arriving after the reset already moved us to row 0.
+    if (id != null && this._winConsumedIds.has(id)) {
+      this._log('INFO', 'AUTO_SEQUENCE_WIN_STALE_FINALIZE_IGNORED', { reason: reason == null ? null : String(reason), execId: id });
+      return;
+    }
     if (reason !== CONTINUABLE_STOP_REASON) {
       // Hard stop / user stop / recovery-failed / login / error → do NOT advance.
       this._log('INFO', 'AUTO_SEQUENCE_HALT', { reason: reason == null ? null : String(reason), index: this._index });
@@ -150,6 +173,71 @@ class AutoSequenceController {
     if (res && res.error) {
       this._log('WARN', 'AUTO_SEQUENCE_NEXT_FAILED', { index: this._index, errorCode: res.error.code });
       this.stop('NEXT_START_FAILED');
+    } else if (res && res.autoExecutionId != null) {
+      this._currentExecId = String(res.autoExecutionId);
+    }
+  }
+
+  // React to an authoritative round WIN inside the CURRENT LƯỢT. The host wires this to the
+  // AutoRunner `roundFinalized` seam, filtered to result === RESULT.COMPLETED (the existing cashout-
+  // ACK evidence path) — the controller NEVER parses protocol frames. A WIN resets the sequence to
+  // LƯỢT 1 / index 0 and launches it as a NEW execution. `rec.autoExecutionId` is the WINNING row's
+  // execution id (captured by the host at emit time) and is the identity used for §5/§6/§7 safety.
+  onRoundWin(rec) {
+    if (!this._running) return;                        // §8 — STOP already ended the sequence
+    const id = rec && rec.autoExecutionId != null ? String(rec.autoExecutionId) : null;
+    // §6 — the win must belong to the row CURRENTLY executing. A late win from an already-superseded
+    // execution (e.g. after we already reset to a new LƯỢT 1) is ignored — it cannot reset again.
+    if (id != null && this._currentExecId != null && id !== this._currentExecId) {
+      this._log('INFO', 'AUTO_SEQUENCE_WIN_STALE_IGNORED', { winExecId: id, currentExecId: this._currentExecId });
+      return;
+    }
+    // §5 — exactly ONE reset per winning execution. Duplicate WIN emits for the same execution
+    // (duplicate qualifying frames / re-entrant emits) collapse to a single LƯỢT 1 start.
+    if (id != null) {
+      if (this._winHandledIds.has(id)) return;
+      this._winHandledIds.add(id);
+      // §6/§7 — the winning execution's own terminal finalize (and any late/stale finalize from it)
+      // must NOT advance or stop the sequence once the win has been consumed here.
+      this._winConsumedIds.add(id);
+    }
+    // §7/§8 — bump the generation so any queued normal advance (or a concurrent STOP's guard) is
+    // superseded by this reset, and cancel the pending next-row timer.
+    this._generation += 1;
+    this._clearPending();
+    this._index = 0;                                   // reset LƯỢT → row 0 (the reset target)
+    const gen = this._generation;
+    this._log('INFO', 'AUTO_SEQUENCE_WIN_RESET', { winExecId: id, index: 0, total: this._rows.length });
+    // §4 — defer the stop+restart to the next tick. `roundFinalized` fires while AutoRunner is still
+    // unwinding its own _finalize/_afterRound stack; re-entering stop/start now would corrupt it. The
+    // same scheduler seam the normal advance uses guarantees the win finalization completes first.
+    this._pending = this._scheduler.setTimeout(() => this._fireWinReset(gen), 0);
+  }
+
+  async _fireWinReset(gen) {
+    this._pending = null;
+    if (gen !== this._generation) return;              // superseded by stop()/start()/another win
+    if (!this._running) return;                        // §8 — STOP won the race
+    if (!this._isRunValid()) { this.stop('RUN_INVALID'); return; }
+    // Cleanly END the winning execution with a semantic terminal reason (never a fabricated loss).
+    // Its executionFinalized is ignored via _winConsumedIds, so it neither advances nor stops us.
+    try { this._stopExecution('SEQUENCE_WIN_RESET'); }
+    catch (e) { this._log('WARN', 'AUTO_SEQUENCE_WIN_STOP_FAILED', { message: String(e && e.message || e) }); }
+    if (gen !== this._generation) return;              // a STOP could land during the synchronous stop
+    if (!this._running) return;
+    const cfg = this._rows[0];
+    this._log('INFO', 'AUTO_SEQUENCE_WIN_NEXT', { index: 0, total: this._rows.length });
+    let res;
+    // A genuinely NEW execution for LƯỢT 1 (first: false → never resumes the winning id; a fresh
+    // autoExecutionId is minted). old winning id A != new LƯỢT 1 id B.
+    try { res = await this._startExecution(cfg, { first: false }); }
+    catch (e) { res = { error: { code: 'AUTO_SEQUENCE_WIN_START_EXCEPTION', message: String(e && e.message || e) } }; }
+    if (gen !== this._generation) return;              // stopped while awaiting the async start
+    if (res && res.error) {
+      this._log('WARN', 'AUTO_SEQUENCE_WIN_START_FAILED', { errorCode: res.error.code });
+      this.stop('WIN_START_FAILED');
+    } else if (res && res.autoExecutionId != null) {
+      this._currentExecId = String(res.autoExecutionId);
     }
   }
 

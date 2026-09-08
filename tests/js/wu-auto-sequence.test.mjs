@@ -32,20 +32,28 @@ function fakeScheduler({ leaky = false } = {}) {
 function mockCtrl({ startResults, ownerRunId = 'B1', scheduler } = {}) {
   const sch = scheduler || fakeScheduler();
   const starts = [];
+  const stops = [];               // recorded stopExecution(reason) calls (WIN reset terminations)
   let seq = 0;
+  let curId = null;               // last successfully started execution id (mirrors _currentExecId)
   const startExecution = async (cfg, o) => {
     seq += 1;
     const execId = `AX-${ownerRunId}-${seq}`;
     starts.push({ cfg, first: !!(o && o.first), execId });
     const r = startResults ? startResults(seq, cfg) : null;
     if (r && r.error) return r;
+    curId = execId;
     return { ok: true, autoExecutionId: execId };
   };
-  const ctrl = new AutoSequenceController({ startExecution, scheduler: sch, ownerRunId });
+  // Mirror production: finalizeExecution(reason) synchronously emits executionFinalized, which
+  // re-enters onExecutionFinalized for the (now win-consumed) execution — proving the guard.
+  const stopExecution = (reason) => { stops.push({ reason, execId: curId }); ctrl.onExecutionFinalized({ autoExecutionId: curId, stopReason: reason }); };
+  const ctrl = new AutoSequenceController({ startExecution, stopExecution, scheduler: sch, ownerRunId });
   const lastId = () => (starts.length ? starts[starts.length - 1].execId : null);
   const finalize = (reason = CONTINUABLE_STOP_REASON, execId) => ctrl.onExecutionFinalized({ autoExecutionId: execId || lastId(), stopReason: reason });
+  // Signal an authoritative round WIN for the CURRENT (or an explicit) execution id.
+  const win = (execId) => ctrl.onRoundWin({ autoExecutionId: execId !== undefined ? execId : curId });
   const advance = async () => { sch.fireAll(); await flush(); };
-  return { ctrl, sch, starts, finalize, advance, lastId };
+  return { ctrl, sch, starts, stops, finalize, win, advance, lastId };
 }
 
 const ROW = (roundCount, amount = 5000, stopOdd = 2.0) => ({ roundCount, amount, stopOdd });
@@ -218,14 +226,19 @@ test('SEQ row-0 start error aborts the sequence', async () => {
 // autoExecutionIds, one finalize per row, recovery continuity, and that roundCount /
 // BET / CASHOUT semantics are untouched by the outer loop.
 // ---------------------------------------------------------------------------
-function makeReal({ ownerRunId = 'B1' } = {}) {
+// winReset:false → the legacy harness (only executionFinalized wired), used to prove AutoRunner's
+// own _attempted/win semantics in ISOLATION. winReset:true → also wires the production WIN bridge
+// (roundFinalized[result===COMPLETED] → onRoundWin) + stopExecution(finalizeExecution), so a round
+// WIN resets the sequence to row 0 exactly as main.cjs does. cashout lets a test force a non-ACK.
+function makeReal({ ownerRunId = 'B1', winReset = false, cashout } = {}) {
   const tracker = new RoundTracker({ ackWindowMs: 60000 });
   const observer = new RoundObserver({ roundTracker: tracker });
   const sends = [];
   const harness = {
     execute: async (opts) => {
       sends.push(opts.command);
-      return opts.command === 'cashout' ? { result: 'ACK', responsePayload: { odd: 2.05, wm: 7750 } } : { result: 'ACK' };
+      if (opts.command === 'cashout') return cashout || { result: 'ACK', responsePayload: { odd: 2.05, wm: 7750 } };
+      return { result: 'ACK' };
     },
   };
   const runner = new AutoRunner({ roundTracker: tracker, observer, harness, getTargetUrl: () => 'http://localhost:8080/game' });
@@ -238,13 +251,20 @@ function makeReal({ ownerRunId = 'B1' } = {}) {
     starts.push({ cfg, execId: r.autoExecutionId });
     return { ok: true, autoExecutionId: r.autoExecutionId };
   };
-  const ctrl = new AutoSequenceController({ startExecution, scheduler, ownerRunId });
+  const stopExecution = (reason) => { try { runner.finalizeExecution(reason); } catch { /* best effort */ } };
+  const ctrl = new AutoSequenceController({ startExecution, stopExecution, scheduler, ownerRunId });
+  const rounds = [];   // every roundFinalized pub (the authoritative per-round result feed)
   runner.on('executionFinalized', (rec) => { finalized.push(rec); ctrl.onExecutionFinalized(rec); });
+  runner.on('roundFinalized', (pub) => {
+    rounds.push({ ...pub, execId: runner.autoExecutionId() });
+    // Production bridge (main.cjs): only an authoritative WIN (RESULT.COMPLETED) resets the LƯỢT.
+    if (winReset && pub && pub.result === RESULT.COMPLETED) ctrl.onRoundWin({ autoExecutionId: runner.autoExecutionId() });
+  });
   const feed = (raw) => tracker.observe({ raw, direction: 'recv', targetId: 'T', url: 'wss://game.local/ws' });
   const betCount = () => sends.filter((c) => c === 'bet').length;
   const cashCount = () => sends.filter((c) => c === 'cashout').length;
   const advance = async () => { scheduler.fireAll(); await flush(); };
-  return { tracker, observer, runner, ctrl, scheduler, starts, finalized, feed, betCount, cashCount, advance };
+  return { tracker, observer, runner, ctrl, scheduler, starts, finalized, rounds, feed, betCount, cashCount, advance };
 }
 async function playLose(feed, sid) {
   feed(`{"cmd":100005,"sid":${sid}}`); await flush();   // bet sent + ACK → WATCHING_ODD
@@ -346,4 +366,256 @@ test('SEQ (real) win resets _attempted within a row; row still terminates on a l
   assert.equal(cashCount(), 1, 'exactly one cashout (the winning round)');
   assert.equal(betCount(), 2, 'one bet per played SID; no cross-execution SID reuse');
   assert.equal(ctrl.index(), 1, 'sequence advanced to row 2');
+});
+
+// ===========================================================================
+// WIN-RESET — an authoritative round WIN (RESULT.COMPLETED, the cashout-ACK evidence path)
+// in the CURRENT LƯỢT resets the sequence to LƯỢT 1 / index 0 and starts it as a NEW execution.
+// WIN ownership stays in AutoRunner; the controller owns the LƯỢT transition. These prove the
+// transition + every reentrancy/dedup/stale/stop/recovery guard the spec requires.
+// ===========================================================================
+
+// T1 — L1 WIN → a NEW L1 execution (semantic reason SEQUENCE_WIN_RESET; distinct id).
+test('WIN T1 — L1 win restarts L1 as a new execution', async () => {
+  const { ctrl, starts, stops, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1000)]);
+  assert.equal(starts.length, 1);
+  win(); await advance();
+  assert.equal(ctrl.index(), 0, 'reset to LƯỢT 1');
+  assert.equal(ctrl.isRunning(), true, 'sequence keeps running');
+  assert.equal(starts.length, 2, 'LƯỢT 1 restarted');
+  assert.deepEqual(starts.map((s) => s.cfg.roundCount), [1000, 1000], 'restarted with row-0 config');
+  assert.equal(stops.length, 1, 'winning execution cleanly terminated once');
+  assert.equal(stops[0].reason, 'SEQUENCE_WIN_RESET', 'terminated with the semantic win reason, not a fake failure');
+  assert.notEqual(starts[1].execId, starts[0].execId, 'NEW autoExecutionId (A != B)');
+});
+
+// T2 — L2 WIN → L1.
+test('WIN T2 — win in L2 resets to L1', async () => {
+  const { ctrl, starts, finalize, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2), ROW(3)]);
+  finalize(); await advance();                 // L1 → L2
+  assert.equal(ctrl.index(), 1);
+  win(); await advance();                       // WIN in L2 → L1
+  assert.equal(ctrl.index(), 0, 'back to LƯỢT 1');
+  assert.equal(starts[starts.length - 1].cfg.roundCount, 1, 'restarted at row-0 config');
+});
+
+// T3 — L3 WIN → L1.
+test('WIN T3 — win in L3 resets to L1', async () => {
+  const { ctrl, starts, finalize, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2), ROW(3)]);
+  finalize(); await advance(); finalize(); await advance();   // → L3
+  assert.equal(ctrl.index(), 2);
+  win(); await advance();
+  assert.equal(ctrl.index(), 0);
+  assert.equal(starts[starts.length - 1].cfg.roundCount, 1);
+});
+
+// T4 — WIN in the LAST LƯỢT → L1 (a win never "completes" the sequence like a normal last-row finalize).
+test('WIN T4 — win in the final LƯỢT resets to L1 (not sequence-complete)', async () => {
+  const { ctrl, starts, finalize, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2)]);
+  finalize(); await advance();                 // → L2 (last row)
+  assert.equal(ctrl.index(), 1);
+  win(); await advance();
+  assert.equal(ctrl.index(), 0, 'win in last row loops to L1, does not end the sequence');
+  assert.equal(ctrl.isRunning(), true);
+  assert.equal(starts[starts.length - 1].cfg.roundCount, 1);
+});
+
+// T5 + T6 (real) — new L1 id != winning id; the winning ROUND stays RESULT.COMPLETED; the terminal
+// EXECUTION record is SEQUENCE_WIN_RESET, never a fabricated losing result.
+test('WIN T5/T6 (real) — new L1 id != winning id; winning round stays COMPLETED', async () => {
+  const { ctrl, runner, feed, advance, rounds, finalized } = makeReal({ winReset: true });
+  await ctrl.start([{ roundCount: 1, amount: 5000, stopOdd: 2 }, { roundCount: 1, amount: 5000, stopOdd: 2 }]);
+  const idA = runner.autoExecutionId();
+  await playWin(feed, 100);                     // authoritative WIN → cashout ACK → RESULT.COMPLETED
+  await advance();                              // win-reset fires: end A, start L1 as B
+  const idB = runner.autoExecutionId();
+  assert.notEqual(idB, idA, 'LƯỢT 1 minted a NEW execution id (A != B)');
+  const wins = rounds.filter((r) => r.result === RESULT.COMPLETED);
+  assert.equal(wins.length, 1, 'exactly one winning round');
+  assert.equal(wins[0].result, RESULT.COMPLETED, 'winning round remains WIN/COMPLETED');
+  assert.equal(wins[0].execId, idA, 'the winning round belongs to the OLD (winning) execution');
+  assert.ok(finalized.some((f) => f.autoExecutionId === idA && f.stopReason === 'SEQUENCE_WIN_RESET'), 'winning execution ended with the semantic win reason');
+  assert.ok(!finalized.some((f) => f.stopReason === 'USER_STOP' || f.stopReason === 'UNKNOWN'), 'never recorded as a manual/unknown stop');
+  assert.equal(ctrl.index(), 0);
+});
+
+// T7 (real, no bridge) — AutoRunner's own _attempted/win semantics are UNCHANGED in isolation:
+// a win resets _attempted to 0 and the execution keeps running (does NOT self-finalize).
+test('WIN T7 (real) — AutoRunner _attempted semantics unchanged in isolation', async () => {
+  const { runner, ctrl, feed, finalized } = makeReal({ winReset: false });
+  await ctrl.start([{ roundCount: 3, amount: 5000, stopOdd: 2 }]);
+  await playWin(feed, 100);
+  assert.equal(finalized.length, 0, 'win did not finalize the execution');
+  assert.equal(runner.isRunning(), true, 'execution still running after a win');
+  assert.equal(runner.snapshot().progress.attempted, 0, '_attempted reset to 0 on win (unchanged)');
+});
+
+// T8 — a bare BET ACK (no qualifying odd, no round finalized) is NOT a win → no reset.
+test('WIN T8 (real) — bare BET ACK does not reset the LƯỢT', async () => {
+  const { ctrl, feed, advance, starts, rounds } = makeReal({ winReset: true });
+  await ctrl.start([{ roundCount: 1, amount: 5000, stopOdd: 2 }, { roundCount: 1, amount: 5000, stopOdd: 2 }]);
+  feed(`{"cmd":100005,"sid":100}`); await flush();   // bet sent + ACK → WATCHING_ODD; no round finalized
+  await advance();
+  assert.equal(rounds.filter((r) => r.result === RESULT.COMPLETED).length, 0, 'no COMPLETED round');
+  assert.equal(ctrl.index(), 0);
+  assert.equal(starts.length, 1, 'no restart from a bare BET ACK');
+});
+
+// T9 — a CASHOUT request that does NOT ACK (TIMEOUT) is NOT a win. It is a normal non-win outcome,
+// so it consumes the round budget and advances normally — it never triggers a WIN reset.
+test('WIN T9 (real) — cashout request without ACK is not a win (no reset)', async () => {
+  const { ctrl, feed, advance, finalized } = makeReal({ winReset: true, cashout: { result: 'TIMEOUT' } });
+  await ctrl.start([{ roundCount: 1, amount: 5000, stopOdd: 2 }, { roundCount: 1, amount: 5000, stopOdd: 2 }]);
+  await playWin(feed, 100);                     // odd crosses → cashout REQUEST → TIMEOUT (not COMPLETED)
+  await advance();
+  assert.ok(!finalized.some((f) => f.stopReason === 'SEQUENCE_WIN_RESET'), 'cashout timeout is not a win');
+  assert.equal(ctrl.index(), 1, 'treated as normal non-win progression → advanced to L2');
+});
+
+// T10 — a ROUND_END before threshold (loss) is NOT a win → normal progression, no reset.
+test('WIN T10 (real) — round-end loss does not reset (normal advance)', async () => {
+  const { ctrl, feed, advance, finalized } = makeReal({ winReset: true });
+  await ctrl.start([{ roundCount: 1, amount: 5000, stopOdd: 2 }, { roundCount: 1, amount: 5000, stopOdd: 2 }]);
+  await playLose(feed, 100); await advance();
+  assert.ok(!finalized.some((f) => f.stopReason === 'SEQUENCE_WIN_RESET'));
+  assert.equal(ctrl.index(), 1, 'loss advances normally, never a win reset');
+});
+
+// T11 — an UNKNOWN terminal reason stops the sequence (existing behavior) and never win-resets.
+test('WIN T11 (mock) — UNKNOWN terminal never triggers a win reset', async () => {
+  const { ctrl, starts, stops, finalize, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2)]);
+  finalize('UNKNOWN'); await advance();
+  assert.equal(ctrl.isRunning(), false, 'UNKNOWN stops the sequence');
+  assert.equal(stops.length, 0, 'no SEQUENCE_WIN_RESET termination');
+  assert.equal(starts.length, 1, 'no L1 restart');
+});
+
+// T12/T13/T14 (real, bridge ON) — non-win progression + final-row stop are byte-for-byte unchanged.
+test('WIN T12/T13/T14 (real) — non-win progression L1→L2→L3 then stop, with bridge active', async () => {
+  const { ctrl, feed, advance, finalized } = makeReal({ winReset: true });
+  await ctrl.start([
+    { roundCount: 1, amount: 5000, stopOdd: 2 },
+    { roundCount: 1, amount: 10000, stopOdd: 2 },
+    { roundCount: 1, amount: 15000, stopOdd: 2 },
+  ]);
+  await playLose(feed, 100); await advance();  assert.equal(ctrl.index(), 1, 'L1 loss → L2');
+  await playLose(feed, 200); await advance();  assert.equal(ctrl.index(), 2, 'L2 loss → L3');
+  await playLose(feed, 300); await advance();
+  assert.equal(ctrl.isRunning(), false, 'final-row loss ends the sequence (unchanged)');
+  assert.ok(finalized.every((f) => f.stopReason === 'ROUND_TARGET_COMPLETED'), 'all normal terminal records; no win reset involved');
+});
+
+// T15 — duplicate WIN for the SAME winning execution → exactly ONE L1 start.
+test('WIN T15 (mock) — duplicate win same round → exactly one reset', async () => {
+  const { ctrl, starts, stops, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2)]);
+  win(); win(); win();                          // three emits for the SAME current execution
+  await advance();
+  assert.equal(stops.length, 1, 'exactly one termination');
+  assert.equal(starts.length, 2, 'exactly one L1 restart (WIN_RESET_COUNT_PER_WINNING_ROUND = 1)');
+});
+
+// T16 — after a reset, ANY late event from the OLD winning execution cannot affect the new L1.
+test('WIN T16 (mock) — stale events from the old winning execution are inert', async () => {
+  const { ctrl, starts, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2), ROW(3)]);
+  const idA = starts[0].execId;
+  win(idA); await advance();                    // reset → new L1 (idB)
+  const n = starts.length;
+  win(idA);                                     // stale duplicate win from A
+  ctrl.onExecutionFinalized({ autoExecutionId: idA, stopReason: 'ROUND_TARGET_COMPLETED' });
+  await advance();
+  assert.equal(ctrl.index(), 0, 'stale A cannot move the new L1');
+  assert.equal(starts.length, n, 'no extra start from stale A');
+  assert.equal(ctrl.isRunning(), true);
+});
+
+// T17 — WIN then a stale ROUND_TARGET_COMPLETED from the old execution → stays L1 (no wrong advance).
+test('WIN T17 (mock) — win then stale ROUND_TARGET_COMPLETED does not advance', async () => {
+  const { ctrl, starts, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2), ROW(3)]);
+  const idA = starts[0].execId;
+  win(idA); await advance();
+  const n = starts.length;
+  ctrl.onExecutionFinalized({ autoExecutionId: idA, stopReason: 'ROUND_TARGET_COMPLETED' });
+  await advance();
+  assert.equal(ctrl.index(), 0, 'WIN_THEN_STALE_FINALIZE_WRONG_ADVANCE = 0');
+  assert.equal(starts.length, n);
+});
+
+// T18 — WIN queued then STOP (generation guard beats the queued reset even if the timer still fires).
+test('WIN T18 (mock) — win queued + STOP → no L1 restart', async () => {
+  const sch = fakeScheduler({ leaky: true });   // clearTimeout is a no-op
+  const { ctrl, starts, win } = mockCtrl({ scheduler: sch });
+  await ctrl.start([ROW(1), ROW(2)]);
+  win();
+  assert.equal(sch.pending(), 1, 'reset queued');
+  ctrl.stop('USER_STOP');                        // bumps generation
+  sch.fireAll(); await flush();                  // stale reset timer fires anyway
+  assert.equal(starts.length, 1, 'no L1 restart after STOP');
+  assert.equal(ctrl.isRunning(), false);
+});
+
+// T19 — STOP then a late WIN → nothing happens (STOP_RESURRECTION = 0).
+test('WIN T19 (mock) — STOP then late win → no resurrection', async () => {
+  const { ctrl, starts, win, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2)]);
+  ctrl.stop('USER_STOP');
+  win(); await advance();
+  assert.equal(starts.length, 1);
+  assert.equal(ctrl.isRunning(), false);
+});
+
+// T20 — SESSION_RECOVERY pause while on L3 → stays L3 (recovery is orthogonal to WIN).
+test('WIN T20 (real) — recovery pause on L3 preserves the current LƯỢT', async () => {
+  const C = (amount) => ({ roundCount: 1, amount, stopOdd: 2 });
+  const { ctrl, feed, advance, runner } = makeReal({ winReset: true });
+  await ctrl.start([C(5000), C(10000), C(15000)]);
+  await playLose(feed, 100); await advance();
+  await playLose(feed, 200); await advance();
+  assert.equal(ctrl.index(), 2, 'on L3');
+  runner.stop({ reason: 'SESSION_RECOVERY' });   // pause: emits neither executionFinalized nor a COMPLETED round
+  assert.equal(runner.pausedForRecovery(), true);
+  assert.equal(ctrl.index(), 2, 'recovery pause did NOT reset the LƯỢT');
+});
+
+// T23 (covers T21/T22 mechanism) — a WIN on a RECOVERED (resumed) L3 execution resets to L1 exactly
+// once. Proves recovery/context-loss/login re-entry never win-resets, but a real WIN afterwards does.
+test('WIN T23 (real) — win after a recovered L3 execution resets to L1 exactly once', async () => {
+  const C = (amount) => ({ roundCount: 1, amount, stopOdd: 2 });
+  const { ctrl, feed, advance, runner, starts } = makeReal({ winReset: true });
+  await ctrl.start([C(5000), C(10000), C(15000)]);
+  await playLose(feed, 100); await advance();
+  await playLose(feed, 200); await advance();
+  assert.equal(ctrl.index(), 2, 'on L3');
+  const idC = runner.autoExecutionId();
+  runner.stop({ reason: 'SESSION_RECOVERY' });                       // context-loss/login recovery pause
+  runner.start('T', C(15000), { resumeExecutionId: idC }); await flush(); // resume SAME id (no reset)
+  assert.equal(ctrl.index(), 2, 'still L3 after resume');
+  assert.equal(runner.autoExecutionId(), idC, 'recovery kept the execution id');
+  const nBefore = starts.length;
+  await playWin(feed, 300); await advance();                          // authoritative WIN on recovered L3
+  assert.equal(ctrl.index(), 0, 'win resets to L1');
+  assert.equal(starts.length, nBefore + 1, 'exactly one L1 restart');
+  assert.notEqual(runner.autoExecutionId(), idC, 'L1 minted a new id');
+});
+
+// T24 — multi-browser isolation: B1 win resets only B1; B2's current LƯỢT is untouched.
+test('WIN T24 (mock) — a win in one run does not reset another run', async () => {
+  const A = mockCtrl({ ownerRunId: 'B1' });
+  const B = mockCtrl({ ownerRunId: 'B2' });
+  await A.ctrl.start([ROW(1), ROW(2)]);
+  await B.ctrl.start([ROW(10), ROW(20)]);
+  A.finalize(); await A.advance();             // A → L2
+  B.finalize(); await B.advance();             // B → L2
+  A.win(); await A.advance();                  // A WIN → L1
+  assert.equal(A.ctrl.index(), 0, 'B1 reset to L1');
+  assert.equal(B.ctrl.index(), 1, 'B2 unaffected');
+  assert.equal(B.starts.length, 2, 'B2 no extra start');
+  assert.ok(B.starts.every((s) => s.execId.startsWith('AX-B2-')), 'no cross-run retarget');
 });

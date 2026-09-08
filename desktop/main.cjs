@@ -613,10 +613,22 @@ function buildProtocolSubsystem(run) {
     diag: runDiag(run),
     isRunValid: () => run.status !== RUN_STATUS.CLOSED && !run._rendererGone,
     startExecution: (cfg, o) => startAutoExecution(run, cfg, { sequenceNext: !(o && o.first) }),
+    // WIN reset — cleanly END the winning LƯỢT execution before starting LƯỢT 1. Uses the existing
+    // idempotent public finalize seam with a semantic reason (never a fabricated losing result).
+    stopExecution: (reason) => finalizeAutoExecutionForRun(run, reason || 'SEQUENCE_WIN_RESET'),
   });
   // Advance the sequence ONLY on the authoritative terminal EXECUTION record. A recovery
   // PAUSE emits no executionFinalized, so it stays on the current row (same autoExecutionId).
   autoRunner.on('executionFinalized', (rec) => { try { autoSequence.onExecutionFinalized(rec); } catch { /* outer-loop best-effort */ } });
+  // WIN → LƯỢT reset. An authoritative round WIN (RESULT.COMPLETED — the existing cashout-ACK
+  // evidence path) in the CURRENT LƯỢT resets the sequence to row 0. WIN ownership stays in
+  // AutoRunner; the controller owns the LƯỢT transition. The winning execution id is captured HERE
+  // (structural identity) so a late/duplicate win cannot reset the wrong/next LƯỢT. Only a COMPLETED
+  // round bridges — BET ACK / CASHOUT request / ROUND_END / recovery never emit a COMPLETED round.
+  autoRunner.on('roundFinalized', (pub) => {
+    try { if (pub && pub.result === 'COMPLETED') autoSequence.onRoundWin({ autoExecutionId: autoRunner.autoExecutionId() }); }
+    catch { /* outer-loop best-effort */ }
+  });
 
   return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery, aviatorContext };
 }
