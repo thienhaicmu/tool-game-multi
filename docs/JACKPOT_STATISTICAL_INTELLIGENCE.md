@@ -187,5 +187,75 @@ jackpot nóng|lạnh`. Only descriptive terms (`tỷ lệ quan sát`, `phân ph�
 4. Real-Electron visual acceptance of the redesigned report with live captured data —
    requires a desktop session with passive traffic; see the WU final report.
 
+## 11. Statistical Engine V1 (implemented — RETROSPECTIVE only)
+
+A pure, dependency-free engine under [desktop/analytics/statistics/](../desktop/analytics/statistics/)
+answers *"does Jackpot show a measurable **historical** relationship with round outcomes?"* It
+runs over the **same qualified population** every report uses (`JackpotReport._load(spec)` — time
+/ hour / browser / **selected basis** / **Jackpot Range** / **Last-N**); it never re-filters,
+never predicts, never emits a betting signal. Every result carries `mode = 'RETROSPECTIVE'`.
+
+**Explanatory variable** = the selected Jackpot basis value; **outcome** = `max_odd` (and binary
+`reached_X` thresholds). User WIN/LOSS is never used.
+
+### Methods & policies
+
+| Method | Implementation | p-value | Effect size |
+|---|---|---|---|
+| Spearman ρ | Pearson on average (tie-corrected) ranks | Student-t, `t = ρ√((n−2)/(1−ρ²))`, df = n−2 | \|ρ\| bands: <.10 negligible · <.30 weak · <.50 moderate · ≥.50 strong |
+| Kendall τ-b | Knight's **O(n log n)** (merge-sort inversions), tie-corrected | normal approx (tie-adjusted) | same \|τ\| bands |
+| χ² independence | JP-range × coarse ODD bucket (`<2× / 2–5× / 5–10× / ≥10×`) | regularized incomplete gamma | **Cramér's V** (size-adjusted bands) |
+| Kruskal–Wallis H | tie-corrected, across JP ranges | χ²(k−1) | — |
+| Mann–Whitney U | normal approx + tie correction | two-sided | rank-biserial `1 − 2U/(n₁n₂)` |
+| Threshold rates | reused **Wilson 95%** per JP range + range×{reached,not} χ² | per-threshold | — |
+
+**Numerical core** ([special.cjs](../desktop/analytics/statistics/special.cjs)): erf/normal CDF,
+regularized incomplete gamma (χ² tail), regularized incomplete beta (t tail) — validated against
+textbook critical values. All routines guard empty / constant / NaN / Infinity / tie inputs and
+return an explicit **status** (`OK / INSUFFICIENT_SAMPLE / CONSTANT_INPUT / NUMERIC_FAILURE /
+ASSUMPTION_FAILED / NOT_APPLICABLE_FILTERED_TO_SINGLE_RANGE`) rather than a fabricated 0.
+
+**χ² assumption guard (Cochran):** reports total cells, min expected, count/percent of cells with
+expected < 5; `status = ASSUMPTION_FAILED` when min expected < 1 or > 20% of cells < 5 — the
+p-value is then not authoritative and the matrix is descriptive only. Buckets are never silently
+merged.
+
+**Multiple testing:** the per-threshold χ² p-values are corrected with **Benjamini–Hochberg FDR**
+(step-up); each threshold returns `rawP`, `adjustedP`, `significantRaw`, `significantAdjusted`.
+
+**Stability:** chronological thirds. Each slice exposes `n`, Spearman ρ, and reached-2×/5×/10×
+rates (never hidden behind one label). Verdict: **UNSTABLE** if slice ρ signs flip (beyond ±0.05);
+**STABLE** if same direction and ρ-spread < 0.15; **MIXED** otherwise; **INSUFFICIENT_DATA** if
+< 15 rounds or < 3 slices with an OK ρ.
+
+**Jackpot Range interaction (§28):** with a single global range selected, continuous within-range
+correlation still runs, but multi-range χ² and Kruskal–Wallis return
+`NOT_APPLICABLE_FILTERED_TO_SINGLE_RANGE` — the filter is honored, never secretly bypassed.
+
+**Sample quality:** reuses the existing `n<30 VERY_LOW / <100 LOW / <1000 MODERATE / ≥1000 GOOD`
+policy; small-n results are labelled, not hidden. Basis comparison shows eligible n + missing rate
+per basis (never ranks a "best prediction basis").
+
+**Performance** (`statistics()` end-to-end, in-memory): ~7 ms @ 1k · ~42 ms @ 10k · ~505 ms @ 100k.
+
+**UI:** a compact *Phân tích thống kê* block inside the **Jackpot** section (not a new tab):
+effect-size-first cards + a details table; p-values via `AFmt.pvalue` (never `p = 0.000`);
+conservative Vietnamese effect language; no prediction/recommendation wording.
+
+### Limitations
+- **KS two-sample test: deferred.** `max_odd` contains many tied/discrete-looking repeated values,
+  violating the continuous-distribution assumption; Kruskal–Wallis / Mann–Whitney (rank-based,
+  tie-corrected) are used instead. KS may be revisited with a tie-aware variant.
+- Kendall/Spearman p-values are large-sample approximations; for small n the **status** and n are
+  shown so significance is read with the effect size and sample, not alone.
+- χ² uses the uncorrected Pearson statistic (consistent with Cramér's V); Yates is not applied.
+
+### Example interpretation
+> Spearman ρ = 0.18 (n = 4,210, p < 0.001) → *Mối liên hệ yếu*. Significant only because n is large;
+> the **effect is weak**. Stability = MIXED (slice ρ: 0.20 / 0.17 / −0.02). This describes the
+> historical sample; it makes **no** statement about a future round.
+
 *No conclusion in this document asserts a future outcome or a prediction; all statements
-describe stored/derivable data and historical, sample-bounded observation.*
+describe stored/derivable data and historical, sample-bounded observation. Retrospective tests
+existing does NOT change the forward-algorithm readiness verdict (§8) — that remains deferred
+behind the leakage guard.*

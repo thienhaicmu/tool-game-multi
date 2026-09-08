@@ -70,6 +70,21 @@ test('global Jackpot Range filter is present and propagated (half-open, basis-al
   assert.ok(js.includes('if (rng.max != null) f.jackpotRangeMax'), 'open-ended bucket omits the upper bound');
 });
 
+test('S25/S26/S27 statistical analysis block: retrospective, effect-first, no prediction wording', () => {
+  // Compact "Phân tích thống kê" lives inside the Jackpot section (not a new main tab).
+  assert.ok(js.includes('renderStatsBlock') && js.includes('api.report.stats'), 'stats block wired into Jackpot');
+  assert.ok(js.includes('Phân tích thống kê'));
+  assert.ok(!/data-sub="stats"/.test(html), 'statistics is NOT a separate report perspective');
+  // S26: p-values via the centralized formatter (never "p = 0.000").
+  assert.ok(js.includes('AFmt.pvalue'), 'p-values formatted via AFmt.pvalue');
+  // S27: effect-size interpretation present (cards + details), significance is not a success badge.
+  assert.ok(js.includes('EFFECT_VI') && js.includes('Hiệu ứng'), 'effect-size interpretation surfaced');
+  // S25: no Vietnamese prediction/recommendation wording anywhere in the renderer.
+  const banned = ['dự đoán', 'vòng sau', 'vòng tiếp', 'nên cược', 'nên vào', 'tín hiệu', 'jackpot nóng', 'jackpot lạnh', 'dễ nổ', 'xác suất thắng', 'sắp ra', 'điểm vào'];
+  const lower = js.toLowerCase();
+  for (const b of banned) assert.ok(!lower.includes(b), `renderer must not contain "${b}"`);
+});
+
 test('centralized number formatter (format.js / AFmt) is loaded before the app', () => {
   assert.ok(/<script src="format\.js">/.test(html), 'format.js script tag present');
   assert.ok(html.indexOf('format.js') < html.indexOf('analytics.js'), 'format.js loads before analytics.js');

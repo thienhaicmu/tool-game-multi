@@ -187,7 +187,7 @@ async function renderReport() {
   panel.innerHTML = '<div class="muted" style="padding:12px">Đang tải…</div>';
   try {
     if (currentSub === 'overview') return renderOverview(await api.report.overview(f, jp));
-    if (currentSub === 'jackpot') return renderJackpot(await api.report.overview(f, jp), await api.report.delta(f, jp));
+    if (currentSub === 'jackpot') return renderJackpot(await api.report.overview(f, jp), await api.report.delta(f, jp), await api.report.stats(f, jp));
     if (currentSub === 'odd') return renderOdd(await api.report.odd(f, jp));
     if (currentSub === 'time') return renderTimeTab(f, jp);
     if (currentSub === 'streakgap') return renderStreakGap(await api.report.streak(f, jp), await api.report.gap(f, jp));
@@ -230,7 +230,41 @@ function renderOdd(r) {
   $('analytics-panel').innerHTML = html;
 }
 
-function renderJackpot(ov, delta) {
+// Language-neutral engine enums → conservative user-facing Vietnamese (no prediction wording).
+const EFFECT_VI = { STRONG: 'Mối liên hệ mạnh', MODERATE: 'Mối liên hệ trung bình', WEAK: 'Mối liên hệ yếu', NEGLIGIBLE: 'Mối liên hệ rất yếu', NONE: '—' };
+const STAT_STATUS_VI = { INSUFFICIENT_SAMPLE: 'Chưa đủ dữ liệu', CONSTANT_INPUT: 'Giá trị không đổi', NUMERIC_FAILURE: 'Không tính được', ASSUMPTION_FAILED: 'Chưa đủ điều kiện kiểm định', NOT_APPLICABLE_FILTERED_TO_SINGLE_RANGE: 'Không áp dụng (đã lọc 1 khoảng)' };
+const STABILITY_VI = { STABLE: 'Ổn định', MIXED: 'Chưa rõ ràng', UNSTABLE: 'Chưa ổn định theo thời gian', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu' };
+const QUALITY_VI = { VERY_LOW: 'Rất ít dữ liệu', LOW: 'Ít dữ liệu', MODERATE: 'Vừa đủ', GOOD: 'Dồi dào' };
+function effVi(effect, status) { return status && status !== 'OK' ? (STAT_STATUS_VI[status] || '—') : (EFFECT_VI[effect] || '—'); }
+
+// Compact "Phân tích thống kê" — effect size FIRST, p-value last (never a success badge).
+function renderStatsBlock(st) {
+  if (!st || st.error) return '';
+  const sp = st.correlation.spearman, kd = st.correlation.kendall, ct = st.contingency, kw = st.distribution.kruskal;
+  const card = (title, big, sub, n) => `<div class="stat-card"><div class="c-label">${title}</div><div class="c-value">${big}</div><div class="c-sub">${sub}</div>${n != null ? `<div class="c-sub">${AFmt.sampleN(n)}</div>` : ''}</div>`;
+  const corrBig = sp.status === 'OK' ? 'ρ = ' + fx(sp.rho, 2) : '—';
+  const vBig = ct.status === 'OK' ? 'V = ' + fx(ct.cramersV, 2) : '—';
+  let html = `<div class="section-h">Phân tích thống kê <span class="muted">(chỉ thống kê lịch sử)</span></div>`;
+  html += `<div class="stat-cards">` +
+    card('Mối liên hệ Jackpot ↔ ODD', corrBig, effVi(sp.effect, sp.status), sp.n) +
+    card('Độ mạnh phân nhóm', vBig, effVi(ct.effect, ct.status), ct.n) +
+    card('Khác biệt phân phối', kw.status === 'OK' ? (kw.pValue < 0.05 ? 'Có khác biệt' : 'Không rõ') : '—', kw.status === 'OK' ? AFmt.pvalue(kw.pValue) : (STAT_STATUS_VI[kw.status] || '—'), kw.n) +
+    card('Độ ổn định theo thời gian', STABILITY_VI[st.stability.status] || '—', st.stability.magnitudeSpread != null ? 'Biên độ ρ: ' + fx(st.stability.magnitudeSpread, 2) : '—', null) +
+    `</div>`;
+  // Details table — effect size / interpretation / n / significance / quality.
+  const row = (metric, value, n, sig, eff, q) => `<tr><td>${metric}</td><td>${value}</td><td>${n == null ? '—' : cnt(n)}</td><td>${sig}</td><td>${eff}</td><td>${q || '—'}</td></tr>`;
+  html += `<table class="atable stat-table"><thead><tr><th>Chỉ số</th><th>Giá trị</th><th>n</th><th>Ý nghĩa thống kê</th><th>Hiệu ứng</th><th>Chất lượng mẫu</th></tr></thead><tbody>`;
+  html += row('Spearman ρ', sp.status === 'OK' ? fx(sp.rho, 3) : '—', sp.n, sp.status === 'OK' ? AFmt.pvalue(sp.pValue) : (STAT_STATUS_VI[sp.status] || '—'), effVi(sp.effect, sp.status), QUALITY_VI[st.quality]);
+  html += row('Kendall τ', kd.status === 'OK' ? fx(kd.tau, 3) : '—', kd.n, kd.status === 'OK' ? AFmt.pvalue(kd.pValue) : (STAT_STATUS_VI[kd.status] || '—'), effVi(kd.effect, kd.status), QUALITY_VI[st.quality]);
+  html += row('Chi-square', ct.status === 'OK' || ct.status === 'ASSUMPTION_FAILED' ? fx(ct.chiSquare, 2) + (ct.df != null ? ' (df ' + ct.df + ')' : '') : '—', ct.n, ct.status === 'OK' ? AFmt.pvalue(ct.pValue) : (STAT_STATUS_VI[ct.status] || '—'), effVi(ct.effect, ct.status), null);
+  html += row('Cramér V', ct.status === 'OK' ? fx(ct.cramersV, 3) : '—', ct.n, '—', effVi(ct.effect, ct.status), null);
+  html += row('Kruskal-Wallis', kw.status === 'OK' ? 'H = ' + fx(kw.H, 2) + (kw.df != null ? ' (df ' + kw.df + ')' : '') : '—', kw.n, kw.status === 'OK' ? AFmt.pvalue(kw.pValue) : (STAT_STATUS_VI[kw.status] || '—'), '—', null);
+  html += `</tbody></table>`;
+  html += `<div class="muted" title="p-value nhỏ cho biết dữ liệu khó phù hợp với giả thuyết không có mối liên hệ; nó không cho biết hiệu ứng mạnh.">p-value nhỏ ≠ mối liên hệ mạnh. Ưu tiên đọc hiệu ứng và cỡ mẫu (n) trước p-value. Đây là phân tích dữ liệu lịch sử, không suy ra kết quả tương lai.</div>`;
+  return html;
+}
+
+function renderJackpot(ov, delta, stats) {
   if (ov.error) return bail(ov); setMatched(ov.summary);
   let html = `<div class="section-h">Khoảng Jackpot × ODD (${jpBasisLabel(ov.jackpotBasis)})</div>`;
   html += `<table class="atable"><thead><tr><th>Jackpot</th><th>n</th><th>%tập</th><th>Trung vị</th><th>P90</th><th>≥2×</th><th>≥5×</th><th>≥10×</th><th>≥50×</th><th>≥100×</th><th>TG TB</th></tr></thead><tbody>`;
@@ -242,6 +276,7 @@ function renderJackpot(ov, delta) {
     for (const g of delta.byGroup) html += `<tr><td>${escapeHtml(g.label)}</td><td class="${nCls(g.n)}">${cnt(g.n)}</td><td>${fmtOdd(g.median)}</td><td>${pct(g.rate2)}</td><td>${pct(g.rate5)}</td><td>${pct(g.rate10)}</td></tr>`;
     html += `</tbody></table>`;
   }
+  html += renderStatsBlock(stats);
   $('analytics-panel').innerHTML = html;
 }
 

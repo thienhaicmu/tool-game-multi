@@ -54,6 +54,7 @@ contextBridge.exposeInMainWorld('analytics', {
     streak: (filter, jp) => ipcRenderer.invoke('analytics-jr-streak', filter, jp),
     gap: (filter, jp) => ipcRenderer.invoke('analytics-jr-gap', filter, jp),
     delta: (filter, jp) => ipcRenderer.invoke('analytics-jr-delta', filter, jp),
+    stats: (filter, jp) => ipcRenderer.invoke('analytics-jr-stats', filter, jp),
   },
   export: {
     rounds: (filter) => ipcRenderer.invoke('analytics-export-rounds', filter),

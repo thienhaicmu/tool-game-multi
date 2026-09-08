@@ -82,3 +82,11 @@ test('fixed: grouped fixed decimals, null-safe', () => {
   assert.equal(AFmt.fixed(1234.5, 0), '1,235');
   assert.equal(AFmt.fixed(null, 1), '—');
 });
+
+test('pvalue: never "p = 0.000"; small → "p < 0.001"; null → —', () => {
+  assert.equal(AFmt.pvalue(0.032), 'p = 0.032');
+  assert.equal(AFmt.pvalue(0.0004), 'p < 0.001');
+  assert.equal(AFmt.pvalue(0), 'p < 0.001');
+  assert.equal(AFmt.pvalue(1), 'p = 1.000');
+  assert.equal(AFmt.pvalue(null), '—');
+});

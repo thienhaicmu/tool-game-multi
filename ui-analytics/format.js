@@ -73,7 +73,15 @@ var AFmt = (function () {
   // Byte size for the Data panel. 12_300_000 → "12.30 MB".
   function bytes(v) { return isNum(v) ? (Number(v) / 1e6).toFixed(2) + ' MB' : DASH; }
 
-  return { DASH: DASH, jackpot: jackpot, odd: odd, percent: percent, ci: ci, count: count, sampleN: sampleN, duration: duration, fixed: fixed, id: id, bytes: bytes };
+  // P-VALUE — never the misleading "p = 0.000". 0.032 → "p = 0.032"; 0.0004 → "p < 0.001".
+  function pvalue(p) {
+    if (!isNum(p)) return DASH;
+    const v = Number(p);
+    if (v < 0.001) return 'p < 0.001';
+    return 'p = ' + v.toFixed(3);
+  }
+
+  return { DASH: DASH, jackpot: jackpot, odd: odd, percent: percent, ci: ci, count: count, sampleN: sampleN, duration: duration, fixed: fixed, id: id, bytes: bytes, pvalue: pvalue };
 })();
 
 if (typeof window !== 'undefined') window.AFmt = AFmt;

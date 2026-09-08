@@ -265,6 +265,9 @@ function registerIpc() {
   ipcMain.handle('analytics-jr-streak', jr((spec, jp) => jackpotReport.streak(spec, jp)));
   ipcMain.handle('analytics-jr-gap', jr((spec, jp) => jackpotReport.gap(spec, jp)));
   ipcMain.handle('analytics-jr-delta', jr((spec, jp) => jackpotReport.delta(spec, jp)));
+  // StatEngine V1 — RETROSPECTIVE Jackpot↔outcome relationship analysis over the SAME
+  // qualified population (never re-filters, never predicts).
+  ipcMain.handle('analytics-jr-stats', jr((spec, jp) => jackpotReport.statistics(spec, jp)));
   ipcMain.handle('analytics-export-weblog', async (_e, filter) => {
     ensureRuntime();
     const out = await chooseSave('aviator-weblog.csv', [{ name: 'CSV', extensions: ['csv'] }]);

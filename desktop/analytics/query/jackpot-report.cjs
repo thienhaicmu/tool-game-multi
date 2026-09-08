@@ -4,6 +4,12 @@ const S = require('./statistics.cjs');
 const { wilson, sampleQuality } = require('./confidence.cjs');
 const { buildWhere, basisColumn, JACKPOT_BASIS_COLUMN } = require('./analytics-filter.cjs');
 const { thresholdKey, columnsFor } = require('../thresholds.cjs');
+const { spearman, kendallTauB } = require('../statistics/rank-correlation.cjs');
+const { chiSquareContingency } = require('../statistics/contingency.cjs');
+const { kruskalWallis } = require('../statistics/distribution-tests.cjs');
+const { benjaminiHochberg } = require('../statistics/multiple-testing.cjs');
+const { interpretCorrelation, interpretCramersV } = require('../statistics/effect-size.cjs');
+const { STATUS } = require('../statistics/guards.cjs');
 
 // ---------------------------------------------------------------------------
 // JackpotReport — JACKPOT-FIRST comparison layer over the normalized round data.
@@ -217,4 +223,132 @@ class JackpotReport {
 
 function rate(maxOdds, t) { const vals = maxOdds.filter(Number.isFinite); if (!vals.length) return null; let r = 0; for (const v of vals) if (v >= t) r++; return r / vals.length; }
 
-module.exports = { JackpotReport, normalizeJpConfig, DEFAULT_JP_RANGES, DIST_BUCKETS, CMP_THRESHOLDS };
+// Coarse ODD buckets for the contingency test (kept small so expected-cell-count
+// assumptions can actually be met — the 12-bucket distribution is too sparse for χ²).
+const STAT_ODD_BUCKETS = [
+  { label: '<2×', min: 0, max: 2 }, { label: '2–5×', min: 2, max: 5 },
+  { label: '5–10×', min: 5, max: 10 }, { label: '≥10×', min: 10, max: null },
+];
+const STAT_THRESHOLDS = [2, 5, 10, 20, 50, 100];
+const ALL_BASES = Object.keys(JACKPOT_BASIS_COLUMN);
+const oddIndex = (v) => STAT_ODD_BUCKETS.findIndex((b) => v >= b.min && (b.max == null ? true : v < b.max));
+
+// ---------------------------------------------------------------------------
+// StatEngine V1 — RETROSPECTIVE Jackpot↔outcome relationship analysis. Operates on
+// the SAME qualified population every report uses (this._load(spec): time/hour/browser
+// /basis/Jackpot-Range/Last-N). It NEVER re-filters, predicts, or emits betting signal.
+// ---------------------------------------------------------------------------
+JackpotReport.prototype.statistics = function statistics(spec, jpConfig) {
+  const jp = normalizeJpConfig(jpConfig);
+  const basis = jp.basis;
+  const loaded = this._load(spec);                                  // identical population to every report view
+  const eligible = loaded.filter((r) => Number.isFinite(r.max_odd));
+  const withBasis = eligible.filter((r) => Number.isFinite(this._basisVal(r, basis)));
+  const jpVals = withBasis.map((r) => this._basisVal(r, basis));
+  const moVals = withBasis.map((r) => r.max_odd);
+  const rangeFiltered = spec.jackpotRangeMin != null || spec.jackpotRangeMax != null;
+
+  const population = {
+    nTotal: loaded.length, nEligible: eligible.length,
+    nMissingJackpot: eligible.length - withBasis.length, nMissingOutcome: loaded.length - eligible.length,
+    basis, rangeFiltered, quality: sampleQuality(withBasis.length),
+  };
+  const dJp = S.describe(jpVals), dMo = S.describe(moVals);
+  const descriptive = {
+    jackpot: { n: dJp.count, min: dJp.min, max: dJp.max, mean: dJp.mean, median: dJp.median, p25: dJp.p25, p75: dJp.p75, p90: dJp.p90, p95: dJp.p95 },
+    maxOdd: { n: dMo.count, min: dMo.min, max: dMo.max, mean: dMo.mean, median: dMo.median, p25: dMo.p25, p75: dMo.p75, p90: dMo.p90, p95: dMo.p95, p99: dMo.p99 },
+  };
+
+  const sp = spearman(jpVals, moVals); sp.effect = interpretCorrelation(sp.rho);
+  const kd = kendallTauB(jpVals, moVals); kd.effect = interpretCorrelation(kd.tau);
+  const correlation = { spearman: sp, kendall: kd };
+
+  // Contingency + Kruskal–Wallis need MULTIPLE Jackpot ranges; a global single-range
+  // selection makes them meaningless — declared explicitly, never silently ignored (§28).
+  let contingency, distribution;
+  if (rangeFiltered) {
+    contingency = { status: STATUS.NOT_APPLICABLE_FILTERED_TO_SINGLE_RANGE };
+    distribution = { kruskal: { status: STATUS.NOT_APPLICABLE_FILTERED_TO_SINGLE_RANGE, H: null, df: null, pValue: null, groupCount: null, n: withBasis.length } };
+  } else {
+    const R = jp.ranges.length, C = STAT_ODD_BUCKETS.length;
+    const observed = Array.from({ length: R }, () => new Array(C).fill(0));
+    const groups = Array.from({ length: R }, () => []);
+    for (let i = 0; i < withBasis.length; i++) {
+      const ri = jp.ranges.findIndex((r) => inRange(jpVals[i], r)); if (ri < 0) continue;
+      const ci = oddIndex(moVals[i]); if (ci < 0) continue;
+      observed[ri][ci]++; groups[ri].push(moVals[i]);
+    }
+    const ct = chiSquareContingency(observed, { rowLabels: jp.ranges.map((r) => r.label), colLabels: STAT_ODD_BUCKETS.map((b) => b.label) });
+    ct.effect = ct.status === STATUS.OK ? interpretCramersV(ct.cramersV, Math.min(ct.rows, ct.cols)) : 'NONE';
+    contingency = ct;
+    distribution = { kruskal: kruskalWallis(groups) };
+  }
+
+  // Per-threshold observed rate (Wilson CI, reused) per Jackpot range, plus a
+  // range×{reached,not} χ² per threshold; BH-corrected across thresholds (§15/§16).
+  const thEntries = STAT_THRESHOLDS.map((t) => {
+    const byRange = jp.ranges.map((r) => {
+      const inb = []; for (let i = 0; i < withBasis.length; i++) if (inRange(jpVals[i], r)) inb.push(moVals[i]);
+      const succ = inb.filter((v) => v >= t).length; const w = wilson(succ, inb.length);
+      return { label: r.label, successes: succ, n: inb.length, observedRate: w.rate, ci95Low: w.low, ci95High: w.high, quality: sampleQuality(inb.length) };
+    });
+    let cont = { status: rangeFiltered ? STATUS.NOT_APPLICABLE_FILTERED_TO_SINGLE_RANGE : STATUS.INSUFFICIENT_SAMPLE, chiSquare: null, df: null, pValue: null };
+    if (!rangeFiltered) {
+      const obs = byRange.filter((b) => b.n > 0).map((b) => [b.successes, b.n - b.successes]);
+      if (obs.length >= 2) cont = chiSquareContingency(obs);
+    }
+    return { threshold: t, byRange, contingency: { status: cont.status, chiSquare: cont.chiSquare, df: cont.df, pValue: cont.pValue }, _p: cont.pValue };
+  });
+  const bh = benjaminiHochberg(thEntries.map((e, i) => ({ key: i, p: e._p })));
+  const thresholds = thEntries.map((e, i) => ({ threshold: e.threshold, byRange: e.byRange, contingency: e.contingency,
+    rawP: bh[i].rawP, adjustedP: bh[i].adjustedP, significantRaw: bh[i].significantRaw, significantAdjusted: bh[i].significantAdjusted }));
+
+  const stability = this._stability(withBasis, jpVals, moVals);
+  const basisComparison = this._basisComparison(eligible);
+
+  return { mode: 'RETROSPECTIVE', population, descriptive, correlation, contingency, distribution, thresholds, stability, basisComparison, quality: population.quality,
+    oddBuckets: STAT_ODD_BUCKETS.map((b) => b.label), ranges: jp.ranges.map((r) => r.label) };
+};
+
+// Chronological thirds (population is ascending sequence). Transparent per-slice values;
+// a single conservative verdict. Criteria are documented in JACKPOT_STATISTICAL_INTELLIGENCE.md.
+JackpotReport.prototype._stability = function _stability(rows, jpVals, moVals) {
+  const n = rows.length;
+  if (n < 3 * 5) return { method: 'CHRONOLOGICAL_THIRDS', slices: [], directionConsistent: null, magnitudeSpread: null, status: 'INSUFFICIENT_DATA' };
+  const third = Math.floor(n / 3);
+  const bounds = [[0, third], [third, 2 * third], [2 * third, n]];
+  const slices = bounds.map(([a, b], i) => {
+    const jx = jpVals.slice(a, b), mx = moVals.slice(a, b);
+    const sp = spearman(jx, mx);
+    return { label: 'S' + (i + 1), n: b - a, spearmanRho: sp.rho, spearmanStatus: sp.status,
+      rate2: rate(mx, 2), rate5: rate(mx, 5), rate10: rate(mx, 10) };
+  });
+  const okRhos = slices.filter((s) => s.spearmanStatus === STATUS.OK && Number.isFinite(s.spearmanRho)).map((s) => s.spearmanRho);
+  if (okRhos.length < 3) return { method: 'CHRONOLOGICAL_THIRDS', slices, directionConsistent: null, magnitudeSpread: null, status: 'INSUFFICIENT_DATA' };
+  const spread = Math.max(...okRhos) - Math.min(...okRhos);
+  const signs = okRhos.map((r) => (Math.abs(r) < 0.05 ? 0 : Math.sign(r)));
+  const nonZero = signs.filter((s) => s !== 0);
+  const hasPos = nonZero.some((s) => s > 0), hasNeg = nonZero.some((s) => s < 0);
+  const directionConsistent = !(hasPos && hasNeg);
+  let status;
+  if (hasPos && hasNeg) status = 'UNSTABLE';                        // sign flip across slices
+  else if (directionConsistent && spread < 0.15) status = 'STABLE';
+  else status = 'MIXED';
+  return { method: 'CHRONOLOGICAL_THIRDS', slices, directionConsistent, magnitudeSpread: spread, status };
+};
+
+// Historical association per Jackpot basis (descriptive comparison; NOT a "best basis" ranking).
+JackpotReport.prototype._basisComparison = function _basisComparison(eligible) {
+  const total = eligible.length;
+  return ALL_BASES.map((b) => {
+    const jv = [], mv = [];
+    for (const r of eligible) { const v = this._basisVal(r, b); if (Number.isFinite(v)) { jv.push(v); mv.push(r.max_odd); } }
+    const sp = spearman(jv, mv); const kd = kendallTauB(jv, mv);
+    return { basis: b, nEligible: jv.length, nMissing: total - jv.length, missingRate: total ? (total - jv.length) / total : null,
+      spearman: { rho: sp.rho, pValue: sp.pValue, status: sp.status, effect: interpretCorrelation(sp.rho) },
+      kendall: { tau: kd.tau, pValue: kd.pValue, status: kd.status },
+      quality: sampleQuality(jv.length) };
+  });
+};
+
+module.exports = { JackpotReport, normalizeJpConfig, DEFAULT_JP_RANGES, DIST_BUCKETS, CMP_THRESHOLDS, STAT_ODD_BUCKETS, STAT_THRESHOLDS };
