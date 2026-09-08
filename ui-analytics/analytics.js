@@ -11,15 +11,20 @@ let selectedId = null;
 let currentTab = 'home';
 let currentSub = 'overview';
 let currentAdv = 'weblog';
+let timeMetric = 'hour';   // 'hour' | 'timing' — the metric shown inside the merged "Thời gian" section
 let lastOpenedRoundId = null;
 
-// ---------- formatting ----------
+// ---------- formatting (centralized in format.js / window.AFmt; display only) ----------
+const F = window.AFmt;
 function fmtTime(ts) { if (!ts) return '—'; const d = new Date(ts); return d.toLocaleTimeString([], { hour12: false }) + '.' + String(d.getMilliseconds()).padStart(3, '0'); }
-function fmtOdd(v) { return v == null ? '—' : Number(v).toFixed(2) + 'x'; }
-function fmtNum(v) { return v == null ? '—' : String(v); }
-function pct(v) { return v == null ? '—' : (v * 100).toFixed(1) + '%'; }
-function fx(v, d = 2) { return v == null ? '—' : Number(v).toFixed(d); }
-function dur(ms) { return ms == null ? '—' : (ms / 1000).toFixed(2) + 's'; }
+const fmtOdd = (v) => F.odd(v);        // ODD → "2.00×"
+const fmtNum = (v) => F.id(v);         // identifiers (SID / CMD) — never grouped
+const fmtJp = (v) => F.jackpot(v);     // jackpot values — grouped thousands
+const pct = (v) => F.percent(v);       // fraction → "12.35%"
+const ciBand = (lo, hi) => F.ci(lo, hi);
+const cnt = (v) => F.count(v);         // sample sizes — grouped
+const fx = (v, d = 2) => F.fixed(v, d);
+const dur = (ms) => F.duration(ms);
 function tsIso(ms) { return ms == null ? null : new Date(ms).toISOString(); }
 function hostOf(u) { try { return new URL(u).host; } catch { return u; } }
 function shortUrl(u) { if (!u) return '—'; try { const x = new URL(u); return x.pathname + (x.search ? x.search.slice(0, 20) : ''); } catch { return String(u).slice(0, 60); } }
@@ -112,7 +117,7 @@ function renderHome(s) {
   }
   $('chip-capture').textContent = 'Thu thập: ' + captureText;
   $('chip-capture').classList.toggle('on', capturing);
-  $('m-sid').textContent = fmtNum(s.currentSid); $('m-odd').textContent = fmtOdd(s.currentOdd); $('m-jp').textContent = fmtNum(s.currentJackpot);
+  $('m-sid').textContent = fmtNum(s.currentSid); $('m-odd').textContent = fmtOdd(s.currentOdd); $('m-jp').textContent = fmtJp(s.currentJackpot);
   $('home-open').textContent = s.open ? 'TRÌNH DUYỆT ĐANG MỞ' : 'MỞ TRÌNH DUYỆT';
 }
 async function loadHomeRecent() {
@@ -123,11 +128,11 @@ async function loadHomeRecent() {
   if (!r || r.error) { $('home-recent').innerHTML = ''; return; }
   const t = (x) => (r.all.thresholds.find((z) => z.threshold === x) || {});
   $('home-recent').innerHTML = `<div class="section-h">Gần đây (100 vòng gần nhất — dữ liệu lịch sử)</div>` +
-    `<div class="cards"><div class="card"><div class="c-label">Số vòng</div><div class="c-value">${r.all.n}</div></div>` +
-    `<div class="card"><div class="c-label">≥2x</div><div class="c-value">${pct(t(2).observedRate)}</div></div>` +
-    `<div class="card"><div class="c-label">≥5x</div><div class="c-value">${pct(t(5).observedRate)}</div></div>` +
-    `<div class="card"><div class="c-label">≥10x</div><div class="c-value">${pct(t(10).observedRate)}</div></div>` +
-    `<div class="card"><div class="c-label">Trung vị ODD</div><div class="c-value">${fx(r.all.medianMaxOdd)}</div></div></div>`;
+    `<div class="cards"><div class="card"><div class="c-label">Số vòng</div><div class="c-value">${cnt(r.all.n)}</div></div>` +
+    `<div class="card"><div class="c-label">≥2×</div><div class="c-value">${pct(t(2).observedRate)}</div></div>` +
+    `<div class="card"><div class="c-label">≥5×</div><div class="c-value">${pct(t(5).observedRate)}</div></div>` +
+    `<div class="card"><div class="c-label">≥10×</div><div class="c-value">${pct(t(10).observedRate)}</div></div>` +
+    `<div class="card"><div class="c-label">Trung vị ODD</div><div class="c-value">${fmtOdd(r.all.medianMaxOdd)}</div></div></div>`;
 }
 
 api.live.onUpdate((s) => { if (s && s.browserId === selectedId && currentTab === 'home') renderHome(s); });
@@ -163,34 +168,33 @@ async function renderReport() {
   panel.innerHTML = '<div class="muted" style="padding:12px">Đang tải…</div>';
   try {
     if (currentSub === 'overview') return renderOverview(await api.report.overview(f, jp));
-    if (currentSub === 'odd') return renderOdd(await api.report.odd(f, jp));
     if (currentSub === 'jackpot') return renderJackpot(await api.report.overview(f, jp), await api.report.delta(f, jp));
-    if (currentSub === 'time') return renderTime(await api.report.time(f, jp));
-    if (currentSub === 'timing') return renderTiming(await api.report.timing(f, jp, 'median'));
+    if (currentSub === 'odd') return renderOdd(await api.report.odd(f, jp));
+    if (currentSub === 'time') return renderTimeTab(f, jp);
     if (currentSub === 'streakgap') return renderStreakGap(await api.report.streak(f, jp), await api.report.gap(f, jp));
   } catch (e) { panel.innerHTML = `<div class="disabled-note">Lỗi truy vấn: ${escapeHtml(String(e))}</div>`; }
 }
 function bail(r) { $('analytics-panel').innerHTML = `<div class="disabled-note">${escapeHtml((r.error && r.error.message) || 'Lỗi truy vấn')}</div>`; }
 function disabledNote(r) { $('analytics-panel').innerHTML = `<div class="disabled-note">${escapeHtml(r.message || 'Cần chọn một trình duyệt.')}</div>`; }
 
-function thRow(t) { return `<tr><td>≥ ${Number(t.threshold).toFixed(2)}x</td><td>${t.reachedCount}</td><td class="${nCls(t.sampleCount)}">${t.sampleCount}</td><td>${pct(t.observedRate)}</td><td class="ci">${t.observedRate == null ? '—' : pct(t.ci95Low) + '–' + pct(t.ci95High)}</td></tr>`; }
+function thRow(t) { return `<tr><td>≥ ${fmtOdd(t.threshold)}</td><td>${cnt(t.reachedCount)}</td><td class="${nCls(t.sampleCount)}">${cnt(t.sampleCount)}</td><td>${pct(t.observedRate)}</td><td class="ci">${t.observedRate == null ? '—' : ciBand(t.ci95Low, t.ci95High)}</td></tr>`; }
 function jpTheadCols(ranges) { return ranges.map((r) => `<th>${escapeHtml(r.label)}</th>`).join(''); }
 
 function renderOverview(r) {
   if (r.error) return bail(r); setMatched(r.summary);
   const a = r.all;
   let html = `<div class="cards">` +
-    `<div class="card"><div class="c-label">Số vòng</div><div class="c-value">${a.n}</div></div>` +
-    `<div class="card"><div class="c-label">Trung vị ODD</div><div class="c-value">${fx(a.medianMaxOdd)}</div></div>` +
-    `<div class="card"><div class="c-label">P90</div><div class="c-value">${fx(a.p90)}</div></div>` +
-    `<div class="card"><div class="c-label">P95</div><div class="c-value">${fx(a.p95)}</div></div>` +
-    `<div class="card"><div class="c-label">P99</div><div class="c-value">${fx(a.p99)}</div></div></div>`;
+    `<div class="card"><div class="c-label">Số vòng</div><div class="c-value">${cnt(a.n)}</div></div>` +
+    `<div class="card"><div class="c-label">Trung vị ODD</div><div class="c-value">${fmtOdd(a.medianMaxOdd)}</div></div>` +
+    `<div class="card"><div class="c-label">P90</div><div class="c-value">${fmtOdd(a.p90)}</div></div>` +
+    `<div class="card"><div class="c-label">P95</div><div class="c-value">${fmtOdd(a.p95)}</div></div>` +
+    `<div class="card"><div class="c-label">P99</div><div class="c-value">${fmtOdd(a.p99)}</div></div></div>`;
   html += `<div class="section-h">Tỷ lệ quan sát theo ngưỡng (toàn bộ)</div>`;
   html += `<table class="atable"><thead><tr><th>Ngưỡng</th><th>Đạt</th><th>n</th><th>Tỷ lệ quan sát</th><th>95% CI</th></tr></thead><tbody>${a.thresholds.map(thRow).join('')}</tbody></table>`;
   // JACKPOT comparison (primary)
   html += `<div class="section-h">So sánh theo Jackpot (${jpBasisLabel(r.jackpotBasis)}) — phơi nhiễm + tỷ lệ quan sát</div>`;
-  html += `<table class="atable"><thead><tr><th>Jackpot</th><th>Số vòng (phơi nhiễm)</th><th>%tập</th><th>Trung vị</th><th>≥2x</th><th>≥5x</th><th>≥10x</th><th>≥100x</th></tr></thead><tbody>`;
-  for (const b of r.byRange) { const g = (x) => (b.thresholds.find((z) => z.threshold === x) || {}).observedRate; html += `<tr><td>${escapeHtml(b.label)}</td><td class="${nCls(b.exposureN)}">${b.exposureN}</td><td>${pct(b.exposureShare)}</td><td>${fx(b.medianMaxOdd)}</td><td>${pct(g(2))}</td><td>${pct(g(5))}</td><td>${pct(g(10))}</td><td>${pct(g(100))}</td></tr>`; }
+  html += `<table class="atable"><thead><tr><th>Jackpot</th><th>Số vòng (phơi nhiễm)</th><th>%tập</th><th>Trung vị</th><th>≥2×</th><th>≥5×</th><th>≥10×</th><th>≥100×</th></tr></thead><tbody>`;
+  for (const b of r.byRange) { const g = (x) => (b.thresholds.find((z) => z.threshold === x) || {}).observedRate; html += `<tr><td>${escapeHtml(b.label)}</td><td class="${nCls(b.exposureN)}">${cnt(b.exposureN)}</td><td>${pct(b.exposureShare)}</td><td>${fmtOdd(b.medianMaxOdd)}</td><td>${pct(g(2))}</td><td>${pct(g(5))}</td><td>${pct(g(10))}</td><td>${pct(g(100))}</td></tr>`; }
   html += `</tbody></table><div class="muted">Cột "phơi nhiễm" cho biết mỗi khoảng Jackpot có bao nhiêu vòng, tách bạch với số sự kiện và tỷ lệ.</div>`;
   $('analytics-panel').innerHTML = html;
 }
@@ -200,9 +204,9 @@ function renderOdd(r) {
   let html = `<div class="section-h">ODD × Jackpot (${jpBasisLabel(r.jackpotBasis)})</div>`;
   html += `<table class="atable"><thead><tr><th>ODD \\ Jackpot</th>${jpTheadCols(r.jackpotRanges)}</tr></thead><tbody>`;
   for (const ob of r.oddBuckets) {
-    html += `<tr><td>${escapeHtml(ob.label)}</td>` + ob.cells.map((c) => `<td title="${c.count} vòng">${c.observedRate == null ? '—' : pct(c.observedRate)}<span class="celln"> (${c.count})</span></td>`).join('') + `</tr>`;
+    html += `<tr><td>${escapeHtml(ob.label)}</td>` + ob.cells.map((c) => `<td title="${cnt(c.count)} vòng">${c.observedRate == null ? '—' : pct(c.observedRate)}<span class="celln"> (${cnt(c.count)})</span></td>`).join('') + `</tr>`;
   }
-  html += `<tr class="exposure-row"><td>Phơi nhiễm (số vòng)</td>` + r.jackpotRanges.map((c) => `<td class="${nCls(c.exposureN)}">${c.exposureN}</td>`).join('') + `</tr>`;
+  html += `<tr class="exposure-row"><td>Phơi nhiễm (số vòng)</td>` + r.jackpotRanges.map((c) => `<td class="${nCls(c.exposureN)}">${cnt(c.exposureN)}</td>`).join('') + `</tr>`;
   html += `</tbody></table><div class="muted">Mỗi ô = tỷ lệ vòng trong khoảng Jackpot đó rơi vào khoảng ODD (kèm số vòng). Hàng cuối = phơi nhiễm.</div>`;
   $('analytics-panel').innerHTML = html;
 }
@@ -210,40 +214,52 @@ function renderOdd(r) {
 function renderJackpot(ov, delta) {
   if (ov.error) return bail(ov); setMatched(ov.summary);
   let html = `<div class="section-h">Khoảng Jackpot × ODD (${jpBasisLabel(ov.jackpotBasis)})</div>`;
-  html += `<table class="atable"><thead><tr><th>Jackpot</th><th>n</th><th>%tập</th><th>Trung vị</th><th>P90</th><th>≥2x</th><th>≥5x</th><th>≥10x</th><th>≥50x</th><th>≥100x</th><th>TG TB</th></tr></thead><tbody>`;
-  for (const b of ov.byRange) { const g = (x) => (b.thresholds.find((z) => z.threshold === x) || {}).observedRate; html += `<tr><td>${escapeHtml(b.label)}</td><td class="${nCls(b.exposureN)}">${b.exposureN}</td><td>${pct(b.exposureShare)}</td><td>${fx(b.medianMaxOdd)}</td><td>${fx(b.p90)}</td><td>${pct(g(2))}</td><td>${pct(g(5))}</td><td>${pct(g(10))}</td><td>${pct(g(50))}</td><td>${pct(g(100))}</td><td>${dur(b.avgDurationMs)}</td></tr>`; }
+  html += `<table class="atable"><thead><tr><th>Jackpot</th><th>n</th><th>%tập</th><th>Trung vị</th><th>P90</th><th>≥2×</th><th>≥5×</th><th>≥10×</th><th>≥50×</th><th>≥100×</th><th>TG TB</th></tr></thead><tbody>`;
+  for (const b of ov.byRange) { const g = (x) => (b.thresholds.find((z) => z.threshold === x) || {}).observedRate; html += `<tr><td>${escapeHtml(b.label)}</td><td class="${nCls(b.exposureN)}">${cnt(b.exposureN)}</td><td>${pct(b.exposureShare)}</td><td>${fmtOdd(b.medianMaxOdd)}</td><td>${fmtOdd(b.p90)}</td><td>${pct(g(2))}</td><td>${pct(g(5))}</td><td>${pct(g(10))}</td><td>${pct(g(50))}</td><td>${pct(g(100))}</td><td>${dur(b.avgDurationMs)}</td></tr>`; }
   html += `</tbody></table>`;
   if (delta && !delta.error) {
-    html += `<div class="section-h">Chênh lệch Jackpot trong vòng × ODD <span class="muted">(nhóm cấu hình được; ${delta.summary.withDelta}/${delta.summary.matchedRounds} có dữ liệu)</span></div>`;
-    html += `<table class="atable"><thead><tr><th>Nhóm</th><th>n</th><th>Trung vị ODD</th><th>≥2x</th><th>≥5x</th><th>≥10x</th></tr></thead><tbody>`;
-    for (const g of delta.byGroup) html += `<tr><td>${escapeHtml(g.label)}</td><td class="${nCls(g.n)}">${g.n}</td><td>${fx(g.median)}</td><td>${pct(g.rate2)}</td><td>${pct(g.rate5)}</td><td>${pct(g.rate10)}</td></tr>`;
+    html += `<div class="section-h">Chênh lệch Jackpot trong vòng × ODD <span class="muted">(nhóm cấu hình được; ${cnt(delta.summary.withDelta)}/${cnt(delta.summary.matchedRounds)} có dữ liệu)</span></div>`;
+    html += `<table class="atable"><thead><tr><th>Nhóm</th><th>n</th><th>Trung vị ODD</th><th>≥2×</th><th>≥5×</th><th>≥10×</th></tr></thead><tbody>`;
+    for (const g of delta.byGroup) html += `<tr><td>${escapeHtml(g.label)}</td><td class="${nCls(g.n)}">${cnt(g.n)}</td><td>${fmtOdd(g.median)}</td><td>${pct(g.rate2)}</td><td>${pct(g.rate5)}</td><td>${pct(g.rate10)}</td></tr>`;
     html += `</tbody></table>`;
   }
   $('analytics-panel').innerHTML = html;
 }
 
-function renderTime(r) {
-  if (r.error) return bail(r); setMatched(r.summary);
-  let html = `<div class="section-h">Giờ trong ngày × Jackpot — tỷ lệ ≥2x (${jpBasisLabel(r.jackpotBasis)})</div>`;
+// "Thời gian" section merges two metrics behind a selector (spec §4): the hour × Jackpot
+// rate view, and the (former "Tốc độ ODD") time-to-threshold × Jackpot view. Jackpot context
+// is preserved in both. `timeMetric` remembers the user's choice across re-renders.
+async function renderTimeTab(f, jp) {
+  const sw = `<div class="metric-switch">` +
+    `<button class="mbtn ${timeMetric === 'hour' ? 'active' : ''}" data-tm="hour">Theo giờ</button>` +
+    `<button class="mbtn ${timeMetric === 'timing' ? 'active' : ''}" data-tm="timing">Thời gian đạt ODD</button></div>`;
+  let body;
+  if (timeMetric === 'timing') { const r = await api.report.timing(f, jp, 'median'); if (r.error) return bail(r); setMatched(r.summary); body = buildTiming(r); }
+  else { const r = await api.report.time(f, jp); if (r.error) return bail(r); setMatched(r.summary); body = buildTime(r); }
+  $('analytics-panel').innerHTML = sw + body;
+  for (const b of document.querySelectorAll('#analytics-panel .mbtn')) b.onclick = () => { timeMetric = b.dataset.tm; renderReport(); };
+}
+
+function buildTime(r) {
+  let html = `<div class="section-h">Giờ trong ngày × Jackpot — tỷ lệ ≥2× (${jpBasisLabel(r.jackpotBasis)})</div>`;
   html += `<table class="atable"><thead><tr><th>Giờ</th>${jpTheadCols(r.ranges)}</tr></thead><tbody>`;
   for (const h of r.hours) {
     if (h.byRange.every((b) => b.n === 0)) continue;
-    html += `<tr><td>${String(h.hour).padStart(2, '0')}:00</td>` + h.byRange.map((b) => `<td title="${b.n} vòng">${b.n ? pct(b.rate2) : '—'}<span class="celln"> (${b.n})</span></td>`).join('') + `</tr>`;
+    html += `<tr><td>${String(h.hour).padStart(2, '0')}:00</td>` + h.byRange.map((b) => `<td title="${cnt(b.n)} vòng">${b.n ? pct(b.rate2) : '—'}<span class="celln"> (${cnt(b.n)})</span></td>`).join('') + `</tr>`;
   }
-  html += `</tbody></table><div class="muted">Ô = tỷ lệ ≥2x trong giờ đó cho từng khoảng Jackpot (kèm số vòng). Giờ theo giờ máy.</div>`;
-  $('analytics-panel').innerHTML = html;
+  html += `</tbody></table><div class="muted">Ô = tỷ lệ ≥2× trong giờ đó cho từng khoảng Jackpot (kèm số vòng). Giờ theo giờ máy.</div>`;
+  return html;
 }
 
-function renderTiming(r) {
-  if (r.error) return bail(r); setMatched(r.summary);
+function buildTiming(r) {
   let html = `<div class="section-h">Thời gian đạt ngưỡng × Jackpot — trung vị (loại trừ vòng bị cắt) (${jpBasisLabel(r.jackpotBasis)})</div>`;
   html += `<table class="atable"><thead><tr><th>Ngưỡng</th><th>Tất cả (n)</th>${jpTheadCols(r.ranges)}</tr></thead><tbody>`;
   for (const t of r.thresholds) {
-    html += `<tr><td>≥ ${Number(t.threshold).toFixed(2)}x</td><td>${t.all.statMs == null ? '—' : dur(t.all.statMs)} <span class="celln">(${t.all.timingN})</span></td>` +
-      t.byRange.map((b) => `<td>${b.statMs == null ? '—' : dur(b.statMs)}<span class="celln"> (${b.timingN})</span></td>`).join('') + `</tr>`;
+    html += `<tr><td>≥ ${fmtOdd(t.threshold)}</td><td>${t.all.statMs == null ? '—' : dur(t.all.statMs)} <span class="celln">(${cnt(t.all.timingN)})</span></td>` +
+      t.byRange.map((b) => `<td>${b.statMs == null ? '—' : dur(b.statMs)}<span class="celln"> (${cnt(b.timingN)})</span></td>`).join('') + `</tr>`;
   }
   html += `</tbody></table>`;
-  $('analytics-panel').innerHTML = html;
+  return html;
 }
 
 function renderStreakGap(streak, gap) {
@@ -251,23 +267,23 @@ function renderStreakGap(streak, gap) {
   if (streak.error) return bail(streak); setMatched(streak.summary);
   let html = `<div class="section-h">Chuỗi (số vòng liên tiếp dưới ngưỡng)</div>`;
   html += `<table class="atable"><thead><tr><th>Dưới</th><th>Hiện tại</th><th>Dài nhất</th><th>Số chuỗi đã kết thúc</th><th>Trung vị</th></tr></thead><tbody>`;
-  for (const s of streak.overall) html += `<tr><td>&lt; ${Number(s.threshold).toFixed(2)}x</td><td>${s.currentStreak}</td><td>${s.longestStreak}</td><td>${s.completedStreakCount}</td><td>${fx(s.medianCompletedStreak, 1)}</td></tr>`;
+  for (const s of streak.overall) html += `<tr><td>&lt; ${fmtOdd(s.threshold)}</td><td>${cnt(s.currentStreak)}</td><td>${cnt(s.longestStreak)}</td><td>${cnt(s.completedStreakCount)}</td><td>${fx(s.medianCompletedStreak, 1)}</td></tr>`;
   html += `</tbody></table>`;
   const ctx = streak.context;
-  html += `<div class="section-h">Jackpot của các vòng bên trong chuỗi &lt;2x</div>`;
+  html += `<div class="section-h">Jackpot của các vòng bên trong chuỗi &lt;2×</div>`;
   html += `<table class="atable"><thead><tr><th>Ngữ cảnh</th>${ctx.insideStreaks.map((b) => `<th>${escapeHtml(b.label)}</th>`).join('')}</tr></thead><tbody>`;
-  html += `<tr><td>Trong chuỗi</td>${ctx.insideStreaks.map((b) => `<td>${b.n}</td>`).join('')}</tr>`;
-  html += `<tr><td>Đầu chuỗi</td>${ctx.atStart.map((b) => `<td>${b.n}</td>`).join('')}</tr>`;
-  html += `<tr><td>Cuối chuỗi</td>${ctx.atEnd.map((b) => `<td>${b.n}</td>`).join('')}</tr></tbody></table>`;
+  html += `<tr><td>Trong chuỗi</td>${ctx.insideStreaks.map((b) => `<td>${cnt(b.n)}</td>`).join('')}</tr>`;
+  html += `<tr><td>Đầu chuỗi</td>${ctx.atStart.map((b) => `<td>${cnt(b.n)}</td>`).join('')}</tr>`;
+  html += `<tr><td>Cuối chuỗi</td>${ctx.atEnd.map((b) => `<td>${cnt(b.n)}</td>`).join('')}</tr></tbody></table>`;
   html += `<div class="section-h">Khoảng cách giữa các vòng ODD cao</div>`;
   html += `<table class="atable"><thead><tr><th>≥</th><th>Số lần</th><th>Khoảng hiện tại</th><th>Trung vị</th><th>P90</th></tr></thead><tbody>`;
-  for (const g of gap.overall) html += `<tr><td>≥ ${Number(g.threshold).toFixed(0)}x</td><td>${g.occurrences}</td><td>${g.hasPriorOccurrence ? g.currentGapRounds : g.currentGapRounds + ' (chưa có)'}</td><td>${fx(g.medianGapRounds, 0)}</td><td>${fx(g.p90, 0)}</td></tr>`;
+  for (const g of gap.overall) html += `<tr><td>≥ ${fmtOdd(g.threshold)}</td><td>${cnt(g.occurrences)}</td><td>${g.hasPriorOccurrence ? cnt(g.currentGapRounds) : cnt(g.currentGapRounds) + ' (chưa có)'}</td><td>${fx(g.medianGapRounds, 0)}</td><td>${fx(g.p90, 0)}</td></tr>`;
   html += `</tbody></table>`;
   const ex10 = gap.exposure.find((e) => e.threshold === 10);
   if (ex10) {
-    html += `<div class="section-h">Phơi nhiễm ≥10x theo Jackpot</div>`;
-    html += `<table class="atable"><thead><tr><th>Jackpot</th><th>Số vòng đủ điều kiện</th><th>Số lần ≥10x</th><th>Tỷ lệ quan sát</th></tr></thead><tbody>`;
-    for (const b of ex10.byRange) html += `<tr><td>${escapeHtml(b.label)}</td><td class="${nCls(b.eligibleN)}">${b.eligibleN}</td><td>${b.occurrences}</td><td>${pct(b.observedRate)}</td></tr>`;
+    html += `<div class="section-h">Phơi nhiễm ≥10× theo Jackpot</div>`;
+    html += `<table class="atable"><thead><tr><th>Jackpot</th><th>Số vòng đủ điều kiện</th><th>Số lần ≥10×</th><th>Tỷ lệ quan sát</th></tr></thead><tbody>`;
+    for (const b of ex10.byRange) html += `<tr><td>${escapeHtml(b.label)}</td><td class="${nCls(b.eligibleN)}">${cnt(b.eligibleN)}</td><td>${cnt(b.occurrences)}</td><td>${pct(b.observedRate)}</td></tr>`;
     html += `</tbody></table>`;
   }
   $('analytics-panel').innerHTML = html;
@@ -287,7 +303,7 @@ function renderRounds(rows) {
   if (!rows.length) { body.innerHTML = '<tr><td colspan="8" class="muted" style="padding:12px">Chưa có vòng nào.</td></tr>'; return; }
   for (const r of rows) {
     const tr = document.createElement('tr');
-    tr.innerHTML = `<td>${r.sequenceNumber}</td><td>${fmtTime(tsIso(r.openedAtMs))}</td><td>${fmtNum(r.sid)}</td><td>${r.maxOdd == null ? '—' : fmtOdd(r.maxOdd)}</td><td>${fmtNum(r.jackpotAtOpen)}</td><td>${fmtNum(r.jackpotAtEnd)}</td><td>${r.durationMs == null ? '—' : (r.durationMs / 1000).toFixed(2) + 's'}</td><td><span class="cmpl cmpl-${r.completeness}">${r.completeness}</span></td>`;
+    tr.innerHTML = `<td>${cnt(r.sequenceNumber)}</td><td>${fmtTime(tsIso(r.openedAtMs))}</td><td>${fmtNum(r.sid)}</td><td>${fmtOdd(r.maxOdd)}</td><td>${fmtJp(r.jackpotAtOpen)}</td><td>${fmtJp(r.jackpotAtEnd)}</td><td>${dur(r.durationMs)}</td><td><span class="cmpl cmpl-${r.completeness}">${r.completeness}</span></td>`;
     tr.onclick = () => openDetail(r.id); body.appendChild(tr);
   }
 }
@@ -298,17 +314,17 @@ async function openDetail(id) {
   const d = await api.rounds.detail(id); if (!d || d.error) return; lastOpenedRoundId = id;
   const r = d.round;
   $('detail-title').textContent = `Vòng #${r.sequenceNumber}` + (r.sid != null ? ` · SID ${r.sid}` : '');
-  let html = section('Định danh & vòng đời', kv([['SID', fmtNum(r.sid)], ['Trạng thái', r.completeness], ['Mở', fmtTime(tsIso(r.openedAtMs))], ['Kết thúc', fmtTime(tsIso(r.endedAtMs))], ['Thời lượng', r.durationMs == null ? '—' : (r.durationMs / 1000).toFixed(2) + 's']]));
-  html += section('ODD', kv([['Đầu', r.firstOdd == null ? '—' : fmtOdd(r.firstOdd)], ['Cuối', r.lastOdd == null ? '—' : fmtOdd(r.lastOdd)], ['Max', r.maxOdd == null ? '—' : fmtOdd(r.maxOdd)], ['Số mẫu', r.oddSampleCount]]));
+  let html = section('Định danh & vòng đời', kv([['SID', fmtNum(r.sid)], ['Trạng thái', r.completeness], ['Mở', fmtTime(tsIso(r.openedAtMs))], ['Kết thúc', fmtTime(tsIso(r.endedAtMs))], ['Thời lượng', dur(r.durationMs)]]));
+  html += section('ODD', kv([['Đầu', fmtOdd(r.firstOdd)], ['Cuối', fmtOdd(r.lastOdd)], ['Max', fmtOdd(r.maxOdd)], ['Số mẫu', cnt(r.oddSampleCount)]]));
   html += section('Biểu đồ ODD', spark(d.oddSamples.map((s) => s.odd), false));
-  html += section('Jackpot', kv([['Mở', fmtNum(r.jackpotAtOpen)], ['Kết thúc', fmtNum(r.jackpotAtEnd)], ['Min', fmtNum(r.jackpotMin)], ['Max', fmtNum(r.jackpotMax)], ['Số mẫu', r.jackpotSampleCount]]));
+  html += section('Jackpot', kv([['Mở', fmtJp(r.jackpotAtOpen)], ['Kết thúc', fmtJp(r.jackpotAtEnd)], ['Min', fmtJp(r.jackpotMin)], ['Max', fmtJp(r.jackpotMax)], ['Số mẫu', cnt(r.jackpotSampleCount)]]));
   if (d.jackpotSamples.length) html += section('Biểu đồ Jackpot', spark(d.jackpotSamples.map((s) => s.jackpot), true));
   html += section('Mốc ngưỡng' + (d.metrics && d.metrics.timingCensored ? ' (thời gian bị cắt — vòng thu thập dở)' : ''), milestones(d.metrics));
   html += `<details class="tech"><summary>Bằng chứng kỹ thuật (${d.relatedRawEvents.length})</summary>${rawTable(d.relatedRawEvents)}</details>`;
   $('detail-body').innerHTML = html; $('detail-drawer').classList.remove('hidden');
 }
-function milestones(m) { if (!m || !m.thresholds) return '<div class="muted">—</div>'; return '<table class="milestones">' + Object.keys(m.thresholds).map((t) => { const x = m.thresholds[t]; return `<tr><td>${Number(t).toFixed(2)}x</td><td>${x.reached ? '<span class="ms-yes">đạt' + (x.timeToMs != null ? ' · ' + (x.timeToMs / 1000).toFixed(3) + 's' : '') + '</span>' : '<span class="ms-no">không đạt</span>'}</td></tr>`; }).join('') + '</table>'; }
-function rawTable(events) { if (!events.length) return '<div class="muted">Không có.</div>'; return '<div class="events-table-wrap"><table class="events-table"><thead><tr><th>Thời gian</th><th>Hướng</th><th>CMD</th><th>Type</th><th>SID</th><th>ODD</th><th>JP</th></tr></thead><tbody>' + events.map((e) => `<tr><td>${fmtTime(tsIso(e.timestampMs))}</td><td class="dir-${e.direction}">${e.direction}</td><td>${fmtNum(e.cmd)}</td><td>${escapeHtml(e.type || '')}</td><td>${fmtNum(e.sid)}</td><td>${e.odd == null ? '—' : fmtOdd(e.odd)}</td><td>${fmtNum(e.jackpot)}</td></tr>`).join('') + '</tbody></table></div>'; }
+function milestones(m) { if (!m || !m.thresholds) return '<div class="muted">—</div>'; return '<table class="milestones">' + Object.keys(m.thresholds).map((t) => { const x = m.thresholds[t]; return `<tr><td>${fmtOdd(t)}</td><td>${x.reached ? '<span class="ms-yes">đạt' + (x.timeToMs != null ? ' · ' + dur(x.timeToMs) : '') + '</span>' : '<span class="ms-no">không đạt</span>'}</td></tr>`; }).join('') + '</table>'; }
+function rawTable(events) { if (!events.length) return '<div class="muted">Không có.</div>'; return '<div class="events-table-wrap"><table class="events-table"><thead><tr><th>Thời gian</th><th>Hướng</th><th>CMD</th><th>Type</th><th>SID</th><th>ODD</th><th>JP</th></tr></thead><tbody>' + events.map((e) => `<tr><td>${fmtTime(tsIso(e.timestampMs))}</td><td class="dir-${e.direction}">${e.direction}</td><td>${fmtNum(e.cmd)}</td><td>${escapeHtml(e.type || '')}</td><td>${fmtNum(e.sid)}</td><td>${e.odd == null ? '—' : fmtOdd(e.odd)}</td><td>${fmtJp(e.jackpot)}</td></tr>`).join('') + '</tbody></table></div>'; }
 
 // ---------- ADVANCED ----------
 for (const st of document.querySelectorAll('#view-advanced .subtab')) st.addEventListener('click', () => { currentAdv = st.dataset.adv; for (const s of document.querySelectorAll('#view-advanced .subtab')) s.classList.toggle('active', s === st); loadAdvanced(); });
@@ -356,7 +372,7 @@ $('wl-detail-close').onclick = () => $('weblog-drawer').classList.add('hidden');
 async function openWebLogDetail(kind, id) {
   const d = await api.webLog.detail(kind, id); if (!d || d.error) return;
   if (d.kind === 'WS') { const ev = d.event, conn = d.connection; $('wl-detail-title').textContent = `WS ${ev.direction}${ev.direction === 'SEND' ? ' (website)' : ''}`;
-    let h = section('Khung WebSocket', kv([['Hướng', ev.direction === 'SEND' ? 'WEBSITE SEND' : 'RECV (server)'], ['Thời gian', fmtTime(tsIso(ev.timestamp_ms))], ['CMD', fmtNum(ev.cmd)], ['Type', ev.event_type], ['SID', fmtNum(ev.sid)], ['ODD', ev.odd == null ? '—' : fmtOdd(ev.odd)], ['Jackpot', fmtNum(ev.jackpot)]]));
+    let h = section('Khung WebSocket', kv([['Hướng', ev.direction === 'SEND' ? 'WEBSITE SEND' : 'RECV (server)'], ['Thời gian', fmtTime(tsIso(ev.timestamp_ms))], ['CMD', fmtNum(ev.cmd)], ['Type', ev.event_type], ['SID', fmtNum(ev.sid)], ['ODD', ev.odd == null ? '—' : fmtOdd(ev.odd)], ['Jackpot', fmtJp(ev.jackpot)]]));
     if (conn) h += section('Kết nối', kv([['URL', conn.url], ['SEND', conn.send_count], ['RECV', conn.recv_count]]));
     h += section('Payload thô', preBlock(ev.payload)); $('wl-detail-body').innerHTML = h; $('weblog-drawer').classList.remove('hidden'); return; }
   const req = d.request, resp = d.response, b = d.body;
@@ -386,7 +402,7 @@ function bailText(r) { return `<div class="disabled-note">${escapeHtml((r.error 
 // Data
 async function loadData() {
   const info = await api.db.info();
-  const cards = [['Phiên bản schema', info.schemaVersion], ['Kích thước', info.sizeBytes == null ? '—' : (info.sizeBytes / 1e6).toFixed(2) + ' MB'], ['Phiên thu thập', info.sessions], ['Request mạng', info.networkRequests], ['Response', info.networkResponses], ['Body', info.networkBodies], ['WS kết nối', info.wsConnections], ['WS sự kiện', info.wsEvents], ['Sự kiện giao thức', info.rawEvents], ['Vòng', info.rounds], ['Mẫu ODD', info.oddSamples], ['Mẫu Jackpot', info.jackpotSamples]];
+  const cards = [['Phiên bản schema', info.schemaVersion], ['Kích thước', F.bytes(info.sizeBytes)], ['Phiên thu thập', cnt(info.sessions)], ['Request mạng', cnt(info.networkRequests)], ['Response', cnt(info.networkResponses)], ['Body', cnt(info.networkBodies)], ['WS kết nối', cnt(info.wsConnections)], ['WS sự kiện', cnt(info.wsEvents)], ['Sự kiện giao thức', cnt(info.rawEvents)], ['Vòng', cnt(info.rounds)], ['Mẫu ODD', cnt(info.oddSamples)], ['Mẫu Jackpot', cnt(info.jackpotSamples)]];
   $('data-cards').innerHTML = cards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('');
 }
 function dataResult(r, kind) {

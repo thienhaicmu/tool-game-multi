@@ -47,13 +47,25 @@ test('HOME is browser-first: Open Browser action + current SID/ODD/JP, no manual
   }
 });
 
-test('REPORT is jackpot-first: persistent JP basis config + 6 perspectives', () => {
+test('REPORT is jackpot-first: persistent JP basis config + 5 simplified perspectives', () => {
   assert.ok(html.includes('id="f-jpbasis"'), 'jackpot basis selector present');
-  for (const s of ['overview', 'odd', 'jackpot', 'time', 'timing', 'streakgap']) {
+  // Simplified normal-user structure (spec §3): Tổng quan → Jackpot → ODD → Thời gian → Chuỗi/Xu hướng.
+  for (const s of ['overview', 'jackpot', 'odd', 'time', 'streakgap']) {
     assert.ok(new RegExp(`data-sub="${s}"`).test(html), `missing report perspective ${s}`);
   }
+  // Jackpot is promoted ahead of ODD (jackpot-first ordering).
+  assert.ok(html.indexOf('data-sub="jackpot"') < html.indexOf('data-sub="odd"'), 'Jackpot precedes ODD');
+  // "Tốc độ ODD" (timing) is MERGED into "Thời gian" as a metric, not a separate perspective.
+  assert.ok(!/data-sub="timing"/.test(html), 'timing is no longer a standalone perspective');
+  assert.ok(js.includes('data-tm="timing"') && js.includes('api.report.timing'), 'timing reachable inside Thời gian');
   // every report perspective renderer consults the jackpot report API
   assert.ok(js.includes('api.report.overview') && js.includes('api.report.odd') && js.includes('api.report.gap'));
+});
+
+test('centralized number formatter (format.js / AFmt) is loaded before the app', () => {
+  assert.ok(/<script src="format\.js">/.test(html), 'format.js script tag present');
+  assert.ok(html.indexOf('format.js') < html.indexOf('analytics.js'), 'format.js loads before analytics.js');
+  assert.ok(js.includes('window.AFmt'), 'app uses the centralized AFmt formatter');
 });
 
 test('no action controls / no prediction language anywhere in the UI', () => {

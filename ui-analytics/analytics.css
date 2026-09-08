@@ -125,6 +125,11 @@ body { display: flex; flex-direction: column; }
   padding: 5px 12px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 12px; font-weight: 600; }
 .subtab.active { color: var(--text); border-color: var(--accent); }
 .analytics-panel { flex: 1; overflow-y: auto; padding-top: 12px; }
+/* Metric selector inside the merged "Thời gian" section. */
+.metric-switch { display: flex; gap: 6px; margin-bottom: 12px; }
+.metric-switch .mbtn { background: transparent; border: 1px solid var(--line); color: var(--muted);
+  padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.metric-switch .mbtn.active { color: var(--text); border-color: var(--accent); }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .card .c-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
