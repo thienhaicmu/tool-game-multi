@@ -78,11 +78,14 @@ class AnalyticsPersistence {
   // One observed WS frame. direction: 'recv' | 'send'. Persists the RAW WS event
   // (source of truth), derives a raw_protocol_event linked by source_ws_event_id
   // (provenance: round -> protocol event -> raw WS frame), then feeds the assembler.
-  onWsFrame(browserId, { direction, raw, at, opcode, targetId, cdpRequestId, cdpSessionId } = {}) {
+  onWsFrame(browserId, { direction, raw, at, opcode, targetId, cdpRequestId, cdpSessionId, origin } = {}) {
     const s = this._ensure(browserId);
     const t = at != null ? at : this._now();
     const cls = classifyFrame(raw);
     const dir = direction === 'send' ? 'SEND' : 'RECV';
+    // Provenance (§22): default SEND=WEBSITE, RECV=SERVER; an explicit origin override lets the
+    // runtime mark Analytics' own sealed entry-recovery frame as ANALYTICS_ENTRY_RECOVERY.
+    const originTag = origin || (dir === 'SEND' ? 'WEBSITE' : 'SERVER');
     const odd = (Number.isFinite(cls.odd) && cls.odd > 0) ? cls.odd : null;
     const jackpot = Number.isFinite(cls.jp) ? cls.jp : null;
     const parseStatus = cls.json == null ? 'UNPARSED' : (cls.known ? 'OK' : 'UNKNOWN_CMD');
@@ -99,7 +102,7 @@ class AnalyticsPersistence {
     // Derived protocol event (with provenance back to the raw WS frame).
     const rawEventId = this._store.raw.append({
       captureSessionId: s.sessionId, browserId: String(browserId), wsConnectionId,
-      direction: dir, origin: dir === 'SEND' ? 'WEBSITE' : 'SERVER',
+      direction: dir, origin: originTag,
       wallTimestampMs: t, monotonicTimestampMs: null, opcode: opcode != null ? opcode : null,
       rawPayload: cls.raw, parseStatus, parseError: parseStatus === 'UNPARSED' ? 'non-JSON or unparseable frame' : null,
       cmd: Number.isFinite(cls.cmd) ? cls.cmd : null, eventType: cls.type,

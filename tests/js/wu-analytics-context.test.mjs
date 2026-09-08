@@ -111,17 +111,30 @@ test('A9: manual website re-entry (fresh Aviator frames) auto-resumes ACTIVE + r
   assert.equal(s.currentJackpot, 1234);
 });
 
-test('A10: no Analytics-originated SEND/action path (passive boundary intact)', () => {
+test('A10: Analytics may originate ENTRY cmd100000 ONLY — no wager/generic send path', () => {
+  // NEW POLICY (this WU): Analytics is passive for game observation + wagering, with ONE
+  // permitted protocol action — the fixed Aviator ENTER cmd100000 for bounded context recovery.
+  // BET/CASHOUT/arbitrary-send/replay/AutoRunner remain architecturally impossible.
   const dir = path.resolve(process.cwd(), 'desktop', 'analytics');
-  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.cjs'));
-  // Match CODE invocations that would originate protocol/actions — not prose in the
-  // deliberate passive-boundary documentation (which legitimately names bet/cashout/enter).
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) =>
+    e.isDirectory() ? walk(path.join(d, e.name)) : (e.name.endsWith('.cjs') ? [path.join(d, e.name)] : []));
+  const files = walk(dir);
   const stripComments = (src) => src
     .replace(/\/\*[\s\S]*?\*\//g, '')       // block comments
     .replace(/(^|[^:])\/\/.*$/gm, '$1');    // line comments (keep :// in URLs)
-  const banned = /\.sendRaw\(|\.sendProtocol\(|wsReplay\.|new\s+AutoRunner|\.ensureEntered\(|\.ensureThreshold\(|\bcmd:\s*100000\b|\b100000\b/;
+  // Hard-forbidden anywhere in the Analytics graph: wager cmds, generic senders, action stacks.
+  const banned = /\b100002\b|\b100003\b|\.sendRaw\(|\.sendProtocol\(|\bwsReplay\b|new\s+AutoRunner|AutoSequenceController|\bJackpotGate\b|\.ensureThreshold\(/;
   for (const f of files) {
-    const code = stripComments(fs.readFileSync(path.join(dir, f), 'utf8'));
-    assert.equal(banned.test(code), false, `${f} must not contain any send/action/re-entry origination`);
+    const code = stripComments(fs.readFileSync(f, 'utf8'));
+    assert.equal(banned.test(code), false, `${path.basename(f)} must not contain wager/generic-send/action origination`);
+  }
+  // The entry cmd literal (cmd:100000) is permitted ONLY inside the sealed entry seam. Note a bare
+  // 100000 also appears as a numeric clamp bound in query code — so match it ONLY next to `cmd`.
+  const entryCmdLiteral = /cmd["'\s:]{0,4}100000|100000[\s,}\]]{0,4}["']?\s*\)?\s*;?\s*\/\/|aviatorPlugin[\s\S]{0,40}100000/;
+  const allowEntryLiteral = new Set(['entry-only-transport.cjs', 'analytics-aviator-entry.cjs', 'analytics-runtime.cjs']);
+  for (const f of files) {
+    if (allowEntryLiteral.has(path.basename(f))) continue;
+    const code = stripComments(fs.readFileSync(f, 'utf8'));
+    assert.equal(entryCmdLiteral.test(code), false, `${path.basename(f)} must not embed the entry cmd literal (belongs in the sealed seam)`);
   }
 });

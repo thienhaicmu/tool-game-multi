@@ -111,9 +111,14 @@ function renderHome(s) {
   let captureText = 'Tạm dừng';
   let capturing = false;
   if (s.open) {
+    // Entry-only auto-reentry adds REENTERING / LOGIN_REQUIRED / RECOVERY_FAILED runtime states.
     if (ctx === 'AVIATOR_ACTIVE') { captureText = '● ĐANG THU THẬP'; capturing = true; }
     else if (ctx === 'AVIATOR_VERIFYING') { captureText = 'ĐANG KIỂM TRA GAME'; }
-    else { captureText = 'CẦN VÀO LẠI GAME'; } // AVIATOR_CONTEXT_LOST or AVIATOR_UNKNOWN (not in game yet)
+    else if (ctx === 'AVIATOR_REENTERING') { captureText = 'ĐANG VÀO LẠI GAME'; }
+    else if (ctx === 'AVIATOR_LOGIN_REQUIRED') { captureText = 'CẦN ĐĂNG NHẬP'; }
+    else if (ctx === 'AVIATOR_RECOVERY_FAILED') { captureText = 'KHÔNG THỂ VÀO LẠI GAME'; }
+    else if (ctx === 'AVIATOR_CONTEXT_LOST') { captureText = 'MẤT KẾT NỐI GAME'; }
+    else { captureText = 'CẦN VÀO LẠI GAME'; } // AVIATOR_UNKNOWN (not in game yet)
   }
   $('chip-capture').textContent = 'Thu thập: ' + captureText;
   $('chip-capture').classList.toggle('on', capturing);

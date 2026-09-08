@@ -2,6 +2,26 @@
 
 const EventEmitter = require('node:events');
 const { AnalyticsLiveState } = require('./live-state.cjs');
+const { classifyFrame } = require('../protocol/frame-classify.cjs');
+const { AVIATOR_EVIDENCE_CMDS } = require('../protocol/aviator-context.cjs');
+const { EntryOnlyTransport } = require('./entry-only-transport.cjs');
+const { AnalyticsAviatorEntryGate } = require('./analytics-aviator-entry.cjs');
+const { AnalyticsContextRecovery, STATE: RECOVERY_STATE } = require('./analytics-context-recovery.cjs');
+const { looksLikeLoginUrl } = require('../browser-run/login-signal.cjs');
+
+// The single Aviator ENTER cmd (client-originated). Kept as a literal here only to RECOGNISE
+// our own outbound entry frame for provenance tagging — never to construct a send.
+const CMD_AVIATOR_ENTER = 100000;
+// Recovery cadence + thresholds. freshMs MUST exceed a normal between-round gap so quiet pauses
+// never read as loss. Fast profile for the deterministic acceptance harness (mirrors Control).
+const FAST = process.env.OBSERVATORY_RECOVERY_FAST === '1';
+const RECOVERY_CONFIG = FAST
+  ? { freshMs: 4000, verifyWindowMs: 2000, maxReentryAttempts: 3 }
+  : { freshMs: 20000, verifyWindowMs: 6000, maxReentryAttempts: 3 };
+const ENTRY_CONFIRM_TIMEOUT_MS = FAST ? 4000 : 10000;
+const RECOVERY_TICK_MS = FAST ? 1000 : 3000;
+const hostOf = (u) => { try { return new URL(u).host; } catch { return ''; } };
+const wsKeyOf = (t, s, r) => `${t != null ? t : ''}:${s != null ? s : ''}:${r != null ? r : ''}`;
 
 // ---------------------------------------------------------------------------
 // AnalyticsRuntime — M2 composition core for Aviator Analytics.
@@ -12,10 +32,12 @@ const { AnalyticsLiveState } = require('./live-state.cjs');
 //   - a PASSIVE capture attachment (Network + WebSocket frame events only)
 //   - an AnalyticsLiveState (bounded live snapshot)
 //
-// It is strictly an OBSERVER. There is deliberately NO send/replay/bet/cashout/
-// enter path anywhere in this module or its imports. The shared CaptureCorrelator
-// is target-keyed, so B1 frames route to B1's live state and B2 frames to B2's —
-// the UI selection never changes capture ownership.
+// It is passive for game OBSERVATION and all WAGERING behavior: there is deliberately NO
+// bet/cashout/replay/arbitrary-send/AutoRunner path anywhere in this module or its imports.
+// The ONE permitted protocol-originated action is the fixed Aviator ENTER cmd100000, used only
+// for bounded context re-entry via the sealed EntryOnlyTransport + AnalyticsAviatorEntryGate
+// (see ADR 0003). The shared CaptureCorrelator is target-keyed, so B1 frames route to B1's live
+// state and B2 frames to B2's — the UI selection never changes capture ownership.
 //
 // Electron-touching work (WebContentsView, CDP) is reached only via the injected
 // `inappRuntime` + `capture`, so this module is unit-testable with fakes.
@@ -66,7 +88,7 @@ class AnalyticsRuntime extends EventEmitter {
       partition: this._inapp.partitionFor(b.id),
       open: !!run,
       selected: this._selectedBrowserId === String(b.id),
-      live: run ? run.liveState.snapshot({ events: false }) : null,
+      live: run ? this._liveWithRecovery(run, run.liveState.snapshot({ events: false })) : null,
     };
   }
 
@@ -86,10 +108,32 @@ class AnalyticsRuntime extends EventEmitter {
       launcher: null,
       targetManager: null,
       selectedTargetId: null,
-      liveState: new AnalyticsLiveState({ browserId: id, now: this._now }),
+      liveState: new AnalyticsLiveState({ browserId: id, now: this._now, contextConfig: RECOVERY_CONFIG }),
+      aviatorWsCtx: null,        // { targetId, cdpSessionId, host } of the socket carrying Aviator evidence
+      wsHostByKey: new Map(),    // wsKey -> host (from webSocketCreated) for entry targeting
+      recoveryTick: null,        // per-run tick timer
     };
     run.liveState.on('update', () => this.emit('browser-updated', id));
     if (this._persistence) { try { this._persistence.beginSession(id); } catch { /* persistence best-effort; capture continues */ } }
+
+    // ENTRY-ONLY auto-reentry (this WU). The ONLY protocol action Analytics may originate is the
+    // fixed Aviator ENTER frame, and only for confirmed context recovery. The transport is sealed
+    // (no payload arg); the gate is the semantic owner (SEND != ENTERED); the coordinator reuses the
+    // same proven pure AviatorContextTracker Control uses. No BET/CASHOUT/replay/AutoRunner exists here.
+    const transport = new EntryOnlyTransport({ resolveClient: (tid) => this.clientForTarget(tid) });
+    run.entryGate = new AnalyticsAviatorEntryGate({
+      sendEntry: (ctx) => transport.sendEntry(ctx),
+      getContext: () => run.aviatorWsCtx,
+      now: this._now,
+      timeoutMs: ENTRY_CONFIRM_TIMEOUT_MS,
+    });
+    run.recovery = new AnalyticsContextRecovery({
+      entryGate: run.entryGate,
+      config: RECOVERY_CONFIG,
+      now: this._now,
+      onDiag: (evt) => this.emit('recovery-diag', { browserId: id, ...evt }),
+    });
+    run.recovery.on('state', () => this.emit('browser-updated', id));
 
     run.launcher = this._inapp.launcher(run);
     const launched = await run.launcher.open(rec.launchUrl);
@@ -109,11 +153,18 @@ class AnalyticsRuntime extends EventEmitter {
       this._targetIndex.delete(String(tid));
       if (run.selectedTargetId === String(tid)) {
         run.selectedTargetId = null; run.liveState.onDisconnect();
+        run.aviatorWsCtx = null;                                   // owning socket gone: no entry target
+        try { if (run.entryGate) run.entryGate.cancel('ANALYTICS_ENTRY_DISCONNECTED'); } catch { /* best effort */ }
         if (this._persistence) { try { this._persistence.onDisconnect(id); } catch { /* best effort */ } }
       }
       this.emit('browser-updated', id);
     });
     await tm.start();
+
+    // Per-run recovery tick — advances VERIFYING→CONTEXT_LOST→REENTERING on time, independent of
+    // whether new frames arrive. Unref'd so it never keeps the process alive.
+    run.recoveryTick = setInterval(() => { try { this._recoveryTick(run); } catch { /* tick best-effort */ } }, RECOVERY_TICK_MS);
+    if (run.recoveryTick.unref) run.recoveryTick.unref();
 
     this._runs.set(id, run);
     if (!this._selectedBrowserId) this._selectedBrowserId = id;
@@ -127,6 +178,11 @@ class AnalyticsRuntime extends EventEmitter {
     const run = this._runs.get(id);
     if (!run) return { ok: true, alreadyClosed: true };
     for (const [tid, bid] of [...this._targetIndex]) if (bid === id) this._targetIndex.delete(tid);
+    // Stop recovery FIRST so no late frame/callback can resurrect a closing browser (§18).
+    try { if (run.recoveryTick) clearInterval(run.recoveryTick); } catch { /* noop */ }
+    run.recoveryTick = null;
+    try { if (run.recovery) run.recovery.dispose(); } catch { /* noop */ }
+    run.aviatorWsCtx = null;
     try { if (run.targetManager && run.targetManager.stop) await run.targetManager.stop(); } catch { /* already gone */ }
     try { if (run.launcher && run.launcher.close) run.launcher.close(); } catch { /* best effort */ }
     run.liveState.onDisconnect();
@@ -178,8 +234,49 @@ class AnalyticsRuntime extends EventEmitter {
       open: true,
       displayName: rec ? rec.name : null,
       configuredUrl: rec ? rec.launchUrl : null,
-      ...run.liveState.snapshot({ events: true, eventsLimit }),
+      ...this._liveWithRecovery(run, run.liveState.snapshot({ events: true, eventsLimit })),
     };
+  }
+
+  // Overlay the ONE authoritative composite context state onto a live snapshot. The recovery-only
+  // runtime states (REENTERING / LOGIN_REQUIRED / RECOVERY_FAILED) override and force live SID/ODD/
+  // Jackpot to unavailable; for the base detection states we trust the live-state snapshot itself
+  // (same freshness derivation the coordinator's tracker uses — it already nulls on CONTEXT_LOST),
+  // so a not-yet-ticked coordinator never wipes genuinely fresh values.
+  _liveWithRecovery(run, snap) {
+    if (!run.recovery) return snap;
+    const composite = run.recovery.state();
+    const overlay = composite === RECOVERY_STATE.REENTERING
+      || composite === RECOVERY_STATE.LOGIN_REQUIRED
+      || composite === RECOVERY_STATE.RECOVERY_FAILED;
+    if (!overlay) return snap; // ACTIVE / VERIFYING / CONTEXT_LOST / UNKNOWN: snapshot is authoritative
+    return { ...snap, aviatorContext: composite, currentSid: null, currentOdd: null, currentJackpot: null };
+  }
+
+  // WU ENTRY-ONLY — evaluate one browser's context/recovery. Gathers the two DISTINCT freshness
+  // signals + page/login/socket health and ticks the coordinator (which may fire a bounded, sealed
+  // entry request). Time-driven so VERIFYING→CONTEXT_LOST advances even with no new frames.
+  _recoveryTick(run) {
+    if (!run || !run.recovery) return;
+    const now = this._now();
+    const ls = run.liveState;
+    const wc = (typeof this._inapp.webContents === 'function') ? this._inapp.webContents(run.id) : null;
+    let url = '';
+    try { if (wc && !wc.isDestroyed()) url = wc.getURL() || ''; } catch { /* wc gone */ }
+    const wsConnected = ls.wsStatus() === 'CONNECTED';
+    const wcAlive = wc ? !wc.isDestroyed() : wsConnected; // no introspection (tests) → trust WS
+    const lastWsRecvMono = ls.lastWsRecvMono();
+    const lastWsRecvFresh = lastWsRecvMono != null && (now - lastWsRecvMono) <= RECOVERY_CONFIG.freshMs;
+    run.recovery.tick({
+      now,
+      lastAviatorMono: ls.lastAviatorFrameMono(),
+      lastWsRecvMono,
+      wcAlive,
+      wsConnected,
+      lastWsRecvFresh,
+      loginRequired: looksLikeLoginUrl(url),
+      hasSocket: !!run.aviatorWsCtx,
+    });
   }
 
   // ---- shared-capture routing (passive) ----
@@ -196,9 +293,25 @@ class AnalyticsRuntime extends EventEmitter {
     if (req.isWebSocket && req.wsDirection) {           // WS data frame
       const raw = req.body && req.body.raw;
       const at = this._now();
-      if (p) { try { p.onWsFrame(bid, { direction: req.wsDirection, raw, at, targetId: req.targetId, cdpRequestId: req.cdpRequestId, cdpSessionId: req.cdpSessionId }); } catch { /* never stop capture */ } }
-      if (run.liveState) run.liveState.observeFrame({ direction: req.wsDirection, raw, at, targetId: req.targetId });
+      const cls = classifyFrame(raw);
+      const isAviatorEvidence = req.wsDirection === 'recv' && (AVIATOR_EVIDENCE_CMDS.has(cls.cmd) || cls.jp != null);
+      // Bind the game-socket context from the socket that actually carries Aviator evidence —
+      // this is the ONLY socket the sealed entry frame may ride. Never guessed, never global.
+      if (isAviatorEvidence) {
+        const host = run.wsHostByKey.get(wsKeyOf(req.targetId, req.cdpSessionId, req.cdpRequestId)) || '';
+        run.aviatorWsCtx = { targetId: req.targetId, cdpSessionId: req.cdpSessionId, host };
+        try { if (run.entryGate) run.entryGate.onAviatorEvidence(at); } catch { /* best effort */ }
+      }
+      // Provenance (§22): tag our OWN sealed entry frame so it is never mislabelled as a website
+      // action. A SEND cmd100000 within the gate's self-send window is Analytics-recovery-originated.
+      let origin;
+      if (req.wsDirection === 'send' && cls.cmd === CMD_AVIATOR_ENTER && run.entryGate && run.entryGate.wasSelfSentRecently(at)) {
+        origin = 'ANALYTICS_ENTRY_RECOVERY';
+      }
+      if (p) { try { p.onWsFrame(bid, { direction: req.wsDirection, raw, at, targetId: req.targetId, cdpRequestId: req.cdpRequestId, cdpSessionId: req.cdpSessionId, origin }); } catch { /* never stop capture */ } }
+      if (run.liveState) run.liveState.observeFrame({ direction: req.wsDirection, raw, at, targetId: req.targetId, origin });
     } else if (req.isWebSocket) {                        // WS connection opened
+      try { run.wsHostByKey.set(wsKeyOf(req.targetId, req.cdpSessionId, req.cdpRequestId), hostOf(req.url)); } catch { /* best effort */ }
       if (p) { try { p.onWsCreated(bid, req); } catch { /* best effort */ } }
     } else {                                             // HTTP/XHR/fetch/document request
       if (p) { try { p.onHttpRequest(bid, req); } catch { /* best effort */ } }
