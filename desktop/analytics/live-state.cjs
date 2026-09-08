@@ -77,7 +77,10 @@ class AnalyticsLiveState extends EventEmitter {
       seq: this._seq++,
       browserId: this.browserId,
       direction,                                   // 'SEND' (website-originated) | 'RECV'
-      origin: direction === 'SEND' ? 'WEBSITE' : 'SERVER',
+      // Provenance (§22): a SEND is normally WEBSITE-originated, but Analytics' own sealed
+      // entry-recovery frame is tagged ANALYTICS_ENTRY_RECOVERY by the runtime so it is never
+      // mislabelled as a website action. RECV is always SERVER.
+      origin: direction === 'SEND' ? (frame.origin === 'ANALYTICS_ENTRY_RECOVERY' ? 'ANALYTICS_ENTRY_RECOVERY' : 'WEBSITE') : 'SERVER',
       at,
       timestamp: isoOrNull(at),
       cmd: cls.cmd != null ? cls.cmd : null,
@@ -127,6 +130,12 @@ class AnalyticsLiveState extends EventEmitter {
   currentOdd() { return this._currentOdd; }
   currentJackpot() { return this._jackpot.current(); }
   wsStatus() { return this._wsStatus; }
+  // §1 freshness signals exposed for the recovery coordinator (read-only). Kept DISTINCT:
+  // lastWsRecvMono = ANY recv traffic (lobby chatter incl.); lastAviatorFrameMono = classified
+  // authoritative Aviator server evidence only.
+  lastWsRecvMono() { return this._lastWsRecvMono; }
+  lastAviatorFrameMono() { return this._lastAviatorFrameMono; }
+  hasEverSeenAviator() { return this._lastAviatorFrameMono != null; }
 
   // §9 — passive Aviator-context health, derived from the two freshness signals. Strictly
   // observational: the collector stays attached; this never sends or re-enters anything.

@@ -125,6 +125,23 @@ body { display: flex; flex-direction: column; }
   padding: 5px 12px; border-radius: 6px 6px 0 0; cursor: pointer; font-size: 12px; font-weight: 600; }
 .subtab.active { color: var(--text); border-color: var(--accent); }
 .analytics-panel { flex: 1; overflow-y: auto; padding-top: 12px; }
+/* Metric selector inside the merged "Thời gian" section. */
+.metric-switch { display: flex; gap: 6px; margin-bottom: 12px; }
+.metric-switch .mbtn { background: transparent; border: 1px solid var(--line); color: var(--muted);
+  padding: 4px 12px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600; }
+.metric-switch .mbtn.active { color: var(--text); border-color: var(--accent); }
+/* Statistical analysis block (Jackpot section) — effect-size-first, compact. */
+.stat-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin-bottom: 12px; }
+.stat-card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.stat-card .c-label { font-size: 11px; color: var(--muted); }
+.stat-card .c-value { font-size: 19px; font-weight: 700; margin-top: 2px; font-variant-numeric: tabular-nums; }
+.stat-card .c-sub { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.stat-table { margin-top: 4px; }
+/* Forward research (subordinate research area). */
+.fwd-lab { font-size: 12px; color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+.fwd-lab select { margin-left: 4px; }
+.fwd-conclusion { margin-top: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); font-size: 13px; }
+.fwd-summary { padding: 6px 0; }
 .cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
 .card .c-label { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
