@@ -34,7 +34,7 @@ test('EntryOnlyTransport exposes ONLY sendEntry as a wire op (no send/sendRaw/se
   assert.deepEqual(wireish.sort(), ['sendEntry'], 'the only wire method must be sendEntry');
 });
 
-test('sendEntry emits ONLY the sealed __avEnterAviator handshake — never arbitrary payload or wager cmds', async () => {
+test('sendEntry runs ONLY the sealed site-open (onClickBaseMiniGameNode) — no wager cmds, no fetch, no frames', async () => {
   const client = fakeClient();
   const t = new EntryOnlyTransport({ resolveClient: () => client });
   // Caller tries to smuggle a payload/cmd — extra ctx fields must be ignored entirely.
@@ -43,12 +43,14 @@ test('sendEntry emits ONLY the sealed __avEnterAviator handshake — never arbit
   const evalExprs = client.exprs.join('\n');
   assert.ok(/__avEnterAviator/.test(evalExprs), 'must call the sealed entry function');
   assert.equal(/100002|100003|BET|CASHOUT/.test(evalExprs), false, 'must never reference wager cmds/payloads');
-  // The baked hook is the ONLY place the fixed frames + learned game-act live; all are sealed literals.
+  // The baked hook resolves + invokes the SITE's own entry with the learned gameId — it never fetches
+  // or constructs a frame itself (the site owns game-act / 10002 / 100000, with its own auth).
   const hookExpr = client.exprs.find((e) => /__avEnterAviator\s*=/.test(e));
   assert.ok(hookExpr, 'a hook expression that defines __avEnterAviator is injected');
-  assert.ok(/aviatorPlugin/.test(hookExpr) && /100000/.test(hookExpr), 'hook bakes the fixed enter frame');
-  assert.ok(/lobbyPlugin/.test(hookExpr) && /10002/.test(hookExpr), 'hook bakes the fixed lobby frame');
-  assert.ok(/game-act/.test(hookExpr), 'hook bakes the learned game-act URL');
+  assert.ok(/onClickBaseMiniGameNode/.test(hookExpr) && /MiniGameNode/.test(hookExpr), 'hook resolves the site entry accessor');
+  assert.ok(hookExpr.includes('vgmn_221'), 'hook bakes the learned gameId');
+  assert.equal(/fetch\s*\(/.test(hookExpr), false, 'no hand-crafted fetch in the sealed hook');
+  assert.equal(/game-act|lobbyPlugin|aviatorPlugin|X-TOKEN|X-FG-ID/i.test(hookExpr), false, 'no game-act/frame/secret handling');
 });
 
 test('sendEntry without a learned descriptor fails safe — nothing is put on the wire', async () => {

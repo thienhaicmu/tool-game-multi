@@ -125,7 +125,7 @@ class AnalyticsRuntime extends EventEmitter {
     // same proven pure AviatorContextTracker Control uses. No BET/CASHOUT/replay/AutoRunner exists here.
     const transport = new EntryOnlyTransport({ resolveClient: (tid) => this.clientForTarget(tid) });
     run.entryGate = new AnalyticsAviatorEntryGate({
-      sendEntry: (ctx, descriptor) => transport.sendEntry(ctx, descriptor),
+      sendEntry: (ctx, descriptor) => transport.sendEntry(ctx, descriptor, (f) => this.emit('recovery-diag', { browserId: id, ...f })),
       getDescriptor: () => run._aviatorEntryDescriptor || null,
       getContext: () => run.aviatorWsCtx,
       now: this._now,

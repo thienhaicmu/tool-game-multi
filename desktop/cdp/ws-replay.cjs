@@ -1,6 +1,6 @@
 'use strict';
 
-const { runEnterAviatorHandshake } = require('../protocol/aviator-entry-descriptor.cjs');
+const { runEnterAviatorViaSite } = require('../protocol/aviator-entry-descriptor.cjs');
 
 // CDP has NO command to inject a WebSocket frame, so resending a captured frame
 // means calling `.send()` on the page's own live socket. We install a tiny hook
@@ -123,14 +123,15 @@ class WsReplay {
     }
   }
 
-  // Semantic recovery operation: run the sealed lobby→Aviator ENTER handshake (game-act POST →
-  // lobbyPlugin 10002 → aviatorPlugin 100000) through this run's OWN authenticated page context.
-  // descriptor = the run's LEARNED, validated game-act descriptor (never caller-supplied). This
-  // reuses the run's resolveClient; the handshake logic + baked frames live in the shared seam.
-  async enterAviator(ctx, descriptor) {
+  // Semantic recovery operation: RESOLVE-BEFORE-INVOKE the site's OWN authenticated minigame entry
+  // (onClickBaseMiniGameNode) through this run's own game CDP session. The site then performs the
+  // authenticated game-act + lobby 10002 + aviator 100000 — we transmit nothing ourselves. descriptor
+  // = the run's LEARNED, validated Aviator gameId (never caller-supplied). onDiag receives non-secret
+  // resolve facts only. Reuses the run's resolveClient; all logic lives in the shared sealed seam.
+  async enterAviator(ctx, descriptor, onDiag) {
     if (!ctx || !ctx.targetId) return { error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for entry' } };
     const client = this._resolveClient(ctx.targetId);
-    return runEnterAviatorHandshake(client, ctx.cdpSessionId || undefined, descriptor, ctx.host);
+    return runEnterAviatorViaSite(client, ctx.cdpSessionId || undefined, descriptor, onDiag);
   }
 
   async sendProtocol(ctx, payload) {

@@ -526,9 +526,13 @@ function buildProtocolSubsystem(run) {
   // its OWN socket context (the enter request rides only this run's connection).
   const entryGate = new AviatorEntryGate({
     roundTracker: aviator,
-    // LIVE-PROVEN full handshake (game-act → 10002 → 100000). descriptor is THIS run's learned,
-    // validated game-act (never caller-supplied); the gate still confirms only on fresh server evidence.
-    enterAviator: (ctx, descriptor) => wsReplay.enterAviator(ctx, descriptor),
+    // Sealed site-owned entry: RESOLVE-BEFORE-INVOKE onClickBaseMiniGameNode(learned gameId). The
+    // site performs the authenticated game-act + 10002 + 100000. descriptor is THIS run's learned,
+    // validated Aviator gameId (never caller-supplied); the gate confirms only on fresh server evidence.
+    // onDiag logs ONLY non-secret resolve facts (no page state / no tokens).
+    enterAviator: (ctx, descriptor) => wsReplay.enterAviator(ctx, descriptor, (f) => {
+      try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: f.event, meta: { requireAvailable: f.requireAvailable, moduleResolved: f.moduleResolved, instanceResolved: f.instanceResolved, methodResolved: f.methodResolved, tileRegistered: f.tileRegistered } }); } catch { /* best effort */ }
+    }),
     getDescriptor: () => run._aviatorEntryDescriptor || null,
     getContext: () => { const tid = run.selectedTargetId; return tid != null ? aviator.socketContext(tid) : null; },
   });

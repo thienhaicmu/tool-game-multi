@@ -1,45 +1,49 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// Aviator ENTER handshake — the sealed, LIVE-PROVEN lobby→Aviator entry sequence.
+// Aviator ENTER via the SITE's OWN semantic tile-open — the sealed re-entry seam.
 //
-// Live acceptance proved that a bare `aviatorPlugin cmd100000` from a real LOBBY does
-// NOT re-enter the game (no authoritative server round frames return). The full observed
-// SUCCESSFUL entry is a three-step handshake, in order:
+// Live acceptance proved a hand-crafted game-act fetch cannot re-enter: the site's game-act
+// is authenticated by site-injected headers (X-FG-ID, X-TOKEN=session_id) that we must never
+// reconstruct or store. Source-tracing the game client (Cocos Creator) found the site's own
+// programmatic entry: the minigame-lobby manager exposes
 //
-//   1. POST <game-act>  body {"game_id": "<id>"}   (authenticated browser context)
-//   2. WS  ["6","MiniGame","lobbyPlugin",  {"cmd":10002}]
-//   3. WS  ["6","MiniGame","aviatorPlugin",{"cmd":100000}]
-//   → fresh authoritative SERVER Aviator round frames → ACTIVE
+//     __require("MiniGameNode").default.instance.onClickBaseMiniGameNode(gameId, null)
 //
-// This module is the ONE place that knows that sequence. It is a CAPABILITY BOUNDARY,
-// not a convenience API:
-//   - The two WS frames are baked literals. No caller can substitute BET (100002),
-//     CASHOUT (100003), an arbitrary cmd or an arbitrary payload.
-//   - The game-act URL + game_id are NEVER caller-supplied. They are LEARNED from genuine
-//     website traffic (parseGameActDescriptor) and validated (isValidDescriptor) before use.
-//     game_id must match a strict shape; anything else is rejected → fail safe.
-//   - buildEnterAviatorHook bakes the validated descriptor into a ZERO-ARGUMENT page global
-//     `__avEnterAviator()`. The page/renderer surface can only trigger THIS one handshake;
-//     it cannot pass a url, body, frame or cmd. There is no generic fetch/send/replay here.
+// which drives the SITE's authenticated flow end-to-end:
+//     game-act (with the site's own X-FG-ID/X-TOKEN)  →  lobbyPlugin 10002  →  aviatorPlugin 100000
+//     →  fresh authoritative SERVER Aviator frames  →  ACTIVE
 //
-// game_id lifecycle (see the runtimes): learned per-BrowserRun from the site's own game-act
-// POST, kept in memory on the run, refreshed by any later genuine game-act, never persisted,
-// never accepted from a renderer/IPC caller, and gone when the run closes. If none has been
-// learned yet, entry fails safely rather than inventing one.
+// This module is a CAPABILITY BOUNDARY, not a convenience API:
+//   - It invokes exactly ONE site routine (onClickBaseMiniGameNode) with the LEARNED, validated
+//     Aviator gameId. No caller supplies a function name, module name, JS source, URL, body,
+//     frame, cmd or arbitrary argument. The module + method + gameId are baked/validated here.
+//   - RESOLVE-BEFORE-INVOKE: every attempt first runs READ-ONLY existence checks (require, module,
+//     default, instance, method, tile registered). If ANY fails it returns ENTRY_SITE_SEAM_UNAVAILABLE
+//     and invokes NOTHING — no fallback to a hand-crafted game-act, no direct 10002/100000 send.
+//   - We perform NO fetch and send NO WS frame ourselves; the site's own code owns game-act, 10002
+//     and 100000, using the site's own authenticated session. We never touch X-TOKEN/X-FG-ID.
+//
+// game_id lifecycle (see the runtimes): learned per-BrowserRun from the site's own game-act POST,
+// validated, kept in memory, refreshed by any later genuine game-act, never persisted, never
+// accepted from a renderer/IPC caller, gone when the run closes. If none learned yet, entry fails
+// safe (ENTRY_NO_DESCRIPTOR) rather than inventing one.
 // ---------------------------------------------------------------------------
 
-// Fixed WS envelopes — exactly as observed on the wire. DO NOT add sid/aid/eid/b/odd.
+// The Cocos module + method that own the site's authenticated minigame entry (source-proven).
+const ENTRY_MODULE = 'MiniGameNode';
+const ENTRY_METHOD = 'onClickBaseMiniGameNode';
+
+// Reference-only: the frames the SITE itself emits during entry. We NEVER send these — they are
+// kept for recognition/provenance/tests only (the sealed re-entry no longer transmits any frame).
 const LOBBY_ENVELOPE = ['6', 'MiniGame', 'lobbyPlugin', { cmd: 10002 }];
 const ENTER_ENVELOPE = ['6', 'MiniGame', 'aviatorPlugin', { cmd: 100000 }];
-const LOBBY_FRAME = JSON.stringify(LOBBY_ENVELOPE);   // ["6","MiniGame","lobbyPlugin",{"cmd":10002}]
-const ENTER_FRAME = JSON.stringify(ENTER_ENVELOPE);   // ["6","MiniGame","aviatorPlugin",{"cmd":100000}]
+const LOBBY_FRAME = JSON.stringify(LOBBY_ENVELOPE);
+const ENTER_FRAME = JSON.stringify(ENTER_ENVELOPE);
 
-// The observed game-act endpoint path. We match by path suffix (host/version may differ per
-// deployment); the descriptor retains the full learned URL so we never guess the host.
+// Observed game-act endpoint path suffix; host/version vary per deployment so we retain the full
+// learned URL and match by suffix. game_id is a short opaque product token (observed "vgmn_221").
 const GAME_ACT_PATH = '/game-act';
-// game_id is an opaque short product token (observed: "vgmn_221"). Strict shape so a learned
-// descriptor can never smuggle a URL, script or arbitrary body through the game_id field.
 const GAME_ID_RE = /^[A-Za-z0-9_]{1,40}$/;
 
 function isGameActUrl(url) {
@@ -47,8 +51,7 @@ function isGameActUrl(url) {
 }
 
 // Learn the minimal validated entry descriptor from a genuine website game-act POST.
-// Returns { gameActUrl, gameId } or null. Retains ONLY those two fields — nothing else
-// from the request (no headers, no cookies, no auth) is kept.
+// Returns { gameActUrl, gameId } or null. Retains ONLY those two fields (no headers/cookies/auth).
 function parseGameActDescriptor(url, rawBody) {
   if (!isGameActUrl(url)) return null;
   let gameId = null;
@@ -65,84 +68,82 @@ function isValidDescriptor(d) {
     && typeof d.gameId === 'string' && GAME_ID_RE.test(d.gameId));
 }
 
-// Build the SEALED, zero-argument page hook that bakes THIS validated descriptor + the two
-// fixed WS frames. It installs `globalThis.__avEnterAviator()` which performs the ordered
-// handshake and resolves to { ok:true } | { ok:false, step, status? }. Callers cannot pass a
-// url/body/frame — those are literals inside the closure.
-function buildEnterAviatorHook(descriptor, wsHost) {
+// Build the SEALED, zero-argument page hook. It installs globalThis.__avEnterAviator() which:
+//   1. runs READ-ONLY resolution of the site's own entry accessor, and
+//   2. ONLY if every check passes, invokes onClickBaseMiniGameNode(<baked gameId>, null).
+// It returns non-secret facts only: { ok, step?, resolve:{requireAvailable, moduleResolved,
+// instanceResolved, methodResolved, tileRegistered}, invoked }. It performs no fetch and sends
+// no WS frame. The gameId + module + method are baked literals — callers cannot substitute them.
+function buildEnterAviatorHook(descriptor) {
   if (!isValidDescriptor(descriptor)) throw new Error('invalid entry descriptor');
-  const URL_ = JSON.stringify(descriptor.gameActUrl);
-  const BODY_ = JSON.stringify(JSON.stringify({ game_id: descriptor.gameId }));
-  const HOST_ = JSON.stringify(String(wsHost || ''));
-  const F1 = JSON.stringify(LOBBY_FRAME);
-  const F2 = JSON.stringify(ENTER_FRAME);
+  const GID = JSON.stringify(descriptor.gameId);
+  const MOD = JSON.stringify(ENTRY_MODULE);
   return `(() => {
   try {
     var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof self !== 'undefined') ? self : this;
     if (!g) return;
-    var WS = g.__wsoNativeWebSocket || g.WebSocket;
-    if (WS && WS.prototype && WS.prototype.send && !g.__avEnterHooked) {
-      g.__avEnterHooked = 1;
-      try { g.__wsoNativeWebSocket = WS; } catch (e) {}
-      var socks = g.__wsoSocks = g.__wsoSocks || [];
-      var track = function (ws) { try { if (ws && socks.indexOf(ws) === -1) socks.push(ws); } catch (e) {} return ws; };
-      var nativeSend = WS.prototype.send;
-      var wrapped = function (data) { track(this); return nativeSend.apply(this, arguments); };
-      try { Object.defineProperty(wrapped, 'name', { value: 'send' }); } catch (e) {}
-      try { wrapped.toString = function () { return nativeSend.toString(); }; } catch (e) {}
-      try { WS.prototype.send = wrapped; } catch (e) { try { WS.prototype.send = nativeSend; } catch (e2) {} }
-    }
-    var socks2 = g.__wsoSocks = g.__wsoSocks || [];
-    var GAME_ACT_URL = ${URL_}, GAME_ACT_BODY = ${BODY_}, WS_HOST = ${HOST_}, FRAME_LOBBY = ${F1}, FRAME_ENTER = ${F2};
-    var sendFrame = function (frame) {
-      try { for (var i = socks2.length - 1; i >= 0; i--) { var ws = socks2[i]; if (!ws || ws.readyState !== 1) continue; if (WS_HOST && String(ws.url || '').indexOf(WS_HOST) === -1) continue; ws.send(frame); return true; } } catch (e) {}
-      try { for (var j = socks2.length - 1; j >= 0; j--) { var w2 = socks2[j]; if (!w2 || w2.readyState !== 1) continue; w2.send(frame); return true; } } catch (e) {}
-      return false;
-    };
-    // Zero-argument sealed handshake. No url/body/frame/cmd parameter is accepted from callers.
+    var GID = ${GID}, MOD = ${MOD};
     g.__avEnterAviator = function () {
-      return (async function () {
-        try {
-          var r = await fetch(GAME_ACT_URL, { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json' }, body: GAME_ACT_BODY });
-          if (!r || !r.ok) return { ok: false, step: 'game-act', status: r ? r.status : 0 };
-        } catch (e) { return { ok: false, step: 'game-act', error: String(e && e.message || e) }; }
-        if (!sendFrame(FRAME_LOBBY)) return { ok: false, step: 'lobby-10002' };
-        if (!sendFrame(FRAME_ENTER)) return { ok: false, step: 'enter-100000' };
-        return { ok: true };
-      })();
+      var r = { requireAvailable:false, moduleResolved:false, instanceResolved:false, methodResolved:false, tileRegistered:null };
+      try {
+        if (typeof g.__require !== 'function') return { ok:false, step:'no-require', resolve:r };
+        r.requireAvailable = true;
+        var m; try { m = g.__require(MOD); } catch (e) { return { ok:false, step:'no-module', resolve:r }; }
+        if (!m || !m.default) return { ok:false, step:'no-default', resolve:r };
+        r.moduleResolved = true;
+        var inst; try { inst = m.default.instance; } catch (e) { return { ok:false, step:'no-instance', resolve:r }; }
+        if (!inst) return { ok:false, step:'no-instance', resolve:r };
+        r.instanceResolved = true;
+        if (typeof inst.${ENTRY_METHOD} !== 'function') return { ok:false, step:'no-method', resolve:r };
+        r.methodResolved = true;
+        r.tileRegistered = (inst.miniGameKVP && typeof inst.miniGameKVP.has === 'function') ? !!inst.miniGameKVP.has(GID) : null;
+        if (r.tileRegistered === false) return { ok:false, step:'tile-not-registered', resolve:r };
+        // All read-only checks passed — invoke the site's OWN entry; it owns everything downstream.
+        inst.${ENTRY_METHOD}(GID, null);
+        return { ok:true, invoked:true, resolve:r };
+      } catch (e) { return { ok:false, step:'invoke-error', resolve:r }; }
     };
   } catch (e) {}
 })();`;
 }
 
-// Execute the sealed handshake through a target's OWN CDP client (page-authenticated context).
-// client: a CRI-compatible client with .Runtime.evaluate / .Page. sessionId: flattened child
-// session (or undefined for root). Returns { ok:true } | { error:{ code, message, step?, status? } }.
-// Sending is NOT entry: the caller (entry gate) confirms only on fresh authoritative server
-// evidence that arrived AFTER the attempt boundary (SENT != ENTERED).
-async function runEnterAviatorHandshake(client, sessionId, descriptor, wsHost) {
+// Non-secret resolve facts are surfaced to onDiag ONLY (booleans + tileRegistered). The returned
+// page value is NOT logged wholesale. Executes through a target's OWN CDP client (the BrowserRun
+// game session). Returns { ok:true } | { error:{ code:'ENTRY_SITE_SEAM_UNAVAILABLE'|..., step? } }.
+// SENT != ENTERED: a successful invoke does not confirm entry — the caller (gate) confirms only on
+// fresh authoritative SERVER Aviator evidence after the attempt boundary.
+async function runEnterAviatorViaSite(client, sessionId, descriptor, onDiag) {
+  const diag = typeof onDiag === 'function' ? onDiag : () => {};
   if (!client || !client.Runtime || typeof client.Runtime.evaluate !== 'function') {
     return { error: { code: 'ENTER_NO_CLIENT', message: 'Target connection is gone' } };
   }
   if (!isValidDescriptor(descriptor)) {
-    return { error: { code: 'ENTER_NO_DESCRIPTOR', message: 'No validated Aviator game-act descriptor learned yet — enter Aviator once so it can be observed.' } };
+    return { error: { code: 'ENTER_NO_DESCRIPTOR', message: 'No validated Aviator game id learned yet — enter Aviator once so it can be observed.' } };
   }
   let hook;
-  try { hook = buildEnterAviatorHook(descriptor, wsHost); } catch (e) { return { error: { code: 'ENTER_NO_DESCRIPTOR', message: String(e && e.message || e) } }; }
+  try { hook = buildEnterAviatorHook(descriptor); } catch (e) { return { error: { code: 'ENTER_NO_DESCRIPTOR', message: String(e && e.message || e) } }; }
   try { await client.Runtime.evaluate({ expression: hook, includeCommandLineAPI: false }, sessionId); } catch { /* worker/detached — the call below still reports */ }
   const expr = "globalThis.__avEnterAviator ? globalThis.__avEnterAviator() : ({ ok:false, step:'no-hook' })";
+  let v;
   try {
     const res = await client.Runtime.evaluate({ expression: expr, awaitPromise: true, returnByValue: true }, sessionId);
-    const v = res && res.result && res.result.value;
-    if (v && v.ok === true) return { ok: true };
-    return { error: { code: 'ENTER_HANDSHAKE_FAILED', message: 'Entry handshake did not complete', step: v && v.step, status: v && v.status } };
+    v = res && res.result && res.result.value;
   } catch (e) {
-    return { error: { code: 'ENTER_HANDSHAKE_FAILED', message: String(e && e.message || e) } };
+    return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: String(e && e.message || e), step: 'evaluate-error' } };
   }
+  // Surface ONLY non-secret booleans (never the returned object wholesale / never page state).
+  const rf = (v && v.resolve) || {};
+  diag({ event: 'SITE_ENTRY_SEAM_RESOLVE', requireAvailable: !!rf.requireAvailable, moduleResolved: !!rf.moduleResolved, instanceResolved: !!rf.instanceResolved, methodResolved: !!rf.methodResolved, tileRegistered: rf.tileRegistered == null ? null : !!rf.tileRegistered });
+  if (v && v.ok === true) {
+    diag({ event: 'SITE_ENTRY_INVOKED' });
+    return { ok: true };
+  }
+  return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: 'Site entry accessor did not resolve', step: v && v.step } };
 }
 
 module.exports = {
+  ENTRY_MODULE, ENTRY_METHOD,
   LOBBY_ENVELOPE, ENTER_ENVELOPE, LOBBY_FRAME, ENTER_FRAME,
   GAME_ACT_PATH, GAME_ID_RE, isGameActUrl,
-  parseGameActDescriptor, isValidDescriptor, buildEnterAviatorHook, runEnterAviatorHandshake,
+  parseGameActDescriptor, isValidDescriptor, buildEnterAviatorHook, runEnterAviatorViaSite,
 };
