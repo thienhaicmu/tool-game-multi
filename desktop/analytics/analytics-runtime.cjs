@@ -110,6 +110,7 @@ class AnalyticsRuntime extends EventEmitter {
       selectedTargetId: null,
       liveState: new AnalyticsLiveState({ browserId: id, now: this._now, contextConfig: RECOVERY_CONFIG }),
       aviatorWsCtx: null,        // { targetId, cdpSessionId, host } of the socket carrying Aviator evidence
+      aviatorWsKey: null,        // §12 exact wsKey of that owning socket — matched on WS-close by identity
       wsHostByKey: new Map(),    // wsKey -> host (from webSocketCreated) for entry targeting
       recoveryTick: null,        // per-run tick timer
     };
@@ -153,7 +154,7 @@ class AnalyticsRuntime extends EventEmitter {
       this._targetIndex.delete(String(tid));
       if (run.selectedTargetId === String(tid)) {
         run.selectedTargetId = null; run.liveState.onDisconnect();
-        run.aviatorWsCtx = null;                                   // owning socket gone: no entry target
+        run.aviatorWsCtx = null; run.aviatorWsKey = null;          // owning socket gone: no entry target
         try { if (run.entryGate) run.entryGate.cancel('ANALYTICS_ENTRY_DISCONNECTED'); } catch { /* best effort */ }
         if (this._persistence) { try { this._persistence.onDisconnect(id); } catch { /* best effort */ } }
       }
@@ -182,7 +183,7 @@ class AnalyticsRuntime extends EventEmitter {
     try { if (run.recoveryTick) clearInterval(run.recoveryTick); } catch { /* noop */ }
     run.recoveryTick = null;
     try { if (run.recovery) run.recovery.dispose(); } catch { /* noop */ }
-    run.aviatorWsCtx = null;
+    run.aviatorWsCtx = null; run.aviatorWsKey = null;
     try { if (run.targetManager && run.targetManager.stop) await run.targetManager.stop(); } catch { /* already gone */ }
     try { if (run.launcher && run.launcher.close) run.launcher.close(); } catch { /* best effort */ }
     run.liveState.onDisconnect();
@@ -298,8 +299,12 @@ class AnalyticsRuntime extends EventEmitter {
       // Bind the game-socket context from the socket that actually carries Aviator evidence —
       // this is the ONLY socket the sealed entry frame may ride. Never guessed, never global.
       if (isAviatorEvidence) {
-        const host = run.wsHostByKey.get(wsKeyOf(req.targetId, req.cdpSessionId, req.cdpRequestId)) || '';
+        const wsKey = wsKeyOf(req.targetId, req.cdpSessionId, req.cdpRequestId);
+        const host = run.wsHostByKey.get(wsKey) || '';
         run.aviatorWsCtx = { targetId: req.targetId, cdpSessionId: req.cdpSessionId, host };
+        // §12 — remember the EXACT owning socket key so a later WS-close can be matched by identity.
+        // Only THIS socket's close may clear Aviator context; unrelated socket churn must not.
+        run.aviatorWsKey = wsKey;
         try { if (run.entryGate) run.entryGate.onAviatorEvidence(at); } catch { /* best effort */ }
       }
       // Provenance (§22): tag our OWN sealed entry frame so it is never mislabelled as a website
@@ -325,7 +330,18 @@ class AnalyticsRuntime extends EventEmitter {
     const p = this._persistence;
     if (req.isWebSocket && !req.wsDirection && req.state === 'FINISHED') {   // WS connection closed
       if (p) { try { p.onWsClosed(bid, req); } catch { /* best effort */ } }
-      if (run.liveState) run.liveState.onDisconnect();
+      // §12 CONNECTION-AWARE disconnect: ONLY the socket that actually carries Aviator evidence owns
+      // the live Aviator context. Unrelated socket churn (gemsdatapi / millicast / analytics side
+      // channels open & close constantly) must NEVER wipe _lastAviatorFrameMono or the live snapshot,
+      // or a healthy in-game browser would falsely read as "context lost". Genuine whole-page loss is
+      // handled separately by tm.on('target-removed'). We match the closed socket by exact identity.
+      const closedKey = wsKeyOf(req.targetId, req.cdpSessionId, req.cdpRequestId);
+      if (run.aviatorWsKey != null && closedKey === run.aviatorWsKey) {
+        run.aviatorWsKey = null;
+        run.aviatorWsCtx = null;                                   // owning game socket gone: no entry target
+        try { if (run.entryGate) run.entryGate.cancel('ANALYTICS_ENTRY_DISCONNECTED'); } catch { /* best effort */ }
+        if (run.liveState) run.liveState.onDisconnect();
+      }
     } else if (!req.isWebSocket && (req.state === 'BODY_AVAILABLE' || req.state === 'FINISHED' || req.state === 'FAILED')) {
       // Terminal HTTP: persist response + body (passive body fetch via the owning target's client).
       if (p) { p.onHttpFinalize(bid, req, () => this._capture.getResponseBody(req.id)).catch(() => {}); }

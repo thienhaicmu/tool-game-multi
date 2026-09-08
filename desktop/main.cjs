@@ -544,7 +544,11 @@ function buildProtocolSubsystem(run) {
   // chatter must never read as Aviator freshness. Drives the per-run AviatorContextTracker.
   aviator.on('frame', (ev) => {
     if (!ev || ev.direction !== 'recv') return;
-    if (AVIATOR_EVIDENCE_CMDS.has(ev.cmd) || ev.jp != null) run._lastAviatorFrameMono = perfNow();
+    // §3 MAINTAIN-AVIATOR: authoritative Aviator SERVER evidence both refreshes freshness AND
+    // latches that THIS run has genuinely been inside the game. The latch persists for the life of
+    // the run (it is the room-maintenance intent) — a browser that has NEVER entered Aviator must
+    // never be force-entered from lobby, but one that HAS must re-enter after a silent lobby kick.
+    if (AVIATOR_EVIDENCE_CMDS.has(ev.cmd) || ev.jp != null) { run._lastAviatorFrameMono = perfNow(); run._everConfirmedAviator = true; }
   });
   // WU-CONTEXT — per-run "browser healthy but Aviator context lost" tracker (§2). Owned by
   // THIS run; ticked/actuated by the wiring below. It handles the lobby-kick case the session
@@ -912,9 +916,13 @@ function aviatorContextTick(run) {
   const autoRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
   const jackpotWaiting = !!(run.jackpotGate && run.jackpotGate.isWaiting && run.jackpotGate.isWaiting());
   const pausedForRecovery = !!(run.autoRunner && run.autoRunner.pausedForRecovery && run.autoRunner.pausedForRecovery());
-  // §4 — an active reason to expect Aviator: running Auto, a waiting Jackpot gate, a paused
-  // execution awaiting resume, or an in-flight context re-entry. NOT derived solely from isRunning().
-  const hasIntent = autoRunning || jackpotWaiting || pausedForRecovery || run._ctxReentryInFlight === true;
+  // §3/§4 — an active reason to expect Aviator. MAINTAIN-AVIATOR intent comes FIRST: once THIS run
+  // has ever had authoritative Aviator SERVER evidence, room maintenance is intent enough on its own,
+  // so a previously-confirmed watch-only browser (Auto OFF, no jackpot wait) still re-enters after a
+  // silent lobby kick — the audited gap where hasIntent was wrongly tied to execution state alone.
+  // Execution-state signals only ADD to that; they are no longer the sole source of intent.
+  const maintainAviator = run._everConfirmedAviator === true;
+  const hasIntent = maintainAviator || autoRunning || jackpotWaiting || pausedForRecovery || run._ctxReentryInFlight === true;
   const ev = {
     now,
     lastAviatorMono: run._lastAviatorFrameMono != null ? run._lastAviatorFrameMono : null,
