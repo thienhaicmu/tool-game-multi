@@ -85,6 +85,16 @@ test('S25/S26/S27 statistical analysis block: retrospective, effect-first, no pr
   for (const b of banned) assert.ok(!lower.includes(b), `renderer must not contain "${b}"`);
 });
 
+test('Forward Research: subordinate research area, out-of-sample, no prediction/betting wording', () => {
+  assert.ok(js.includes('renderForwardSection') && js.includes('api.forward.run'), 'forward research wired into Jackpot');
+  assert.ok(js.includes('Nghiên cứu Forward'));
+  assert.ok(!/data-sub="forward"/.test(html) && !/data-tab="forward"/.test(html), 'forward is NOT a primary tab/perspective');
+  assert.ok(js.includes('walkForward') && js.includes('leakageAudit'), 'walk-forward + leakage audit surfaced');
+  const banned = ['dự đoán', 'dự báo', 'vòng sau', 'nên cược', 'nên vào', 'tín hiệu', 'jackpot nóng', 'jackpot lạnh', 'dễ nổ', 'xác suất thắng', 'khuyến nghị', 'signal', 'edge', 'bet when', 'next round'];
+  const lower = js.toLowerCase();
+  for (const b of banned) assert.ok(!lower.includes(b), `renderer must not contain "${b}"`);
+});
+
 test('centralized number formatter (format.js / AFmt) is loaded before the app', () => {
   assert.ok(/<script src="format\.js">/.test(html), 'format.js script tag present');
   assert.ok(html.indexOf('format.js') < html.indexOf('analytics.js'), 'format.js loads before analytics.js');

@@ -37,6 +37,7 @@ const { FilterError } = require('./analytics/query/analytics-filter.cjs');
 const exporter = require('./analytics/export/exporter.cjs');
 const { WebLogQuery, NetworkReport, normalizeNetworkFilter } = require('./analytics/query/web-log-query.cjs');
 const { JackpotReport } = require('./analytics/query/jackpot-report.cjs');
+const { ForwardResearch } = require('./analytics/forward-research/forward-research.cjs');
 
 const PRODUCT_NAME = 'Aviator Analytics';
 
@@ -71,6 +72,7 @@ let engine = null;
 let webLog = null;
 let netReport = null;
 let jackpotReport = null;
+let forwardResearch = null;
 
 function analyticsRoot() { return path.join(ANALYTICS_USERDATA, 'analytics'); }
 
@@ -85,6 +87,7 @@ function ensureStore() {
   webLog = new WebLogQuery({ store });
   netReport = new NetworkReport({ store });
   jackpotReport = new JackpotReport({ store });
+  forwardResearch = new ForwardResearch({ store });
   return store;
 }
 
@@ -268,6 +271,9 @@ function registerIpc() {
   // StatEngine V1 — RETROSPECTIVE Jackpot↔outcome relationship analysis over the SAME
   // qualified population (never re-filters, never predicts).
   ipcMain.handle('analytics-jr-stats', jr((spec, jp) => jackpotReport.statistics(spec, jp)));
+  // Forward Research V1 — leakage-safe, time-split, out-of-sample RESEARCH (not a predictor).
+  ipcMain.handle('analytics-fwd-run', (_e, opts) => { ensureRuntime(); const o = opts || {}; try { return forwardResearch.run({ modelStage: String(o.modelStage || 'ROUND_OPEN'), target: o.target || { name: 'reached_2x', threshold: 2 }, browserId: o.browserId != null ? String(o.browserId) : null }); } catch (err) { return { error: { code: 'FWD_FAILED', message: String(err && err.message || err) } }; } });
+  ipcMain.handle('analytics-fwd-matrix', (_e, opts) => { ensureRuntime(); const o = opts || {}; try { return forwardResearch.matrix({ browserId: o.browserId != null ? String(o.browserId) : null }); } catch (err) { return { error: { code: 'FWD_FAILED', message: String(err && err.message || err) } }; } });
   ipcMain.handle('analytics-export-weblog', async (_e, filter) => {
     ensureRuntime();
     const out = await chooseSave('aviator-weblog.csv', [{ name: 'CSV', extensions: ['csv'] }]);

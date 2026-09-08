@@ -56,6 +56,11 @@ contextBridge.exposeInMainWorld('analytics', {
     delta: (filter, jp) => ipcRenderer.invoke('analytics-jr-delta', filter, jp),
     stats: (filter, jp) => ipcRenderer.invoke('analytics-jr-stats', filter, jp),
   },
+  // Forward Research V1 — RESEARCH evidence only (leakage-safe, out-of-sample). No prediction/betting.
+  forward: {
+    run: (opts) => ipcRenderer.invoke('analytics-fwd-run', opts),
+    matrix: (opts) => ipcRenderer.invoke('analytics-fwd-matrix', opts),
+  },
   export: {
     rounds: (filter) => ipcRenderer.invoke('analytics-export-rounds', filter),
     roundDetail: (roundId) => ipcRenderer.invoke('analytics-export-round-detail', roundId),

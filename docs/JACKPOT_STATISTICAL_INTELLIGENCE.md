@@ -259,3 +259,89 @@ conservative Vietnamese effect language; no prediction/recommendation wording.
 describe stored/derivable data and historical, sample-bounded observation. Retrospective tests
 existing does NOT change the forward-algorithm readiness verdict (§8) — that remains deferred
 behind the leakage guard.*
+
+## 12. Forward Research V1 (implemented — leakage-safe, out-of-sample, RESEARCH only)
+
+A pure, dependency-free research layer under
+[desktop/analytics/forward-research/](../desktop/analytics/forward-research/) answers a
+question fundamentally different from the retrospective §11 engine:
+
+> *Using ONLY information genuinely available BEFORE the outcome, is there **stable
+> out-of-sample** information about a subsequent round outcome?*
+
+It is **not** a predictor, betting signal, or auto-bet integration. It exposes research
+evidence, tagged `mode = 'FORWARD_RESEARCH'`. A scientifically valid **"no useful forward
+signal"** is a successful result.
+
+### Feature-time contract (hard gate)
+[feature-registry.cjs](../desktop/analytics/forward-research/feature-registry.cjs) — every
+feature declares the STAGE it first becomes known (`PRE_ROUND < ROUND_OPEN < ROUND_LOCK <
+IN_ROUND < POST_ROUND`). A model at stage S may use ONLY features with stage ≤ S.
+- **MODEL_A = ROUND_OPEN** may use PRE_ROUND + ROUND_OPEN (e.g. `jp_open`, prior-round
+  context, time-of-day). **MODEL_B = ROUND_LOCK** additionally may use `jp_lock`.
+- **Forbidden as predictors** (current-round, realized during/after the climb): `max_odd`,
+  `reached_*`, `time_to_*`, `last_odd`, `jackpot_at_end/min/max/avg/delta`, `duration_ms`,
+  full-round `update_count`/slope/volatility. These are targets, never inputs.
+
+### Targets
+Descriptive round outcomes only: `reached_2x / 5x / 10x` (binary), never user WIN/LOSS/payout.
+
+### Pipeline
+- **Dataset builder** ([dataset-builder.cjs](../desktop/analytics/forward-research/dataset-builder.cjs)):
+  per-browser streams (no B1→B2 crossover); prior/rolling features are `shift(1)` (current
+  round appended to history AFTER its features are built, so it can never enter its own
+  predictors); missing stays `null` (never `0` — the S06 lesson).
+- **Chronological split** 60/20/20 (no shuffle) + **expanding-window walk-forward** (4 folds).
+  TEST is evaluated exactly once, after model/feature/L2 selection on TRAIN+VALIDATION only
+  (DEFINE→FIT→VALIDATE→FREEZE→TEST). Scaler (mean/std, also the train-mean imputer) is fit on
+  TRAIN only, per fold.
+- **Models** ([logistic.cjs](../desktop/analytics/forward-research/logistic.cjs)): IRLS logistic
+  regression with L2 ridge on slopes; nested M0 (prevalence) / M1 (`jp_open`) / M2 (+prior
+  context) / M3 (+time, +`jp_lock` at ROUND_LOCK). Time as cyclical `hour_sin/cos`.
+- **Metrics** ([metrics.cjs](../desktop/analytics/forward-research/metrics.cjs)): ROC AUC,
+  PR AUC, Brier, log loss, equal-width calibration bins, base rate. **Every model is compared
+  to the prevalence baseline** (Δ Brier). AUC uncertainty via a **moving-block bootstrap**
+  (time-series aware; naive IID bootstrap would understate dependence), deterministic seed.
+- **Stability**: per-fold Δ Brier / AUC → STABLE / MIXED / UNSTABLE / INSUFFICIENT_DATA
+  (documented criteria); coefficient **sign stability** across folds.
+- **Sample guards**: MIN_TRAIN 200, MIN_POS_PER_SET 20, MIN_TEST 50 → explicit statuses
+  (`INSUFFICIENT_DATA` / `INSUFFICIENT_POSITIVES`), never fabricated zeros. No synthetic
+  balancing (SMOTE/oversampling) — the real base-rate/temporal structure is preserved.
+- **Leakage audit** (machine-checkable, `LEAKAGE_CHECK=PASS/FAIL`): feature stage ≤ model
+  stage; no forbidden current field; prior features shifted; browser isolation; train-only
+  scaler; TEST never used for selection. A failed audit invalidates the experiment.
+
+### Validation (synthetic sanity, deterministic)
+Known-signal → model beats baseline out-of-sample with correct coefficient direction;
+no-signal → `NO_STABLE_FORWARD_VALUE`; regime-shift (early +, late −) → stability
+MIXED/UNSTABLE and no claim; adversarial post-round field → rejected by the registry/audit;
+shift(1) + browser isolation + chronological split + train-only scaler + TEST-independence all
+enforced by tests.
+
+### Performance (build / one experiment cell incl. walk-forward)
+~4.5 ms / 46 ms @ 1k · ~16 ms / 321 ms @ 10k · ~85 ms / 3.8 s @ 100k. Run on demand (main
+process), not per keystroke.
+
+### Real-data result matrix (READ-ONLY, %APPDATA%\Aviator Analytics\...\analytics.db)
+Population: 153 rounds total, **76 COMPLETE**, **1 browser**, ~6 h span (2026-09-08).
+This is far below the training/positive guards, so **every (stage × target) cell returns
+`INSUFFICIENT_DATA`**. This is the correct, honest result — the guards refuse to fabricate a
+forward model from 76 rounds. No forward value is claimed.
+
+| | reached_2x | reached_5x | reached_10x |
+|---|---|---|---|
+| **ROUND_OPEN** | INSUFFICIENT_DATA | INSUFFICIENT_DATA | INSUFFICIENT_DATA |
+| **ROUND_LOCK** | INSUFFICIENT_DATA | INSUFFICIENT_DATA | INSUFFICIENT_DATA |
+
+### Limitations / policy
+- Logistic p-value/CI are large-sample approximations; effect magnitude + temporal stability
+  outrank a single p-value. Distribution-shift comparison uses descriptive summaries (NOT
+  continuous KS — same tie/discreteness reason maxOdd KS was deferred in §11).
+- **Forward-algorithm readiness stays deferred**: the pipeline exists and is validated, but no
+  real dataset yet supports a forward model. Complex models (GAM/tree/GBM) are gated on
+  `LOGISTIC_RESEARCH_COMPLETE` AND real out-of-sample evidence — not to be used to manufacture
+  a positive conclusion.
+
+*This section adds a RESEARCH pipeline; it does not implement prediction, a betting signal, or
+any Control/protocol/recovery behavior. Negative or insufficient results are first-class,
+correct outcomes.*

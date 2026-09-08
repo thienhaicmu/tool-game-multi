@@ -282,7 +282,74 @@ function renderJackpot(ov, delta, stats) {
     html += `</tbody></table>`;
   }
   html += renderStatsBlock(stats);
+  html += renderForwardSection();
   $('analytics-panel').innerHTML = html;
+  wireForward();
+}
+
+// ---- Forward Research V1 (subordinate research area; NOT a betting/action surface) ----
+let fwdStage = 'ROUND_OPEN';
+let fwdTarget = 'reached_2x';
+const FWD_TARGETS = { reached_2x: 2, reached_5x: 5, reached_10x: 10 };
+const FWD_CONCLUSION_VI = { NO_STABLE_FORWARD_VALUE: 'Không có cải thiện ổn định ngoài mẫu so với mức nền', SMALL_STABLE_FORWARD_VALUE: 'Có cải thiện nhỏ, ổn định ngoài mẫu (mức độ nhỏ)' };
+const FWD_REASON_VI = { NO_OUT_OF_SAMPLE_IMPROVEMENT: 'Không cải thiện so với mức nền', TEMPORAL_INSTABILITY: 'Không ổn định theo thời gian', POOR_CALIBRATION: 'Hiệu chỉnh xác suất kém' };
+const FWD_STATUS_VI = { INSUFFICIENT_DATA: 'Chưa đủ dữ liệu', INSUFFICIENT_POSITIVES: 'Chưa đủ sự kiện dương', OK: '' };
+const FWD_STABILITY_VI = { STABLE: 'Ổn định', MIXED: 'Chưa rõ ràng', UNSTABLE: 'Không ổn định', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu' };
+
+function renderForwardSection() {
+  const opt = (v, l, sel) => `<option value="${v}"${sel === v ? ' selected' : ''}>${l}</option>`;
+  return `<div class="section-h" style="margin-top:18px">Nghiên cứu Forward <span class="muted">(ngoài mẫu · chỉ dùng cho nghiên cứu)</span></div>` +
+    `<div class="metric-switch">` +
+    `<label class="fwd-lab">Giai đoạn <select id="fwd-stage">${opt('ROUND_OPEN', 'Lúc mở vòng', fwdStage)}${opt('ROUND_LOCK', 'Lúc khóa', fwdStage)}</select></label>` +
+    `<label class="fwd-lab">Mục tiêu <select id="fwd-target">${opt('reached_2x', '≥2×', fwdTarget)}${opt('reached_5x', '≥5×', fwdTarget)}${opt('reached_10x', '≥10×', fwdTarget)}</select></label>` +
+    `<button id="fwd-run" class="mbtn">Chạy nghiên cứu</button></div>` +
+    `<div id="fwd-result" class="muted">Chọn giai đoạn/mục tiêu rồi bấm "Chạy nghiên cứu". Phân tích dùng dữ liệu lịch sử chia theo thời gian (train/validation/test) và kiểm tra ngoài mẫu.</div>`;
+}
+function wireForward() {
+  const btn = $('fwd-run'); if (!btn) return;
+  btn.onclick = () => runForward();
+  const ss = $('fwd-stage'); if (ss) ss.onchange = () => { fwdStage = ss.value; };
+  const ts = $('fwd-target'); if (ts) ts.onchange = () => { fwdTarget = ts.value; };
+}
+async function runForward() {
+  const box = $('fwd-result'); if (!box) return;
+  box.innerHTML = '<span class="muted">Đang chạy nghiên cứu…</span>';
+  const target = { name: fwdTarget, threshold: FWD_TARGETS[fwdTarget] };
+  const r = await api.forward.run({ modelStage: fwdStage, target, browserId: selectedId || null });
+  box.innerHTML = renderForwardResult(r);
+}
+function renderForwardResult(r) {
+  if (!r || r.error) return `<div class="disabled-note">${escapeHtml((r && r.error && r.error.message) || 'Lỗi nghiên cứu')}</div>`;
+  const leak = `Kiểm tra rò rỉ: <b class="${r.leakageAudit && r.leakageAudit.pass ? 'ms-yes' : 'ms-no'}">${r.leakageAudit && r.leakageAudit.pass ? 'ĐẠT' : 'KHÔNG ĐẠT'}</b>`;
+  if (r.status !== 'OK') {
+    return `<div class="fwd-summary"><div class="muted">${FWD_STATUS_VI[r.status] || r.status} — n=${cnt(r.n)}, trình duyệt=${cnt(r.browsers)}. ${leak}.</div>` +
+      `<div class="muted">Nghiên cứu forward cần đủ số vòng và sự kiện dương theo thời gian; hiện chưa đủ để đánh giá ngoài mẫu.</div></div>`;
+  }
+  const t = r.testMetrics, b = r.baseline.test;
+  const card = (l, v, s) => `<div class="stat-card"><div class="c-label">${l}</div><div class="c-value">${v}</div>${s ? `<div class="c-sub">${s}</div>` : ''}</div>`;
+  let html = `<div class="stat-cards">` +
+    card('Mẫu (train/val/test)', `${cnt(r.split.train.n)} / ${cnt(r.split.validation.n)} / ${cnt(r.split.test.n)}`, `Tỷ lệ nền test: ${pct(t.prevalence)}`) +
+    card('Brier (nền → mô hình)', `${fx(b.brier, 3)} → ${fx(t.brier, 3)}`, `Δ = ${fx(r.deltaBrierTest, 4)}`) +
+    card('ROC AUC (test)', fx(t.auc, 3), `PR AUC: ${fx(t.prAuc, 3)}` + (r.aucCI && r.aucCI.status === 'OK' ? ` · CI ${fx(r.aucCI.low, 2)}–${fx(r.aucCI.high, 2)}` : '')) +
+    card('Ổn định theo thời gian', FWD_STABILITY_VI[r.stability.status] || r.stability.status, leak) +
+    `</div>`;
+  // Walk-forward folds.
+  html += `<div class="section-h">Kiểm định trượt theo thời gian (walk-forward)</div>`;
+  html += `<table class="atable stat-table"><thead><tr><th>Fold</th><th>Train n</th><th>Test n</th><th>Tỷ lệ nền</th><th>AUC</th><th>Brier</th><th>Δ Brier</th></tr></thead><tbody>`;
+  for (const f of r.walkForward) html += `<tr><td>${f.fold}</td><td>${cnt(f.trainN)}</td><td>${cnt(f.testN)}</td><td>${pct(f.prevalence)}</td><td>${fx(f.auc, 3)}</td><td>${fx(f.brier, 3)}</td><td>${fx(f.deltaBrier, 4)}</td></tr>`;
+  html += `</tbody></table>`;
+  // Calibration (only bins with enough n).
+  const cbins = (t.calibration || []).filter((c) => c.n >= 1);
+  if (cbins.length) {
+    html += `<div class="section-h">Hiệu chỉnh xác suất (test)</div><table class="atable stat-table"><thead><tr><th>Khoảng dự tính</th><th>n</th><th>TB dự tính</th><th>Tỷ lệ quan sát</th></tr></thead><tbody>`;
+    for (const c of cbins) html += `<tr><td>${pct(c.lo)}–${pct(c.hi)}</td><td class="${nCls(c.n)}">${cnt(c.n)}</td><td>${pct(c.meanPredicted)}</td><td>${pct(c.observedRate)}</td></tr>`;
+    html += `</tbody></table>`;
+  }
+  // Conclusion (effect + stability first; not a p-value badge, not a recommendation).
+  const reasons = (r.conclusion.reasons || []).map((x) => FWD_REASON_VI[x] || x).join('; ');
+  html += `<div class="fwd-conclusion"><b>Kết luận:</b> ${FWD_CONCLUSION_VI[r.conclusion.status] || r.conclusion.status}${reasons ? ' — ' + reasons : ''}. ` +
+    `<span class="muted">Đây là bằng chứng nghiên cứu lịch sử ngoài mẫu, chỉ dùng cho mục đích nghiên cứu.</span></div>`;
+  return html;
 }
 
 // "Thời gian" section merges two metrics behind a selector (spec §4): the hour × Jackpot
