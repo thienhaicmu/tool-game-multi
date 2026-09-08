@@ -15,6 +15,7 @@
     "desktop/browser-run/browser-registry.cjs",
     "desktop/protocol/frame-classify.cjs",
     "desktop/protocol/jackpot-observer.cjs",
+    "desktop/protocol/aviator-context.cjs",
     "ui-analytics/**/*",
     "package.json"
   ],
