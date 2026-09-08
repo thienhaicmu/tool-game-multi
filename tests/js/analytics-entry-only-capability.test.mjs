@@ -9,15 +9,18 @@ const { EntryOnlyTransport, ENTER_FRAME, ENTER_ENVELOPE } = require('../../deskt
 const { AnalyticsAviatorEntryGate } = require('../../desktop/analytics/analytics-aviator-entry.cjs');
 const { AnalyticsRuntime } = require('../../desktop/analytics/analytics-runtime.cjs');
 
-// A fake CDP client that records every Runtime.evaluate expression.
+// A fake CDP client that records every Runtime.evaluate expression. The sealed handshake resolves
+// to { ok:true } (the shared seam checks value.ok === true), so the fake returns that shape.
 function fakeClient() {
   const exprs = [];
   return {
     exprs,
     Page: { addScriptToEvaluateOnNewDocument: async () => ({}) },
-    Runtime: { evaluate: async ({ expression }) => { exprs.push(expression); return { result: { value: true } }; } },
+    Runtime: { evaluate: async ({ expression }) => { exprs.push(expression); return { result: { value: { ok: true } } }; } },
   };
 }
+// A learned, validated game-act descriptor (never caller-supplied in production).
+const DESCRIPTOR = { gameActUrl: 'https://host.example/gwms/v1/game-act', gameId: 'vgmn_221' };
 
 test('the fixed enter frame is exactly the observed website request (no sid/aid/eid/odd/bet added)', () => {
   assert.equal(ENTER_FRAME, '["6","MiniGame","aviatorPlugin",{"cmd":100000}]');
@@ -31,23 +34,51 @@ test('EntryOnlyTransport exposes ONLY sendEntry as a wire op (no send/sendRaw/se
   assert.deepEqual(wireish.sort(), ['sendEntry'], 'the only wire method must be sendEntry');
 });
 
-test('sendEntry emits ONLY the sealed __avEnterAviator call — never arbitrary payload or wager cmds', async () => {
+test('sendEntry runs ONLY the sealed site-open (onClickBaseMiniGameNode) — no wager cmds, no fetch, no frames', async () => {
   const client = fakeClient();
   const t = new EntryOnlyTransport({ resolveClient: () => client });
-  // Caller tries to smuggle a payload/cmd — extra fields must be ignored entirely.
-  const res = await t.sendEntry({ targetId: 'T1', cdpSessionId: 'S1', host: 'game.example', payload: 'BET', cmd: 100002 });
+  // Caller tries to smuggle a payload/cmd — extra ctx fields must be ignored entirely.
+  const res = await t.sendEntry({ targetId: 'T1', cdpSessionId: 'S1', host: 'game.example', payload: 'BET', cmd: 100002 }, DESCRIPTOR);
   assert.equal(res.ok, true);
   const evalExprs = client.exprs.join('\n');
   assert.ok(/__avEnterAviator/.test(evalExprs), 'must call the sealed entry function');
   assert.equal(/100002|100003|BET|CASHOUT/.test(evalExprs), false, 'must never reference wager cmds/payloads');
-  // The only cmd literal reachable is the baked enter frame, and it lives in the injected hook only.
-  const hookExpr = client.exprs.find((e) => /__avEnterVersion/.test(e));
-  assert.ok(hookExpr && /aviatorPlugin/.test(hookExpr) && /100000/.test(hookExpr), 'hook bakes the fixed enter frame');
+  // The baked hook resolves + invokes the SITE's own entry with the learned gameId — it never fetches
+  // or constructs a frame itself (the site owns game-act / 10002 / 100000, with its own auth).
+  const hookExpr = client.exprs.find((e) => /__avEnterAviator\s*=/.test(e));
+  assert.ok(hookExpr, 'a hook expression that defines __avEnterAviator is injected');
+  assert.ok(/onClickIConGame/.test(hookExpr) && /LobbyViewController/.test(hookExpr), 'hook resolves the site entry accessor');
+  assert.ok(hookExpr.includes('vgmn_221'), 'hook bakes the learned gameId');
+  assert.equal(/fetch\s*\(/.test(hookExpr), false, 'no hand-crafted fetch in the sealed hook');
+  assert.equal(/game-act|lobbyPlugin|aviatorPlugin|X-TOKEN|X-FG-ID/i.test(hookExpr), false, 'no game-act/frame/secret handling');
+});
+
+test('sendEntry without a learned descriptor fails safe — nothing is put on the wire', async () => {
+  const client = fakeClient();
+  const t = new EntryOnlyTransport({ resolveClient: () => client });
+  const res = await t.sendEntry({ targetId: 'T1', cdpSessionId: 'S1', host: 'game.example' }, null);
+  assert.equal(res.ok, undefined);
+  assert.equal(res.error.code, 'ANALYTICS_ENTRY_NO_DESCRIPTOR');
+  assert.equal(client.exprs.length, 0, 'no hook injected, no handshake evaluated');
+});
+
+test('sendEntry rejects a caller-supplied non-game-act / bad descriptor (no arbitrary fetch)', async () => {
+  const client = fakeClient();
+  const t = new EntryOnlyTransport({ resolveClient: () => client });
+  for (const bad of [
+    { gameActUrl: 'https://evil.example/steal', gameId: 'vgmn_221' },     // not a game-act path
+    { gameActUrl: 'https://host.example/gwms/v1/game-act', gameId: 'a b' }, // invalid game_id shape
+    { gameActUrl: 'https://host.example/gwms/v1/game-act' },                // missing game_id
+  ]) {
+    const res = await t.sendEntry({ targetId: 'T1', cdpSessionId: 'S1', host: 'game.example' }, bad);
+    assert.equal(res.error.code, 'ANALYTICS_ENTRY_NO_DESCRIPTOR');
+  }
+  assert.equal(client.exprs.length, 0, 'no handshake evaluated for any invalid descriptor');
 });
 
 test('no eligible socket => sendEntry fails cleanly (never sends blindly)', async () => {
   const t = new EntryOnlyTransport({ resolveClient: () => null });
-  const res = await t.sendEntry({ targetId: null });
+  const res = await t.sendEntry({ targetId: null }, DESCRIPTOR);
   assert.ok(res.error);
   assert.equal(res.ok, undefined);
 });

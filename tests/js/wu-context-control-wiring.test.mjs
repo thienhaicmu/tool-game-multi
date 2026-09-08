@@ -175,3 +175,34 @@ test('C18 (wiring): a re-entry in flight is reported back so the tracker suppres
   const seg = fnSegment(rd('desktop/main.cjs'), 'aviatorContextTick');
   assert.match(seg, /reentryInFlight: run\._ctxReentryInFlight === true/);
 });
+
+// ---------------------------------------------------------------------------
+// §3/§12 MAINTAIN-AVIATOR — a previously-confirmed browser re-enters after a silent lobby
+// kick even with Auto OFF and no jackpot wait. The audited defect tied hasIntent solely to
+// execution state (autoRunning || jackpotWaiting || pausedForRecovery || reentryInFlight),
+// leaving a watch-only browser permanently UNKNOWN so it could never re-enter (T2/T10).
+// ---------------------------------------------------------------------------
+
+test('§3: authoritative Aviator SERVER evidence latches maintain-Aviator intent for the run', () => {
+  const main = rd('desktop/main.cjs');
+  // The classified-evidence handler sets BOTH freshness AND the persistent room-maintenance latch.
+  assert.match(main, /AVIATOR_EVIDENCE_CMDS\.has\(ev\.cmd\) \|\| ev\.jp != null\)[\s\S]{0,120}run\._everConfirmedAviator = true/);
+});
+
+test('§3/§12: hasIntent is satisfied by maintain-Aviator alone (not only by execution state)', () => {
+  const seg = fnSegment(rd('desktop/main.cjs'), 'aviatorContextTick');
+  // maintainAviator derives from the ever-confirmed latch...
+  assert.match(seg, /const maintainAviator = run\._everConfirmedAviator === true/);
+  // ...and leads hasIntent, so a confirmed watch-only browser (Auto OFF) still re-enters.
+  assert.match(seg, /const hasIntent = maintainAviator \|\| autoRunning \|\| jackpotWaiting \|\| pausedForRecovery \|\| run\._ctxReentryInFlight === true/);
+});
+
+test('T10: light re-entry only resumes Auto when one was actually running (watch-only stays OFF)', () => {
+  const seg = fnSegment(rd('desktop/main.cjs'), 'applyAviatorContextAction');
+  // wasRunning gates BOTH the pause and the post-reentry resume latch — no Auto is invented from lobby.
+  assert.match(seg, /const wasRunning = !!\(run\.autoRunner && run\.autoRunner\.isRunning && run\.autoRunner\.isRunning\(\)\)/);
+  assert.match(seg, /run\._ctxResumeAfterReentry = wasRunning/);
+  // onAviatorReentered is a no-op unless a paused execution exists (so re-entry never starts Auto).
+  const rseg = fnSegment(rd('desktop/main.cjs'), 'onAviatorReentered');
+  assert.match(rseg, /if \(!run\._ctxResumeAfterReentry\) return/);
+});

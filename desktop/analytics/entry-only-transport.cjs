@@ -1,64 +1,31 @@
 'use strict';
 
-// ---------------------------------------------------------------------------
-// EntryOnlyTransport — the SEALED wire seam for Aviator Analytics recovery.
-//
-// This is the ONLY code in the Analytics graph that can put a frame on the
-// game WebSocket, and it can emit EXACTLY ONE frame: the fixed Aviator ENTER
-// request. It is a CAPABILITY BOUNDARY, not a UI hint:
-//
-//   - sendEntry(ctx) takes NO payload / cmd / JSON / method argument. The caller
-//     cannot influence what goes on the wire.
-//   - The enter frame is baked, as a literal, into the injected page hook AND
-//     into this module. There is no code path that accepts BET (100002),
-//     CASHOUT (100003), an arbitrary cmd, or an arbitrary payload.
-//   - It deliberately does NOT install the generic __wsoSendFrame(url, data)
-//     hook that Control's WsReplay uses (that one relays ARBITRARY data). The
-//     injected surface here exposes only __avEnterAviator(), a zero-argument
-//     fixed-frame sender.
-//
-// A raw CDP debugger is of course omnipotent; the boundary this module enforces
-// is that no Analytics-reachable API (runtime method / IPC / preload) ever
-// constructs or forwards anything but this one fixed frame.
-// ---------------------------------------------------------------------------
+const {
+  ENTER_ENVELOPE, ENTER_FRAME, LOBBY_ENVELOPE, LOBBY_FRAME,
+  isValidDescriptor, runEnterAviatorViaSite,
+} = require('../protocol/aviator-entry-descriptor.cjs');
 
-// The exact, already-observed website enter request. DO NOT add sid/aid/eid/odd/
-// bet/cashout or any field that was not part of the authoritative captured frame.
-const ENTER_ENVELOPE = ['6', 'MiniGame', 'aviatorPlugin', { cmd: 100000 }];
-const ENTER_FRAME = JSON.stringify(ENTER_ENVELOPE); // ["6","MiniGame","aviatorPlugin",{"cmd":100000}]
-
-// Injected page/worker hook. Tracks live sockets (wrapping send, like WsReplay) and
-// exposes ONLY g.__avEnterAviator(urlPart) — a sender whose payload is the baked
-// ENTER_FRAME literal. There is intentionally no arbitrary-data entry point here.
-const ENTRY_HOOK = `(() => {
-  try {
-    var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof self !== 'undefined') ? self : this;
-    if (!g) return;
-    if (g.__avEnterVersion >= 1) return; g.__avEnterVersion = 1;
-    var WS = g.__wsoNativeWebSocket || g.WebSocket; if (!WS || !WS.prototype || !WS.prototype.send) return;
-    try { g.__wsoNativeWebSocket = WS; } catch (e) {}
-    var socks = g.__wsoSocks = g.__wsoSocks || [];
-    var track = function (ws) { try { if (ws && socks.indexOf(ws) === -1) socks.push(ws); } catch (e) {} return ws; };
-    var nativeSend = WS.prototype.send;
-    var wrapped = function (data) { track(this); return nativeSend.apply(this, arguments); };
-    try { Object.defineProperty(wrapped, 'name', { value: 'send' }); } catch (e) {}
-    try { wrapped.toString = function () { return nativeSend.toString(); }; } catch (e) {}
-    try { WS.prototype.send = wrapped; } catch (e) { try { WS.prototype.send = nativeSend; } catch (e2) {} return; }
-    // ENTRY-ONLY: the single frame this surface can ever emit, baked as a literal.
-    var FRAME = ${JSON.stringify(ENTER_FRAME)};
-    g.__avEnterAviator = function (urlPart) {
-      try {
-        for (var i = socks.length - 1; i >= 0; i--) {
-          var ws = socks[i];
-          if (!ws || ws.readyState !== 1) continue;
-          if (urlPart && String(ws.url || '').indexOf(urlPart) === -1) continue;
-          ws.send(FRAME); return true;
-        }
-      } catch (e) {}
-      return false;
-    };
-  } catch (e) {}
-})();`;
+// ---------------------------------------------------------------------------
+// EntryOnlyTransport — the SEALED entry seam for Aviator Analytics recovery.
+//
+// This is the ONLY code in the Analytics graph that can trigger game entry, and it can perform
+// EXACTLY ONE operation: RESOLVE-BEFORE-INVOKE the site's OWN authenticated minigame-open routine.
+// It is a CAPABILITY BOUNDARY, not a UI hint:
+//
+//   - sendEntry(ctx, descriptor) takes NO payload / cmd / JSON / method / module / URL / body / fn
+//     name argument. The caller cannot influence what runs.
+//   - The sealed op resolves __require("MiniGameNode").default.instance.onClickBaseMiniGameNode and,
+//     only if every read-only check passes, invokes it with the LEARNED, validated Aviator gameId.
+//     The site then performs the authenticated game-act (its own X-FG-ID/X-TOKEN) + lobby 10002 +
+//     aviator 100000. Analytics transmits NO frame and issues NO fetch itself.
+//   - There is no code path that emits BET (100002), CASHOUT (100003), an arbitrary cmd, an arbitrary
+//     payload, an arbitrary fetch(url, body), or an arbitrary function/module name. gameId is the only
+//     input and it is validated + learned from genuine site traffic (never renderer/IPC-supplied).
+//
+// A raw CDP debugger is of course omnipotent; the boundary this module enforces is that no
+// Analytics-reachable API (runtime method / IPC / preload) ever constructs or forwards anything
+// but this one sealed ENTER operation.
+// ---------------------------------------------------------------------------
 
 class EntryOnlyTransport {
   // resolveClient(targetId) -> a CRI-compatible CDP client for that target (or null).
@@ -66,33 +33,20 @@ class EntryOnlyTransport {
     this._resolveClient = typeof resolveClient === 'function' ? resolveClient : () => null;
   }
 
-  async _inject(client, sessionId) {
-    try {
-      try { await client.Page.addScriptToEvaluateOnNewDocument({ source: ENTRY_HOOK }, sessionId); } catch { /* survives-nav best-effort */ }
-      await client.Runtime.evaluate({ expression: ENTRY_HOOK, includeCommandLineAPI: false }, sessionId);
-    } catch { /* no DOM (worker) / detached — ignore; evaluate below still runs */ }
-  }
-
-  // sendEntry(ctx) — emit the fixed Aviator enter frame through the game's OWN live
-  // socket, in the frame's own target/session. ctx: { targetId, cdpSessionId?, host? }.
-  // NO payload argument exists by design.
-  async sendEntry(ctx) {
+  // sendEntry(ctx, descriptor, onDiag) — RESOLVE-BEFORE-INVOKE the site's own entry through the
+  // game's OWN CDP session. ctx: { targetId, cdpSessionId?, host? }. descriptor: the run's LEARNED,
+  // validated { gameActUrl, gameId } (never caller-supplied). onDiag receives non-secret resolve
+  // facts only. NO payload argument exists. SEND != ENTERED: invocation does not confirm entry —
+  // the gate confirms only on fresh authoritative SERVER Aviator evidence after the attempt boundary.
+  async sendEntry(ctx, descriptor, onDiag) {
     if (!ctx || !ctx.targetId) return { error: { code: 'ANALYTICS_ENTRY_NO_SOCKET', message: 'No owning game WebSocket bound for this browser yet.' } };
+    if (!isValidDescriptor(descriptor)) return { error: { code: 'ANALYTICS_ENTRY_NO_DESCRIPTOR', message: 'No validated Aviator game id learned yet — enter Aviator once so it can be observed.' } };
     const client = this._resolveClient(ctx.targetId);
     if (!client) return { error: { code: 'ANALYTICS_ENTRY_NO_CLIENT', message: 'Target connection is gone' } };
-    const sessionId = ctx.cdpSessionId || undefined;
-    await this._inject(client, sessionId);
-    const host = JSON.stringify(String(ctx.host || ''));
-    // Host-matched first, then any open socket in this session — NEVER arbitrary data.
-    const expr = `globalThis.__avEnterAviator && (globalThis.__avEnterAviator(${host}) || globalThis.__avEnterAviator(''))`;
-    try {
-      const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, sessionId);
-      if (res && res.result && res.result.value === true) return { ok: true };
-      return { error: { code: 'ANALYTICS_ENTRY_SEND_FAILED', message: 'No tracked open WebSocket in this session to carry the enter request.' } };
-    } catch (e) {
-      return { error: { code: 'ANALYTICS_ENTRY_SEND_FAILED', message: String(e && e.message || e) } };
-    }
+    const res = await runEnterAviatorViaSite(client, ctx.cdpSessionId || undefined, descriptor, onDiag);
+    if (res && res.ok === true) return { ok: true };
+    return { error: (res && res.error) || { code: 'ANALYTICS_ENTRY_SEND_FAILED', message: 'Site entry failed' } };
   }
 }
 
-module.exports = { EntryOnlyTransport, ENTER_ENVELOPE, ENTER_FRAME, ENTRY_HOOK };
+module.exports = { EntryOnlyTransport, ENTER_ENVELOPE, ENTER_FRAME, LOBBY_ENVELOPE, LOBBY_FRAME };

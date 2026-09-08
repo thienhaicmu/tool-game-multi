@@ -37,6 +37,7 @@ const { AutoSequenceController } = require('./browser-run/auto-sequence-controll
 const { DiagnosticLog } = require('./diagnostics/diagnostic-log.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
+const { parseGameActDescriptor, isGameActUrl } = require('./protocol/aviator-entry-descriptor.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
 const { AviatorContextTracker, ACTION: CTX_ACTION, AVIATOR_EVIDENCE_CMDS } = require('./protocol/aviator-context.cjs');
 const { looksLikeLoginUrl } = require('./browser-run/login-signal.cjs');
@@ -525,7 +526,14 @@ function buildProtocolSubsystem(run) {
   // its OWN socket context (the enter request rides only this run's connection).
   const entryGate = new AviatorEntryGate({
     roundTracker: aviator,
-    send: (ctx, wire) => wsReplay.sendProtocol(ctx, wire),
+    // Sealed site-owned entry: RESOLVE-BEFORE-INVOKE onClickBaseMiniGameNode(learned gameId). The
+    // site performs the authenticated game-act + 10002 + 100000. descriptor is THIS run's learned,
+    // validated Aviator gameId (never caller-supplied); the gate confirms only on fresh server evidence.
+    // onDiag logs ONLY non-secret resolve facts (no page state / no tokens).
+    enterAviator: (ctx, descriptor) => wsReplay.enterAviator(ctx, descriptor, (f) => {
+      try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: f.event, meta: { requireAvailable: f.requireAvailable, moduleResolved: f.moduleResolved, instanceResolved: f.instanceResolved, methodResolved: f.methodResolved, tileRegistered: f.tileRegistered } }); } catch { /* best effort */ }
+    }),
+    getDescriptor: () => run._aviatorEntryDescriptor || null,
     getContext: () => { const tid = run.selectedTargetId; return tid != null ? aviator.socketContext(tid) : null; },
   });
   entryGate.on('state', () => scheduleRunsBroadcast());
@@ -544,7 +552,11 @@ function buildProtocolSubsystem(run) {
   // chatter must never read as Aviator freshness. Drives the per-run AviatorContextTracker.
   aviator.on('frame', (ev) => {
     if (!ev || ev.direction !== 'recv') return;
-    if (AVIATOR_EVIDENCE_CMDS.has(ev.cmd) || ev.jp != null) run._lastAviatorFrameMono = perfNow();
+    // §3 MAINTAIN-AVIATOR: authoritative Aviator SERVER evidence both refreshes freshness AND
+    // latches that THIS run has genuinely been inside the game. The latch persists for the life of
+    // the run (it is the room-maintenance intent) — a browser that has NEVER entered Aviator must
+    // never be force-entered from lobby, but one that HAS must re-enter after a silent lobby kick.
+    if (AVIATOR_EVIDENCE_CMDS.has(ev.cmd) || ev.jp != null) { run._lastAviatorFrameMono = perfNow(); run._everConfirmedAviator = true; }
   });
   // WU-CONTEXT — per-run "browser healthy but Aviator context lost" tracker (§2). Owned by
   // THIS run; ticked/actuated by the wiring below. It handles the lobby-kick case the session
@@ -709,6 +721,20 @@ function ensureRunManager() {
     // per-run (monotonic), never global. Aviator-CLASSIFIED freshness (lastAviatorFrameMono) is
     // tracked separately from the classified frame stream — lobby chatter is NOT Aviator freshness.
     if (run && req.wsDirection === 'recv') { run._lastWsRecvMono = perfNow(); run._wsConnected = true; }
+  });
+  // Learn the Aviator entry descriptor (game-act URL + game_id) from the site's OWN game-act POST.
+  // Per-run, in-memory, never persisted, never caller-supplied; refreshed by any later genuine
+  // game-act. Enables the full re-entry handshake after a silent lobby kick (the site's original
+  // entry sent this before lobbyPlugin 10002 + aviatorPlugin 100000). Only the validated minimum
+  // {gameActUrl, gameId} is retained — no headers/cookies/auth.
+  capture.on('request', req => {
+    if (!req || req.isWebSocket || String(req.method || '').toUpperCase() !== 'POST' || !isGameActUrl(req.url)) return;
+    const run = runManager.runForTarget(req.targetId);
+    if (!run) return;
+    const d = parseGameActDescriptor(req.url, req.body && req.body.raw);
+    if (!d) return;
+    run._aviatorEntryDescriptor = d;
+    try { runDiag(run).log({ level: 'INFO', category: 'AVIATOR_ENTRY', event: 'ENTRY_DESCRIPTOR_LEARNED', meta: { host: hostOf(d.gameActUrl), gameId: d.gameId } }); } catch { /* best effort */ }
   });
   // Recovery evidence: a WebSocket close means the owning Aviator socket is gone (page may stay).
   capture.on('update', req => {
@@ -912,9 +938,13 @@ function aviatorContextTick(run) {
   const autoRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
   const jackpotWaiting = !!(run.jackpotGate && run.jackpotGate.isWaiting && run.jackpotGate.isWaiting());
   const pausedForRecovery = !!(run.autoRunner && run.autoRunner.pausedForRecovery && run.autoRunner.pausedForRecovery());
-  // §4 — an active reason to expect Aviator: running Auto, a waiting Jackpot gate, a paused
-  // execution awaiting resume, or an in-flight context re-entry. NOT derived solely from isRunning().
-  const hasIntent = autoRunning || jackpotWaiting || pausedForRecovery || run._ctxReentryInFlight === true;
+  // §3/§4 — an active reason to expect Aviator. MAINTAIN-AVIATOR intent comes FIRST: once THIS run
+  // has ever had authoritative Aviator SERVER evidence, room maintenance is intent enough on its own,
+  // so a previously-confirmed watch-only browser (Auto OFF, no jackpot wait) still re-enters after a
+  // silent lobby kick — the audited gap where hasIntent was wrongly tied to execution state alone.
+  // Execution-state signals only ADD to that; they are no longer the sole source of intent.
+  const maintainAviator = run._everConfirmedAviator === true;
+  const hasIntent = maintainAviator || autoRunning || jackpotWaiting || pausedForRecovery || run._ctxReentryInFlight === true;
   const ev = {
     now,
     lastAviatorMono: run._lastAviatorFrameMono != null ? run._lastAviatorFrameMono : null,
