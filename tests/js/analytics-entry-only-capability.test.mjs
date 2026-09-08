@@ -47,7 +47,7 @@ test('sendEntry runs ONLY the sealed site-open (onClickBaseMiniGameNode) — no 
   // or constructs a frame itself (the site owns game-act / 10002 / 100000, with its own auth).
   const hookExpr = client.exprs.find((e) => /__avEnterAviator\s*=/.test(e));
   assert.ok(hookExpr, 'a hook expression that defines __avEnterAviator is injected');
-  assert.ok(/onClickBaseMiniGameNode/.test(hookExpr) && /MiniGameNode/.test(hookExpr), 'hook resolves the site entry accessor');
+  assert.ok(/onClickIConGame/.test(hookExpr) && /LobbyViewController/.test(hookExpr), 'hook resolves the site entry accessor');
   assert.ok(hookExpr.includes('vgmn_221'), 'hook bakes the learned gameId');
   assert.equal(/fetch\s*\(/.test(hookExpr), false, 'no hand-crafted fetch in the sealed hook');
   assert.equal(/game-act|lobbyPlugin|aviatorPlugin|X-TOKEN|X-FG-ID/i.test(hookExpr), false, 'no game-act/frame/secret handling');

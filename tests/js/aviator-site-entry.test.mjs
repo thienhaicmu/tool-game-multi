@@ -14,12 +14,12 @@ const { EntryOnlyTransport } = require('../../desktop/analytics/entry-only-trans
 const DESCRIPTOR = { gameActUrl: 'https://host.example/gwms/v1/game-act', gameId: 'vgmn_221' };
 
 // Execute the sealed page hook in an isolated realm with a mocked window.__require + a fake
-// MiniGameNode manager, so we observe the EXACT resolve-before-invoke behaviour.
+// LobbyViewController, so we observe the EXACT resolve-before-invoke behaviour.
 function runHook({ descriptor = DESCRIPTOR, module: mod, noRequire = false } = {}) {
   const calls = [];
   const sandbox = {}; sandbox.globalThis = sandbox; sandbox.console = console;
   if (!noRequire) {
-    const modules = { MiniGameNode: mod === undefined ? defaultModule(calls) : mod };
+    const modules = { LobbyViewController: mod === undefined ? defaultModule(calls) : mod };
     sandbox.__require = (name) => { if (name in modules) { if (modules[name] === 'THROW') throw new Error('boom'); return modules[name]; } throw new Error('no module ' + name); };
   }
   vm.createContext(sandbox);
@@ -27,14 +27,18 @@ function runHook({ descriptor = DESCRIPTOR, module: mod, noRequire = false } = {
   const val = vm.runInContext('globalThis.__avEnterAviator()', sandbox);
   return { val, calls };
 }
-function defaultModule(calls, { hasInstance = true, hasMethod = true, tile = true } = {}) {
-  const inst = { miniGameKVP: { has: (id) => tile } };
-  if (hasMethod) inst.onClickBaseMiniGameNode = (id, cb) => { calls.push({ id, cb }); };
-  return { default: { instance: hasInstance ? inst : null } };
+// Fake LobbyViewController: default.Instance.onClickIConGame(t,e) + gameLaunchHandler.mapClickLobby,
+// a CUSTOM map with .get/.set only (NO .has/.size — matches the live client). `tile` controls
+// whether mapClickLobby.get(gameId) returns a value.
+function defaultModule(calls, { hasInstance = true, hasMethod = true, tile = true, hasMap = true } = {}) {
+  const glh = { launchSceneGame: () => {}, mapClickLobby: hasMap ? { get: (id) => (tile && id === 'vgmn_221' ? { node: {}, sceneName: 's' } : null), set: () => {} } : undefined };
+  const inst = { gameLaunchHandler: glh };
+  if (hasMethod) inst.onClickIConGame = (t, e) => { calls.push({ t, e }); };
+  return { default: { Instance: hasInstance ? inst : null } };
 }
 
 // ---- 1: exact accessor resolution + invoke once with the learned gameId ----
-test('T1: resolves __require("MiniGameNode").default.instance.onClickBaseMiniGameNode and invokes it once with gameId', () => {
+test('T1: resolves __require("LobbyViewController").default.Instance.onClickIConGame and invokes it once (null, gameId)', () => {
   const h = runHook();
   assert.equal(h.val.ok, true);
   assert.equal(h.val.invoked, true);
@@ -44,8 +48,8 @@ test('T1: resolves __require("MiniGameNode").default.instance.onClickBaseMiniGam
   assert.equal(h.val.resolve.methodResolved, true);
   assert.equal(h.val.resolve.tileRegistered, true);
   assert.equal(h.calls.length, 1, 'invoked exactly once');
-  assert.equal(h.calls[0].id, 'vgmn_221', 'invoked with the baked learned gameId');
-  assert.equal(h.calls[0].cb, null);
+  assert.equal(h.calls[0].t, null, 'first arg is null (unused by the site)');
+  assert.equal(h.calls[0].e, 'vgmn_221', 'invoked with the baked learned gameId');
 });
 
 // ---- 2: resolve-before-invoke fails safe at every missing step; NOTHING invoked ----
@@ -98,7 +102,7 @@ test('T5/T6: the built hook contains NO fetch, NO game-act, and NO direct 10002/
   assert.equal(/lobbyPlugin|aviatorPlugin/.test(hook), false, 'no plugin frame construction');
   assert.equal(/\b10002\b|\b100000\b|\b100002\b|\b100003\b/.test(hook), false, 'no cmd literals');
   assert.equal(/X-TOKEN|X-FG-ID|session_id/i.test(hook), false, 'no secret/header handling');
-  assert.ok(/onClickBaseMiniGameNode/.test(hook) && /MiniGameNode/.test(hook) && hook.includes('vgmn_221'));
+  assert.ok(/onClickIConGame/.test(hook) && /LobbyViewController/.test(hook) && hook.includes('vgmn_221'));
 });
 test('T5b: the recovery graph retired the hand-crafted game-act fetch (module source has no fetch)', () => {
   const src = fs.readFileSync(path.resolve(process.cwd(), 'desktop', 'protocol', 'aviator-entry-descriptor.cjs'), 'utf8');

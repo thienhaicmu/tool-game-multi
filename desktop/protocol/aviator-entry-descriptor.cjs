@@ -5,19 +5,21 @@
 //
 // Live acceptance proved a hand-crafted game-act fetch cannot re-enter: the site's game-act
 // is authenticated by site-injected headers (X-FG-ID, X-TOKEN=session_id) that we must never
-// reconstruct or store. Source-tracing the game client (Cocos Creator) found the site's own
-// programmatic entry: the minigame-lobby manager exposes
+// reconstruct or store. Manual-click GROUND TRUTH (CDP initiator capture) proved the site's own
+// lobby entry for Aviator is the game-icon click path (NOT the minigame strip):
 //
-//     __require("MiniGameNode").default.instance.onClickBaseMiniGameNode(gameId, null)
+//     __require("LobbyViewController").default.Instance.onClickIConGame(null, gameId)
 //
-// which drives the SITE's authenticated flow end-to-end:
+// (first arg is unused by the site; second is the game id). It resolves the game via
+// gameLaunchHandler.mapClickLobby — a CUSTOM map with .get/.set but NO .has/.size, so membership
+// is `mapClickLobby.get(id) != null`. This drives the SITE's authenticated flow end-to-end:
 //     game-act (with the site's own X-FG-ID/X-TOKEN)  →  lobbyPlugin 10002  →  aviatorPlugin 100000
 //     →  fresh authoritative SERVER Aviator frames  →  ACTIVE
 //
 // This module is a CAPABILITY BOUNDARY, not a convenience API:
-//   - It invokes exactly ONE site routine (onClickBaseMiniGameNode) with the LEARNED, validated
-//     Aviator gameId. No caller supplies a function name, module name, JS source, URL, body,
-//     frame, cmd or arbitrary argument. The module + method + gameId are baked/validated here.
+//   - It invokes exactly ONE site routine (onClickIConGame) with the LEARNED, validated Aviator
+//     gameId. No caller supplies a function name, module name, JS source, URL, body, frame, cmd or
+//     arbitrary argument. The module + method + gameId are baked/validated here.
 //   - RESOLVE-BEFORE-INVOKE: every attempt first runs READ-ONLY existence checks (require, module,
 //     default, instance, method, tile registered). If ANY fails it returns ENTRY_SITE_SEAM_UNAVAILABLE
 //     and invokes NOTHING — no fallback to a hand-crafted game-act, no direct 10002/100000 send.
@@ -30,9 +32,11 @@
 // safe (ENTRY_NO_DESCRIPTOR) rather than inventing one.
 // ---------------------------------------------------------------------------
 
-// The Cocos module + method that own the site's authenticated minigame entry (source-proven).
-const ENTRY_MODULE = 'MiniGameNode';
-const ENTRY_METHOD = 'onClickBaseMiniGameNode';
+// The Cocos module + method that own the site's authenticated lobby game entry (ground-truthed
+// live via CDP initiator capture on a real Aviator tile click). The live singleton is `.Instance`
+// (capital I) on the module default; the game-registration map is on `.gameLaunchHandler`.
+const ENTRY_MODULE = 'LobbyViewController';
+const ENTRY_METHOD = 'onClickIConGame';
 
 // Reference-only: the frames the SITE itself emits during entry. We NEVER send these — they are
 // kept for recognition/provenance/tests only (the sealed re-entry no longer transmits any frame).
@@ -91,15 +95,16 @@ function buildEnterAviatorHook(descriptor) {
         var m; try { m = g.__require(MOD); } catch (e) { return { ok:false, step:'no-module', resolve:r }; }
         if (!m || !m.default) return { ok:false, step:'no-default', resolve:r };
         r.moduleResolved = true;
-        var inst; try { inst = m.default.instance; } catch (e) { return { ok:false, step:'no-instance', resolve:r }; }
+        var inst; try { inst = m.default.Instance; } catch (e) { return { ok:false, step:'no-instance', resolve:r }; }
         if (!inst) return { ok:false, step:'no-instance', resolve:r };
         r.instanceResolved = true;
         if (typeof inst.${ENTRY_METHOD} !== 'function') return { ok:false, step:'no-method', resolve:r };
         r.methodResolved = true;
-        r.tileRegistered = (inst.miniGameKVP && typeof inst.miniGameKVP.has === 'function') ? !!inst.miniGameKVP.has(GID) : null;
-        if (r.tileRegistered === false) return { ok:false, step:'tile-not-registered', resolve:r };
-        // All read-only checks passed — invoke the site's OWN entry; it owns everything downstream.
-        inst.${ENTRY_METHOD}(GID, null);
+        var glh = inst.gameLaunchHandler, kvp = glh && glh.mapClickLobby;
+        r.tileRegistered = (kvp && typeof kvp.get === 'function') ? (kvp.get(GID) != null) : null;
+        if (r.tileRegistered !== true) return { ok:false, step:'tile-not-registered', resolve:r };
+        // All read-only checks passed — invoke the site's OWN lobby entry; it owns everything downstream.
+        inst.${ENTRY_METHOD}(null, GID);
         return { ok:true, invoked:true, resolve:r };
       } catch (e) { return { ok:false, step:'invoke-error', resolve:r }; }
     };
