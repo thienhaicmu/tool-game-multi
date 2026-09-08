@@ -7,6 +7,7 @@
   "files": [
     "desktop/analytics-main.cjs",
     "desktop/analytics-preload.cjs",
+    "desktop/window-bounds.cjs",
     "desktop/analytics/**/*",
     "desktop/browser/inapp-runtime.cjs",
     "desktop/cdp/capture.cjs",
