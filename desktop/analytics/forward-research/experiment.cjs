@@ -231,4 +231,4 @@ function concludeStatus({ deltaBrierTest, testAuc, stability, calibration }) {
   return { status, magnitude, stability: stability.status, calibrationMaxDiff: maxCalibDiff, reasons };
 }
 
-module.exports = { runExperiment, evaluateFeatureSet, auditLeakage, modelsForStage, fitModel, evalModel, toXY, GUARD, stabilityVerdict };
+module.exports = { runExperiment, evaluateFeatureSet, auditLeakage, modelsForStage, fitModel, evalModel, toXY, GUARD, L2_GRID, stabilityVerdict, concludeStatus };

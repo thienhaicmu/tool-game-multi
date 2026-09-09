@@ -92,7 +92,13 @@ test('Forward Research: subordinate research area, out-of-sample, no prediction/
   assert.ok(js.includes('walkForward') && js.includes('leakageAudit'), 'walk-forward + leakage audit surfaced');
   const banned = ['dự đoán', 'dự báo', 'vòng sau', 'nên cược', 'nên vào', 'tín hiệu', 'jackpot nóng', 'jackpot lạnh', 'dễ nổ', 'xác suất thắng', 'khuyến nghị', 'signal', 'edge', 'bet when', 'next round'];
   const lower = js.toLowerCase();
-  for (const b of banned) assert.ok(!lower.includes(b), `renderer must not contain "${b}"`);
+  // ASCII tokens are matched as WHOLE WORDS so the wagering term "edge" does not
+  // false-positive on legitimate words like "ledger" (hyperparameter search ledger,
+  // §31) — the guard's intent is wagering language, not the substring.
+  for (const b of banned) {
+    const hit = /^[a-z ]+$/.test(b) ? new RegExp(`\\b${b}\\b`).test(lower) : lower.includes(b);
+    assert.ok(!hit, `renderer must not contain "${b}"`);
+  }
 });
 
 test('centralized number formatter (format.js / AFmt) is loaded before the app', () => {

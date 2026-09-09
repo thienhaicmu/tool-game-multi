@@ -356,10 +356,63 @@ CREATE INDEX idx_research_calib_run       ON research_calibration(run_id);
 CREATE INDEX idx_research_coef_run        ON research_coefficients(run_id);
 `;
 
+// v4 — Prediction Research V2 (multi-algorithm families + batches). PURELY ADDITIVE:
+// new research_* tables + nullable columns on existing research tables. V1 research
+// history keeps loading unchanged (§57); existing runs simply have NULL in the new
+// columns. Never touches capture/round history. A BATCH groups algorithms evaluated
+// on the SAME dataset snapshot + policy versions (§37); a run's evaluation_generation
+// records that re-evaluation on more data is a new generation, never an overwrite (§35).
+const SCHEMA_V4 = `
+CREATE TABLE research_batches (
+  id                     INTEGER PRIMARY KEY,
+  batch_key              TEXT NOT NULL UNIQUE,
+  created_at_ms          INTEGER NOT NULL,
+  browser_scope          TEXT,
+  schema_version         INTEGER,
+  code_revision          TEXT,
+  quality_policy_version INTEGER,
+  comparability_policy_version INTEGER,
+  fingerprint_policy_version   INTEGER,
+  dataset_fingerprints   TEXT,
+  cell_count             INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE research_search_ledger (
+  id               INTEGER PRIMARY KEY,
+  run_id           INTEGER NOT NULL REFERENCES research_runs(id),
+  config_json      TEXT NOT NULL,
+  validation_brier REAL,
+  status           TEXT,
+  selected         INTEGER NOT NULL DEFAULT 0,
+  reason           TEXT
+);
+
+ALTER TABLE research_runs ADD COLUMN family                 TEXT;
+ALTER TABLE research_runs ADD COLUMN kind                   TEXT;
+ALTER TABLE research_runs ADD COLUMN complexity_params      INTEGER;
+ALTER TABLE research_runs ADD COLUMN delta_brier_vs_linear  REAL;
+ALTER TABLE research_runs ADD COLUMN incremental_value      TEXT;
+ALTER TABLE research_runs ADD COLUMN batch_id               INTEGER;
+ALTER TABLE research_runs ADD COLUMN evaluation_generation  INTEGER;
+ALTER TABLE research_runs ADD COLUMN search_space_version   INTEGER;
+ALTER TABLE research_runs ADD COLUMN quality_policy_version INTEGER;
+
+ALTER TABLE research_algorithms ADD COLUMN kind            TEXT;
+ALTER TABLE research_algorithms ADD COLUMN capability      TEXT;
+ALTER TABLE research_algorithms ADD COLUMN experimental    INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE research_algorithms ADD COLUMN deprecated      INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE research_algorithms ADD COLUMN complexity_class TEXT;
+
+CREATE INDEX idx_research_runs_family ON research_runs(family, target, model_stage);
+CREATE INDEX idx_research_runs_batch  ON research_runs(batch_id);
+CREATE INDEX idx_research_ledger_run  ON research_search_ledger(run_id);
+`;
+
 const MIGRATIONS = [
   { version: 1, up: (db) => { db.exec(SCHEMA_V1); } },
   { version: 2, up: (db) => { db.exec(SCHEMA_V2); } },
   { version: 3, up: (db) => { db.exec(SCHEMA_V3); } },
+  { version: 4, up: (db) => { db.exec(SCHEMA_V4); } },
 ];
 
 const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

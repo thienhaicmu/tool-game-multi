@@ -151,9 +151,10 @@ test('R12 readiness: rare target → insufficient; full matrix persisted; overvi
   const rare = s.readiness({ algorithmId: 'jp_open_logistic_v1', modelStage: 'ROUND_OPEN', target: 'reached_100x' });
   assert.ok(['INSUFFICIENT_POSITIVES', 'INSUFFICIENT_DATA'].includes(rare.status));
   const m = s.evaluateAll({});
-  assert.equal(m.cells.length, 4 * 2 * 3, 'algorithms × stages × enabled targets');
+  const nAlgos = registry.ALGORITHMS.length; // registry-driven (V2 adds spline/tree families)
+  assert.equal(m.cells.length, nAlgos * 2 * 3, 'algorithms × stages × enabled targets');
   const ov = s.overview();
-  assert.equal(ov.registeredAlgorithms, 4);
+  assert.equal(ov.registeredAlgorithms, nAlgos);
   assert.ok(ov.evaluatedExperiments > 0);
   assert.equal(ov.coverage.completeRounds, 3000);
 });

@@ -19,9 +19,9 @@ class ResearchRepo {
     this._db = db; this._now = now;
 
     this._upsertAlgo = db.prepare(
-      `INSERT INTO research_algorithms (algorithm_id, version, name, family, feature_set_id, description, code_version, created_at_ms)
-       VALUES (@algorithmId, @version, @name, @family, @featureSetId, @description, @codeVersion, @now)
-       ON CONFLICT(algorithm_id, version) DO UPDATE SET name=@name, family=@family, feature_set_id=@featureSetId, description=@description, code_version=@codeVersion`
+      `INSERT INTO research_algorithms (algorithm_id, version, name, family, feature_set_id, description, code_version, kind, capability, experimental, deprecated, complexity_class, created_at_ms)
+       VALUES (@algorithmId, @version, @name, @family, @featureSetId, @description, @codeVersion, @kind, @capability, @experimental, @deprecated, @complexityClass, @now)
+       ON CONFLICT(algorithm_id, version) DO UPDATE SET name=@name, family=@family, feature_set_id=@featureSetId, description=@description, code_version=@codeVersion, kind=@kind, capability=@capability, experimental=@experimental, deprecated=@deprecated, complexity_class=@complexityClass`
     );
     this._findExperiment = db.prepare('SELECT * FROM research_experiments WHERE experiment_key=?');
     this._insertExperiment = db.prepare(
@@ -35,13 +35,26 @@ class ResearchRepo {
          target, model_stage, browser_scope, code_revision, leakage_status, leakage_policy_version, status, n,
          time_range_start_ms, time_range_end_ms, test_n, test_positives, prevalence, auc, pr_auc, brier, log_loss,
          delta_brier_test, calibration_max_diff, stability_status, conclusion_status, conclusion_magnitude, quality_status,
+         family, kind, complexity_params, delta_brier_vs_linear, incremental_value, batch_id, evaluation_generation,
+         search_space_version, quality_policy_version,
          result_json, evaluated_at_ms, created_at_ms)
        VALUES (@experimentId, @algorithmId, @version, @algorithmFingerprint, @datasetFingerprint, @frozenFingerprint,
          @target, @modelStage, @browserScope, @codeRevision, @leakageStatus, @leakagePolicyVersion, @status, @n,
          @timeRangeStartMs, @timeRangeEndMs, @testN, @testPositives, @prevalence, @auc, @prAuc, @brier, @logLoss,
          @deltaBrierTest, @calibrationMaxDiff, @stabilityStatus, @conclusionStatus, @conclusionMagnitude, @qualityStatus,
+         @family, @kind, @complexityParams, @deltaBrierVsLinear, @incrementalValue, @batchId, @evaluationGeneration,
+         @searchSpaceVersion, @qualityPolicyVersion,
          @resultJson, @evaluatedAtMs, @now)`
     );
+    this._insertBatch = db.prepare(
+      `INSERT INTO research_batches (batch_key, created_at_ms, browser_scope, schema_version, code_revision, quality_policy_version, comparability_policy_version, fingerprint_policy_version, dataset_fingerprints, cell_count)
+       VALUES (@batchKey, @now, @browserScope, @schemaVersion, @codeRevision, @qualityPolicyVersion, @comparabilityPolicyVersion, @fingerprintPolicyVersion, @datasetFingerprints, @cellCount)`
+    );
+    this._insertLedger = db.prepare(
+      `INSERT INTO research_search_ledger (run_id, config_json, validation_brier, status, selected, reason)
+       VALUES (@runId, @configJson, @validationBrier, @status, @selected, @reason)`
+    );
+    this._genCount = db.prepare('SELECT COUNT(*) AS n FROM research_runs WHERE experiment_id=?');
     this._insertMetric = db.prepare(
       `INSERT INTO research_metrics (run_id, split, n, positives, prevalence, auc, pr_auc, brier, log_loss)
        VALUES (@runId, @split, @n, @positives, @prevalence, @auc, @prAuc, @brier, @logLoss)`
@@ -61,7 +74,25 @@ class ResearchRepo {
   }
 
   registerAlgorithm(a) {
-    this._upsertAlgo.run({ now: this._now(), algorithmId: a.algorithmId, version: a.version, name: a.name, family: a.family, featureSetId: a.featureSetId, description: a.description || null, codeVersion: a.codeVersion || null });
+    this._upsertAlgo.run({
+      now: this._now(), algorithmId: a.algorithmId, version: a.version, name: a.name, family: a.family,
+      featureSetId: a.featureSetId, description: a.description || null, codeVersion: a.codeVersion || null,
+      kind: a.kind || null, capability: a.capability || null, experimental: a.experimental ? 1 : 0,
+      deprecated: a.deprecated ? 1 : 0, complexityClass: a.complexityClass || null,
+    });
+  }
+
+  // Create a batch (§37): one dataset snapshot + policy versions, many algorithm cells.
+  createBatch(meta) {
+    const info = this._insertBatch.run({
+      now: this._now(), batchKey: meta.batchKey, browserScope: meta.browserScope == null ? null : String(meta.browserScope),
+      schemaVersion: meta.schemaVersion != null ? meta.schemaVersion : null, codeRevision: meta.codeRevision || null,
+      qualityPolicyVersion: meta.qualityPolicyVersion != null ? meta.qualityPolicyVersion : null,
+      comparabilityPolicyVersion: meta.comparabilityPolicyVersion != null ? meta.comparabilityPolicyVersion : null,
+      fingerprintPolicyVersion: meta.fingerprintPolicyVersion != null ? meta.fingerprintPolicyVersion : null,
+      datasetFingerprints: meta.datasetFingerprints ? JSON.stringify(meta.datasetFingerprints) : null, cellCount: meta.cellCount || 0,
+    });
+    return Number(info.lastInsertRowid);
   }
 
   _experimentId(ev) {
@@ -72,16 +103,17 @@ class ResearchRepo {
   }
 
   // Persist one evaluation. `ev` is an enriched evaluateAlgorithm() result (+ quality
-  // + evaluatedAtMs). Returns { runId, deduped }.
-  saveRun(ev) {
+  // + evaluatedAtMs). Optional `batchId` groups a cohort (§37). Returns { runId, deduped, evaluationGeneration }.
+  saveRun(ev, batchId = null) {
     const frozen = ev.algorithmFingerprint + '|' + ev.datasetFingerprint;
     const prior = this._findRunByFrozen.get(frozen);
-    if (prior) return { runId: prior.id, deduped: true };
+    if (prior) return { runId: prior.id, deduped: true, evaluationGeneration: prior.evaluation_generation };
 
     const now = this._now();
     const evaluatedAtMs = ev.evaluatedAtMs != null ? ev.evaluatedAtMs : now;
     const tx = this._db.transaction(() => {
       const experimentId = this._experimentId(ev);
+      const generation = (this._genCount.get(experimentId).n || 0) + 1; // §35: monotonic per-experiment snapshot id
       const tm = ev.testMetrics || {};
       const runInfo = this._insertRun.run({
         now, evaluatedAtMs, experimentId,
@@ -99,9 +131,17 @@ class ResearchRepo {
         conclusionStatus: ev.conclusion ? ev.conclusion.status : null,
         conclusionMagnitude: ev.conclusion ? ev.conclusion.magnitude : null,
         qualityStatus: ev.quality ? ev.quality.status : null,
+        family: ev.family || null, kind: ev.kind || null,
+        complexityParams: ev.complexity && ev.complexity.params != null ? ev.complexity.params : null,
+        deltaBrierVsLinear: num(ev.deltaBrierVsLinear), incrementalValue: ev.incrementalValue || null,
+        batchId: batchId != null ? batchId : null, evaluationGeneration: generation,
+        searchSpaceVersion: ev.searchSpaceVersion != null ? ev.searchSpaceVersion : null,
+        qualityPolicyVersion: ev.qualityPolicyVersion != null ? ev.qualityPolicyVersion : null,
         resultJson: JSON.stringify(ev),
       });
       const runId = runInfo.lastInsertRowid;
+      // Hyperparameter search ledger (§31): persist ALL attempted configs, not just the winner.
+      for (const e of (ev.searchLedger || [])) this._insertLedger.run({ runId, configJson: JSON.stringify(e.params || {}), validationBrier: num(e.validationBrier), status: e.status || null, selected: e.selected ? 1 : 0, reason: e.reason || null });
 
       if (ev.status === 'OK') {
         const base = ev.baseline || {};
@@ -114,9 +154,10 @@ class ResearchRepo {
         for (const c of (ev.calibration || [])) this._insertCalib.run({ runId, bin: c.bin, lo: num(c.lo), hi: num(c.hi), n: c.n, meanPredicted: num(c.meanPredicted), observedRate: num(c.observedRate), diff: num(c.diff) });
         for (const c of (ev.coefficientStability || [])) this._insertCoef.run({ runId, feature: c.feature, meanCoef: num(c.meanCoef), signFlips: c.signFlips ? 1 : 0, stable: c.stable ? 1 : 0 });
       }
-      return runId;
+      return { runId, generation };
     });
-    return { runId: tx(), deduped: false };
+    const out = tx();
+    return { runId: out.runId, deduped: false, evaluationGeneration: out.generation };
   }
 
   // ---- queries ----
@@ -155,6 +196,32 @@ class ResearchRepo {
 
   runsByIds(ids) { if (!ids.length) return []; const q = ids.map(() => '?').join(','); return this._db.prepare(`SELECT * FROM research_runs WHERE id IN (${q})`).all(...ids.map(Number)).map(mapRun); }
 
+  // Persisted hyperparameter search ledger for a run (§31).
+  getLedger(runId) { return this._db.prepare('SELECT * FROM research_search_ledger WHERE run_id=? ORDER BY id').all(Number(runId)); }
+
+  // Latest run per experiment, grouped by FAMILY (§39). Distinct versions are kept
+  // separate (never collapsed); each family row lists its cells without ranking by
+  // a single best run.
+  familyLatest() {
+    const latest = this.latestRuns();
+    const byFamily = new Map();
+    for (const r of latest) {
+      const fam = r.family || 'UNKNOWN';
+      if (!byFamily.has(fam)) byFamily.set(fam, []);
+      byFamily.get(fam).push(r);
+    }
+    return [...byFamily.entries()].map(([family, cells]) => ({ family, cells }));
+  }
+
+  // Fill in a batch's dataset-fingerprint set + cell count once the cohort is evaluated.
+  setBatchSummary(batchId, { datasetFingerprints, cellCount }) {
+    this._db.prepare('UPDATE research_batches SET dataset_fingerprints=?, cell_count=? WHERE id=?')
+      .run(datasetFingerprints ? JSON.stringify(datasetFingerprints) : null, cellCount || 0, Number(batchId));
+  }
+
+  batches() { return this._db.prepare('SELECT * FROM research_batches ORDER BY created_at_ms DESC, id DESC').all(); }
+  runsForBatch(batchId) { return this._db.prepare('SELECT * FROM research_runs WHERE batch_id=? ORDER BY id').all(Number(batchId)).map(mapRun); }
+
   counts() {
     return {
       algorithms: this._db.prepare('SELECT COUNT(*) AS n FROM research_algorithms').get().n,
@@ -175,6 +242,9 @@ function mapRun(r) {
     testN: r.test_n, testPositives: r.test_positives, prevalence: r.prevalence, auc: r.auc, prAuc: r.pr_auc, brier: r.brier, logLoss: r.log_loss,
     deltaBrierTest: r.delta_brier_test, calibrationMaxDiff: r.calibration_max_diff, stabilityStatus: r.stability_status,
     conclusionStatus: r.conclusion_status, conclusionMagnitude: r.conclusion_magnitude, quality: r.quality_status,
+    family: r.family, kind: r.kind, complexityParams: r.complexity_params, deltaBrierVsLinear: r.delta_brier_vs_linear,
+    incrementalValue: r.incremental_value, batchId: r.batch_id, evaluationGeneration: r.evaluation_generation,
+    searchSpaceVersion: r.search_space_version, qualityPolicyVersion: r.quality_policy_version,
     evaluatedAtMs: r.evaluated_at_ms, resultJson: r.result_json,
   };
 }

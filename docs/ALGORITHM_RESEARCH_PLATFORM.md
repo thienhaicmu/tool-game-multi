@@ -1,5 +1,10 @@
 # Algorithm Research & Evaluation Platform (V1)
 
+> **V2 (multi-family) extends this document** — see
+> [ALGORITHM_RESEARCH_PLATFORM_V2.md](./ALGORITHM_RESEARCH_PLATFORM_V2.md) for the SPLINE +
+> DECISION_TREE families, family-specific guards, incremental-value evaluation, evaluation
+> batches/generations, schema v4, and the simple-first UI. V1 semantics below are unchanged.
+
 **Product:** Aviator Analytics (passive, observe-only). **Scope:** a durable, productized
 research workspace for *defining → registering → evaluating → comparing → versioning →
 monitoring → historically tracking* multiple forward research/evaluation algorithms over

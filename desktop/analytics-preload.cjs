@@ -76,6 +76,10 @@ contextBridge.exposeInMainWorld('analytics', {
     compare: (opts) => ipcRenderer.invoke('analytics-research-compare', opts),
     drift: (opts) => ipcRenderer.invoke('analytics-research-drift', opts),
     monitoring: () => ipcRenderer.invoke('analytics-research-monitoring'),
+    familyMonitoring: () => ipcRenderer.invoke('analytics-research-family-monitoring'),
+    batches: () => ipcRenderer.invoke('analytics-research-batches'),
+    batchRuns: (opts) => ipcRenderer.invoke('analytics-research-batch-runs', opts),
+    ledger: (runId) => ipcRenderer.invoke('analytics-research-ledger', runId),
   },
   export: {
     rounds: (filter) => ipcRenderer.invoke('analytics-export-rounds', filter),

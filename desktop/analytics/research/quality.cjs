@@ -41,4 +41,23 @@ function qualityStatus(result) {
   return { status: 'SMALL_STABLE_IMPROVEMENT', reasons };
 }
 
-module.exports = { qualityStatus, MATERIAL_BRIER, SMALL_BRIER, POOR_CALIB };
+// Conservative RESEARCH DECISION for an advanced (non-linear) candidate (§25/§51).
+// Layered on top of quality: it answers "does this complex family add stable value
+// BEYOND the simple linear model?" — never a wagering instruction. Linear/baseline
+// algorithms are not advanced candidates and return N_A. The incremental-value status
+// itself is computed by the engine (vs the reference linear model on the same split);
+// here we only gate it on validity/readiness.
+const QUALITY_POLICY_VERSION = 2;
+
+function researchDecision(result) {
+  if (!result) return 'NOT_READY';
+  if (result.leakageStatus && result.leakageStatus !== 'PASS') return 'INVALID';
+  if (result.status && result.status !== 'OK') return 'NOT_READY';
+  const fam = result.family;
+  if (fam === 'BASELINE' || fam === 'LOGISTIC_REGRESSION') return 'N_A';
+  const iv = result.incrementalValue;
+  if (!iv || iv === 'N_A' || iv === 'NOT_READY') return 'NOT_READY';
+  return iv; // NO_INCREMENTAL_VALUE | POSSIBLE_INCREMENTAL_VALUE | STABLE_INCREMENTAL_VALUE | UNSTABLE
+}
+
+module.exports = { qualityStatus, researchDecision, MATERIAL_BRIER, SMALL_BRIER, POOR_CALIB, QUALITY_POLICY_VERSION };

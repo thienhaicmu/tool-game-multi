@@ -292,6 +292,10 @@ function registerIpc() {
   ipcMain.handle('analytics-research-compare', rsvc((s, o) => s.compare({ runIds: Array.isArray((o || {}).runIds) ? (o || {}).runIds : [] })));
   ipcMain.handle('analytics-research-drift', rsvc((s, o) => s.drift({ algorithmId: String((o || {}).algorithmId), version: (o || {}).version, target: String((o || {}).target || 'reached_2x'), modelStage: String((o || {}).modelStage || 'ROUND_OPEN'), browserScope: str((o || {}).browserScope) })));
   ipcMain.handle('analytics-research-monitoring', rsvc((s) => s.monitoring()));
+  ipcMain.handle('analytics-research-family-monitoring', rsvc((s) => s.familyMonitoring()));
+  ipcMain.handle('analytics-research-batches', rsvc((s) => s.batches()));
+  ipcMain.handle('analytics-research-batch-runs', rsvc((s, o) => s.batchRuns(Number((o || {}).batchId))));
+  ipcMain.handle('analytics-research-ledger', rsvc((s, runId) => s.ledger(runId)));
   ipcMain.handle('analytics-export-weblog', async (_e, filter) => {
     ensureRuntime();
     const out = await chooseSave('aviator-weblog.csv', [{ name: 'CSV', extensions: ['csv'] }]);

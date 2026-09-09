@@ -572,7 +572,47 @@ const RS_STABILITY_VI = { STABLE: 'Ổn định', MIXED: 'Chưa rõ ràng', UNST
 const RS_DRIFT_VI = { NO_MATERIAL_CHANGE: 'Không đổi đáng kể', POSSIBLE_DRIFT: 'Có thể biến động', MATERIAL_DEGRADATION: 'Suy giảm đáng kể', IMPROVEMENT: 'Cải thiện', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu' };
 const RS_DRIFT_CLS = { MATERIAL_DEGRADATION: 'ms-no', POSSIBLE_DRIFT: 'warn', IMPROVEMENT: 'ms-yes', NO_MATERIAL_CHANGE: '', INSUFFICIENT_DATA: '' };
 const RS_READY_VI = { READY: 'Đủ dữ liệu', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu', INSUFFICIENT_POSITIVES: 'Chưa đủ sự kiện dương', FEATURE_UNAVAILABLE: 'Thiếu biến', INVALID: 'Không hợp lệ' };
-const RS_STATUS_VI = { OK: 'OK', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu', INSUFFICIENT_POSITIVES: 'Chưa đủ sự kiện dương', INVALID: 'Không hợp lệ' };
+const RS_STATUS_VI = { OK: 'OK', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu', INSUFFICIENT_POSITIVES: 'Chưa đủ sự kiện dương', INVALID: 'Không hợp lệ', MODEL_FAILED: 'Mô hình không hội tụ / lỗi số học' };
+// ---- V2 plain-language maps (simple-first UX; internal enums never shown raw) ----
+const RS_FAMILY_VI = { BASELINE: 'Mốc cơ bản', LOGISTIC_REGRESSION: 'Tuyến tính (logistic)', SPLINE: 'Phi tuyến trơn (spline)', DECISION_TREE: 'Cây quyết định' };
+const RS_COMPLEXITY_VI = { BASELINE: 'Rất đơn giản', LINEAR: 'Đơn giản (tuyến tính)', NONLINEAR_ADDITIVE: 'Trung bình (phi tuyến)', NONLINEAR_TREE: 'Trung bình (cây)' };
+const RS_INCR_VI = {
+  N_A: '—', NOT_READY: 'Chưa đánh giá được', NO_INCREMENTAL_VALUE: 'Không tốt hơn mô hình đơn giản',
+  POSSIBLE_INCREMENTAL_VALUE: 'Có thể tốt hơn đôi chút', STABLE_INCREMENTAL_VALUE: 'Tốt hơn ổn định so với mô hình đơn giản',
+  UNSTABLE: 'Tốt hơn nhưng chưa ổn định', INVALID: 'Không hợp lệ (rò rỉ)',
+};
+const RS_INCR_CLS = { STABLE_INCREMENTAL_VALUE: 'ms-yes', POSSIBLE_INCREMENTAL_VALUE: 'warn', UNSTABLE: 'warn', NO_INCREMENTAL_VALUE: '', INVALID: 'ms-no', NOT_READY: '', 'N_A': '' };
+// Metric translation (§ metric-translation): user-friendly label first, raw value smaller (§ advanced details).
+const RS_METRIC_VI = { brier: 'Sai số xác suất', calibration: 'Độ khớp xác suất', stability: 'Độ ổn định theo thời gian', leakage: 'Kiểm tra dữ liệu tương lai', baseline: 'Mốc so sánh cơ bản' };
+// Plain result status (Level-1): one phrase a non-technical user understands.
+function rsPlainResult(r) {
+  if (!r) return { icon: '○', label: 'Chưa đánh giá', cls: '' };
+  if (r.leakageStatus && r.leakageStatus !== 'PASS') return { icon: '!', label: 'Không hợp lệ (dữ liệu tương lai)', cls: 'ms-no' };
+  if (r.status && r.status !== 'OK') {
+    if (r.status === 'MODEL_FAILED') return { icon: '!', label: 'Mô hình chưa chạy được', cls: 'warn' };
+    return { icon: '○', label: 'Chưa đủ dữ liệu', cls: '' };
+  }
+  const q = r.quality && r.quality.status ? r.quality.status : r.quality;
+  const map = {
+    MATERIAL_STABLE_IMPROVEMENT: { icon: '✓', label: 'Có cải thiện rõ, ổn định', cls: 'ms-yes' },
+    SMALL_STABLE_IMPROVEMENT: { icon: '✓', label: 'Có cải thiện nhỏ, ổn định', cls: 'ms-yes' },
+    SMALL_UNSTABLE_IMPROVEMENT: { icon: '!', label: 'Kết quả chưa ổn định', cls: 'warn' },
+    NO_IMPROVEMENT: { icon: '○', label: 'Không tốt hơn mốc cơ bản', cls: '' },
+    INVALID: { icon: '!', label: 'Không hợp lệ', cls: 'ms-no' },
+    INSUFFICIENT_DATA: { icon: '○', label: 'Chưa đủ dữ liệu', cls: '' },
+  };
+  return map[q] || { icon: '○', label: RS_QUALITY_VI[q] || '—', cls: '' };
+}
+// Plain-language "how much more data" hint (§ data-readiness UX); no false precision.
+function rsDataHint(rd) {
+  if (!rd) return '';
+  if (rd.status === 'READY') return 'Đã đủ dữ liệu để đánh giá.';
+  const needRounds = Math.max(Math.ceil((rd.trainDeficit || 0) / 0.6), Math.ceil((rd.testDeficit || 0) / 0.2));
+  if (needRounds > 0) return `Cần thêm khoảng ${needRounds} vòng hoàn chỉnh trước khi đánh giá thuật toán này.`;
+  if (rd.positiveDeficit > 0) return `Chưa đủ số vòng đạt ngưỡng để đánh giá đáng tin cậy (thiếu ~${rd.positiveDeficit} sự kiện dương).`;
+  return 'Chưa đủ dữ liệu.';
+}
+const RS_DECISION_VI = RS_INCR_VI; // research decision shares the incremental-value vocabulary
 const leakVi = (s) => (s === 'PASS' ? '<b class="ms-yes">ĐẠT</b>' : '<b class="ms-no">KHÔNG ĐẠT</b>');
 const rsTime = (ms) => (ms ? new Date(ms).toLocaleString([], { hour12: false }) : '—');
 const rsFp = (s) => (s ? `<code class="rs-fp">${escapeHtml(s)}</code>` : '—');
@@ -594,50 +634,107 @@ function renderResearch() {
   if (rsSub === 'algorithms') return rsRenderAlgorithms();
   if (rsSub === 'compare') return rsRenderCompare();
   if (rsSub === 'history') return rsRenderHistory();
-  if (rsSub === 'stability') return rsRenderStability();
-  if (rsSub === 'readiness') return rsRenderReadiness();
+  return rsRenderOverview();
 }
 
-// ---- Overview (§43) ----
+// ---- Overview — LEVEL 1 simple-first (plain conclusion → evidence → technical) ----
 async function rsRenderOverview() {
   const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
   const o = await api.research.overview();
   if (o.error) { box.innerHTML = bailText(o); return; }
   const cov = o.coverage || {};
-  const cards = [
-    ['Thuật toán đã đăng ký', cnt(o.registeredAlgorithms)],
-    ['Thí nghiệm đã đánh giá', cnt(o.evaluatedExperiments)],
-    ['Ô đủ dữ liệu', `${cnt(o.dataReadyCells)} / ${cnt(o.readyCellsTotal)}`],
-    ['Cải thiện ổn định', cnt(o.stableImprovement)],
-    ['Không cải thiện', cnt(o.noImprovement)],
+  // 1) A few plain-language primary cards — understandable in under 10 seconds.
+  const primary = [
+    ['Thuật toán đang theo dõi', cnt(o.registeredAlgorithms)],
+    ['Đủ dữ liệu để đánh giá', `${cnt(o.dataReadyCells)} / ${cnt(o.readyCellsTotal)}`],
+    ['Có cải thiện ổn định', cnt(o.stableImprovement)],
     ['Chưa đủ dữ liệu', cnt(o.insufficientData)],
-    ['Lần đánh giá gần nhất', rsTime(o.latestEvaluationMs)],
+    ['Cảnh báo giảm hiệu năng', cnt((o.driftWarnings || []).length)],
   ];
-  let html = `<div class="section-h">Tổng quan nghiên cứu</div><div class="cards">` + cards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('') + '</div>';
-  const covCards = [['Vòng hoàn tất', cnt(cov.completeRounds)], ['Số trình duyệt', cnt(cov.browsers)], ['Từ', rsTime(cov.earliestMs)], ['Đến', rsTime(cov.latestMs)], ['Schema', cov.schemaVersion]];
-  html += `<div class="section-h">Phạm vi dữ liệu quan sát</div><div class="cards">` + covCards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('') + '</div>';
-  html += `<div class="section-h">Cảnh báo biến động hiệu năng</div>`;
-  if (!o.driftWarnings || !o.driftWarnings.length) html += `<div class="muted">Không có cảnh báo biến động ngoài mẫu.</div>`;
-  else { html += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Giai đoạn</th><th>Mục tiêu</th><th>Trạng thái</th></tr></thead><tbody>` + o.driftWarnings.map((d) => `<tr><td>${escapeHtml(d.algorithmId)}</td><td>${RS_STAGE_VI[d.modelStage] || d.modelStage}</td><td>${RS_TARGET_VI[d.target] || d.target}</td><td class="${RS_DRIFT_CLS[d.status] || ''}">${RS_DRIFT_VI[d.status] || d.status}</td></tr>`).join('') + `</tbody></table>`; }
-  if (!o.evaluatedExperiments) html += `<div class="fwd-conclusion muted">Chưa có lần đánh giá nào được lưu. Bấm "Chạy đánh giá toàn bộ" để đánh giá mọi thuật toán trên dữ liệu hiện có.</div>`;
-  html += `<div class="muted" style="margin-top:10px">Mọi kết quả là bằng chứng nghiên cứu lịch sử ngoài mẫu — mô tả và so sánh, không phải lời khuyên hành động.</div>`;
-  box.innerHTML = html;
-}
+  let html = `<div class="section-h">Tổng quan</div><div class="cards">` + primary.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('') + '</div>';
+  if (!o.evaluatedExperiments) html += `<div class="fwd-conclusion muted">Chưa có lần đánh giá nào. Khi dữ liệu đủ, bấm "Đánh giá lại" để hệ thống chạy đánh giá mọi thuật toán trên dữ liệu hiện có.</div>`;
 
-// ---- Algorithms list + detail (§44/§45) ----
-async function rsRenderAlgorithms() {
-  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  // 2) Compact algorithm list with PLAIN statuses (no internal enum names).
   const mon = await api.research.monitoring();
-  const latestByKey = {};
-  if (Array.isArray(mon)) for (const m of mon) latestByKey[`${m.algorithmId}|${m.modelStage}|${m.target}`] = m;
-  let html = `<div class="section-h">Thuật toán đã đăng ký</div>`;
-  html += `<table class="atable"><thead><tr><th>Tên</th><th>Họ</th><th>Phiên bản</th><th>Giai đoạn</th><th>Tập biến</th></tr></thead><tbody>`;
+  const latestByKey = {}; if (Array.isArray(mon)) for (const m of mon) latestByKey[`${m.algorithmId}|${m.modelStage}|${m.target}`] = m;
+  html += `<div class="section-h">Thuật toán</div>`;
+  html += `<table class="atable"><thead><tr><th>Tên</th><th>Loại</th><th>Trạng thái dữ liệu</th><th>Kết quả hiện tại</th><th>Lần đánh giá gần nhất</th></tr></thead><tbody>`;
   for (const a of rsAlgos) {
-    const active = a.algorithmId === rsSel.algorithmId ? ' class="rs-row-active"' : '';
-    html += `<tr data-algo="${escapeHtml(a.algorithmId)}"${active}><td><a href="#" data-algo="${escapeHtml(a.algorithmId)}">${escapeHtml(a.name)}</a></td><td>${escapeHtml(a.family)}</td><td>v${a.version}</td><td>${a.supportedStages.map((s) => RS_STAGE_VI[s] || s).join(', ')}</td><td class="muted">${escapeHtml(a.featureSetId)}</td></tr>`;
+    const m = latestByKey[`${a.algorithmId}|ROUND_OPEN|reached_2x`] || null;
+    const lr = m ? m.latest : null;
+    const pr = rsPlainResult(lr ? { status: lr.status, leakageStatus: lr.leakageStatus, quality: lr.quality } : null);
+    const dataState = lr ? (lr.status === 'OK' ? '✓ Đủ dữ liệu' : '○ Chưa đủ dữ liệu') : '○ Chưa đánh giá';
+    const expTag = a.experimental ? ' <span class="muted">(thử nghiệm)</span>' : '';
+    html += `<tr><td><a href="#" data-algo="${escapeHtml(a.algorithmId)}">${escapeHtml(a.name)}</a>${expTag}</td><td>${RS_FAMILY_VI[a.family] || a.family}</td><td class="muted">${dataState}</td><td class="${pr.cls}">${pr.icon} ${pr.label}</td><td class="muted">${lr ? rsTime(lr.evaluatedAtMs) : '—'}</td></tr>`;
   }
   html += `</tbody></table>`;
-  html += `<div id="rs-algo-detail"></div>`;
+  for (const el of []) void el;
+
+  // 3) Family-level view (does a family consistently add value? — never ranked by best single run).
+  const fam = await api.research.familyMonitoring();
+  if (Array.isArray(fam) && fam.length) {
+    html += `<div class="section-h">Theo nhóm thuật toán</div>`;
+    html += `<table class="atable"><thead><tr><th>Nhóm</th><th>Ô đủ dữ liệu</th><th>Tốt hơn mô hình đơn giản (ổn định)</th><th>Chưa ổn định</th><th>Không tốt hơn</th></tr></thead><tbody>`;
+    for (const f of fam) html += `<tr><td>${RS_FAMILY_VI[f.family] || f.family}</td><td>${cnt(f.realReadyCells)}</td><td class="${f.stableIncrementalCells ? 'ms-yes' : ''}">${cnt(f.stableIncrementalCells)}</td><td class="${f.unstableCells ? 'warn' : ''}">${cnt(f.unstableCells)}</td><td>${cnt(f.noIncrementalValueCells)}</td></tr>`;
+    html += `</tbody></table>`;
+  }
+
+  // 4) Performance-degradation warnings (plain).
+  if (o.driftWarnings && o.driftWarnings.length) {
+    html += `<div class="section-h">↓ Cảnh báo giảm hiệu năng gần đây</div>`;
+    html += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Giai đoạn</th><th>Mục tiêu</th><th>Trạng thái</th></tr></thead><tbody>` + o.driftWarnings.map((d) => `<tr><td>${escapeHtml(d.algorithmId)}</td><td>${RS_STAGE_VI[d.modelStage] || d.modelStage}</td><td>${RS_TARGET_VI[d.target] || d.target}</td><td class="${RS_DRIFT_CLS[d.status] || ''}">${RS_DRIFT_VI[d.status] || d.status}</td></tr>`).join('') + `</tbody></table>`;
+  }
+
+  // 5) Collapsed technical details (coverage, readiness matrix, policy versions, batches).
+  html += await rsOverviewTechnical(o, cov);
+  html += `<div class="muted" style="margin-top:10px">Mọi kết quả là bằng chứng nghiên cứu lịch sử ngoài mẫu — mô tả và so sánh, không phải lời khuyên hành động.</div>`;
+  box.innerHTML = html;
+  for (const link of document.querySelectorAll('#rs-panel a[data-algo]')) link.onclick = (e) => { e.preventDefault(); rsSel.algorithmId = link.dataset.algo; rsSub = 'algorithms'; for (const s of document.querySelectorAll('#view-research .subtab')) s.classList.toggle('active', s.dataset.rs === 'algorithms'); renderResearch(); };
+}
+
+// Collapsed "Chi tiết kỹ thuật" for the overview (Level 3 — hidden until requested).
+async function rsOverviewTechnical(o, cov) {
+  const covCards = [['Vòng hoàn tất', cnt(cov.completeRounds)], ['Số trình duyệt', cnt(cov.browsers)], ['Từ', rsTime(cov.earliestMs)], ['Đến', rsTime(cov.latestMs)], ['Schema', cov.schemaVersion]];
+  let t = `<div class="cards">` + covCards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('') + '</div>';
+  // Readiness matrix (family-specific guards).
+  const m = await api.research.readinessMatrix({ browserScope: rsScope || null });
+  if (!m.error && m.cells) {
+    t += `<div class="section-h">Chất lượng dữ liệu theo thuật toán × giai đoạn × mục tiêu</div>`;
+    t += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Giai đoạn</th><th>Mục tiêu</th><th>Trạng thái</th><th>Train n</th><th>Test n</th><th>Dương (train/test)</th><th>Thiếu</th></tr></thead><tbody>`;
+    for (const c of m.cells) {
+      const r = c.readiness; const ok = r.status === 'READY';
+      const deficits = [];
+      if (r.trainDeficit) deficits.push(`train −${cnt(r.trainDeficit)}`);
+      if (r.testDeficit) deficits.push(`test −${cnt(r.testDeficit)}`);
+      if (r.positiveDeficit) deficits.push(`dương −${cnt(r.positiveDeficit)}`);
+      t += `<tr><td>${escapeHtml(c.algorithmId)}</td><td>${RS_STAGE_VI[c.modelStage] || c.modelStage}</td><td>${RS_TARGET_VI[c.target] || c.target}</td>` +
+        `<td class="${ok ? 'ms-yes' : 'ms-no'}">${RS_READY_VI[r.status] || r.status}</td><td>${cnt(r.train ? r.train.n : null)}</td><td>${cnt(r.test ? r.test.n : null)}</td>` +
+        `<td>${cnt(r.train ? r.train.positives : null)} / ${cnt(r.test ? r.test.positives : null)}</td><td class="muted">${deficits.join(', ') || '—'}</td></tr>`;
+    }
+    t += `</tbody></table>`;
+  }
+  // Batches + policy versions.
+  const batches = await api.research.batches();
+  if (Array.isArray(batches) && batches.length) {
+    t += `<div class="section-h">Đợt đánh giá (cùng một ảnh chụp dữ liệu)</div>`;
+    t += `<table class="atable"><thead><tr><th>Thời điểm</th><th>Phạm vi</th><th>Số ô</th><th>Số vân tay dữ liệu</th><th>Mã đợt</th></tr></thead><tbody>` +
+      batches.slice(0, 12).map((b) => `<tr><td>${rsTime(b.createdAtMs)}</td><td>${b.browserScope || 'Tất cả'}</td><td>${cnt(b.cellCount)}</td><td>${cnt((b.datasetFingerprints || []).length)}</td><td><code class="rs-fp">${escapeHtml(b.batchKey)}</code></td></tr>`).join('') + `</tbody></table>`;
+  }
+  if (o.policyVersions) t += `<div class="muted">Phiên bản chính sách — chất lượng v${o.policyVersions.quality}, so sánh v${o.policyVersions.comparability}, vân tay v${o.policyVersions.fingerprint}, rò rỉ v${o.policyVersions.leakage}.</div>`;
+  return `<details class="rs-tech"><summary>Chi tiết kỹ thuật</summary>${t}</details>`;
+}
+
+// ---- Algorithms list + detail (§49/§51 simple-first) ----
+async function rsRenderAlgorithms() {
+  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  let html = `<div class="section-h">Thuật toán</div>`;
+  html += `<table class="atable"><thead><tr><th>Tên</th><th>Loại</th><th>Độ phức tạp</th><th>Trạng thái</th></tr></thead><tbody>`;
+  for (const a of rsAlgos) {
+    const active = a.algorithmId === rsSel.algorithmId ? ' class="rs-row-active"' : '';
+    const cap = a.deprecated ? 'Ngừng dùng' : (a.experimental ? 'Thử nghiệm' : 'Đang dùng');
+    html += `<tr data-algo="${escapeHtml(a.algorithmId)}"${active}><td><a href="#" data-algo="${escapeHtml(a.algorithmId)}">${escapeHtml(a.name)}</a></td><td>${RS_FAMILY_VI[a.family] || a.family}</td><td class="muted">${RS_COMPLEXITY_VI[a.complexityClass] || a.complexityClass || '—'}</td><td class="muted">${cap}</td></tr>`;
+  }
+  html += `</tbody></table><div id="rs-algo-detail"></div>`;
   box.innerHTML = html;
   for (const a of document.querySelectorAll('#rs-panel a[data-algo]')) a.onclick = (e) => { e.preventDefault(); rsSel.algorithmId = a.dataset.algo; rsRenderAlgorithms(); };
   rsRenderAlgoDetail();
@@ -648,14 +745,13 @@ async function rsRenderAlgoDetail() {
   const a = rsAlgos.find((x) => x.algorithmId === rsSel.algorithmId); if (!a) return;
   const stageOpt = a.supportedStages.map((s) => `<option value="${s}"${rsSel.modelStage === s ? ' selected' : ''}>${RS_STAGE_VI[s] || s}</option>`).join('');
   const tgtOpt = rsTargets.map((t) => `<option value="${t.targetId}"${rsSel.target === t.targetId ? ' selected' : ''}>${RS_TARGET_VI[t.targetId] || t.targetId}</option>`).join('');
-  const feats = (a.featuresByStage && a.featuresByStage[rsSel.modelStage]) || [];
-  let html = `<div class="section-h">${escapeHtml(a.name)} <span class="muted">v${a.version} · ${escapeHtml(a.family)}</span></div>`;
-  html += `<div class="muted" style="margin-bottom:6px">${escapeHtml(a.description)}</div>`;
-  html += kv([['Tập biến', a.featureSetId], ['Tiền xử lý', a.preprocessing], ['Chính sách tách', a.trainingPolicy], ['Biến (giai đoạn này)', feats.length ? feats.join(', ') : '(baseline — không biến)']]);
+  // Top: name + plain-language explanation. One primary action on this screen: "Chạy đánh giá".
+  let html = `<div class="section-h">${escapeHtml(a.name)} <span class="muted">· ${RS_FAMILY_VI[a.family] || a.family}</span></div>`;
+  html += `<div class="muted" style="margin-bottom:6px">${escapeHtml(a.explanation || a.description)}</div>`;
   html += `<div class="fwd-controls"><label class="fwd-lab">Giai đoạn <select id="rs-d-stage">${stageOpt}</select></label>` +
     `<label class="fwd-lab">Mục tiêu <select id="rs-d-target">${tgtOpt}</select></label>` +
-    `<button id="rs-d-run" class="mbtn">Đánh giá</button></div>`;
-  html += `<div id="rs-d-result" class="muted">Chọn giai đoạn/mục tiêu rồi bấm "Đánh giá". Đánh giá ngoài mẫu (train/validation/test theo thời gian) và được lưu lại kèm dấu vân tay thuật toán + dữ liệu.</div>`;
+    `<button id="rs-d-run" class="btn-primary">Chạy đánh giá</button></div>`;
+  html += `<div id="rs-d-result" class="muted">Chọn giai đoạn/mục tiêu rồi bấm "Chạy đánh giá". Hệ thống đánh giá ngoài mẫu (train/validation/test theo thời gian) và lưu lại kết quả.</div>`;
   host.innerHTML = html;
   $('rs-d-stage').onchange = (e) => { rsSel.modelStage = e.target.value; rsRenderAlgoDetail(); };
   $('rs-d-target').onchange = (e) => { rsSel.target = e.target.value; };
@@ -663,43 +759,118 @@ async function rsRenderAlgoDetail() {
     const rb = $('rs-d-result'); rb.innerHTML = '<div class="muted">Đang đánh giá…</div>';
     const res = await api.research.evaluate({ algorithmId: a.algorithmId, modelStage: rsSel.modelStage, target: rsSel.target, browserScope: rsScope || null });
     if (res.error) { rb.innerHTML = bailText(res); return; }
-    rb.innerHTML = rsRenderEvaluation(res.evaluation, res.run);
+    rb.innerHTML = rsRenderEvaluation(res.evaluation, res.run, a);
   };
+  // Auto-show the last saved evaluation for this cell if one exists (so the page isn't empty).
+  const hist = await api.research.history({ algorithmId: a.algorithmId, target: rsSel.target, modelStage: rsSel.modelStage, browserScope: rsScope || null });
+  if (Array.isArray(hist) && hist.length) {
+    const full = await api.research.run(hist[hist.length - 1].runId);
+    if (full && !full.error && full.resultJson) { const ev = JSON.parse(full.resultJson); ev.quality = ev.quality || { status: full.quality }; $('rs-d-result').innerHTML = rsRenderEvaluation(ev, { runId: full.runId, deduped: true }, a); }
+  }
 }
 
-// Full evaluation evidence renderer (train/val/test, baseline, calibration, walk-forward,
-// coefficients, leakage, quality, fingerprints). Shared by detail + history drill-in.
-function rsRenderEvaluation(ev, run) {
-  let html = '';
-  html += `<div class="fwd-summary"><b>Dấu vân tay</b> — thuật toán ${rsFp(ev.algorithmFingerprint)} · dữ liệu ${rsFp(ev.datasetFingerprint)}` + (run ? ` · ${run.deduped ? 'đã có (tái dùng)' : 'đã lưu'} #${run.runId}` : '') + `</div>`;
-  html += `<div class="muted">Rò rỉ dữ liệu: ${leakVi(ev.leakageStatus)} (policy v${ev.leakagePolicyVersion}) · Trạng thái: ${RS_STATUS_VI[ev.status] || ev.status}</div>`;
-  if (ev.status !== 'OK') { html += `<div class="fwd-conclusion muted">${RS_STATUS_VI[ev.status] || ev.status}: chưa đủ điều kiện đánh giá ngoài mẫu (train≥${ev.split && ev.split.train ? '' : ''}). Kết quả được ghi nhận trung thực, không thay bằng số 0.</div>`; return html; }
+// Simple-first evaluation renderer: plain-language summary → 4 simple sections
+// (Kết quả hiện tại / So với baseline / Độ ổn định / Lịch sử) → collapsed technical.
+function rsRenderEvaluation(ev, run, a) {
+  const isAdvanced = ev.family === 'SPLINE' || ev.family === 'DECISION_TREE';
+  // Insufficient / failed: honest plain-language + exact deficits, no fake zeros.
+  if (ev.status !== 'OK') {
+    let h = `<div class="fwd-conclusion ${ev.status === 'MODEL_FAILED' ? 'warn' : 'muted'}">`;
+    if (ev.status === 'MODEL_FAILED') h += `Mô hình chưa chạy được trên dữ liệu hiện có (${(ev.reasons || []).join(', ') || 'lỗi số học'}). Kết quả được ghi nhận trung thực, không thay bằng số 0.`;
+    else h += `Chưa đủ dữ liệu để đánh giá thuật toán này. Hệ thống sẽ tiếp tục đánh giá khi có thêm dữ liệu.`;
+    h += `</div>`;
+    if (ev.split) {
+      const g = ev.guards || {};
+      const needR = Math.max(Math.ceil(Math.max(0, (g.MIN_TRAIN || 0) - ev.split.train.n) / 0.6), Math.ceil(Math.max(0, (g.MIN_TEST || 0) - ev.split.test.n) / 0.2));
+      if (needR > 0) h += `<div class="muted">Ước tính cần thêm khoảng ${needR} vòng hoàn chỉnh. Hiện có: train ${cnt(ev.split.train.n)} (${cnt(ev.split.train.positives)} dương), test ${cnt(ev.split.test.n)} (${cnt(ev.split.test.positives)} dương).</div>`;
+      else h += `<div class="muted">Hiện có: train ${cnt(ev.split.train.n)} (${cnt(ev.split.train.positives)} dương), test ${cnt(ev.split.test.n)} (${cnt(ev.split.test.positives)} dương).</div>`;
+    }
+    h += rsTechnicalBlock(ev, run);
+    return h;
+  }
   const t = ev.testMetrics || {}, b = (ev.baseline && ev.baseline.test) || {};
-  html += `<div class="section-h">Bằng chứng ngoài mẫu (tập test)</div>`;
-  html += `<table class="atable"><thead><tr><th>Chỉ số</th><th>Mô hình</th><th>Baseline (nền)</th></tr></thead><tbody>` +
-    `<tr><td>n / dương</td><td>${cnt(t.n)} / ${cnt(t.positives)}</td><td>${cnt(b.n)} / ${cnt(b.positives)}</td></tr>` +
-    `<tr><td>Tỉ lệ nền</td><td>${pct(t.prevalence)}</td><td>${pct(b.prevalence)}</td></tr>` +
-    `<tr><td>ROC AUC</td><td>${fx(t.auc, 3)}</td><td>—</td></tr>` +
-    `<tr><td>PR AUC</td><td>${fx(t.prAuc, 3)}</td><td>${fx(b.prAuc, 3)}</td></tr>` +
-    `<tr><td>Brier</td><td>${fx(t.brier, 4)}</td><td>${fx(b.brier, 4)}</td></tr>` +
-    `<tr><td>Log loss</td><td>${fx(t.logLoss, 4)}</td><td>${fx(b.logLoss, 4)}</td></tr>` +
-    `<tr><td>Δ Brier so với nền</td><td colspan="2" class="${ev.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(ev.deltaBrierTest, 4)}</td></tr>` +
-    `</tbody></table>`;
-  if (ev.aucCI && ev.aucCI.status === 'OK') html += `<div class="muted">Khoảng tin cậy AUC (bootstrap khối): ${fx(ev.aucCI.low, 3)}–${fx(ev.aucCI.high, 3)}</div>`;
-  // Split sizes
-  if (ev.split) html += `<div class="muted">Tách theo thời gian — train ${cnt(ev.split.train.n)} (${cnt(ev.split.train.positives)} dương) · validation ${cnt(ev.split.validation.n)} · test ${cnt(ev.split.test.n)}</div>`;
-  // Calibration
-  html += rsCalibrationBlock(ev.calibration);
-  // Walk-forward
-  html += rsWalkForwardBlock(ev.walkForward, ev.stability);
-  // Coefficients
-  html += rsCoefBlock(ev.coefficientStability);
-  // Quality + conclusion
+  const pr = rsPlainResult(ev);
   const q = ev.quality || {};
-  html += `<div class="fwd-conclusion"><b>Chất lượng:</b> <span class="${RS_QUALITY_CLS[q.status] || ''}">${RS_QUALITY_VI[q.status] || q.status}</span>` +
-    (q.reasons && q.reasons.length ? ` <span class="muted">(${q.reasons.join('; ')})</span>` : '') +
-    `. <span class="muted">Độ ổn định: ${RS_STABILITY_VI[ev.stability ? ev.stability.status : ''] || '—'}. Chỉ là mô tả nghiên cứu ngoài mẫu.</span></div>`;
+  // Plain-language top summary.
+  let summary = '';
+  if (isAdvanced) {
+    const d = ev.researchDecision || ev.incrementalValue;
+    if (d === 'STABLE_INCREMENTAL_VALUE') summary = 'Thuật toán này đang tốt hơn mô hình tuyến tính đơn giản một cách ổn định trong các lần đánh giá gần đây.';
+    else if (d === 'UNSTABLE') summary = 'Thuật toán này có vẻ tốt hơn mô hình đơn giản nhưng độ ổn định chưa đủ để kết luận.';
+    else if (d === 'NO_INCREMENTAL_VALUE') summary = 'Thuật toán này KHÔNG tốt hơn mô hình tuyến tính đơn giản — độ phức tạp thêm không mang lại giá trị.';
+    else summary = 'Chưa đủ bằng chứng để kết luận thuật toán này tốt hơn mô hình đơn giản.';
+  } else {
+    if (q.status === 'NO_IMPROVEMENT') summary = 'Thuật toán này hiện không tốt hơn mốc cơ bản ngoài mẫu.';
+    else if (q.status === 'MATERIAL_STABLE_IMPROVEMENT' || q.status === 'SMALL_STABLE_IMPROVEMENT') summary = 'Thuật toán này đang tốt hơn mốc cơ bản và ổn định trong các lần đánh giá gần đây.';
+    else summary = 'Kết quả của thuật toán này chưa ổn định; cần thêm dữ liệu để kết luận.';
+  }
+  let html = `<div class="fwd-conclusion ${pr.cls}"><b>${pr.icon} ${pr.label}.</b> <span class="muted">${summary}</span></div>`;
+
+  // Section 1 — Kết quả hiện tại (friendly metric first, raw value smaller).
+  html += `<div class="section-h">Kết quả hiện tại</div>`;
+  html += `<div class="rs-metric"><div class="rs-metric-k">${RS_METRIC_VI.brier}</div><div class="rs-metric-v">${fx(t.brier, 4)}</div><div class="muted">` + (ev.deltaBrierTest > 0 ? `Tốt hơn mốc cơ bản ${fx(ev.deltaBrierTest, 4)}` : `Không tốt hơn mốc cơ bản`) + `</div></div>`;
+  html += `<div class="muted">Dựa trên ${cnt(t.n)} vòng kiểm định ngoài mẫu (${cnt(t.positives)} sự kiện dương).</div>`;
+
+  // Section 2 — So với baseline (+ so với mô hình tuyến tính for advanced families).
+  html += `<div class="section-h">So với mốc so sánh</div>`;
+  html += `<table class="atable"><thead><tr><th></th><th>${RS_METRIC_VI.brier}</th><th>So sánh</th></tr></thead><tbody>`;
+  html += `<tr><td>So với mốc cơ bản</td><td>${fx(ev.deltaBrierTest, 4)}</td><td class="${ev.deltaBrierTest > 0 ? 'ms-yes' : ''}">${ev.deltaBrierTest > 0 ? 'Tốt hơn' : 'Không tốt hơn'}</td></tr>`;
+  if (isAdvanced && ev.deltaBrierVsLinear != null) html += `<tr><td>So với mô hình tuyến tính</td><td>${fx(ev.deltaBrierVsLinear, 4)}</td><td class="${RS_INCR_CLS[ev.incrementalValue] || ''}">${RS_INCR_VI[ev.incrementalValue] || ev.incrementalValue}</td></tr>`;
+  html += `</tbody></table>`;
+
+  // Section 3 — Độ ổn định.
+  html += `<div class="section-h">${RS_METRIC_VI.stability}</div>`;
+  html += `<div class="${ev.stability && ev.stability.status === 'STABLE' ? 'ms-yes' : 'muted'}">${RS_STABILITY_VI[ev.stability ? ev.stability.status : ''] || '—'}</div>`;
+
+  // Section 4 — Lịch sử đánh giá (link into history tab).
+  html += `<div class="section-h">Lịch sử đánh giá</div><div class="muted">Xem tab "Lịch sử" để theo dõi thuật toán này đang tốt lên, xấu đi hay không đổi qua các lần đánh giá.</div>`;
+
+  // Collapsed technical detail (Level 3).
+  html += rsTechnicalBlock(ev, run);
   return html;
+}
+
+// Level-3 "Chi tiết kỹ thuật" — all raw metrics/fingerprints/ledger, collapsed by default.
+function rsTechnicalBlock(ev, run) {
+  let t = '';
+  t += `<div class="muted">${RS_METRIC_VI.leakage}: ${leakVi(ev.leakageStatus)} (policy v${ev.leakagePolicyVersion}) · Trạng thái: ${RS_STATUS_VI[ev.status] || ev.status}` + (ev.complexity ? ` · Độ phức tạp: ${cnt(ev.complexity.params)} tham số, ${cnt(ev.complexity.features)} biến` : '') + `</div>`;
+  t += `<div class="fwd-summary"><b>Dấu vân tay</b> — thuật toán ${rsFp(ev.algorithmFingerprint)} · dữ liệu ${rsFp(ev.datasetFingerprint)}` + (run ? ` · ${run.deduped ? 'đã có (tái dùng)' : 'đã lưu'} #${run.runId}` : '') + `</div>`;
+  if (ev.status === 'OK') {
+    const tm = ev.testMetrics || {}, b = (ev.baseline && ev.baseline.test) || {};
+    t += `<table class="atable"><thead><tr><th>Chỉ số (thô)</th><th>Mô hình</th><th>Baseline</th></tr></thead><tbody>` +
+      `<tr><td>ROC AUC</td><td>${fx(tm.auc, 3)}</td><td>—</td></tr>` +
+      `<tr><td>PR AUC</td><td>${fx(tm.prAuc, 3)}</td><td>${fx(b.prAuc, 3)}</td></tr>` +
+      `<tr><td>Brier</td><td>${fx(tm.brier, 4)}</td><td>${fx(b.brier, 4)}</td></tr>` +
+      `<tr><td>Log loss</td><td>${fx(tm.logLoss, 4)}</td><td>${fx(b.logLoss, 4)}</td></tr>` +
+      (ev.referenceLinear && ev.referenceLinear.test ? `<tr><td>Brier (tuyến tính tham chiếu)</td><td colspan="2">${fx(ev.referenceLinear.test.brier, 4)}</td></tr>` : '') +
+      `</tbody></table>`;
+    if (ev.aucCI && ev.aucCI.status === 'OK') t += `<div class="muted">Khoảng tin cậy AUC (bootstrap khối): ${fx(ev.aucCI.low, 3)}–${fx(ev.aucCI.high, 3)}</div>`;
+    if (ev.split) t += `<div class="muted">Tách theo thời gian — train ${cnt(ev.split.train.n)} (${cnt(ev.split.train.positives)} dương) · validation ${cnt(ev.split.validation.n)} · test ${cnt(ev.split.test.n)}</div>`;
+    t += rsCalibrationBlock(ev.calibration);
+    t += rsWalkForwardBlock(ev.walkForward, ev.stability);
+    t += rsCoefBlock(ev.coefficientStability);
+    t += rsImportanceBlock(ev.modelDiagnostics);
+    t += rsLedgerBlock(ev.searchLedger, ev.searchSpaceVersion);
+  }
+  return `<details class="rs-tech"><summary>Chi tiết kỹ thuật</summary>${t}</details>`;
+}
+
+// Descriptive model importance (tree/forest) — labelled MODEL_IMPORTANCE, never cause (§47).
+function rsImportanceBlock(diag) {
+  if (!diag || !Array.isArray(diag.importance) || !diag.importance.length) return '';
+  let html = `<div class="section-h">Mức độ quan trọng của biến (mô tả, không phải nhân quả)</div>`;
+  html += `<table class="atable"><thead><tr><th>Biến</th><th>Độ quan trọng (mô hình)</th></tr></thead><tbody>`;
+  for (const c of diag.importance) html += `<tr><td>${escapeHtml(c.feature)}</td><td>${fx(c.modelImportance, 3)}</td></tr>`;
+  return html + `</tbody></table>`;
+}
+
+// Hyperparameter search ledger (§31) — all attempted validation configs, not just the winner.
+function rsLedgerBlock(ledger, ssv) {
+  if (!Array.isArray(ledger) || !ledger.length) return '';
+  let html = `<div class="section-h">Nhật ký tìm siêu tham số (validation) · không gian tìm v${ssv != null ? ssv : '—'}</div>`;
+  html += `<table class="atable"><thead><tr><th>Cấu hình</th><th>Brier (validation)</th><th>Trạng thái</th><th>Chọn</th></tr></thead><tbody>`;
+  for (const e of ledger) html += `<tr><td class="muted">${escapeHtml(JSON.stringify(e.params || {}))}</td><td>${fx(e.validationBrier, 4)}</td><td>${e.status || '—'}</td><td>${e.selected ? '<b class="ms-yes">✓</b>' : ''}</td></tr>`;
+  return html + `</tbody></table>`;
 }
 
 function rsCalibrationBlock(cal) {
@@ -763,10 +934,12 @@ function rsRenderComparison(r) {
     const reasons = (r.reasons || []).join(', ');
     return `<div class="fwd-conclusion warn">Không so sánh trực tiếp được (${r.verdict}${reasons ? ': ' + reasons : ''}). Các kết quả phải cùng mục tiêu, giai đoạn, chính sách và cùng dấu vân tay dữ liệu.</div>`;
   }
-  let html = `<div class="section-h">Kết quả so sánh (cùng ${RS_TARGET_VI[r.target] || r.target} · ${RS_STAGE_VI[r.modelStage] || r.modelStage} · dữ liệu ${rsFp(r.datasetFingerprint)})</div>`;
-  html += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Phiên bản</th><th>Test n</th><th>AUC</th><th>PR AUC</th><th>Brier</th><th>Δ Brier</th><th>Log loss</th><th>Ổn định</th><th>Rò rỉ</th><th>Chất lượng</th></tr></thead><tbody>`;
-  for (const x of r.rows) html += `<tr><td>${escapeHtml(x.algorithmName || x.algorithmId)}</td><td>v${x.version}</td><td>${cnt(x.testN)}</td><td>${fx(x.auc, 3)}</td><td>${fx(x.prAuc, 3)}</td><td>${fx(x.brier, 4)}</td><td class="${x.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(x.deltaBrierTest, 4)}</td><td>${fx(x.logLoss, 4)}</td><td>${RS_STABILITY_VI[x.stabilityStatus] || '—'}</td><td>${leakVi(x.leakageStatus)}</td><td class="${RS_QUALITY_CLS[x.quality] || ''}">${RS_QUALITY_VI[x.quality] || x.quality || '—'}</td></tr>`;
-  html += `</tbody></table><div class="muted">Sắp xếp theo Brier chỉ để trình bày — không phải xếp hạng chất lượng. Chất lượng là đánh giá đa tiêu chí theo từng thuật toán.</div>`;
+  // Plain-language summary first (never "winner"/"best").
+  let html = r.summary ? `<div class="fwd-conclusion">${escapeHtml(r.summary)}</div>` : '';
+  html += `<div class="section-h">Bảng so sánh (cùng ${RS_TARGET_VI[r.target] || r.target} · ${RS_STAGE_VI[r.modelStage] || r.modelStage})</div>`;
+  html += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Loại</th><th>Độ phức tạp</th><th>Sai số xác suất</th><th>So mốc cơ bản</th><th>So tuyến tính</th><th>Ổn định</th><th>Kết quả</th></tr></thead><tbody>`;
+  for (const x of r.rows) html += `<tr><td>${escapeHtml(x.algorithmName || x.algorithmId)} <span class="muted">v${x.version}</span></td><td>${RS_FAMILY_VI[x.family] || x.family}</td><td class="muted">${cnt(x.complexityParams)} tham số</td><td>${fx(x.brier, 4)}</td><td class="${x.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(x.deltaBrierTest, 4)}</td><td class="${RS_INCR_CLS[x.incrementalValue] || ''}">${x.deltaBrierVsLinear != null ? fx(x.deltaBrierVsLinear, 4) : '—'}</td><td>${RS_STABILITY_VI[x.stabilityStatus] || '—'}</td><td class="${RS_QUALITY_CLS[x.quality] || ''}">${RS_QUALITY_VI[x.quality] || x.quality || '—'}</td></tr>`;
+  html += `</tbody></table><div class="muted">Sắp xếp theo sai số xác suất chỉ để trình bày — KHÔNG phải xếp hạng "thắng/thua". Kết quả là đánh giá đa tiêu chí theo từng thuật toán.</div>`;
   return html;
 }
 
@@ -780,9 +953,9 @@ async function rsRenderHistory() {
   const drift = await api.research.drift({ algorithmId: rsSel.algorithmId, target: rsSel.target, modelStage: rsSel.modelStage, browserScope: rsScope || null });
   let html = '';
   if (!Array.isArray(hist) || !hist.length) { out.innerHTML = `<div class="muted">Chưa có lần đánh giá nào đã lưu cho ô này.</div>`; return; }
-  html += `<div class="section-h">Lịch sử đánh giá (cũ → mới)</div>`;
-  html += `<table class="atable"><thead><tr><th>Thời điểm</th><th>Dữ liệu</th><th>Test n</th><th>Tỉ lệ nền</th><th>AUC</th><th>Brier</th><th>Δ Brier</th><th>Ổn định</th><th>Chất lượng</th></tr></thead><tbody>`;
-  for (const r of hist) html += `<tr><td>${rsTime(r.evaluatedAtMs)}</td><td>${rsFp(r.datasetFingerprint)}</td><td>${cnt(r.testN)}</td><td>${pct(r.prevalence)}</td><td>${fx(r.auc, 3)}</td><td>${fx(r.brier, 4)}</td><td class="${r.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(r.deltaBrierTest, 4)}</td><td>${RS_STABILITY_VI[r.stabilityStatus] || '—'}</td><td class="${RS_QUALITY_CLS[r.quality] || ''}">${RS_QUALITY_VI[r.quality] || r.quality || '—'}</td></tr>`;
+  html += `<div class="section-h">Lịch sử đánh giá (cũ → mới) — thuật toán này đang tốt lên, xấu đi hay không đổi?</div>`;
+  html += `<table class="atable"><thead><tr><th>Thời điểm</th><th>Thế hệ</th><th>Số vòng</th><th>Tỉ lệ nền</th><th>Sai số xác suất</th><th>So mốc cơ bản</th><th>Ổn định</th><th>Kết quả</th></tr></thead><tbody>`;
+  for (const r of hist) html += `<tr><td>${rsTime(r.evaluatedAtMs)}</td><td class="muted">#${cnt(r.evaluationGeneration)}</td><td>${cnt(r.testN)}</td><td>${pct(r.prevalence)}</td><td>${fx(r.brier, 4)}</td><td class="${r.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(r.deltaBrierTest, 4)}</td><td>${RS_STABILITY_VI[r.stabilityStatus] || '—'}</td><td class="${RS_QUALITY_CLS[r.quality] || ''}">${RS_QUALITY_VI[r.quality] || r.quality || '—'}</td></tr>`;
   html += `</tbody></table>`;
   html += rsDriftBlock(drift);
   out.innerHTML = html;

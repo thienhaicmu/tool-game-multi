@@ -191,4 +191,11 @@ details.tech summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 .rs-fp { font-family:ui-monospace,Consolas,monospace; font-size:11px; background:rgba(127,127,127,.12); padding:1px 5px; border-radius:4px; }
 tr.rs-row-active td { background:rgba(90,150,255,.10); }
 #rs-panel a[data-algo] { color:#6aa9ff; text-decoration:none; }
+/* V2 simple-first: collapsed technical block + friendly metric card */
+details.rs-tech { margin:14px 0; border:1px solid rgba(127,127,127,.22); border-radius:6px; padding:4px 10px; }
+details.rs-tech > summary { cursor:pointer; font-size:12px; color:var(--muted,#9aa); padding:4px 0; user-select:none; }
+details.rs-tech[open] { padding-bottom:10px; }
+.rs-metric { display:flex; flex-direction:column; gap:1px; margin:4px 0 8px; }
+.rs-metric-k { font-size:13px; font-weight:600; }
+.rs-metric-v { font-size:22px; font-weight:700; line-height:1.1; }
 #rs-panel a[data-algo]:hover { text-decoration:underline; }
