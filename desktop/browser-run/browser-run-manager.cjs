@@ -82,7 +82,7 @@ class BrowserRunManager extends EventEmitter {
       aviator: null, protocolContext: null, observer: null,
       harness: null, autoRunner: null, amountValidator: null, entryGate: null,
       jackpotObserver: null, jackpotGate: null, stop1000: null, autoSequence: null,
-      recovery: null, aviatorContext: null,
+      recovery: null, aviatorContext: null, browserHealth: null,
     };
     run.launcher = this._createLauncher(run);
     const subsystem = this._buildSubsystem(run) || {};
@@ -99,6 +99,7 @@ class BrowserRunManager extends EventEmitter {
     run.autoSequence = subsystem.autoSequence || null; // WU-AUTO-SEQUENCE per-run multi-row sequence owner
     run.recovery = subsystem.recovery || null;    // Part C per-run session-recovery watchdog
     run.aviatorContext = subsystem.aviatorContext || null; // WU-CONTEXT per-run Aviator-context tracker
+    run.browserHealth = subsystem.browserHealth || null;   // per-run BROWSER RUNTIME liveness (separate from game)
 
     this._runs.set(id, run);
     this._order.push(id);
@@ -274,6 +275,10 @@ class BrowserRunManager extends EventEmitter {
       recoveryState: run.recovery && run.recovery.snapshot ? run.recovery.snapshot() : null,
       // WU-CONTEXT — per-run "browser healthy but Aviator context lost" state (view-only).
       aviatorContextState: run.aviatorContext && run.aviatorContext.state ? run.aviatorContext.state() : 'AVIATOR_UNKNOWN',
+      // BROWSER RUNTIME liveness — "is this run still a live, running browser?" — derived from the
+      // run's OWN WebContents, never the UI selection. Reported ALONGSIDE (never merged into) the
+      // game states above: browserRuntimeState=LIVE can coexist with aviatorContextState=CONTEXT_LOST.
+      browserRuntimeState: run.browserHealth && run.browserHealth.state ? run.browserHealth.state() : 'LAUNCHING',
       error: run.error || null,
     };
   }

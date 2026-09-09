@@ -40,6 +40,7 @@ const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs')
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { parseGameActDescriptor, isGameActUrl } = require('./protocol/aviator-entry-descriptor.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
+const { BrowserRuntimeHealth } = require('./browser-run/browser-runtime-health.cjs');
 const { AviatorContextTracker, ACTION: CTX_ACTION, AVIATOR_EVIDENCE_CMDS } = require('./protocol/aviator-context.cjs');
 const { looksLikeLoginUrl } = require('./browser-run/login-signal.cjs');
 const { parseStrict } = require('./protocol/numeric.cjs');
@@ -648,7 +649,11 @@ function buildProtocolSubsystem(run) {
   // intent so a STOP during a pending Lobby→Aviator entry cancels the start (no AutoRunner start
   // when ACTIVE later arrives) and a duplicate START while pending is a no-op. Bound to THIS run.
   const autoStartIntent = new AutoStartIntent();
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery, aviatorContext, autoStartIntent };
+  // Browser RUNTIME liveness for THIS run — deliberately separate from aviatorContext (game) and
+  // recovery (session). Fed real WebContents evidence each health tick; selection is never an input.
+  const browserHealth = new BrowserRuntimeHealth();
+  browserHealth.on('state', () => scheduleRunsBroadcast());
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery, aviatorContext, autoStartIntent, browserHealth };
 }
 
 // Recovery thresholds are centralised (never scattered). Conservative in production; a fast
@@ -837,8 +842,35 @@ function gatherEvidence(run) {
     workerLost: false,
   };
 }
+// BROWSER RUNTIME liveness for ONE run (§8/§9). Derived from the OWNING run's real WebContents
+// operational signals — never from the object's mere existence, and never from the UI selection.
+// This is the browser-is-a-running-browser answer; game context/lobby are handled elsewhere.
+function browserHealthTick(run) {
+  if (!run || !run.browserHealth) return;
+  const wc = inappRuntime.webContents(run.id);
+  const url = currentRunUrl(run);
+  const ev = {
+    wcExists: !!wc,
+    wcDestroyed: !!(wc && wc.isDestroyed()),
+    rendererGone: run._rendererGone === true,
+    unresponsive: run._unresponsive === true,
+    pageLoaded: run._pageLoadedMono != null,
+    loginDetected: looksLikeLoginUrl(url),
+  };
+  const { changed, state } = run.browserHealth.tick(ev);
+  run.browserRuntimeState = state;
+  if (changed) {
+    try { runDiag(run).log({ level: 'INFO', category: 'BROWSER_RUNTIME', event: 'RUNTIME_STATE', stateAfter: state }); } catch { /* best effort */ }
+    scheduleRunsBroadcast();
+  }
+}
+
 function recoveryTick(run) {
   if (!run || !run.recovery || run.status === RUN_STATUS.CLOSED) return;
+  // Browser RUNTIME liveness FIRST — evaluated for EVERY run on its own per-run interval,
+  // independent of the UI selection and independent of the game/session state below. A hidden
+  // (non-selected) run ticks exactly the same as the selected one.
+  browserHealthTick(run);
   const autoRunning = !!(run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning());
   // §4 — an active Auto INTENT is not only a running AutoRunner. A JackpotGate that is actively
   // waiting (the WAITING_JACKPOT phase runs BEFORE autoRunner.start()) is an equally authoritative
