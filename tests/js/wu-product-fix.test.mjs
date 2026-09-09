@@ -42,49 +42,51 @@ test('package-lock.json version matches package.json', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. Modal state -> native view visibility (renderer wiring, source-asserted)
+// 2. CONTROL-V3 — the website/game is NOT embedded in Control; each profile opens its own
+//    external browser window (BrowserWindowHost). These guard that the embed is gone and the
+//    Control window is a compact automation console.
 // ---------------------------------------------------------------------------
-test('modal open/close dispatch a single central modal-changed event', () => {
+test('Control does NOT embed the website — the in-app embed reconciler is removed', () => {
   const js = read('ui/product.js');
-  assert.match(js, /modal-changed'[^)]*open:\s*true/, 'openModal dispatches modal-changed{open:true}');
-  assert.match(js, /modal-changed'[^)]*open:\s*false/, 'closeModal dispatches modal-changed{open:false}');
-  const listeners = js.match(/addEventListener\('modal-changed'/g) || [];
-  assert.equal(listeners.length, 1, 'exactly one modal-changed listener owner (no duplicate mechanisms)');
-});
-
-test('overviewInAppUI hides the native view while a modal is open and restores from product state', () => {
-  const js = read('ui/product.js');
-  // reconcile derives visibility from real product state AND the modal predicate
-  assert.match(js, /function modalOpen\(\)\s*\{\s*return\s*!!document\.querySelector\('\.bm-overlay:not\(\[hidden\]\)'\)/, 'modalOpen() checks an open .bm-overlay');
-  assert.match(js, /const show = !!\(viewIsOverview && runId && !modalOpen\(\)\)/, 'show = overview AND selected run AND not modal — not a blind show');
-});
-
-test('Overview is a TWO-ROW layout (browser full width, info below) — not side-by-side', () => {
-  const css = read('ui/product.css');
   const html = read('ui/product.html');
-  // Major layout stacks the two regions vertically.
-  assert.match(css, /\.ov-layout\{[^}]*flex-direction:\s*column/, 'ov-layout is a column (rows), not a side-by-side row');
-  // Row 1 (browser) spans the full content width; the info region is no longer a fixed sidebar.
-  assert.match(css, /\.ov-web\{[^}]*width:\s*100%/, 'browser region uses full width');
-  assert.doesNotMatch(css, /\.ov-side\{[^}]*flex:\s*0 0 300px/, 'info region is not a fixed 300px sidebar');
-  assert.match(css, /\.ov-side\{[^}]*border-top:/, 'info region sits below with a top divider');
-  // Both regions still exist in the DOM (browser host + info panel).
-  assert.ok(html.includes('id="ov-web-host"'), 'browser host present');
-  assert.ok(html.includes('class="ov-side"') || html.includes("class='ov-side'"), 'info panel present');
-  // Native view bounds are clamped to the content viewport so it can't cover the header on scroll.
-  const js = read('ui/product.js');
-  assert.match(js, /Math\.max\(r\.top, m\.top\)/, 'browser bounds clamped to #shell-main viewport');
+  // The old Overview embed reconciler that positioned/showed a native WebContentsView is gone.
+  assert.doesNotMatch(js, /function overviewInAppUI/, 'no embedded-web reconciler');
+  assert.doesNotMatch(js, /api\.inappView\([^)]*true\s*\)/, 'renderer never asks main to SHOW an embedded view');
+  // The embedded web host element is removed from the Control DOM.
+  assert.ok(!html.includes('id="ov-web-host"'), 'no embedded browser host in Control');
+  // Tổng quan remains as a live-status view (ov-side present, no web region).
+  assert.ok(html.includes('class="ov-side"'), 'status panel present');
 });
 
-test('Overview uses a single document-scroll model so ALL lower info is reachable (no cramped inner scrollbox)', () => {
+test('main hosts each profile in its OWN external window and the embed IPC is inert', () => {
+  const main = read('desktop/main.cjs');
+  const host = read('desktop/browser/browser-window-host.cjs');
+  // A dedicated BrowserWindowHost owns one top-level BrowserWindow per run.
+  assert.match(main, /new BrowserWindowHost\(/, 'main constructs the external-window host');
+  assert.match(host, /new BrowserWindow\(/, 'host creates a top-level BrowserWindow per run');
+  assert.match(host, /addChildView\(view\)/, 're-parents the run\'s existing view (no duplicate webContents)');
+  // The legacy embed IPC is kept as an inert stub (never positions a view in Control).
+  assert.match(main, /handle\('inapp-view',[^)]*\)\s*=>\s*\(\{\s*ok:\s*true,\s*external:\s*true/, 'inapp-view is an inert external stub');
+});
+
+test('Control opens Auto-first at a compact console size (no maximized dashboard)', () => {
+  const js = read('ui/product.js');
+  const win = read('desktop/window-state.cjs');
+  // Normal flow lands on Tự động (Automation), not the status tab.
+  assert.match(js, /setView\('auto'\)/, 'boot opens the Tự động workspace');
+  // Compact landscape default + small usable minimum (§7/§28).
+  const def = require('../../desktop/window-state.cjs').DEFAULTS;
+  assert.ok(def.width <= 900 && def.height <= 640, 'compact default (<=900x640)');
+  assert.ok(def.minWidth <= 700 && def.minHeight <= 520, 'usable down to ~560x480');
+  assert.match(win, /width:\s*620/, 'documented compact default width');
+});
+
+test('Auto LƯỢT rows are a compact scrollable table with a column header', () => {
+  const html = read('ui/product.html');
   const css = read('ui/product.css');
-  // The content grows and the outer container scrolls; the info row takes natural height.
-  assert.match(css, /#view-overview\{[^}]*min-height:\s*100%/, 'overview grows with content (min-height, not fixed height)');
-  assert.match(css, /\.ov-layout\{[^}]*min-height:\s*100%/, 'ov-layout grows with content');
-  assert.match(css, /\.ov-side\{[^}]*overflow:\s*visible/, 'info row is in document flow (not an internal scrollbox)');
-  assert.doesNotMatch(css, /\.ov-side\{[^}]*overflow-y:\s*auto/, 'info row does not own a competing inner scroll');
-  // #shell-main is the established scroll owner.
-  assert.match(css, /#shell-main\{[^}]*overflow:\s*auto/, '#shell-main owns vertical scrolling');
+  assert.ok(html.includes('class="at-seq-cols"'), 'compact column header present');
+  assert.match(css, /\.at-test-rows\{[^}]*overflow-y:\s*auto/, 'rows area scrolls when there are many LƯỢT');
+  assert.match(css, /\.at-test-rows\{[^}]*max-height/, 'rows area is bounded so START/STOP stay visible');
 });
 
 test('creating a browser focuses the Overview on the NEW browser (configured URL is what the user sees)', () => {
@@ -101,10 +103,13 @@ test('creating a browser focuses the Overview on the NEW browser (configured URL
 // ---------------------------------------------------------------------------
 test('delete action is offered only for a closed browser, never a running one', () => {
   const js = read('ui/product.js');
-  // The offline card offers open + delete (delete lives alongside 'Mở').
-  assert.match(js, /data-open="[\s\S]{0,400}?data-del="[\s\S]{0,40}?>Xóa</, 'offline card offers open ... delete');
-  // The running action row is edit + close ONLY (no delete control in that branch).
-  assert.match(js, /data-edit="\$\{esc\(b\.browserId\)\}">Sửa<\/button><button class="rr-mini danger" data-close="\$\{esc\(b\.browserId\)\}">Đóng<\/button><\/div>`/, 'running card is edit + close only');
+  // The offline card offers "Mở web" + delete (delete lives alongside open). CONTROL-V3 uses a
+  // compact 🗑 icon, but the invariant is the same: only a CLOSED profile exposes data-del.
+  assert.match(js, /data-open="[\s\S]{0,400}?data-del="/, 'offline card offers open ... delete');
+  // The running action row is reload + edit + close — and NEVER a delete control in that branch.
+  const online = js.slice(js.indexOf('        : b.online'), js.indexOf('        : b.online') + 400);
+  assert.match(online, /data-close="/, 'running card offers close');
+  assert.doesNotMatch(online, /data-del="/, 'running card never offers delete (delete only when closed)');
   // WU-PROFILE-DATA-LIFECYCLE §6 — deleting a profile with a live run must be SAFE: the
   // main layer disposes the runtime (closeRun tears down timers/view + releases capacity)
   // BEFORE deleting data, rather than refusing. (The UI still only surfaces delete on the
@@ -215,14 +220,15 @@ test('an already-activated user can re-activate with a new key, and a failed att
   assert.match(guard, /if \(!result\.active\) \{[\s\S]*?return this\.status\(\);\s*\}\s*this\._store\.saveLicense/, 'activateAsync saves only after a successful verify');
 });
 
-test('showing a browser view focuses it (keyboard input works without a click) and focus can be recovered', () => {
+test('CONTROL-V3: focusing a profile window grants keyboard focus and input ownership can be recovered', () => {
   const src = read('desktop/browser/inapp-runtime.cjs');
-  // showOnly focuses the newly-shown view (on transition), so a programmatic show grants keyboard focus.
-  assert.match(src, /showOnly\([^)]*\)\s*\{[\s\S]*?wc\.focus\(\)/, 'showOnly focuses the shown view');
-  // focus is only re-applied on a real transition (tracked via _shownRunId), not on every reconcile.
-  assert.match(src, /runId !== this\._shownRunId/, 'focus applied on visibility transition, not every bounds update');
-  // an explicit focus(runId) exists for input-ownership recovery without a reload.
-  assert.match(src, /focus\(runId\)\s*\{[\s\S]*?wc\.focus\(\)/, 'explicit focus(runId) recovery method exists');
+  const host = read('desktop/browser/browser-window-host.cjs');
+  // The external browser window is focused AND its view's webContents is focused, so a
+  // programmatic focus/raise grants keyboard input without needing a click.
+  assert.match(host, /focusWindow\(runId\)\s*\{[\s\S]*?\.focus\(\)/, 'focusWindow raises/focuses the window');
+  assert.match(host, /focusWindow\(runId\)\s*\{[\s\S]*?webContents\.focus\(\)/, 'focusWindow also focuses the site view (input ownership)');
+  // InAppRuntime.focus(runId) delegates to the host so input ownership is recoverable without a reload.
+  assert.match(src, /focus\(runId\)\s*\{[\s\S]*?this\._windowHost\.focusWindow\(runId\)/, 'explicit focus(runId) recovers input via the window host');
 });
 
 // WU-PROFILE-DATA-LIFECYCLE §3/§4/§5 — deleting a profile now deletes ALL data it owns.

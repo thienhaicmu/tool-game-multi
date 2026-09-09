@@ -16,13 +16,14 @@ const ATC = loadUI('../../ui/autotest-config.js').AutoTestConfig;
 // ---------------------------------------------------------------------------
 // §1/§2/§16 — compact window defaults + bounds restore/validation.
 // ---------------------------------------------------------------------------
-test('fresh launch defaults to 960x680 (no maximize)', () => {
-  // WU-E.1 — Overview now hosts the embedded browser workspace, so the default opens at a
-  // workspace size; min stays small enough for the 1100x700 acceptance viewport.
-  assert.deepEqual(resolveBounds(null), { width: 1300, height: 860 });
-  assert.deepEqual(resolveBounds(undefined), { width: 1300, height: 860 });
-  assert.equal(DEFAULTS.minWidth, 1000);
-  assert.equal(DEFAULTS.minHeight, 680);
+test('fresh launch defaults to a compact console size (no maximize)', () => {
+  // CONTROL-V3 — the web/game is no longer embedded in Control (each profile opens its own
+  // external window), so Control opens as a compact automation console (§7/§28), usable down
+  // to ~900×540.
+  assert.deepEqual(resolveBounds(null), { width: 620, height: 560 });
+  assert.deepEqual(resolveBounds(undefined), { width: 620, height: 560 });
+  assert.equal(DEFAULTS.minWidth, 560);
+  assert.equal(DEFAULTS.minHeight, 480);
 });
 
 test('valid saved bounds are restored (incl. position)', () => {
@@ -31,10 +32,10 @@ test('valid saved bounds are restored (incl. position)', () => {
 });
 
 test('invalid / too-small / malformed bounds fall back to default', () => {
-  assert.deepEqual(resolveBounds({ width: 100, height: 100 }), { width: 1300, height: 860 }, 'below min');
-  assert.deepEqual(resolveBounds({ width: 'x', height: 720 }), { width: 1300, height: 860 }, 'NaN width');
-  assert.deepEqual(resolveBounds({ width: 99999, height: 720 }), { width: 1300, height: 860 }, 'absurd width');
-  assert.deepEqual(resolveBounds({}), { width: 1300, height: 860 });
+  assert.deepEqual(resolveBounds({ width: 100, height: 100 }), { width: 620, height: 560 }, 'below min');
+  assert.deepEqual(resolveBounds({ width: 'x', height: 720 }), { width: 620, height: 560 }, 'NaN width');
+  assert.deepEqual(resolveBounds({ width: 99999, height: 720 }), { width: 620, height: 560 }, 'absurd width');
+  assert.deepEqual(resolveBounds({}), { width: 620, height: 560 });
 });
 
 test('main.cjs opens the window with resolveBounds (no maximize/fullscreen)', () => {

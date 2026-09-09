@@ -45,7 +45,7 @@
   </header>
 
   <aside id="run-rail" aria-label="Trình duyệt">
-    <div class="rr-head"><b>TRÌNH DUYỆT</b><span id="rr-cap" class="rr-cap" title="Số hồ sơ đã đăng ký / cho phép"></span><button id="rr-new" class="btn" type="button" title="Tạo trình duyệt mới">＋ Tạo</button></div>
+    <div class="rr-head"><b>DANH SÁCH BROWSER</b><span id="rr-cap" class="rr-cap" title="Số hồ sơ đã đăng ký / cho phép"></span><button id="rr-new" class="btn" type="button" title="Tạo trình duyệt mới">＋</button></div>
     <div id="run-list" class="rr-list"><div class="rr-empty">Chưa có trình duyệt.<span class="rr-empty-sub">Nhấn <b>＋ Tạo</b> để thêm một trình duyệt.</span></div></div>
   </aside>
 
@@ -70,8 +70,9 @@
     <div id="ws-ident" class="ws-ident">
       <div id="wsi-empty" class="wsi-empty">Chọn một trình duyệt ở cột bên trái để bắt đầu.</div>
       <div id="wsi-body" class="wsi-body" hidden>
-        <div class="wsi-id"><span id="wsi-bid" class="wsi-bid">—</span><span id="wsi-name" class="wsi-name"></span></div>
+        <div class="wsi-id"><span id="wsi-bid" class="wsi-bid">—</span><span id="wsi-name" class="wsi-name"></span><button id="wsi-edit" class="wsi-edit" type="button" title="Sửa hồ sơ">✎</button></div>
         <span id="wsi-state" class="wsi-state">—</span>
+        <div class="wsi-actions"><button id="wsi-history" class="btn" type="button" title="Lịch sử vòng chơi">Lịch sử</button></div>
         <div class="wsi-metrics">
           <div class="wsi-m"><span>SID</span><b id="wsi-sid">—</b></div>
           <div class="wsi-m odd"><span>ODD</span><b id="wsi-odd">—</b></div>
@@ -93,13 +94,9 @@
           <div class="empty-sub">Chọn một trình duyệt và nhấn <b>Mở</b>.</div>
         </div>
         <div id="ov-body" hidden class="ov-layout">
-          <!-- Embedded web surface: the selected browser's native in-app WebContentsView is
-               positioned over this region by the main process. Native display + native input. -->
-          <div class="ov-web">
-            <div id="ov-web-host" class="ov-web-host" tabindex="0">
-              <div id="ov-web-overlay" class="ov-web-overlay" hidden><div class="ov-web-overlay-in"><div class="empty-ic">◴</div><div id="ov-web-overlay-text">Đang kết nối…</div></div></div>
-            </div>
-          </div>
+          <!-- CONTROL-V3 — the website/game is NOT embedded here. Each profile opens its own
+               external browser window (BrowserWindowHost). This view is live status only;
+               use "Mở web" in the browser rail to open/focus the profile's browser window. -->
           <aside class="ov-side">
             <div id="ov-ctx" class="ctx-banner wait"><span id="ov-ctx-text">Chờ đăng nhập…</span></div>
             <div class="live-grid">
@@ -141,6 +138,7 @@
       <!-- LỊCH SỬ — evidence-safe persistent history + stats for the selected browser. -->
       <section id="view-history" class="shell-view" hidden>
         <div class="bh-card">
+          <button id="bh-back" class="btn bh-back" type="button">‹ Tự động</button>
           <div class="section-title">THỐNG KÊ <span id="bh-name" class="faint"></span></div>
           <div id="bh-stats" class="bh-stats"><div class="muted">Chưa có lịch sử.</div></div>
           <div class="section-title">VÒNG GẦN ĐÂY <span class="faint">(lưu vĩnh viễn · SID / kết quả)</span></div>
@@ -384,8 +382,15 @@
   </aside>
 
   <aside id="at-panel" class="proto-panel" hidden aria-label="Tự động">
+    <!-- CONTROL-V3 — live status strip sits BETWEEN the profile identity and the Tự động heading. -->
+    <div class="at-strip">
+      <div class="at-s"><span>SID</span><b id="at-s-sid">—</b></div>
+      <div class="at-s odd"><span>ODD</span><b id="at-s-odd">—</b></div>
+      <div class="at-s jp"><span>JACKPOT</span><b id="at-s-jp">—</b></div>
+      <div class="at-s"><span>Trạng thái</span><b id="at-s-state" class="at-s-val">—</b></div>
+    </div>
     <div class="proto-head">
-      <b>⚙ Tự động</b>
+      <b>🚀 Tự động</b>
       <span id="at-env" class="proto-env off" title="Máy chủ hiện tại">Sẵn sàng</span>
       <div class="spacer"></div>
       <button id="at-close" class="btn icon" title="Ẩn">✕</button>
@@ -424,26 +429,19 @@
 
       <!-- Config (before start) -->
       <div class="proto-card" id="at-config">
-        <div class="section-title">CẤU HÌNH TỰ ĐỘNG</div>
         <div class="at-sequence-head"><span>LƯỢT CHẠY</span><button id="at-add-row" class="btn" type="button">＋ Thêm lượt</button></div>
+        <div class="at-seq-cols" aria-hidden="true"><span>#</span><span>Số vòng</span><span>Tiền cược</span><span>Dừng tại ODD</span><span></span></div>
         <div id="at-test-rows" class="at-test-rows"></div>
-        <div class="hint">Các lượt chạy tuần tự: hoàn tất dòng trước mới chuyển sang dòng tiếp theo. <b>Dừng tại ODD</b> = rút tiền mỗi vòng đạt mốc này.</div>
-        <div class="ctx-line">SID · AID · EID do máy chủ tự cung cấp — bạn không cần nhập.</div>
 
-        <!-- WU-C.3 — optional Jackpot gate (default OFF). When off, jackpot is still
-             observed and highlighted above but has zero effect on Auto. -->
-        <label class="jp-toggle"><input type="checkbox" id="at-jp-wait"> ★ Chờ Jackpot</label>
+        <!-- CONTROL-V3 — the two Auto options share one row, no card. Jackpot gate (WU-C.3) +
+             Stop-1000x session kill switch (WU-D) keep their distinct ids/behavior. -->
+        <div class="at-options">
+          <label class="jp-toggle"><input type="checkbox" id="at-jp-wait"> ★ Chờ Jackpot</label>
+          <label class="jp-toggle" title="Dừng toàn bộ phiên Tự động của trình duyệt này khi vòng máy chủ đạt 1000x."><input type="checkbox" id="at-stop1000"> ⛔ Dừng khi đạt 1000x</label>
+        </div>
         <div id="at-jp-config" class="jp-config" hidden>
           <label class="pf-field">Jackpot tối thiểu<input id="at-jp-min" class="mono" value="50000000"><span class="hint">Chỉ bắt đầu khi jackpot máy chủ ≥ mức này. Hiện tại: <b id="at-jp-cur">—</b></span></label>
           <div id="at-jp-err" class="cfg-err"></div>
-        </div>
-
-        <!-- WU-D — Stop 1000x SESSION kill switch. Distinct from per-round "Dừng tại ODD". -->
-        <div class="safety-box">
-          <label class="jp-toggle" title="Dừng toàn bộ phiên Tự động của trình duyệt này khi vòng máy chủ đạt 1000x.">
-            <input type="checkbox" id="at-stop1000"> ⛔ Dừng khi đạt 1000x
-          </label>
-          <div class="hint">An toàn phiên: dừng <b>cả phiên Tự động</b> khi một vòng máy chủ chạm 1000x. Khác với “Dừng tại ODD” (chỉ rút tiền từng vòng).</div>
         </div>
 
         <div id="at-cfg-err" class="errb"></div>

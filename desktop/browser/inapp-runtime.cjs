@@ -59,12 +59,19 @@ function makeDebuggerClient(wc) {
 }
 
 class InAppRuntime {
-  constructor({ getHostWindow, partitionPrefix = 'persist:aviator-' } = {}) {
-    this._host = getHostWindow || (() => null);       // () => product BrowserWindow
+  // CONTROL-V3 — each run's view is hosted in its OWN top-level browser window (windowHost:
+  // BrowserWindowHost), not embedded in the Control window. `resolveTitle(run)` yields the
+  // window title (e.g. "B-0010 - kt2"). getHostWindow is kept for back-compat but is no
+  // longer used to embed views.
+  constructor({ getHostWindow, windowHost = null, resolveTitle = null, partitionPrefix = 'persist:aviator-' } = {}) {
+    this._host = getHostWindow || (() => null);       // () => product BrowserWindow (legacy; unused for embedding)
+    this._windowHost = windowHost;                     // BrowserWindowHost — owns per-run top-level windows
+    this._resolveTitle = typeof resolveTitle === 'function' ? resolveTitle : null;
     this._prefix = partitionPrefix;
     this._byRun = new Map();                           // runId -> { view, wc, browserId, client }
-    this._shownRunId = null;                           // the run whose view is currently visible+focused
+    this._shownRunId = null;                           // legacy embed pointer (unused with external windows)
   }
+  setWindowHost(host) { this._windowHost = host; }
   partitionFor(browserId) { return this._prefix + String(browserId); }
   has(runId) { return this._byRun.has(runId); }
   webContents(runId) { const r = this._byRun.get(runId); return r ? r.wc : null; }
@@ -76,16 +83,16 @@ class InAppRuntime {
     return {
       async open(url) {
         const { WebContentsView, session } = require('electron');
-        const host = self._host();
-        if (!host || host.isDestroyed()) return { ok: false, error: { code: 'NO_HOST_WINDOW', message: 'Product window not ready' } };
+        if (!self._windowHost) return { ok: false, error: { code: 'NO_WINDOW_HOST', message: 'Browser window host not ready' } };
         const partition = self.partitionFor(run.browserId || run.id);
         const sess = session.fromPartition(partition);
         const view = new WebContentsView({ webPreferences: { session: sess, contextIsolation: true, sandbox: true, backgroundThrottling: false } });
         const wc = view.webContents;
         try { wc.setBackgroundThrottling(false); } catch {}
-        try { host.contentView.addChildView(view); } catch {}
-        try { view.setVisible(false); view.setBounds({ x: 0, y: 0, width: 0, height: 0 }); } catch {}
         self._byRun.set(run.id, { view, wc, browserId: run.browserId, client: null });
+        // Re-parent the view into this run's OWN top-level browser window (created here).
+        const title = self._resolveTitle ? self._resolveTitle(run) : null;
+        try { self._windowHost.ensureWindow(run, view, { title, url: String(url || '') }); } catch {}
         try { wc.loadURL(String(url || 'about:blank')); } catch {}
         return { ok: true, reused: false, endpoint: { inapp: true, host: 'inapp', port: 0 }, pid: null, profile: partition };
       },
@@ -122,30 +129,28 @@ class InAppRuntime {
     };
   }
 
-  // ---- view management (bounds/visibility) ----
-  setBounds(runId, b) { const r = this._byRun.get(runId); if (r && r.view && r.wc && !r.wc.isDestroyed()) { try { r.view.setBounds({ x: Math.round(b.x), y: Math.round(b.y), width: Math.max(0, Math.round(b.width)), height: Math.max(0, Math.round(b.height)) }); } catch {} } }
-  showOnly(runId) {
-    for (const [id, r] of this._byRun) { try { if (r.view && r.wc && !r.wc.isDestroyed()) r.view.setVisible(id === runId); } catch {} }
-    // A shown native WebContentsView is visible but NOT keyboard-focused after a programmatic
-    // show (selection switch, tab return, modal close). Without focus, the page renders but
-    // clicks/keys/scroll don't reach it until the user clicks. Focus the newly-shown view once,
-    // on transition only (not on every bounds reconcile), so we never steal focus mid-scroll.
-    if (runId && runId !== this._shownRunId) {
-      const r = this._byRun.get(runId);
-      if (r && r.wc && !r.wc.isDestroyed()) { try { r.wc.focus(); } catch {} }
-    }
-    this._shownRunId = runId || null;
+  // ---- view management (legacy embed API — now owned by BrowserWindowHost) ----
+  // With CONTROL-V3 each view fills its OWN top-level window (sizing/visibility owned by
+  // BrowserWindowHost). These remain as inert no-ops so any legacy embed caller is harmless.
+  setBounds(/* runId, b */) { /* view now fills its own window; host owns bounds */ }
+  showOnly(/* runId */) { /* each run has its own always-visible window */ }
+  hideAll() { /* no embedded views to hide */ }
+  // Explicitly (re)focus a run — brings its external window forward and focuses the view.
+  focus(runId) {
+    if (this._windowHost && this._windowHost.has(runId)) return this._windowHost.focusWindow(runId);
+    const r = this._byRun.get(runId);
+    if (r && r.wc && !r.wc.isDestroyed()) { try { r.wc.focus(); return true; } catch {} }
+    return false;
   }
-  hideAll() { for (const [, r] of this._byRun) { try { if (r.view && r.wc && !r.wc.isDestroyed()) r.view.setVisible(false); } catch {} } this._shownRunId = null; }
-  // Explicitly (re)focus a run's view — used to recover input ownership without a reload.
-  focus(runId) { const r = this._byRun.get(runId); if (r && r.wc && !r.wc.isDestroyed()) { try { r.wc.focus(); return true; } catch {} } return false; }
 
   destroy(runId) {
     const r = this._byRun.get(runId);
     if (!r) return;
     this._byRun.delete(runId);
     if (this._shownRunId === runId) this._shownRunId = null;
-    try { const host = this._host(); if (host && !host.isDestroyed() && r.view) host.contentView.removeChildView(r.view); } catch {}
+    // Tear down this run's OWN window first (removes the child view, then destroys the window
+    // without re-emitting 'close'), then close the webContents. Only this run is affected.
+    try { if (this._windowHost) this._windowHost.destroyWindow(runId); } catch {}
     try { if (r.wc && !r.wc.isDestroyed()) r.wc.close(); } catch {}
   }
   destroyAll() { for (const id of [...this._byRun.keys()]) this.destroy(id); }

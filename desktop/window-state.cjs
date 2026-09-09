@@ -2,10 +2,10 @@
 
 // WU11.1 — compact window defaults + saved-bounds restore. Presentation only.
 // This is a focused control tool, not an IDE, so a fresh launch opens small.
-// WU-E.1 — the Overview now hosts the live browser workspace (embedded web mirror), so the
-// product opens at a workspace size, not the old compact-control size. min stays small
-// enough to allow the 1100x700 acceptance viewport.
-const DEFAULTS = Object.freeze({ width: 1300, height: 860, minWidth: 1000, minHeight: 680 });
+// CONTROL-V3 — the website/game is no longer embedded in Control (each profile opens its own
+// external browser window), so Control is a compact automation console again: it opens at a
+// landscape-friendly size and stays usable down to ~900×540 (§7/§28).
+const DEFAULTS = Object.freeze({ width: 620, height: 560, minWidth: 560, minHeight: 480 });
 const MAX_DIM = 10000;
 
 // resolveBounds(saved) — return the BrowserWindow bounds to open with.

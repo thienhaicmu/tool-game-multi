@@ -7,11 +7,12 @@ import { createRequire } from 'node:module';
 //
 //   selectedRunId  !=  runtime ownership
 //
-// Changing the SELECTED browser only changes visibility. It must NEVER stop, pause,
-// destroy, recreate or detach a non-selected BrowserRun. And browserRuntimeState is
-// reported ALONGSIDE (never merged into) the game state: a run can be LIVE while its
-// Aviator context is CONTEXT_LOST. These tests prove both at the two owning layers:
-//   1. InAppRuntime (the WebContentsView owner) — showOnly toggles visibility only.
+// CONTROL-V3: each run now lives in its OWN external browser window. Focusing/selecting one
+// run must NEVER stop, pause, destroy, recreate or detach a non-selected BrowserRun. And
+// browserRuntimeState is reported ALONGSIDE (never merged into) the game state: a run can be
+// LIVE while its Aviator context is CONTEXT_LOST. These tests prove both at the two owning layers:
+//   1. InAppRuntime (the WebContentsView owner) — focus/select touches only the focused run;
+//      the legacy embed API (showOnly/hideAll/setBounds) is inert and never disposes a run.
 //   2. BrowserRunManager (the run/summary owner) — selection never disposes a run and
 //      browserRuntimeState is a distinct axis from aviatorContextState.
 // ---------------------------------------------------------------------------
@@ -22,8 +23,8 @@ const { BrowserRunManager } = require('../../desktop/browser-run/browser-run-man
 const { BrowserRuntimeHealth, STATE: RUNTIME } = require('../../desktop/browser-run/browser-runtime-health.cjs');
 const { AviatorContextTracker, STATE: CTX } = require('../../desktop/protocol/aviator-context.cjs');
 
-// A fake WebContentsView record: records visibility + whether it was closed/focused, so we can
-// prove selection touches ONLY visibility and never the webContents lifecycle.
+// A fake WebContentsView record: records whether the webContents was closed/focused, so we can
+// prove focusing/selecting a run never touches another run's webContents lifecycle.
 function fakeRecord(browserId) {
   const wc = {
     _destroyed: false, _closes: 0, _focuses: 0,
@@ -35,53 +36,64 @@ function fakeRecord(browserId) {
   return { view, wc, browserId, client: null };
 }
 
-// ---- Layer 1: InAppRuntime.showOnly is visibility-only ----------------------
-test('showOnly toggles visibility only — background run keeps its webContents (no close/detach)', () => {
-  const rt = new InAppRuntime({ getHostWindow: () => null });
+// A fake BrowserWindowHost: one window per run, records focuses + destroys so we can prove
+// per-run isolation without Electron.
+function fakeHost() {
+  const wins = new Map(); // runId -> { focuses, destroyed }
+  return {
+    wins,
+    ensureWindow(run) { if (!wins.has(run.id)) wins.set(run.id, { focuses: 0, destroyed: false }); return wins.get(run.id); },
+    has(runId) { return wins.has(runId); },
+    focusWindow(runId) { const w = wins.get(runId); if (w && !w.destroyed) { w.focuses++; return true; } return false; },
+    destroyWindow(runId) { const w = wins.get(runId); if (w) { w.destroyed = true; wins.delete(runId); } },
+    destroyAll() { for (const id of [...wins.keys()]) this.destroyWindow(id); },
+  };
+}
+
+// ---- Layer 1: focusing/selecting a run is isolated; legacy embed API is inert -------------
+test('focusing one external window never closes/detaches a background run; embed API is inert', () => {
+  const host = fakeHost();
+  const rt = new InAppRuntime({ windowHost: host });
   const r1 = fakeRecord('B-0001');
   const r2 = fakeRecord('B-0002');
-  rt._byRun.set('run-1', r1);
-  rt._byRun.set('run-2', r2);
+  rt._byRun.set('run-1', r1); host.ensureWindow({ id: 'run-1' });
+  rt._byRun.set('run-2', r2); host.ensureWindow({ id: 'run-2' });
 
-  // Select run-1: it becomes visible+focused, run-2 becomes hidden but is NOT closed/removed.
-  rt.showOnly('run-1');
-  assert.equal(r1.view._visible, true, 'selected view visible');
-  assert.equal(r2.view._visible, false, 'background view hidden');
-  assert.equal(r1.wc._focuses, 1, 'selected view focused once on transition');
+  // Focus run-1: its window is focused; run-2 is NOT closed/removed.
+  rt.focus('run-1');
+  assert.equal(host.wins.get('run-1').focuses, 1, 'run-1 window focused');
   assert.equal(r2.wc._closes, 0, 'background webContents NOT closed');
   assert.equal(r2.wc.isDestroyed(), false, 'background webContents alive');
   assert.equal(rt.has('run-2'), true, 'background run still owned by runtime');
   assert.equal(rt.webContents('run-2'), r2.wc, 'background webContents still reachable');
 
-  // Switch selection to run-2, several times back and forth: still no lifecycle churn.
-  rt.showOnly('run-2'); rt.showOnly('run-1'); rt.showOnly('run-2');
+  // Flip focus back and forth: still no lifecycle churn on either webContents.
+  rt.focus('run-2'); rt.focus('run-1'); rt.focus('run-2');
   assert.equal(r1.wc._closes, 0);
   assert.equal(r2.wc._closes, 0);
   assert.equal(r1.wc.isDestroyed(), false, 'run-1 survives being backgrounded');
-  assert.equal(r2.view._visible, true);
-  assert.equal(r1.view._visible, false);
 
-  // hideAll (e.g. user navigates to a non-Overview tab): both hidden, both still alive.
-  rt.hideAll();
-  assert.equal(r1.view._visible, false);
-  assert.equal(r2.view._visible, false);
+  // The legacy embed API is a no-op that can never dispose a run (external windows own display).
+  rt.showOnly('run-1'); rt.hideAll(); rt.setBounds('run-1', { x: 0, y: 0, width: 100, height: 100 });
   assert.equal(r1.wc.isDestroyed(), false);
   assert.equal(r2.wc.isDestroyed(), false);
-  assert.equal(rt.has('run-1') && rt.has('run-2'), true, 'hideAll never disposes a run');
+  assert.equal(rt.has('run-1') && rt.has('run-2'), true, 'inert embed API never disposes a run');
 });
 
-test('destroy(run) tears down ONLY that run; the other stays live', () => {
-  const rt = new InAppRuntime({ getHostWindow: () => null });
+test('destroy(run) tears down ONLY that run (window + webContents); the other stays live', () => {
+  const host = fakeHost();
+  const rt = new InAppRuntime({ windowHost: host });
   const r1 = fakeRecord('B-0001');
   const r2 = fakeRecord('B-0002');
-  rt._byRun.set('run-1', r1);
-  rt._byRun.set('run-2', r2);
-  rt.showOnly('run-1');
+  rt._byRun.set('run-1', r1); host.ensureWindow({ id: 'run-1' });
+  rt._byRun.set('run-2', r2); host.ensureWindow({ id: 'run-2' });
 
   rt.destroy('run-1');
   assert.equal(r1.wc._closes, 1, 'closed run webContents closed');
+  assert.equal(host.has('run-1'), false, 'closed run window destroyed');
   assert.equal(rt.has('run-1'), false, 'closed run removed');
   assert.equal(rt.has('run-2'), true, 'other run untouched');
+  assert.equal(host.has('run-2'), true, 'other run window still alive');
   assert.equal(r2.wc.isDestroyed(), false, 'other webContents still alive');
 });
 

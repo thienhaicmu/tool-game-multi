@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:;">
+  <title>Browser</title>
+  <style>
+    /* CONTROL-V3 — LIGHT Chrome/Edge-like toolbar occupying ONLY the top strip (44px). The site is
+       a native child view painted below it, so everything under the toolbar is transparent. */
+    :root { --h: 44px; --bd: #dadce0; --fg: #202124; --mut: #5f6368; --btn: #f1f3f4; --btnh: #e8eaed; --acc: #1a73e8; }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; height: 100%; background: transparent; overflow: hidden; }
+    #bar {
+      height: var(--h); display: flex; align-items: center; gap: 6px; padding: 0 8px;
+      background: #ffffff; border-bottom: 1px solid var(--bd);
+      font: 13px/1.2 system-ui, "Segoe UI", Roboto, sans-serif; color: var(--fg);
+      -webkit-user-select: none; user-select: none;
+    }
+    button.nav {
+      height: 30px; min-width: 30px; padding: 0 8px; border: none; border-radius: 50%;
+      background: transparent; color: var(--mut); cursor: pointer; font-size: 16px; line-height: 1;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    button.nav:hover:not(:disabled) { background: var(--btnh); color: var(--fg); }
+    button.nav:disabled { opacity: .35; cursor: default; }
+    #addr {
+      flex: 1 1 auto; height: 32px; min-width: 80px; margin-left: 4px; padding: 0 14px; border: 1px solid transparent;
+      border-radius: 16px; background: var(--btn); color: var(--fg); font-size: 12.5px; outline: none;
+    }
+    #addr:hover { background: var(--btnh); }
+    #addr:focus { background: #fff; border-color: var(--acc); box-shadow: 0 1px 4px rgba(32,33,36,.18); }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <button class="nav" id="back" title="Quay lại" disabled>‹</button>
+    <button class="nav" id="fwd" title="Tiến tới" disabled>›</button>
+    <button class="nav" id="reload" title="Tải lại">⟳</button>
+    <button class="nav" id="home" title="Trang chủ">⌂</button>
+    <input id="addr" type="text" spellcheck="false" placeholder="Địa chỉ trang…" autocomplete="off">
+  </div>
+  <script src="browser-chrome.js"></script>
+</body>
+</html>

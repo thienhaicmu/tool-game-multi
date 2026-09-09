@@ -152,16 +152,18 @@ test('clampToWorkArea is idempotent (clamping an already-clamped rect is a no-op
 // startup/open/tab-switch, NOT only after a manual window resize.
 // INITIAL_LAYOUT_DOES_NOT_DEPEND_ON_MANUAL_RESIZE
 // ---------------------------------------------------------------------------
-test('CONTROL: overview browser view is reconciled at init and on run selection (not only on resize)', () => {
+test('CONTROL: the external browser window lays out its view on open and on resize (not only manual resize)', () => {
+  // CONTROL-V3 — the web/game is a full-window view inside each profile's OWN external browser
+  // window (BrowserWindowHost), no longer embedded in Control. The host fills the view below the
+  // toolbar at window CREATION (first paint) and re-fills on resize.
+  const host = readFileSync(new URL('../../desktop/browser/browser-window-host.cjs', import.meta.url), 'utf8');
+  const ensure = host.match(/ensureWindow\([\s\S]*?\n  \}/);
+  assert.ok(ensure, 'ensureWindow present');
+  assert.ok(/this\._reflow\(rec\)/.test(ensure[0]), 'view laid out at window creation (first paint)');
+  assert.ok(/on\('resize',\s*\(\)\s*=>\s*\{\s*this\._reflow\(rec\)/.test(host), 'view re-filled on resize');
+  // Control itself never embeds/positions a web view anymore.
   const js = readFileSync(new URL('../../ui/product.js', import.meta.url), 'utf8');
-  const block = js.match(/function overviewInAppUI\(\)[\s\S]*?\n\}\)\(\);/);
-  assert.ok(block, 'overviewInAppUI IIFE present');
-  const body = block[0];
-  // reconcile() is invoked directly at the end of the IIFE (first paint) ...
-  assert.ok(/\n\s*reconcile\(\);\n\s*\}\)\(\);/.test(body), 'reconcile() called at init');
-  // ... and on run-selected / view-changed — layout triggers do NOT depend on resize alone.
-  assert.ok(/'run-selected', reconcile/.test(body), 'run-selected triggers layout');
-  assert.ok(/view-changed'[\s\S]*?reconcile\(\)/.test(body), 'view-changed triggers layout');
+  assert.ok(!/function overviewInAppUI/.test(js), 'no embedded-web reconciler in Control');
 });
 
 test('ANALYTICS: home view bounds are reported on open and tab-switch (not only on resize)', () => {

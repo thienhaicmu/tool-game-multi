@@ -926,7 +926,9 @@ renderActions();
   function addTestRow(values = {}) {
     const row = document.createElement('div');
     row.className = 'at-test-row';
-    row.innerHTML = `<span class="at-row-number"></span><label>Số vòng<input class="mono at-rounds" value="${esc(values.rounds ?? 10)}"><span class="cfg-err at-row-error-rounds"></span></label><label>Tiền cược<input class="mono at-amount" value="${esc(values.amount ?? 5000)}"><span class="cfg-err at-row-error-amount"></span></label><label>Dừng tại ODD<input class="mono at-stopodd" value="${esc(values.stopOdd ?? '2.00')}"><span class="cfg-err at-row-error-stopodd"></span></label><button class="btn icon at-row-remove" type="button" title="Xóa lượt">×</button>`;
+    // CONTROL-V3 — compact table row: one input per column (labels live in the sticky column
+    // header .at-seq-cols); aria-label keeps each input accessible without per-row label text.
+    row.innerHTML = `<span class="at-row-number"></span><div class="at-cell"><input class="mono at-rounds" aria-label="Số vòng" value="${esc(values.rounds ?? 10)}"><span class="cfg-err at-row-error-rounds"></span></div><div class="at-cell"><input class="mono at-amount" aria-label="Tiền cược" value="${esc(values.amount ?? 5000)}"><span class="cfg-err at-row-error-amount"></span></div><div class="at-cell"><input class="mono at-stopodd" aria-label="Dừng tại ODD" value="${esc(values.stopOdd ?? '2.00')}"><span class="cfg-err at-row-error-stopodd"></span></div><button class="btn icon at-row-remove" type="button" title="Xóa lượt">×</button>`;
     $('at-test-rows').appendChild(row);
     row.querySelector('.at-row-remove').onclick = () => { if (testRows().length > 1 && !sequenceRunning) { row.remove(); renumberRows(); validateConfigUI(); } };
     row.querySelectorAll('input').forEach((el) => { el.oninput = validateConfigUI; });
@@ -1124,6 +1126,11 @@ renderActions();
     const active = snap.active;
     $('at-bet').textContent = active ? (active.betResult || (['BET_SENDING', 'WAITING_BET_ACK'].includes(snap.state) ? 'đang gửi…' : '—')) : '—';
     $('at-cash').textContent = ['CASHOUT_SENDING', 'WAITING_CASHOUT_ACK'].includes(snap.state) ? 'đang gửi…' : (active && active.ackOdd != null ? 'ACK ' + active.ackOdd : '—');
+    // CONTROL-V3 — mirror the essentials into the compact status strip above the CTA.
+    const sSid = $('at-s-sid'); if (sSid) sSid.textContent = snap.liveSid != null ? '#' + snap.liveSid : '—';
+    const sOdd = $('at-s-odd'); if (sOdd) sOdd.textContent = odd != null ? Number(odd).toFixed(2) + 'x' : '—';
+    const sJp = $('at-s-jp'); if (sJp) { const jv = $('at-jp-value'); sJp.textContent = jv ? jv.textContent : '—'; }
+    const sState = $('at-s-state'); if (sState) { sState.textContent = si.text; sState.className = 'at-s-val ' + si.cls; }
     const rows = visibleRounds();
     syncDayControls(rows);
     const m = metricsForRounds(rows);
@@ -1467,6 +1474,11 @@ renderActions();
     document.dispatchEvent(new CustomEvent('view-changed', { detail: { view } })); // WU-E.1 — embedded web mirror follows the visible view
   }
   for (const b of document.querySelectorAll('#shell-nav .nav-item')) b.onclick = () => setView(b.dataset.view);
+  // CONTROL-V3 — with the tab bar removed in normal mode, History is a compact secondary action
+  // beside the selected profile, and a Back control returns to the Auto workspace. Advanced stays
+  // on the appbar gear (⚙). No capability is removed — only the redundant primary tab strip.
+  { const h = $('wsi-history'); if (h) h.onclick = () => setView('history'); }
+  { const bk = $('bh-back'); if (bk) bk.onclick = () => setView('auto'); }
 
   // ---- Nâng cao (Advanced) tiles → open the secondary tool panels / diagnostics ----
   document.querySelectorAll('#view-advanced [data-adv]').forEach((tile) => {
@@ -1576,9 +1588,10 @@ renderActions();
 
   // ---- boot ----
   applyMode(initialMode);
-  // Product mode opens on Tổng quan (home): selected-browser identity + live state.
-  // Tự động is one tab away; the identity band stays visible across all tabs.
-  setView('overview');
+  // CONTROL-V3 — product mode opens directly on Tự động (Automation): the primary workspace
+  // for the selected profile. The identity band + live status strip stay visible across tabs;
+  // Tổng quan (status) / Lịch sử / Nâng cao are secondary tabs, not the default flow.
+  setView('auto');
   // Seed overview/status from current engine state if already connected.
   (async () => {
     await refreshInstanceInfo();
@@ -1673,11 +1686,14 @@ renderActions();
       // A run in ERROR is a dead end without a retry affordance: offer "Mở lại"
       // (close the failed run, then open again) so the user isn't forced to Đóng→Mở.
       const errored = b.online && b.runtimeStatus === 'ERROR';
+      // CONTROL-V3 — "Mở web" is the single primary action for every state: for an OPEN profile it
+      // focuses its existing external window (no 2nd run); for a CLOSED one it launches the window.
+      // Reload/Edit/Close/Delete stay as compact secondary icons (hover-revealed).
       const actions = errored
-        ? `<div class="rr-actions"><button class="rr-open-btn" data-reopen="${esc(b.browserId)}">Mở lại</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
+        ? `<div class="rr-actions"><button class="rr-open-btn" data-reopen="${esc(b.browserId)}">Mở lại ↗</button><button class="rr-mini" data-edit="${esc(b.browserId)}" title="Sửa">✎</button><button class="rr-mini danger" data-close="${esc(b.browserId)}" title="Đóng">✕</button></div>`
         : b.online
-        ? `<div class="rr-actions"><button class="rr-mini" data-reload="${esc(b.runId || '')}" title="Tải lại trang game (khi trang lỗi / chưa vào được)">Tải lại</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-close="${esc(b.browserId)}">Đóng</button></div>`
-        : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}"${atConc ? ' disabled title="' + esc(`Đang chạy ${running}/${maxConc} trình duyệt đồng thời.`) + '"' : ''}>Mở</button><button class="rr-mini" data-edit="${esc(b.browserId)}">Sửa</button><button class="rr-mini danger" data-del="${esc(b.browserId)}">Xóa</button></div>`;
+        ? `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}">Mở web ↗</button><button class="rr-mini" data-reload="${esc(b.runId || '')}" title="Tải lại trang game">↻</button><button class="rr-mini" data-edit="${esc(b.browserId)}" title="Sửa">✎</button><button class="rr-mini danger" data-close="${esc(b.browserId)}" title="Đóng">✕</button></div>`
+        : `<div class="rr-actions"><button class="rr-open-btn" data-open="${esc(b.browserId)}"${atConc ? ' disabled title="' + esc(`Đang chạy ${running}/${maxConc} trình duyệt đồng thời.`) + '"' : ''}>Mở web ↗</button><button class="rr-mini" data-edit="${esc(b.browserId)}" title="Sửa">✎</button><button class="rr-mini danger" data-del="${esc(b.browserId)}" title="Xóa">🗑</button></div>`;
       // WU-C.3 — compact but distinctive jackpot line (always shown; "—" when unknown).
       const jpTxt = b.currentJackpot != null ? Number(b.currentJackpot).toLocaleString() : '—';
       const jpCls = b.currentJackpot == null ? 'unknown' : ((b.jackpotGateState === 'WAITING' || b.jackpotGateState === 'READY') ? 'gated' : '');
@@ -1747,6 +1763,7 @@ renderActions();
     set('wsi-bid', b.browserId);
     set('wsi-name', b.name || '');
     const st = $('wsi-state'); if (st) { st.textContent = bd.text; st.className = 'wsi-state ' + bd.cls; }
+    const we = $('wsi-edit'); if (we) we.onclick = () => openModal('edit', b);  // inline profile edit (§23)
     set('wsi-sid', b.online && b.currentSid != null ? b.currentSid : '—');
     const odd = f2(b.currentOdd);
     set('wsi-odd', b.online && odd != null ? odd + 'x' : '—');
@@ -1789,11 +1806,10 @@ renderActions();
     $('bm-submit').textContent = mode === 'edit' ? 'Lưu' : 'Tạo & Mở';
     const err = $('bm-error'); err.hidden = true; err.textContent = '';
     $('browser-modal').hidden = false; $('bm-name').focus();
-    // WU-E.4: the in-app browser is a NATIVE view that always paints above HTML; hide it while
-    // this modal is open so its inputs (name/URL) are reachable. See overviewInAppUI.
-    document.dispatchEvent(new CustomEvent('modal-changed', { detail: { open: true } }));
+    // CONTROL-V3 — no embedded native view to coordinate with anymore (each profile is an
+    // external window); the modal is a normal HTML overlay.
   }
-  function closeModal() { $('browser-modal').hidden = true; document.dispatchEvent(new CustomEvent('modal-changed', { detail: { open: false } })); }
+  function closeModal() { $('browser-modal').hidden = true; }
   function modalError(m) { const err = $('bm-error'); err.hidden = false; err.textContent = m; }
   async function submitModal() {
     const name = $('bm-name').value.trim(); const url = $('bm-url').value.trim();
@@ -1932,45 +1948,12 @@ renderActions();
   if (typeof entitlementState !== 'undefined' && entitlementState) apply(entitlementState);
 })();
 
-// ==================== WU-E.4 TRUE IN-APP BROWSER VIEW (Tổng quan) ====================
-// In 'inapp' mode the web/game is a native Electron WebContentsView owned by main. The
-// renderer only reports the Overview web-region bounds so main positions/shows the selected
-// run's view there (and hides all views on other tabs / when offline). Display+layout only:
-// no screencast, no input forwarding — the user interacts with the native surface directly.
-(function overviewInAppUI() {
-  if (!api.inappView) return; // preload without WU-E.4 surface — inert
-  const host = $('ov-web-host'), overlay = $('ov-web-overlay');
-  if (!host) return;
-  let viewIsOverview = (document.body.dataset.view || 'overview') === 'overview';
-  // A native WebContentsView always paints above the window's HTML, so any HTML modal/dialog
-  // over the web region would be occluded. Hide the view while a modal is open (a proven
-  // interaction bug: the "New/Edit browser" URL field was unreachable under the native view).
-  function modalOpen() { return !!document.querySelector('.bm-overlay:not([hidden])'); }
-  // Report the browser host rectangle, CLAMPED to the scrollable content viewport (#shell-main).
-  // The native WebContentsView paints above HTML and does not clip to a scroll container, so
-  // clamping keeps it inside the content area — it never covers the header/tabs when Row 2 scrolls.
-  function bounds() {
-    const r = host.getBoundingClientRect();
-    const main = $('shell-main');
-    const m = main ? main.getBoundingClientRect() : { top: 0, bottom: window.innerHeight, left: 0, right: window.innerWidth };
-    const top = Math.max(r.top, m.top), bottom = Math.min(r.bottom, m.bottom);
-    const left = Math.max(r.left, m.left), right = Math.min(r.right, m.right);
-    return { x: left, y: top, width: Math.max(0, right - left), height: Math.max(0, bottom - top) };
-  }
-  function reconcile() {
-    const runId = (typeof currentRunId !== 'undefined') ? currentRunId : null;
-    const show = !!(viewIsOverview && runId && !modalOpen());
-    if (show) { if (overlay) overlay.hidden = true; api.inappView(runId, bounds(), true).catch(function () {}); }
-    else { api.inappView(runId || null, null, false).catch(function () {}); }
-  }
-  let rt = null; const soon = () => { clearTimeout(rt); rt = setTimeout(reconcile, 60); };
-  document.addEventListener('view-changed', function (e) { viewIsOverview = e.detail && e.detail.view === 'overview'; reconcile(); });
-  document.addEventListener('run-selected', reconcile);
-  document.addEventListener('modal-changed', reconcile);
-  if (api.onBrowsersChanged) api.onBrowsersChanged(soon);
-  window.addEventListener('resize', soon);
-  const main = $('shell-main'); if (main) main.addEventListener('scroll', soon, { passive: true });
-  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(soon).observe(host);
-  window.addEventListener('beforeunload', function () { api.inappView(null, null, false).catch(function () {}); });
-  reconcile();
+// ==================== CONTROL-V3 — NO EMBEDDED WEB IN CONTROL ====================
+// The website/game is NOT embedded in the Control window. Each profile opens its own external
+// browser window (main: BrowserWindowHost). Control is a compact automation controller; the
+// user opens/focuses a profile's browser via "Mở web" in the browser rail. This module only
+// guarantees Control never asks main to embed a view (belt-and-suspenders against a stale
+// preload that still exposes inappView).
+(function noEmbeddedWeb() {
+  if (api.inappView) { try { api.inappView(null, null, false).catch(function () {}); } catch (e) { /* inert */ } }
 })();

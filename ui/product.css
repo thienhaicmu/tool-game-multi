@@ -340,12 +340,34 @@ button.primary:hover:not(:disabled){filter:brightness(1.06)}
 .at-day-filter .btn{height:30px;padding:0 10px}
 .at-day-group{font-size:var(--t-cap);font-weight:800;letter-spacing:.06em;color:var(--dim);padding:8px 2px 5px;text-transform:uppercase}
 .at-day-group:first-child{padding-top:0}
-.at-sequence-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:8px;font-size:var(--t-cap);font-weight:800;letter-spacing:.08em;color:var(--dim)}
-.at-test-rows{display:grid;gap:8px}
-.at-test-row{display:grid;grid-template-columns:28px 1fr 1fr 1fr 30px;gap:7px;align-items:end;padding:9px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surface)}
+.at-sequence-head{display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;font-size:var(--t-cap);font-weight:800;letter-spacing:.08em;color:var(--dim)}
+/* CONTROL-V3 — compact multi-row LƯỢT table: one column header (.at-seq-cols) above a scrollable
+   rows area, so many rows (1/3/6/10+) stay compact and START/STOP never scroll away. */
+/* Compact fixed columns (not 1fr) so the number inputs stay SHORT and the table packs left. */
+.at-seq-cols{display:grid;grid-template-columns:20px 78px 88px 88px 22px;gap:7px;justify-content:start;padding:0 4px 4px;font-size:var(--t-cap);font-weight:700;letter-spacing:.03em;color:var(--faint);border-bottom:1px solid var(--line)}
+.at-test-rows{display:flex;flex-direction:column;gap:2px;max-height:232px;overflow-y:auto;padding:4px 2px 0 0}
+.at-test-row{display:grid;grid-template-columns:20px 78px 88px 88px 22px;gap:7px;justify-content:start;align-items:center;padding:2px 4px;border:1px solid transparent;border-radius:6px;background:transparent}
+.at-test-row:not(:last-child){border-bottom:1px solid var(--line)}
+.at-test-row:hover{background:var(--surface)}
 .at-test-row.active{border-color:var(--accent);box-shadow:0 0 0 1px var(--accent) inset}
-.at-test-row label{display:grid;gap:3px;font-size:var(--t-cap);color:var(--dim)}
+.at-row-number{font-size:var(--t-cap);color:var(--dim);text-align:center}
+.at-cell{display:grid;gap:2px;min-width:0}
 .at-test-row input{width:100%;box-sizing:border-box}
+.at-test-row .at-row-remove{opacity:.5}
+.at-test-row:hover .at-row-remove{opacity:1}
+/* CONTROL-V3 — compact live status strip above the CTA (SID / ODD / JACKPOT / Trạng thái). */
+.at-strip{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:12px 0 10px;padding:10px 12px;border:1px solid var(--line);border-radius:var(--r2);background:var(--surface)}
+.at-strip .at-s{display:flex;flex-direction:column;gap:2px;min-width:0}
+.at-strip .at-s span{font-size:var(--t-cap);letter-spacing:.04em;color:var(--faint)}
+.at-strip .at-s b{font-size:var(--t-md);font-weight:700;overflow-wrap:anywhere}
+.at-strip .at-s.odd b{color:var(--accent)}
+/* Product-mode simplification (§ SMALL/SIMPLE): the big live ODD card, jackpot chip and
+   session-results grid are hidden in normal use — the compact strip + top identity band carry
+   the essentials. They remain in Advanced mode (and in the DOM, so render() never breaks). */
+body[data-mode=product] #at-jp-chip,
+body[data-mode=product] .at-live,
+body[data-mode=product] .at-metrics{display:none}
+body[data-mode=advanced] .at-strip{display:none}
 .at-row-number{font:700 var(--t-sm) var(--f-mono);color:var(--faint);padding-bottom:9px}
 .at-row-remove{height:30px;padding:0;color:var(--err)}
 .proto-panel .danger{background:var(--err-bg);color:var(--err);border-color:transparent;font-weight:600}
@@ -595,23 +617,14 @@ body[data-mode=product] #at-panel .proto-head .btn.icon{ display:none; }
 .ctx-banner .mono{ font-weight:700; }
 
 /* ============================================================================
-   WU-E.1 — embedded web mirror in Tổng quan + systematic license-lock UX
+   CONTROL-V3 — Tổng quan is live STATUS only (no embedded web) + license-lock UX
    ========================================================================= */
-/* Overview becomes a full-bleed browser workspace: big web surface + telemetry side. */
+/* The website/game is never embedded in Control; each profile opens its own external browser
+   window. Tổng quan shows compact live status/telemetry for the selected profile. */
 #view-overview{ max-width:none; padding:0; min-height:100%; }
 #view-overview #ov-empty{ padding:32px 20px; }
-/* 2-ROW Overview: the embedded browser/game gets the FULL content width on top (Row 1),
-   the status/telemetry information sits BELOW it (Row 2). No side-by-side sidebar. */
-/* Single scroll owner: the Overview content flows top-to-bottom and the #shell-main container
-   scrolls as one document. Row 1 (browser) has a comfortable fixed height; Row 2 (info) takes
-   its natural height below — no cramped inner scrollbox, all content reachable by page scroll. */
 .ov-layout{ display:flex; flex-direction:column; min-height:100%; }
-.ov-web{ flex:0 0 auto; width:100%; height:clamp(340px, 56vh, 640px); min-width:0; position:relative; background:#0b0d10; }
-.ov-web-host{ position:absolute; inset:0; overflow:hidden; outline:none; }
-.ov-web-overlay{ position:absolute; inset:0; display:flex; align-items:center; justify-content:center; background:rgba(11,13,16,.86); color:#c9d3de; text-align:center; }
-.ov-web-overlay[hidden]{ display:none; }   /* WU-E.1A — flex display above otherwise beats the [hidden] UA rule */
-.ov-web-overlay-in{ display:grid; gap:8px; justify-items:center; font-size:var(--t-md); }
-.ov-side{ flex:0 0 auto; width:100%; overflow:visible; padding:14px 20px; border-top:1px solid var(--line); background:var(--bg); }
+.ov-side{ flex:1 1 auto; width:100%; overflow:visible; padding:14px 20px; background:var(--bg); }
 .ov-side .ctx-banner{ margin-top:0; }
 /* Row 2 now has the full width: lay key/value pairs out in a responsive grid that fills the
    space, wrapping long mono values instead of clipping them. */
@@ -637,8 +650,7 @@ body[data-mode=product] #at-panel .proto-head .btn.icon{ display:none; }
    WU-E.1A — Overview workspace refinement (web-dominant, de-duplicated telemetry,
    integrated sidebar, clear embed states). Presentation only.
    ========================================================================= */
-.ov-web{ background:#0b0d10; }
-/* Row 2 information band reads as one surface card below the browser. */
+/* Status band reads as one surface card. */
 .ov-side{ background:var(--surface); padding:14px 20px; }
 /* The top identity band is the cross-tab SID/ODD/JP glance; in Overview the live cells are the
    operational copy — a compact KPI group that doesn't need the full row width. */
@@ -650,10 +662,6 @@ body[data-mode=product] #at-panel .proto-head .btn.icon{ display:none; }
 .ov-side .section-title{ margin-top:6px; }
 .ov-tech summary{ cursor:pointer; color:var(--dim); font-size:var(--t-sm); padding:4px 0; }
 .ov-tech[open] summary{ margin-bottom:4px; }
-/* Clear embedded states: distinct look for offline/connecting/error overlays. */
-.ov-web-overlay{ background:rgba(11,13,16,.9); }
-.ov-web-overlay .empty-ic{ font-size:30px; opacity:.6; }
-#ov-web-overlay-text{ max-width:280px; line-height:1.5; }
 
 /* ============================================================================
    WU-E.1B — product polish (header hierarchy, rail clarity, web focus). CSS only.
@@ -670,10 +678,68 @@ body:not([data-mode=advanced]) .rr-brid{ display:none; }
 .rr-name{ font-weight:550; color:var(--text); }
 .rr-actions .rr-mini{ opacity:.82; transition:opacity .12s; }
 .rr-item:hover .rr-actions .rr-mini,.rr-item.sel .rr-actions .rr-mini{ opacity:1; }
-/* Web workspace: keyboard-capture affordance + subtle framing. */
-.ov-web-host:focus{ outline:2px solid var(--accent); outline-offset:-2px; }
-.ov-web-host:focus-visible{ outline:2px solid var(--accent); outline-offset:-2px; }
 /* Overview: emphasize the live ODD; tidy sidebar rhythm. */
 .wsi-m.odd b{ color:var(--accent); }
 .ov-side .live-cell.odd b{ color:var(--accent); }
 .ov-side .section-title{ letter-spacing:.04em; }
+
+/* ============================================================================
+   CONTROL-V3 — normal-mode declutter: ONE Auto workspace (no tab strip), quiet header,
+   compact rail. Everything stays in the DOM and returns in Advanced mode, so no diagnostics
+   or history capability is lost — only redundant chrome is removed from the normal flow.
+   ========================================================================= */
+/* No tab navigation in normal use — the profile workspace IS the Auto screen. */
+body[data-mode=product] #shell-nav{ display:none; }
+/* Quiet header: drop the capacity pill + verbose diag pills (count is in the rail). */
+body[data-mode=product] #cap-badge{ display:none; }
+/* The selected-profile header shows identity + state only; SID/ODD/JP live in the Auto strip. */
+body[data-mode=product] .wsi-metrics{ display:none; }
+/* Compact rail rows: identity + status + "Mở web" only (no SID/ODD/JP/BR-id clutter). */
+body[data-mode=product] .rr-item .rr-meta,
+body[data-mode=product] .rr-item .rr-jp{ display:none; }
+/* The Advanced toggle reads as a quiet gear, not a labelled checkbox (still toggles applyMode). */
+body[data-mode=product] #shell-advanced-wrap{ font-size:0; cursor:pointer; padding:4px 6px; border-radius:6px; }
+body[data-mode=product] #shell-advanced-wrap:hover{ background:var(--panel); }
+body[data-mode=product] #shell-advanced{ display:none; }
+body[data-mode=product] #shell-advanced-wrap::after{ content:'⚙'; font-size:16px; color:var(--dim); }
+/* Remove-row × is a clear (red) destructive affordance. */
+.at-row-remove{ color:var(--err); }
+/* "＋ Thêm lượt" is a primary-tinted action; the section heading uses the rocket, no status chip. */
+#at-add-row{ color:var(--accent); border-color:color-mix(in srgb, var(--accent) 45%, var(--line)); font-weight:600; }
+body[data-mode=product] #at-env{ display:none; }
+/* Inline edit affordance beside the selected profile name. */
+.wsi-edit{ background:transparent; border:none; color:var(--dim); cursor:pointer; font-size:13px; padding:2px 4px; }
+.wsi-edit:hover{ color:var(--accent); }
+/* Compact History access lives beside the identity (no tab needed); Back returns to Auto. */
+.wsi-actions{ display:flex; gap:6px; align-items:center; margin-left:auto; }
+.bh-back{ margin-bottom:10px; }
+/* Tighter Tự động for a smaller app window: the status strip sits at the TOP, the panel ✕ and
+   the extra section chrome are dropped, and padding/heights shrink. */
+body[data-mode=product] #at-close{ display:none; }
+body[data-mode=product] .at-body{ padding:12px 14px; }
+body[data-mode=product] .proto-head{ padding:8px 14px; }
+body[data-mode=product] #at-config{ padding:0; border-bottom:none; }
+/* Product mode has no nav bar and a shorter identity band. --head-h must be redeclared HERE
+   (var() substitution happens where the property is declared, so overriding --ident-h/--nav-h
+   alone won't change the :root-baked --head-h). Declaring it on body re-resolves it to
+   appbar + short identity + no nav, so the Auto panel docks flush under the identity band. */
+body[data-mode=product]{ --ident-h:44px; --nav-h:0px; --head-h:calc(var(--appbar-h) + 44px); }
+/* Strip is a top-level band between the identity and the 🚀 heading — compact, side margins. */
+.at-strip{ margin:8px 12px 2px; padding:6px 10px; gap:6px; }
+.at-strip .at-s{ gap:1px; }
+.at-strip .at-s span{ font-size:10px; }
+.at-strip .at-s b{ font-size:var(--t-sm); }
+body[data-mode=product] .at-test-rows{ max-height:190px; }
+/* Both Auto options on ONE row, no card/box. */
+.at-options{ display:flex; align-items:center; gap:20px; flex-wrap:wrap; margin:10px 0; }
+.at-options .jp-toggle{ margin:0; }
+/* Narrower app + rail; compact buttons (§ ưu tiên gọn). */
+body[data-mode=product]{ --run-rail-w:172px; }
+body[data-mode=product] .rr-head{ flex-wrap:wrap; row-gap:4px; }
+body[data-mode=product] .rr-head b{ font-size:11px; letter-spacing:.02em; flex:1 1 100%; }
+body[data-mode=product] .cta{ padding:11px; font-size:var(--t-md); }
+body[data-mode=product] #at-add-row{ padding:3px 9px; font-size:var(--t-cap); }
+body[data-mode=product] .rr-open-btn{ padding:4px 8px; font-size:var(--t-sm); }
+body[data-mode=product] .rr-mini{ padding:2px 5px; }
+body[data-mode=product] .at-test-row input{ height:28px; padding:0 7px; font-size:var(--t-sm); }
+body[data-mode=product] .at-sequence-head{ margin-bottom:4px; }

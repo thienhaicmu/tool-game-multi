@@ -7,6 +7,8 @@ const { execFile } = require('node:child_process');
 const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
 const { InAppRuntime } = require('./browser/inapp-runtime.cjs');
+const { BrowserWindowHost, DEFAULTS: BROWSER_WIN_DEFAULTS } = require('./browser/browser-window-host.cjs');
+const { BrowserWindowBoundsStore } = require('./browser-run/browser-window-bounds-store.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { InteractionTracker } = require('./cdp/interaction-tracker.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -216,6 +218,7 @@ function killAllManagedBrowsers() {
   }
   try { for (const id of [..._recoveryWatch.keys()]) stopRecoveryWatch(id); } catch {} // no orphan health timers/listeners
   try { inappRuntime.destroyAll(); } catch { /* tear down in-app views on quit */ }
+  try { browserWindowHost.destroyAll(); } catch { /* close any owned browser windows on quit */ }
 }
 // WU-E.1B — on app quit, GRACEFULLY close managed Chrome (so cookies/login flush to disk)
 // with a BOUNDED overall timeout, then force-kill any straggler. Preserves D2-001: nothing
@@ -404,9 +407,59 @@ async function connectRunEndpointWithRetry(run, endpoint, attempt = 0) {
   return result;
 }
 
-// In-app browser runtime: one persistent-partition WebContentsView per run, hosted
-// in the product window; only the selected run's view is visible. Owns the real web/game.
-const inappRuntime = new InAppRuntime({ getHostWindow: () => shell });
+// CONTROL-V3 — per-profile geometry for each external browser window (keyed by browserId),
+// separate from the whitelist-locked BrowserConfigStore. Lazily bound once paths are ready.
+let browserWindowBoundsStore = null;
+function ensureBrowserWindowBoundsStore() {
+  if (browserWindowBoundsStore) return browserWindowBoundsStore;
+  browserWindowBoundsStore = new BrowserWindowBoundsStore({ filePath: path.join(appInstance.paths.root, 'browser-window-bounds.json') });
+  const res = browserWindowBoundsStore.load();
+  if (res && res.error && shell && !shell.isDestroyed()) shell.webContents.send('cdp-error', res.error);
+  return browserWindowBoundsStore;
+}
+
+// The window title shown for a run's external browser window: "B-0010 - kt2" (falls back to
+// the run/browser id when the registry name is unknown).
+function browserWindowTitle(run) {
+  const bid = run && run.browserId ? String(run.browserId) : (run && run.id) || 'Browser';
+  try { const b = run && run.browserId && browserRegistry ? browserRegistry.get(String(run.browserId)) : null; if (b && b.name) return bid + ' — ' + b.name; } catch {}
+  return bid;
+}
+
+// CONTROL-V3 — each BrowserRun's web/game is hosted in its OWN top-level browser window.
+// The host re-parents the run's existing WebContentsView (same webContents/debugger/partition)
+// into that window — no duplicate runtime. Closing a window (user X) runs the existing safe
+// Stop + teardown of ONLY that run.
+const browserWindowHost = new BrowserWindowHost({
+  electron: { BrowserWindow },
+  screen,
+  normalizeWindowBounds,
+  defaults: BROWSER_WIN_DEFAULTS,
+  preloadPath: path.join(__dirname, 'browser-chrome-preload.cjs'),
+  chromeUrl: 'app://ui/browser-chrome.html',
+  get boundsStore() { return ensureBrowserWindowBoundsStore(); },
+  onClose: (runId) => { onBrowserWindowClosed(String(runId)); },
+});
+
+// User closed a profile's external browser window. Per the confirmed close semantics: safe-Stop
+// any active Auto for THAT run, then tear it down (view/debugger/protocol/timers/recovery). The
+// persistent partition on disk is preserved; other runs are untouched; no headless continuation.
+async function onBrowserWindowClosed(runId) {
+  const run = runManager && runManager.get(runId);
+  if (!run) return;
+  try { finalizeAutoExecutionForRun(run, 'RUN_CLOSED'); } catch {}
+  try { stopRecoveryWatch(runId); } catch {}
+  try { if (runManager) await runManager.closeRun(runId); } catch {}
+  broadcastBrowsers();
+}
+
+// In-app browser runtime: one persistent-partition WebContentsView per run, each hosted in
+// its own external browser window (BrowserWindowHost). Owns the real web/game.
+const inappRuntime = new InAppRuntime({
+  getHostWindow: () => shell,
+  windowHost: browserWindowHost,
+  resolveTitle: browserWindowTitle,
+});
 
 // Shared correlator: holds RAW evidence (unredacted) for all attached targets and
 // resolves response bodies through each request's OWN target client. With multiple
@@ -1120,7 +1173,9 @@ async function openPersistentBrowser(browserId) {
   if (!browser) return { ok: false, error: { code: 'BROWSER_NOT_FOUND', message: 'No such browser' } };
   // Same persistent browser cannot double-launch (independent of maxConcurrent §22).
   const existing = runManager.liveRunForBrowser(browser.id);
-  if (existing) { runManager.setActive(existing.id); broadcastTargets(); broadcastBrowsers(); return { ok: true, runId: existing.id, browserId: browser.id, alreadyRunning: true }; }
+  // CONTROL-V3 — "Mở web" on an already-running profile must NOT create a second BrowserRun.
+  // Focus/raise its EXISTING external browser window instead (one Browser ID → one window).
+  if (existing) { runManager.setActive(existing.id); try { browserWindowHost.focusWindow(existing.id); } catch {} broadcastTargets(); broadcastBrowsers(); return { ok: true, runId: existing.id, browserId: browser.id, alreadyRunning: true }; }
   // WU-C.4 — reserve a concurrent runtime slot BEFORE spawning (LAUNCHING counts), so
   // two simultaneous OPENs cannot both take the final slot. Released on any failure/close.
   const reservation = runtimeCapacity.reserve(browser.id);
@@ -1654,20 +1709,34 @@ handle('browser-reload', (_event, runId) => {
     return { ok: true };
   } catch (e) { return { ok: false, error: { code: 'RELOAD_FAILED', message: String(e && e.message || e) } }; }
 });
-// Position/show the in-app browser view for the SELECTED run inside the Overview web region.
-// Renderer reports the region bounds; main owns the native view. Display+layout only — no
-// execution ownership, no protocol. When not visible, all views are hidden so the native
-// surface never covers other product UI (tabs/dialogs/license).
-handle('runtime-mode', () => ({ mode: 'inapp' }));
-handle('inapp-view', (_event, runId, bounds, visible) => {
-  const id = runId != null ? String(runId) : '';
-  if (visible && id && inappRuntime.has(id) && bounds && bounds.width > 0 && bounds.height > 0) {
-    inappRuntime.setBounds(id, bounds);
-    inappRuntime.showOnly(id);
-    return { ok: true, shown: true };
-  }
-  inappRuntime.hideAll();
-  return { ok: true, shown: false };
+// CONTROL-V3 — the web/game is no longer embedded in the Control window; each run lives in its
+// OWN external browser window (BrowserWindowHost). This handler is kept as an inert stub so any
+// legacy renderer that still calls it is harmless (Control never positions the view).
+handle('runtime-mode', () => ({ mode: 'external' }));
+handle('inapp-view', () => ({ ok: true, external: true, shown: false }));
+// CONTROL-V3 — minimal browser chrome navigation, bound to ONE run's own webContents. Never
+// exposes generic evaluate/debug: only Back/Forward/Reload and same-window navigation.
+handle('browser-nav', (_event, runId, action, url) => {
+  const id = String(runId || '');
+  const wc = inappRuntime.webContents(id);
+  if (!wc || wc.isDestroyed()) return { ok: false, error: { code: 'RUN_NOT_FOUND', message: 'Không có trình duyệt đang mở.' } };
+  try {
+    switch (String(action)) {
+      case 'back': if (wc.canGoBack()) wc.goBack(); break;
+      case 'forward': if (wc.canGoForward()) wc.goForward(); break;
+      case 'reload': wc.reload(); break;
+      case 'home': { const run = runManager && runManager.get(id); const home = (run && run.launchUrl) || ''; if (home) wc.loadURL(String(home)); break; }
+      case 'go': { const u = String(url || '').trim(); if (u && /^https?:\/\//i.test(u)) wc.loadURL(u); else if (u) wc.loadURL('https://' + u); break; }
+      default: return { ok: false, error: { code: 'BAD_NAV_ACTION', message: 'Unknown navigation action' } };
+    }
+    return { ok: true };
+  } catch (e) { return { ok: false, error: { code: 'NAV_FAILED', message: String(e && e.message || e) } }; }
+});
+// The toolbar asks for the current URL/nav state when it (re)loads.
+handle('browser-nav-state', (_event, runId) => {
+  const wc = inappRuntime.webContents(String(runId || ''));
+  if (!wc || wc.isDestroyed()) return { ok: false };
+  try { return { ok: true, url: wc.getURL(), canGoBack: wc.canGoBack(), canGoForward: wc.canGoForward() }; } catch { return { ok: false }; }
 });
 handle('capture-toggle', (_event, paused) => { capturePaused = Boolean(paused); return capturePaused; });
 // WU7 — Protocol Test Harness IPC. Every send is target-bound and gated by the
