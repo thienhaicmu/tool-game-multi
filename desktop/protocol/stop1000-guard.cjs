@@ -56,8 +56,23 @@ class Stop1000Guard extends EventEmitter {
     this._fired = false;
     this._evidence = null;
     this.emit('state', this.state());
-    // Evaluate immediately: the round may already be >= 1000 at arm time (state-based).
-    this._check();
+    // EDGE-triggered only (§4): the guard fires exclusively on a FRESH authoritative odd
+    // frame arriving via the observer 'update' stream AFTER arm. It deliberately does NOT
+    // evaluate synchronously here — arming (a START) must never stop Auto off a stale/
+    // previous-round odd the observer still holds. A genuine >= 1000 arrives as a new frame.
+    return { armed: this._armed, enabled: this._enabled, threshold: STOP_1000X_THRESHOLD };
+  }
+
+  // Live per-session enable toggle (the "Dừng khi đạt 1000x" checkbox flipped WHILE Auto is
+  // running). This is a POLICY change only: it updates the enabled flag for the already-armed
+  // session and MUST NOT stop Auto, re-arm, reset the exactly-once latch, or evaluate
+  // synchronously. If enabled, the NEXT authoritative odd >= 1000 fires the stop normally;
+  // if the session already fired, it stays fired. No-op when not armed (next START reads config).
+  setEnabled(enabled) {
+    const next = enabled === true;
+    if (this._enabled === next) return { armed: this._armed, enabled: this._enabled, threshold: STOP_1000X_THRESHOLD };
+    this._enabled = next;
+    this.emit('state', this.state());
     return { armed: this._armed, enabled: this._enabled, threshold: STOP_1000X_THRESHOLD };
   }
 

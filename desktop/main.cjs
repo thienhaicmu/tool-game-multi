@@ -1936,6 +1936,20 @@ handle('autotest-start', async (_event, runId, config = {}) => {
     if (run.autoStartIntent) run.autoStartIntent.markInFlight(false);
   }
 });
+// Live per-run "Dừng khi đạt 1000x" toggle (the checkbox flipped WHILE Auto is running). This is
+// a POLICY change ONLY — it updates THIS run's armed Stop1000 guard enabled flag and MUST NOT stop
+// Auto, re-arm, or reset the exactly-once latch. Execution is resolved by the EXPLICIT runId (never
+// the UI selection), so B1's toggle can never touch B2. Also persists the request to the browser's
+// operating config so a later START/reopen remembers it.
+handle('autotest-stop1000-set', (_event, runId, enabled) => {
+  const r = execRun(runId); if (r.error) return r;
+  const run = r.run;
+  const on = enabled === true;
+  if (run.stop1000 && run.stop1000.setEnabled) run.stop1000.setEnabled(on);
+  if (run.browserId) { try { ensureBrowserConfigStore(); browserConfigStore.set(String(run.browserId), { stopAutoAt1000x: on }); } catch { /* best-effort persist */ } }
+  scheduleRunsBroadcast();
+  return autoSnapshot(run);
+});
 handle('autotest-stop', (_event, runId) => {
   const r = execRun(runId); if (r.error) return r;
   const run = r.run;

@@ -89,6 +89,8 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   autotestEnvironment: (runId, targetId) => ipcRenderer.invoke('autotest-environment', runId, targetId),
   autotestStart: (runId, config) => ipcRenderer.invoke('autotest-start', runId, config),
   autotestStop: runId => ipcRenderer.invoke('autotest-stop', runId),
+  // Live per-run "Dừng khi đạt 1000x" toggle (policy only; never stops Auto).
+  autotestSetStop1000: (runId, enabled) => ipcRenderer.invoke('autotest-stop1000-set', runId, enabled),
   autotestSnapshot: runId => ipcRenderer.invoke('autotest-snapshot', runId),
   onAutotestUpdate: callback => ipcRenderer.on('autotest-update', (_event, snap) => callback(snap)),
   // WU10.2 — bet amount server validation (explicit run binding)

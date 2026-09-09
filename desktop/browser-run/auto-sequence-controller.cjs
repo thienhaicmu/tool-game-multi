@@ -70,7 +70,17 @@ class AutoSequenceController {
   // Serialisable view merged into the Auto snapshot for the renderer status
   // ("Đang chạy lượt index+1 / total"). Display-only; never an authority.
   snapshot() {
-    return { active: this._running, index: this._index, total: this._rows.length, ownerRunId: this._ownerRunId };
+    // roundCount = the CURRENT Level's (current row's) configured Số vòng, so the renderer's
+    // "Vòng: x/roundCount - Level N" denominator always tracks the active Level and never shows
+    // a stale previous-Level total across a transition. Display-only; never an authority.
+    const cur = this._rows[this._index];
+    return {
+      active: this._running,
+      index: this._index,
+      total: this._rows.length,
+      roundCount: cur && cur.roundCount != null ? cur.roundCount : null,
+      ownerRunId: this._ownerRunId,
+    };
   }
 
   // Begin a sequence over an IMMUTABLE snapshot of `rows` (a defensive copy — later UI

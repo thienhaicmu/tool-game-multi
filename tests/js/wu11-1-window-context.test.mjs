@@ -54,7 +54,7 @@ test('autoCta: READY / RUNNING / COMPLETED / STOPPED labels + actions', () => {
   assert.equal(Shell.autoCta('WATCHING_ODD', true).action, 'stop');
   assert.equal(Shell.autoCta('WATCHING_ODD', true).label, '■ DỪNG TỰ ĐỘNG');
   assert.equal(Shell.autoCta('COMPLETED', false).label, '↻ CHẠY LẠI');
-  assert.equal(Shell.autoCta('COMPLETED', false).note, 'Tự dừng — đã chạy hết lượt');
+  assert.equal(Shell.autoCta('COMPLETED', false).note, 'Tự dừng — đã chạy hết vòng');
   assert.equal(Shell.autoCta('STOPPED', false).label, '▶ BẮT ĐẦU LẠI');
   assert.equal(Shell.autoCta('STOPPED', false).note, 'Bạn đã nhấn Dừng');
 });

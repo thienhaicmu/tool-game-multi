@@ -928,7 +928,7 @@ renderActions();
     row.className = 'at-test-row';
     // CONTROL-V3 — compact table row: one input per column (labels live in the sticky column
     // header .at-seq-cols); aria-label keeps each input accessible without per-row label text.
-    row.innerHTML = `<span class="at-row-number"></span><div class="at-cell"><input class="mono at-rounds" aria-label="Số vòng" value="${esc(values.rounds ?? 10)}"><span class="cfg-err at-row-error-rounds"></span></div><div class="at-cell"><input class="mono at-amount" aria-label="Tiền cược" value="${esc(values.amount ?? 5000)}"><span class="cfg-err at-row-error-amount"></span></div><div class="at-cell"><input class="mono at-stopodd" aria-label="Dừng tại ODD" value="${esc(values.stopOdd ?? '2.00')}"><span class="cfg-err at-row-error-stopodd"></span></div><button class="btn icon at-row-remove" type="button" title="Xóa lượt">×</button>`;
+    row.innerHTML = `<span class="at-row-number"></span><div class="at-cell"><input class="mono at-rounds" aria-label="Số vòng" value="${esc(values.rounds ?? 10)}"><span class="cfg-err at-row-error-rounds"></span></div><div class="at-cell"><input class="mono at-amount" aria-label="Tiền cược" value="${esc(values.amount ?? 5000)}"><span class="cfg-err at-row-error-amount"></span></div><div class="at-cell"><input class="mono at-stopodd" aria-label="Dừng tại ODD" value="${esc(values.stopOdd ?? '2.00')}"><span class="cfg-err at-row-error-stopodd"></span></div><button class="btn icon at-row-remove" type="button" title="Xóa Level">×</button>`;
     $('at-test-rows').appendChild(row);
     row.querySelector('.at-row-remove').onclick = () => { if (testRows().length > 1 && !sequenceRunning) { row.remove(); renumberRows(); validateConfigUI(); } };
     row.querySelectorAll('input').forEach((el) => { el.oninput = validateConfigUI; });
@@ -1016,9 +1016,9 @@ renderActions();
   };
   function statusInfo(state, roundCount, terminationReason) {
     // WU-D — Stop-1000x is a distinct terminal state, not a plain manual Stop.
-    if (terminationReason === 'STOPPED_1000X_REACHED') return { text: '⛔ Dừng tại 1000x', cls: 'st-auto' };
+    if (terminationReason === 'STOPPED_1000X_REACHED') return { text: '⛔ Đã dừng — đạt 1000x', cls: 'st-auto' };
     if (state === 'STOPPED') return { text: '⏹ Bạn đã nhấn Dừng', cls: 'st-user' };
-    if (state === 'COMPLETED') return { text: `■ Tự dừng — đã chạy hết ${roundCount != null ? roundCount + ' ' : ''}lượt`, cls: 'st-auto' };
+    if (state === 'COMPLETED') return { text: `■ Tự dừng — đã chạy hết ${roundCount != null ? roundCount + ' ' : ''}vòng`, cls: 'st-auto' };
     if (state === 'ERROR') return { text: '✕ Lỗi — đã dừng', cls: 'st-err' };
     if (RUN_STATE_TEXT[state]) return { text: RUN_STATE_TEXT[state], cls: 'st-run' };
     return { text: state || 'Chưa chạy', cls: 'st-run' };
@@ -1104,11 +1104,24 @@ renderActions();
     const si = waitingJp
       ? { text: '⏳ Đang chờ Jackpot…', cls: 'st-run' }
       : statusInfo(snap.state, snap.config ? snap.config.roundCount : null, snap.terminationReason);
-    // WU-AUTO-SEQUENCE — when the user configured multiple rows, prefix the running status
-    // with the sequence position ("Lượt 2 / 5 · …"). Display-only; main owns advancement.
+    // WU-AUTO-SEQUENCE / LEVEL STATUS — while Auto is running, the status line shows the exact
+    // compact form "Vòng: <round>/<roundCount> - Level <N>", all derived from BACKEND authority:
+    //   Level N       = current AutoSequence row (seq.index, 0-based) + 1
+    //   roundCount    = the CURRENT Level's configured Số vòng (seq.roundCount, falls back to the
+    //                   running AutoRunner config.roundCount) — never a stale previous-Level total
+    //   round         = the AutoRunner's current 1-based round within the Level (active round index
+    //                   +1, else the attempted count). The renderer owns NO progression counter.
     const seq = snap.sequence;
-    if (seq && seq.total > 1 && (seq.active || snap.running)) {
-      si.text = `Lượt ${Math.min((seq.index || 0) + 1, seq.total)} / ${seq.total} · ${si.text}`;
+    const running = !!(snap.running || (seq && seq.active));
+    if (running) {
+      const p0 = snap.progress || {};
+      const level = (seq && Number.isFinite(seq.index)) ? seq.index + 1 : 1;
+      const roundCount = (seq && seq.roundCount != null)
+        ? seq.roundCount
+        : (snap.config && snap.config.roundCount != null ? snap.config.roundCount : (p0.target != null ? p0.target : null));
+      let round = (snap.active && Number.isFinite(snap.active.index)) ? snap.active.index + 1 : (p0.attempted || 0);
+      round = Math.max(1, roundCount != null ? Math.min(round, roundCount) : round);
+      si.text = `Vòng: ${round}/${roundCount != null ? roundCount : '—'} - Level ${level}`;
     }
     const statusEl = $('at-status');
     statusEl.textContent = si.text;
@@ -1211,6 +1224,17 @@ renderActions();
   // WU-C.3 — Jackpot gate config (default OFF -> unchanged Auto behavior).
   const jpWaitBox = $('at-jp-wait');
   if (jpWaitBox) jpWaitBox.onchange = () => { const cfg = $('at-jp-config'); if (cfg) cfg.hidden = !jpWaitBox.checked; };
+  // WU-D — "Dừng khi đạt 1000x" is a POLICY toggle, NOT a Stop button. Flipping it while Auto is
+  // running pushes the new enabled flag to THIS run's backend guard (explicit runId) so it takes
+  // effect for the live session WITHOUT stopping Auto; when idle it is simply read at the next
+  // START. It must never call stop/START itself.
+  const stop1000Box = $('at-stop1000');
+  if (stop1000Box) stop1000Box.onchange = () => {
+    const running = !!(snap && (snap.running || (snap.sequence && snap.sequence.active)));
+    if (running && currentRunId && api.autotestSetStop1000) {
+      try { api.autotestSetStop1000(currentRunId, stop1000Box.checked); } catch { /* best-effort */ }
+    }
+  };
   // Jackpot threshold: strip thousands separators (deliberate for big numbers), then STRICT
   // parse — reject scientific/hex/garbage/NaN so "" never becomes 0 and "1e9" is not accepted.
   function parseJp(v) { const s = String(v == null ? '' : v).replace(/[,\s_]/g, ''); if (s === '') return null; if (!/^\d+(?:\.\d+)?$/.test(s)) return null; const n = Number(s); return Number.isFinite(n) && n >= 0 ? n : null; }

@@ -30,7 +30,7 @@
   // WU11.1 — the one Auto-Run CTA changes label/action by runner state.
   function autoCta(state, running) {
     if (running) return { action: 'stop', label: '■ DỪNG TỰ ĐỘNG', note: 'Đang chạy tự động', cls: 'danger' };
-    if (state === 'COMPLETED') return { action: 'start', label: '↻ CHẠY LẠI', note: 'Tự dừng — đã chạy hết lượt', cls: 'primary' };
+    if (state === 'COMPLETED') return { action: 'start', label: '↻ CHẠY LẠI', note: 'Tự dừng — đã chạy hết vòng', cls: 'primary' };
     if (state === 'STOPPED') return { action: 'start', label: '▶ BẮT ĐẦU LẠI', note: 'Bạn đã nhấn Dừng', cls: 'primary' };
     return { action: 'start', label: '▶ BẮT ĐẦU TỰ ĐỘNG', note: '', cls: 'primary' };
   }
