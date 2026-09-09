@@ -163,13 +163,30 @@ test('T7: runEnterAviatorViaSite runs the sealed op once and surfaces ONLY non-s
   assert.ok(resolve && resolve.nodeResolved === true && resolve.buttonResolved === true && resolve.resolvedBy === 'path');
   assert.ok(facts.some((f) => f.event === 'COCOS_ENTRY_INVOKED'));
   // Non-secret only: the diag facts carry no page object/token/session fields.
-  assert.deepEqual(Object.keys(resolve).sort(), ['buttonResolved', 'ccAvailable', 'directorAvailable', 'event', 'nodeResolved', 'resolvedBy']);
+  assert.deepEqual(Object.keys(resolve).sort(), ['buttonResolved', 'ccAvailable', 'directorAvailable', 'event', 'fallbackGameId', 'nodeResolved', 'resolvedBy']);
+  // A genuinely learned descriptor is NOT a fallback.
+  assert.equal(resolve.fallbackGameId, false);
 });
-test('T8: no learned gameId => ENTER_NO_DESCRIPTOR, nothing evaluated; no client => ENTER_NO_CLIENT', async () => {
-  const c = fakeClient({ ok: true });
-  assert.equal((await desc.runEnterAviatorViaSite(c, undefined, null)).error.code, 'ENTER_NO_DESCRIPTOR');
-  assert.equal(c.exprs.length, 0);
+test('T8: no learned gameId => falls back to the baked known Aviator gameId and still resolves; no client => ENTER_NO_CLIENT', async () => {
+  // First entry (null descriptor) no longer fails ENTER_NO_DESCRIPTOR — it uses the baked known
+  // gameId, fires the SAME sealed op, and flags fallbackGameId:true for diagnostics.
+  const facts = [];
+  const c = fakeClient({ ok: true, invoked: true, resolve: { ccAvailable: true, directorAvailable: true, nodeResolved: true, buttonResolved: true, resolvedBy: 'scene' } });
+  const res = await desc.runEnterAviatorViaSite(c, undefined, null, (f) => facts.push(f));
+  assert.equal(res.ok, true, 'first entry proceeds via the baked known gameId');
+  assert.ok(c.exprs.some((e) => /__avEnterAviator\s*=/.test(e)), 'the sealed hook was installed');
+  const resolve = facts.find((f) => f.event === 'COCOS_ENTRY_SEAM_RESOLVE');
+  assert.equal(resolve.fallbackGameId, true, 'flagged as a baked-gameId fallback');
+  // The baked node name is exactly the known Aviator tile — never an arbitrary/empty one.
+  assert.equal(desc.KNOWN_AVIATOR_GAME_ID, 'vgmn_221');
+  // No client is still a hard fail (nothing to drive).
   assert.equal((await desc.runEnterAviatorViaSite(null, undefined, DESCRIPTOR)).error.code, 'ENTER_NO_CLIENT');
+});
+test('T8b: an empty/garbage gameId is still rejected (no arbitrary/unnamed node search)', () => {
+  assert.throws(() => desc.buildEnterAviatorHook({ gameId: '' }));
+  assert.throws(() => desc.buildEnterAviatorHook({ gameId: 'a b' }));
+  assert.throws(() => desc.buildEnterAviatorHook(null));
+  assert.equal(desc.isValidGameId('vgmn_221'), true);
 });
 test('resolve-gate failure => ENTRY_SITE_SEAM_UNAVAILABLE with the failed step (no invoke, no fallback)', async () => {
   const facts = [];
@@ -187,7 +204,9 @@ test('descriptor learns/validates ONLY a real game-act game_id (fail safe otherw
   assert.equal(desc.parseGameActDescriptor('https://x/steal', '{"game_id":"vgmn_221"}'), null);
   assert.equal(desc.parseGameActDescriptor('https://x/gwms/v1/game-act', '{"game_id":"a b"}'), null);
   assert.equal(desc.isValidDescriptor({ gameId: 'vgmn_221' }), false);
-  assert.throws(() => desc.buildEnterAviatorHook({ gameActUrl: 'https://x/steal', gameId: 'y' }));
+  // LEARNING still requires a real game-act origin (isValidDescriptor), but the click hook needs
+  // only a valid gameId (a learned one or the baked known fallback); a garbage gameId is rejected.
+  assert.throws(() => desc.buildEnterAviatorHook({ gameActUrl: 'https://x/steal', gameId: 'a b' }));
 });
 
 // ---- INVOKED != ENTERED via the Control gate over the sealed Cocos seam ----
