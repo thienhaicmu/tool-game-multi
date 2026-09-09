@@ -979,10 +979,14 @@ function applyAviatorContextAction(run, action, ev) {
       run._ctxReentryInFlight = true;
       run._ctxResumeAfterReentry = wasRunning;   // WAITING_ROUND resumes the SAME execution once ACTIVE
       try { runDiag(run).log({ level: 'WARN', category: 'RECOVERY', event: 'AVIATOR_CONTEXT_LOST_REENTER', autoExecutionId: (run.autoRunner && run.autoRunner.autoExecutionId) ? run.autoRunner.autoExecutionId() : null }); } catch { /* best effort */ }
-      // Invalidate ONLY entry readiness so ensureEntered requires FRESH server evidence (§5 invariant:
-      // cmd100000 SENT != ENTERED). Never invalidate the Jackpot gate/observer here — the WAITING_JACKPOT
-      // wait must survive with its SAME configured threshold (§6).
-      try { if (run.entryGate) run.entryGate.onDisconnect(); } catch { /* best effort */ }
+      // Invalidate ONLY a stale entry-readiness flag so ensureEntered requires FRESH server evidence
+      // (§5 invariant: entry INVOKED != ENTERED). BUT if an entry attempt is ALREADY in flight — e.g.
+      // an explicit START AUTO RUN from Lobby that is waiting on entry — do NOT tear it down: the
+      // onDisconnect() below would reject that attempt and the user's START would silently fail while
+      // the watchdog re-enters. Skipping it lets the ensureEntered() below JOIN the SAME canonical
+      // _pending attempt (one entry, one Cocos invocation). Never invalidate the Jackpot gate/observer
+      // here — the WAITING_JACKPOT wait must survive with its SAME configured threshold (§6).
+      try { if (run.entryGate && !run.entryGate.isEntering()) run.entryGate.onDisconnect(); } catch { /* best effort */ }
       const done = () => { run._ctxReentryInFlight = false; try { if (run.aviatorContext) run.aviatorContext.reentryFinished(); } catch { /* best effort */ } };
       try {
         if (run.entryGate && run.entryGate.ensureEntered) {

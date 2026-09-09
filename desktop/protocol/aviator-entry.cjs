@@ -53,6 +53,10 @@ class AviatorEntryGate extends EventEmitter {
   }
 
   isEntered() { return this._entered; }
+  // An entry ATTEMPT is currently in flight (this gate owns the single canonical _pending attempt).
+  // Callers use this to JOIN the in-flight attempt (ensureEntered() returns the same promise) rather
+  // than tearing it down — e.g. the watchdog must not onDisconnect() an explicit START's attempt.
+  isEntering() { return !!this._pending; }
   state() { return this._entered ? STATE.ENTERED : (this._pending ? STATE.ENTERING : STATE.NOT_ENTERED); }
   enterSends() { return this._sentCount; }
 
