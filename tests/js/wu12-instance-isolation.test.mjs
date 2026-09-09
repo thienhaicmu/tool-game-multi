@@ -124,7 +124,7 @@ test('main process is wired to instance-owned storage and browser runtime', () =
   assert.ok(/appInstance\.paths\.sessions/.test(main));
   assert.ok(/appInstance\.paths\.cookieVault/.test(main));
   assert.ok(/appInstance\.paths\.windowState/.test(main));
-  assert.ok(/new InAppRuntime/.test(main));
+  assert.ok(/new ChromeRuntime/.test(main));
   assert.ok(/handle\('instance-info'/.test(main));
   // WU-C.4 supersedes the earlier multi-instance policy: the customer app now enforces
   // single-instance ownership (via the single-instance seam) before product runtime.

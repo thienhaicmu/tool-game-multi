@@ -6,7 +6,7 @@ const { spawn } = require('node:child_process');
 const { execFile } = require('node:child_process');
 const { EventJournal } = require('./event-journal.cjs');
 const { normalizeCaptureEvent } = require('./event-contract.cjs');
-const { InAppRuntime } = require('./browser/inapp-runtime.cjs');
+const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
 const { BrowserWindowHost, DEFAULTS: BROWSER_WIN_DEFAULTS } = require('./browser/browser-window-host.cjs');
 const { BrowserWindowBoundsStore } = require('./browser-run/browser-window-bounds-store.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -217,7 +217,7 @@ function killAllManagedBrowsers() {
     }
   }
   try { for (const id of [..._recoveryWatch.keys()]) stopRecoveryWatch(id); } catch {} // no orphan health timers/listeners
-  try { inappRuntime.destroyAll(); } catch { /* tear down in-app views on quit */ }
+  try { chromeRuntime.destroyAll(); } catch { /* tear down managed Chrome runtimes on quit */ }
   try { browserWindowHost.destroyAll(); } catch { /* close any owned browser windows on quit */ }
 }
 // WU-E.1B — on app quit, GRACEFULLY close managed Chrome (so cookies/login flush to disk)
@@ -453,12 +453,16 @@ async function onBrowserWindowClosed(runId) {
   broadcastBrowsers();
 }
 
-// In-app browser runtime: one persistent-partition WebContentsView per run, each hosted in
-// its own external browser window (BrowserWindowHost). Owns the real web/game.
-const inappRuntime = new InAppRuntime({
-  getHostWindow: () => shell,
-  windowHost: browserWindowHost,
-  resolveTitle: browserWindowTitle,
+// Real-Chrome browser runtime: one independent chrome.exe process per BrowserRun, each
+// owning its own persistent profile directory, its own unique CDP port and its own
+// per-target CRI client. Control manages these runs; it never embeds the website. The
+// per-run Chrome window opens at 720x405 (default only; Chrome stays resizable). onRunExit
+// fires only when a run's Chrome exits WITHOUT the app asking (user closed the window /
+// crash), so we run the SAME safe-stop teardown for THAT run only.
+const chromeRuntime = new ChromeRuntime({
+  chromeProfileFallback: appInstance.paths.chromeProfile,
+  windowSize: { width: 720, height: 405 },
+  onRunExit: (runId) => { onBrowserWindowClosed(String(runId)); },
 });
 
 // Shared correlator: holds RAW evidence (unredacted) for all attached targets and
@@ -758,10 +762,11 @@ function invalidateRunProtocolState(run) {
 function ensureRunManager() {
   if (runManager) return runManager;
   runManager = new BrowserRunManager({
-    // The in-app WebContentsView runtime: one persistent-partition view per run, instrumented
-    // via webContents.debugger. No external Chrome, no CDP port, no screencast.
-    createLauncher: (run) => inappRuntime.launcher(run),
-    createTargetManager: (_endpoint, run) => inappRuntime.targetManager(run),
+    // Real-Chrome transport: each run launches its OWN chrome.exe (own profile + own unique
+    // CDP port) and attaches its OWN TargetManager to that endpoint. The per-target client is
+    // the SAME CRI interface the subsystem used before, so nothing above the transport changes.
+    createLauncher: (run) => chromeRuntime.launcher(run),
+    createTargetManager: (endpoint, run) => chromeRuntime.targetManager(run, endpoint),
     buildSubsystem: buildProtocolSubsystem,
   });
   runManager.on('run-updated', () => { broadcastRuns(); broadcastBrowsers(); });
@@ -839,7 +844,7 @@ function broadcastRuns() { if (shell && !shell.isDestroyed() && runManager) shel
 // torn down in stopRecoveryWatch (run-closed / quit) so no orphan timers/listeners survive.
 function startRecoveryWatch(run) {
   if (!run || !run.recovery || _recoveryWatch.has(run.id)) return;
-  const wc = inappRuntime.webContents(run.id);
+  const wc = chromeRuntime.webContents(run.id);
   const rec = { interval: null, wc, listeners: [] };
   const on = (ev, fn) => { try { if (wc) { wc.on(ev, fn); rec.listeners.push({ ev, fn }); } } catch {} };
   // Phase 3 — real WebContents health feeds the SAME watchdog/evidence model (no parallel engine).
@@ -861,13 +866,13 @@ function stopRecoveryWatch(runId) {
   try { for (const { ev, fn } of rec.listeners) { if (rec.wc && !rec.wc.isDestroyed()) rec.wc.off(ev, fn); } } catch {}
 }
 function currentRunUrl(run) {
-  const wc = inappRuntime.webContents(run.id);
+  const wc = chromeRuntime.webContents(run.id);
   try { if (wc && !wc.isDestroyed()) return wc.getURL() || run._currentUrl || ''; } catch {}
   return run._currentUrl || '';
 }
 function hostOf(u) { try { return new URL(u).hostname; } catch { return ''; } }
 function gatherEvidence(run) {
-  const wc = inappRuntime.webContents(run.id);
+  const wc = chromeRuntime.webContents(run.id);
   const alive = !!(wc && !wc.isDestroyed()) && !run._rendererGone && !run._unresponsive;
   const url = currentRunUrl(run);
   const curHost = hostOf(url);
@@ -900,7 +905,7 @@ function gatherEvidence(run) {
 // This is the browser-is-a-running-browser answer; game context/lobby are handled elsewhere.
 function browserHealthTick(run) {
   if (!run || !run.browserHealth) return;
-  const wc = inappRuntime.webContents(run.id);
+  const wc = chromeRuntime.webContents(run.id);
   const url = currentRunUrl(run);
   const ev = {
     wcExists: !!wc,
@@ -945,7 +950,7 @@ function recoveryTick(run) {
   aviatorContextTick(run);
 }
 function applyRecoveryAction(run, action, ev) {
-  const wc = inappRuntime.webContents(run.id);
+  const wc = chromeRuntime.webContents(run.id);
   switch (action) {
     case RECOVERY_ACTION.PAUSE_AUTOMATION:
       try { if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run.autoRunner.stop({ reason: 'SESSION_RECOVERY' }); } catch {}
@@ -955,7 +960,7 @@ function applyRecoveryAction(run, action, ev) {
       run._wsConnected = false; run._lastAviatorFrameMono = null; run._lastWsRecvMono = null; run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
       break;
     case RECOVERY_ACTION.FOCUS_VIEW:
-      try { inappRuntime.focus(run.id); } catch {}
+      try { chromeRuntime.focus(run.id); } catch {}
       break;
     case RECOVERY_ACTION.RELOAD:
       run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
@@ -1024,7 +1029,7 @@ function aviatorContextTick(run) {
   try { recState = run.recovery && run.recovery.state ? run.recovery.state() : 'HEALTHY'; } catch { recState = 'HEALTHY'; }
   if (recState !== 'HEALTHY') { run.aviatorContextState = run.aviatorContext.state(); return; }
   const now = perfNow();
-  const wc = inappRuntime.webContents(run.id);
+  const wc = chromeRuntime.webContents(run.id);
   const alive = !!(wc && !wc.isDestroyed()) && !run._rendererGone && !run._unresponsive;
   const url = currentRunUrl(run);
   const wsConnected = run._wsConnected !== false;
@@ -1175,7 +1180,7 @@ async function openPersistentBrowser(browserId) {
   const existing = runManager.liveRunForBrowser(browser.id);
   // CONTROL-V3 — "Mở web" on an already-running profile must NOT create a second BrowserRun.
   // Focus/raise its EXISTING external browser window instead (one Browser ID → one window).
-  if (existing) { runManager.setActive(existing.id); try { browserWindowHost.focusWindow(existing.id); } catch {} broadcastTargets(); broadcastBrowsers(); return { ok: true, runId: existing.id, browserId: browser.id, alreadyRunning: true }; }
+  if (existing) { runManager.setActive(existing.id); try { chromeRuntime.focus(existing.id); } catch {} broadcastTargets(); broadcastBrowsers(); return { ok: true, runId: existing.id, browserId: browser.id, alreadyRunning: true }; }
   // WU-C.4 — reserve a concurrent runtime slot BEFORE spawning (LAUNCHING counts), so
   // two simultaneous OPENs cannot both take the final slot. Released on any failure/close.
   const reservation = runtimeCapacity.reserve(browser.id);
@@ -1262,12 +1267,15 @@ async function deletePersistentBrowser(browserId) {
   return { ok: true, deleted: true, browserId: bid };
 }
 
-// Clear a persistent browser's Electron session storage (§5). Resolved through the SAME
-// partition the in-app runtime uses (persist:aviator-<browserId>) — no filesystem path
-// guessing. Awaits so the caller knows storage is actually gone before reporting success.
+// Clear a persistent browser's session storage (§5). In the real-Chrome model the profile's
+// cookies/localStorage/IndexedDB/cache all live in the on-disk user-data-dir (run.profileDir),
+// removed wholesale by removeProfileDirIfPresent below — so there is no separate Electron
+// partition to clear (partitionFor returns null). Kept as a guarded seam so an Electron-partition
+// runtime (e.g. the Analytics product) would still be handled.
 async function clearProfileSessionStorage(browserId) {
+  const partition = chromeRuntime.partitionFor(browserId);
+  if (!partition) return; // real-Chrome profile data is deleted via the on-disk profile dir
   const { session } = require('electron');
-  const partition = inappRuntime.partitionFor(browserId);
   const sess = session.fromPartition(partition);
   if (!sess) return;
   await sess.clearStorageData(); // cookies, localStorage, IndexedDB, cache, service workers, etc.
@@ -1696,7 +1704,7 @@ handle('close-run', async (_event, runId) => {
 // same owning run + persistent partition (no new profile).
 handle('browser-reload', (_event, runId) => {
   const id = String(runId || '');
-  const wc = inappRuntime.webContents(id);
+  const wc = chromeRuntime.webContents(id);
   if (!wc || wc.isDestroyed()) return { ok: false, error: { code: 'RUN_NOT_FOUND', message: 'Không có trình duyệt đang mở để tải lại.' } };
   try {
     // Re-navigate to the current URL. This is more reliable than webContents.reload() for a
@@ -1718,7 +1726,7 @@ handle('inapp-view', () => ({ ok: true, external: true, shown: false }));
 // exposes generic evaluate/debug: only Back/Forward/Reload and same-window navigation.
 handle('browser-nav', (_event, runId, action, url) => {
   const id = String(runId || '');
-  const wc = inappRuntime.webContents(id);
+  const wc = chromeRuntime.webContents(id);
   if (!wc || wc.isDestroyed()) return { ok: false, error: { code: 'RUN_NOT_FOUND', message: 'Không có trình duyệt đang mở.' } };
   try {
     switch (String(action)) {
@@ -1734,7 +1742,7 @@ handle('browser-nav', (_event, runId, action, url) => {
 });
 // The toolbar asks for the current URL/nav state when it (re)loads.
 handle('browser-nav-state', (_event, runId) => {
-  const wc = inappRuntime.webContents(String(runId || ''));
+  const wc = chromeRuntime.webContents(String(runId || ''));
   if (!wc || wc.isDestroyed()) return { ok: false };
   try { return { ok: true, url: wc.getURL(), canGoBack: wc.canGoBack(), canGoForward: wc.canGoForward() }; } catch { return { ok: false }; }
 });

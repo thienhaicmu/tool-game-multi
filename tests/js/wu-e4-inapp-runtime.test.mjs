@@ -62,12 +62,18 @@ test('InAppRuntime: deterministic per-B partition mapping', () => {
   assert.equal(rt.partitionFor('B-0001'), new InAppRuntime({ getHostWindow: () => null }).partitionFor('B-0001'));
 });
 
-test('main.cjs uses the in-app runtime as the ONLY browser runtime and tears it down on quit', () => {
+// The product runtime is now real Chrome (ChromeRuntime), NOT the in-app WebContentsView.
+// This supersedes the earlier "in-app is the ONLY runtime" wiring test. The InAppRuntime
+// module above is retained and still unit-tested (the Analytics product uses it), but Control
+// launches an independent chrome.exe per BrowserRun via ChromeRuntime.
+test('main.cjs uses the real-Chrome runtime as the ONLY managed browser runtime and tears it down on quit', () => {
   const main = readFileSync(new URL('../../desktop/main.cjs', import.meta.url), 'utf8');
-  assert.ok(/createLauncher: \(run\) => inappRuntime\.launcher\(run\)/.test(main), 'launcher is the in-app runtime (unconditional)');
-  assert.ok(/createTargetManager: \(_endpoint, run\) => inappRuntime\.targetManager\(run\)/.test(main), 'targetManager is the in-app runtime (unconditional)');
-  assert.ok(/handle\('inapp-view'/.test(main), 'in-app view bounds/visibility IPC exists');
-  assert.ok(/inappRuntime\.destroyAll\(\)/.test(main), 'in-app views destroyed on quit');
-  // No legacy external-Chrome runtime, flag, or screencast remains.
-  assert.ok(!/USE_INAPP_RUNTIME|OBSERVATORY_LEGACY_CHROME|ChromeLauncher|PageScreencast/.test(main), 'no legacy runtime/flag/screencast');
+  assert.ok(/const chromeRuntime = new ChromeRuntime\(/.test(main), 'constructs the real-Chrome runtime');
+  assert.ok(/createLauncher: \(run\) => chromeRuntime\.launcher\(run\)/.test(main), 'launcher is the real-Chrome runtime (unconditional)');
+  assert.ok(/createTargetManager: \(endpoint, run\) => chromeRuntime\.targetManager\(run, endpoint\)/.test(main), 'targetManager attaches to the run\'s own Chrome CDP endpoint');
+  assert.ok(/chromeRuntime\.destroyAll\(\)/.test(main), 'managed Chrome runtimes destroyed on quit');
+  // The default opening window size is 720x405 (opening size only; Chrome stays resizable).
+  assert.ok(/windowSize: \{ width: 720, height: 405 \}/.test(main), 'default browser window size is 720x405');
+  // The old in-app-only wiring is gone.
+  assert.ok(!/inappRuntime/.test(main), 'no in-app WebContentsView runtime wiring remains in main');
 });

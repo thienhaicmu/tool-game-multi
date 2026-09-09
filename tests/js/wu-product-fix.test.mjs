@@ -194,8 +194,8 @@ test('user can manually reload a run browser (first-load/WS error), same run + p
   const pre = read('desktop/preload.cjs');
   const js = read('ui/product.js');
   assert.match(main, /handle\('browser-reload'/, 'browser-reload IPC exists');
-  assert.match(main, /const wc = inappRuntime\.webContents\(id\)/, 'reloads the run\'s in-app webContents (same run/partition)');
-  assert.match(main, /wc\.loadURL\(String\(target\)\)/, 're-navigates the current URL (reliable reload for a WebContentsView)');
+  assert.match(main, /const wc = chromeRuntime\.webContents\(id\)/, 'reloads the run\'s own Chrome page (same run/profile)');
+  assert.match(main, /wc\.loadURL\(String\(target\)\)/, 're-navigates the current URL (CDP Page.navigate on the run\'s page)');
   assert.match(pre, /reloadRun: runId => ipcRenderer\.invoke\('browser-reload'/, 'preload exposes reloadRun');
   assert.match(js, /data-reload="\$\{esc\(b\.runId/, 'online browser card offers a Tải lại (reload) action');
   assert.match(js, /api\.reloadRun\(x\.dataset\.reload\)/, 'reload button calls reloadRun');

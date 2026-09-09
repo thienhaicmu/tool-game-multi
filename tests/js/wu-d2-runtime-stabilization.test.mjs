@@ -88,5 +88,5 @@ test('D2-001: main.cjs tears down managed browsers on quit', () => {
   assert.ok(/function killAllManagedBrowsers\s*\(/.test(main), 'defines killAllManagedBrowsers');
   assert.ok(/before-quit[\s\S]{0,140}killAllManagedBrowsers\(\)/.test(main), 'before-quit tears down managed browsers');
   assert.ok(/will-quit[\s\S]{0,80}killAllManagedBrowsers\(\)/.test(main), 'will-quit tears down managed browsers');
-  assert.ok(/inappRuntime\.destroyAll\(\)/.test(main), 'destroys all in-app views on teardown');
+  assert.ok(/chromeRuntime\.destroyAll\(\)/.test(main), 'destroys all managed Chrome runtimes on teardown');
 });
