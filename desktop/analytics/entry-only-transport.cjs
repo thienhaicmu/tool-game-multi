@@ -12,11 +12,11 @@ const {
 // EXACTLY ONE operation: RESOLVE-BEFORE-INVOKE the site's OWN authenticated minigame-open routine.
 // It is a CAPABILITY BOUNDARY, not a UI hint:
 //
-//   - sendEntry(ctx, descriptor) takes NO payload / cmd / JSON / method / module / URL / body / fn
-//     name argument. The caller cannot influence what runs.
-//   - The sealed op resolves __require("MiniGameNode").default.instance.onClickBaseMiniGameNode and,
-//     only if every read-only check passes, invokes it with the LEARNED, validated Aviator gameId.
-//     The site then performs the authenticated game-act (its own X-FG-ID/X-TOKEN) + lobby 10002 +
+//   - sendEntry(ctx, descriptor) takes NO payload / cmd / JSON / node / path / component / URL / body
+//     / fn name / coordinate argument. The caller cannot influence what runs.
+//   - The sealed op resolves the Aviator Cocos scene node (by the LEARNED gameId == node name) and,
+//     only if every read-only check passes, fires the node's OWN wired cc.Button click. The site's
+//     own handlers then perform the authenticated game-act (its own X-FG-ID/X-TOKEN) + lobby 10002 +
 //     aviator 100000. Analytics transmits NO frame and issues NO fetch itself.
 //   - There is no code path that emits BET (100002), CASHOUT (100003), an arbitrary cmd, an arbitrary
 //     payload, an arbitrary fetch(url, body), or an arbitrary function/module name. gameId is the only

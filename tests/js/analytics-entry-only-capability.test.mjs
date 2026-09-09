@@ -34,7 +34,7 @@ test('EntryOnlyTransport exposes ONLY sendEntry as a wire op (no send/sendRaw/se
   assert.deepEqual(wireish.sort(), ['sendEntry'], 'the only wire method must be sendEntry');
 });
 
-test('sendEntry runs ONLY the sealed site-open (onClickBaseMiniGameNode) — no wager cmds, no fetch, no frames', async () => {
+test('sendEntry runs ONLY the sealed Cocos node click — no wager cmds, no fetch, no frames', async () => {
   const client = fakeClient();
   const t = new EntryOnlyTransport({ resolveClient: () => client });
   // Caller tries to smuggle a payload/cmd — extra ctx fields must be ignored entirely.
@@ -43,12 +43,13 @@ test('sendEntry runs ONLY the sealed site-open (onClickBaseMiniGameNode) — no 
   const evalExprs = client.exprs.join('\n');
   assert.ok(/__avEnterAviator/.test(evalExprs), 'must call the sealed entry function');
   assert.equal(/100002|100003|BET|CASHOUT/.test(evalExprs), false, 'must never reference wager cmds/payloads');
-  // The baked hook resolves + invokes the SITE's own entry with the learned gameId — it never fetches
-  // or constructs a frame itself (the site owns game-act / 10002 / 100000, with its own auth).
+  // The baked hook resolves + fires the Aviator Cocos node's OWN cc.Button with the learned gameId —
+  // it never fetches or constructs a frame itself (the site owns game-act / 10002 / 100000, with its
+  // own auth).
   const hookExpr = client.exprs.find((e) => /__avEnterAviator\s*=/.test(e));
   assert.ok(hookExpr, 'a hook expression that defines __avEnterAviator is injected');
-  assert.ok(/onClickIConGame/.test(hookExpr) && /LobbyViewController/.test(hookExpr), 'hook resolves the site entry accessor');
-  assert.ok(hookExpr.includes('vgmn_221'), 'hook bakes the learned gameId');
+  assert.ok(/cc\.find/.test(hookExpr) && /emitEvents/.test(hookExpr), 'hook resolves + clicks the Cocos node');
+  assert.ok(hookExpr.includes('vgmn_221'), 'hook bakes the learned gameId (== node name)');
   assert.equal(/fetch\s*\(/.test(hookExpr), false, 'no hand-crafted fetch in the sealed hook');
   assert.equal(/game-act|lobbyPlugin|aviatorPlugin|X-TOKEN|X-FG-ID/i.test(hookExpr), false, 'no game-act/frame/secret handling');
 });

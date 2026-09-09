@@ -1,42 +1,45 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// Aviator ENTER via the SITE's OWN semantic tile-open — the sealed re-entry seam.
+// Aviator ENTER via the live NewLobby's OWN Cocos scene node — the sealed re-entry seam.
 //
-// Live acceptance proved a hand-crafted game-act fetch cannot re-enter: the site's game-act
-// is authenticated by site-injected headers (X-FG-ID, X-TOKEN=session_id) that we must never
-// reconstruct or store. Manual-click GROUND TRUTH (CDP initiator capture) proved the site's own
-// lobby entry for Aviator is the game-icon click path (NOT the minigame strip):
+// LIVE-PROVEN (end-to-end): the NewLobby page runs Cocos, and the Aviator tile is a real scene
+// node whose name equals the game_id ("vgmn_221"). Firing that node's OWN wired Cocos Button
+// click drives the site's authenticated flow (its own game-act with X-FG-ID/X-TOKEN → lobby 10002
+// → aviator 100000 → fresh authoritative SERVER Aviator frames → ACTIVE). The proven operation is:
 //
-//     __require("LobbyViewController").default.Instance.onClickIConGame(null, gameId)
+//     node = cc.find('Canvas/MainUIParent/NewLobby/Main/ScrollView/view/Content/NodeSpines/'+GID)
+//            (or a bounded live-scene search for a node named GID that has cc.Button)
+//     btn  = node.getComponent(cc.Button)
+//     cc.Component.EventHandler.emitEvents(btn.clickEvents, node);   // fire the wired handlers
+//     node.emit('click', btn);                                       // + the node's click event
 //
-// (first arg is unused by the site; second is the game id). It resolves the game via
-// gameLaunchHandler.mapClickLobby — a CUSTOM map with .get/.set but NO .has/.size, so membership
-// is `mapClickLobby.get(id) != null`. This drives the SITE's authenticated flow end-to-end:
-//     game-act (with the site's own X-FG-ID/X-TOKEN)  →  lobbyPlugin 10002  →  aviatorPlugin 100000
-//     →  fresh authoritative SERVER Aviator frames  →  ACTIVE
+// Live result: CLICKED vgmn_221 → fresh SERVER cmd:100009 → Aviator entered. Both event calls are
+// the proven invocation and are preserved verbatim (no A/B trimming, no simplification).
 //
 // This module is a CAPABILITY BOUNDARY, not a convenience API:
-//   - It invokes exactly ONE site routine (onClickIConGame) with the LEARNED, validated Aviator
-//     gameId. No caller supplies a function name, module name, JS source, URL, body, frame, cmd or
-//     arbitrary argument. The module + method + gameId are baked/validated here.
-//   - RESOLVE-BEFORE-INVOKE: every attempt first runs READ-ONLY existence checks (require, module,
-//     default, instance, method, tile registered). If ANY fails it returns ENTRY_SITE_SEAM_UNAVAILABLE
-//     and invokes NOTHING — no fallback to a hand-crafted game-act, no direct 10002/100000 send.
-//   - We perform NO fetch and send NO WS frame ourselves; the site's own code owns game-act, 10002
-//     and 100000, using the site's own authenticated session. We never touch X-TOKEN/X-FG-ID.
+//   - It fires exactly ONE thing: the Aviator scene node's OWN cc.Button, resolved by the LEARNED,
+//     validated Aviator gameId (== the node name). No caller supplies a node path/name, function,
+//     module, JS source, URL, body, frame, cmd, coordinates or arbitrary argument — all baked here.
+//   - RESOLVE-BEFORE-INVOKE: every attempt first runs READ-ONLY existence checks (cc, cc.director,
+//     the emitter, node resolved by path OR bounded scene search, cc.Button, btn.clickEvents). If ANY
+//     fails it returns ENTRY_SITE_SEAM_UNAVAILABLE and invokes NOTHING — no hand-crafted game-act,
+//     no direct 10002/100000 send, no pixel-coordinate click.
+//   - We perform NO fetch and send NO WS frame ourselves; the site's own click handlers own game-act,
+//     10002 and 100000, using the site's own authenticated session. We never touch X-TOKEN/X-FG-ID.
 //
 // game_id lifecycle (see the runtimes): learned per-BrowserRun from the site's own game-act POST,
 // validated, kept in memory, refreshed by any later genuine game-act, never persisted, never
 // accepted from a renderer/IPC caller, gone when the run closes. If none learned yet, entry fails
-// safe (ENTRY_NO_DESCRIPTOR) rather than inventing one.
+// safe (ENTER_NO_DESCRIPTOR) rather than inventing one. The learned game_id is also the Aviator
+// scene node's name, so it drives both the known path and the bounded scene fallback.
 // ---------------------------------------------------------------------------
 
-// The Cocos module + method that own the site's authenticated lobby game entry (ground-truthed
-// live via CDP initiator capture on a real Aviator tile click). The live singleton is `.Instance`
-// (capital I) on the module default; the game-registration map is on `.gameLaunchHandler`.
-const ENTRY_MODULE = 'LobbyViewController';
-const ENTRY_METHOD = 'onClickIConGame';
+// The live-proven NewLobby scene path to the Aviator node (the learned game_id is appended as the
+// leaf name). If this exact path is absent in a given build, a bounded scene search is the fallback.
+const COCOS_KNOWN_PATH_PREFIX = 'Canvas/MainUIParent/NewLobby/Main/ScrollView/view/Content/NodeSpines/';
+// Bounded max traversal depth for the live-scene fallback (matches the proven operation's cap).
+const COCOS_MAX_DEPTH = 10;
 
 // Reference-only: the frames the SITE itself emits during entry. We NEVER send these — they are
 // kept for recognition/provenance/tests only (the sealed re-entry no longer transmits any frame).
@@ -73,38 +76,61 @@ function isValidDescriptor(d) {
 }
 
 // Build the SEALED, zero-argument page hook. It installs globalThis.__avEnterAviator() which:
-//   1. runs READ-ONLY resolution of the site's own entry accessor, and
-//   2. ONLY if every check passes, invokes onClickBaseMiniGameNode(<baked gameId>, null).
-// It returns non-secret facts only: { ok, step?, resolve:{requireAvailable, moduleResolved,
-// instanceResolved, methodResolved, tileRegistered}, invoked }. It performs no fetch and sends
-// no WS frame. The gameId + module + method are baked literals — callers cannot substitute them.
+//   1. runs READ-ONLY resolution of the Aviator Cocos node (known path, else a bounded scene
+//      search for a node named <gameId> that carries a cc.Button), and
+//   2. ONLY if every check passes, fires the node's OWN wired click (the LIVE-PROVEN operation).
+// It returns non-secret facts only: { ok, step?, resolve:{ccAvailable, directorAvailable,
+// nodeResolved, buttonResolved, resolvedBy}, invoked }. It performs no fetch, sends no WS frame,
+// and does no coordinate clicking. The gameId (== node name) + path prefix + depth cap are baked
+// literals — callers cannot substitute a node path, name, component, function or coordinates.
 function buildEnterAviatorHook(descriptor) {
   if (!isValidDescriptor(descriptor)) throw new Error('invalid entry descriptor');
   const GID = JSON.stringify(descriptor.gameId);
-  const MOD = JSON.stringify(ENTRY_MODULE);
+  const PATH = JSON.stringify(COCOS_KNOWN_PATH_PREFIX + descriptor.gameId);
+  const MAXD = String(COCOS_MAX_DEPTH | 0);
   return `(() => {
   try {
     var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof self !== 'undefined') ? self : this;
     if (!g) return;
-    var GID = ${GID}, MOD = ${MOD};
+    var GID = ${GID}, PATH = ${PATH}, MAXD = ${MAXD};
     g.__avEnterAviator = function () {
-      var r = { requireAvailable:false, moduleResolved:false, instanceResolved:false, methodResolved:false, tileRegistered:null };
+      var r = { ccAvailable:false, directorAvailable:false, nodeResolved:false, buttonResolved:false, resolvedBy:null };
       try {
-        if (typeof g.__require !== 'function') return { ok:false, step:'no-require', resolve:r };
-        r.requireAvailable = true;
-        var m; try { m = g.__require(MOD); } catch (e) { return { ok:false, step:'no-module', resolve:r }; }
-        if (!m || !m.default) return { ok:false, step:'no-default', resolve:r };
-        r.moduleResolved = true;
-        var inst; try { inst = m.default.Instance; } catch (e) { return { ok:false, step:'no-instance', resolve:r }; }
-        if (!inst) return { ok:false, step:'no-instance', resolve:r };
-        r.instanceResolved = true;
-        if (typeof inst.${ENTRY_METHOD} !== 'function') return { ok:false, step:'no-method', resolve:r };
-        r.methodResolved = true;
-        var glh = inst.gameLaunchHandler, kvp = glh && glh.mapClickLobby;
-        r.tileRegistered = (kvp && typeof kvp.get === 'function') ? (kvp.get(GID) != null) : null;
-        if (r.tileRegistered !== true) return { ok:false, step:'tile-not-registered', resolve:r };
-        // All read-only checks passed — invoke the site's OWN lobby entry; it owns everything downstream.
-        inst.${ENTRY_METHOD}(null, GID);
+        var cc = g.cc;
+        if (!cc || typeof cc.find !== 'function' || !cc.Component || !cc.Component.EventHandler
+            || typeof cc.Component.EventHandler.emitEvents !== 'function' || !cc.Button) return { ok:false, step:'no-cc', resolve:r };
+        r.ccAvailable = true;
+        var dir = cc.director;
+        if (!dir || typeof dir.getScene !== 'function') return { ok:false, step:'no-director', resolve:r };
+        r.directorAvailable = true;
+        var Button = cc.Button;
+        var node = null, by = null;
+        // Primary: the live-proven known NewLobby scene path (must itself carry a cc.Button).
+        try { var p = cc.find(PATH); if (p && typeof p.getComponent === 'function' && p.getComponent(Button)) { node = p; by = 'path'; } } catch (e) {}
+        // Fallback: bounded (<= MAXD) live-scene traversal for a node named GID that has a cc.Button.
+        if (!node) {
+          var sc = null; try { sc = dir.getScene(); } catch (e) { sc = null; }
+          var found = null;
+          (function w(n, d) {
+            if (!n || d > MAXD || found) return;
+            var ch = n.children || [];
+            for (var i = 0; i < ch.length; i++) {
+              var c = ch[i];
+              try { if (c && c.name === GID && typeof c.getComponent === 'function' && c.getComponent(Button)) { found = c; return; } } catch (e) {}
+              w(c, d + 1);
+            }
+          })(sc, 0);
+          if (found) { node = found; by = 'scene'; }
+        }
+        if (!node) return { ok:false, step:'node-not-found', resolve:r };
+        r.nodeResolved = true; r.resolvedBy = by;
+        var btn = node.getComponent(Button);
+        if (!btn) return { ok:false, step:'no-button', resolve:r };
+        r.buttonResolved = true;
+        if (!btn.clickEvents) return { ok:false, step:'no-clickevents', resolve:r };
+        // All read-only checks passed — fire the node's OWN wired click (LIVE-PROVEN, both calls).
+        cc.Component.EventHandler.emitEvents(btn.clickEvents, node);
+        node.emit('click', btn);
         return { ok:true, invoked:true, resolve:r };
       } catch (e) { return { ok:false, step:'invoke-error', resolve:r }; }
     };
@@ -112,10 +138,10 @@ function buildEnterAviatorHook(descriptor) {
 })();`;
 }
 
-// Non-secret resolve facts are surfaced to onDiag ONLY (booleans + tileRegistered). The returned
-// page value is NOT logged wholesale. Executes through a target's OWN CDP client (the BrowserRun
-// game session). Returns { ok:true } | { error:{ code:'ENTRY_SITE_SEAM_UNAVAILABLE'|..., step? } }.
-// SENT != ENTERED: a successful invoke does not confirm entry — the caller (gate) confirms only on
+// Non-secret resolve facts are surfaced to onDiag ONLY (booleans + resolvedBy). The returned page
+// value is NOT logged wholesale. Executes through a target's OWN CDP client (the BrowserRun game
+// session). Returns { ok:true } | { error:{ code:'ENTRY_SITE_SEAM_UNAVAILABLE'|..., step? } }.
+// INVOKED != ENTERED: a successful click does not confirm entry — the caller (gate) confirms only on
 // fresh authoritative SERVER Aviator evidence after the attempt boundary.
 async function runEnterAviatorViaSite(client, sessionId, descriptor, onDiag) {
   const diag = typeof onDiag === 'function' ? onDiag : () => {};
@@ -136,18 +162,18 @@ async function runEnterAviatorViaSite(client, sessionId, descriptor, onDiag) {
   } catch (e) {
     return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: String(e && e.message || e), step: 'evaluate-error' } };
   }
-  // Surface ONLY non-secret booleans (never the returned object wholesale / never page state).
+  // Surface ONLY non-secret booleans + resolvedBy (never the returned object wholesale / page state).
   const rf = (v && v.resolve) || {};
-  diag({ event: 'SITE_ENTRY_SEAM_RESOLVE', requireAvailable: !!rf.requireAvailable, moduleResolved: !!rf.moduleResolved, instanceResolved: !!rf.instanceResolved, methodResolved: !!rf.methodResolved, tileRegistered: rf.tileRegistered == null ? null : !!rf.tileRegistered });
+  diag({ event: 'COCOS_ENTRY_SEAM_RESOLVE', ccAvailable: !!rf.ccAvailable, directorAvailable: !!rf.directorAvailable, nodeResolved: !!rf.nodeResolved, buttonResolved: !!rf.buttonResolved, resolvedBy: rf.resolvedBy == null ? null : String(rf.resolvedBy) });
   if (v && v.ok === true) {
-    diag({ event: 'SITE_ENTRY_INVOKED' });
+    diag({ event: 'COCOS_ENTRY_INVOKED' });
     return { ok: true };
   }
-  return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: 'Site entry accessor did not resolve', step: v && v.step } };
+  return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: 'Aviator Cocos node did not resolve', step: v && v.step } };
 }
 
 module.exports = {
-  ENTRY_MODULE, ENTRY_METHOD,
+  COCOS_KNOWN_PATH_PREFIX, COCOS_MAX_DEPTH,
   LOBBY_ENVELOPE, ENTER_ENVELOPE, LOBBY_FRAME, ENTER_FRAME,
   GAME_ACT_PATH, GAME_ID_RE, isGameActUrl,
   parseGameActDescriptor, isValidDescriptor, buildEnterAviatorHook, runEnterAviatorViaSite,
