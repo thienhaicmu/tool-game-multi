@@ -233,9 +233,133 @@ CREATE INDEX idx_rawws_conn           ON raw_ws_events(ws_connection_id, id);
 CREATE INDEX idx_wsconn_session       ON ws_connections(capture_session_id);
 `;
 
+// v3 — Prediction Research & Evaluation platform. Persisted, IMMUTABLE out-of-sample
+// research evidence (§30/§31). These tables are APPENDED to alongside the captured
+// round history; they never modify capture/round rows. A run row, once written, is a
+// permanent record of one evaluation (algorithm fingerprint + dataset fingerprint +
+// policy version + full result). Re-evaluating on more data inserts a NEW run.
+const SCHEMA_V3 = `
+CREATE TABLE research_algorithms (
+  algorithm_id   TEXT NOT NULL,
+  version        INTEGER NOT NULL,
+  name           TEXT NOT NULL,
+  family         TEXT NOT NULL,
+  feature_set_id TEXT NOT NULL,
+  description    TEXT,
+  code_version   TEXT,
+  created_at_ms  INTEGER NOT NULL,
+  PRIMARY KEY (algorithm_id, version)
+);
+
+CREATE TABLE research_experiments (
+  id                     INTEGER PRIMARY KEY,
+  experiment_key         TEXT NOT NULL UNIQUE,
+  algorithm_id           TEXT NOT NULL,
+  version                INTEGER NOT NULL,
+  algorithm_fingerprint  TEXT NOT NULL,
+  target                 TEXT NOT NULL,
+  model_stage            TEXT NOT NULL,
+  browser_scope          TEXT,
+  created_at_ms          INTEGER NOT NULL
+);
+
+CREATE TABLE research_runs (
+  id                     INTEGER PRIMARY KEY,
+  experiment_id          INTEGER NOT NULL REFERENCES research_experiments(id),
+  algorithm_id           TEXT NOT NULL,
+  version                INTEGER NOT NULL,
+  algorithm_fingerprint  TEXT NOT NULL,
+  dataset_fingerprint    TEXT NOT NULL,
+  frozen_fingerprint     TEXT NOT NULL,
+  target                 TEXT NOT NULL,
+  model_stage            TEXT NOT NULL,
+  browser_scope          TEXT,
+  code_revision          TEXT,
+  leakage_status         TEXT NOT NULL,
+  leakage_policy_version INTEGER NOT NULL,
+  status                 TEXT NOT NULL,
+  n                      INTEGER,
+  time_range_start_ms    INTEGER,
+  time_range_end_ms      INTEGER,
+  test_n                 INTEGER,
+  test_positives         INTEGER,
+  prevalence             REAL,
+  auc                    REAL,
+  pr_auc                 REAL,
+  brier                  REAL,
+  log_loss               REAL,
+  delta_brier_test       REAL,
+  calibration_max_diff   REAL,
+  stability_status       TEXT,
+  conclusion_status      TEXT,
+  conclusion_magnitude   TEXT,
+  quality_status         TEXT,
+  result_json            TEXT NOT NULL,
+  evaluated_at_ms        INTEGER NOT NULL,
+  created_at_ms          INTEGER NOT NULL
+);
+
+CREATE TABLE research_metrics (
+  id         INTEGER PRIMARY KEY,
+  run_id     INTEGER NOT NULL REFERENCES research_runs(id),
+  split      TEXT NOT NULL,
+  n          INTEGER,
+  positives  INTEGER,
+  prevalence REAL,
+  auc        REAL,
+  pr_auc     REAL,
+  brier      REAL,
+  log_loss   REAL
+);
+
+CREATE TABLE research_walk_forward (
+  id             INTEGER PRIMARY KEY,
+  run_id         INTEGER NOT NULL REFERENCES research_runs(id),
+  fold           INTEGER NOT NULL,
+  train_n        INTEGER,
+  test_n         INTEGER,
+  prevalence     REAL,
+  auc            REAL,
+  pr_auc         REAL,
+  brier          REAL,
+  baseline_brier REAL,
+  delta_brier    REAL
+);
+
+CREATE TABLE research_calibration (
+  id             INTEGER PRIMARY KEY,
+  run_id         INTEGER NOT NULL REFERENCES research_runs(id),
+  bin            INTEGER NOT NULL,
+  lo             REAL,
+  hi             REAL,
+  n              INTEGER,
+  mean_predicted REAL,
+  observed_rate  REAL,
+  diff           REAL
+);
+
+CREATE TABLE research_coefficients (
+  id         INTEGER PRIMARY KEY,
+  run_id     INTEGER NOT NULL REFERENCES research_runs(id),
+  feature    TEXT NOT NULL,
+  mean_coef  REAL,
+  sign_flips INTEGER,
+  stable     INTEGER
+);
+
+CREATE INDEX idx_research_runs_experiment ON research_runs(experiment_id, evaluated_at_ms);
+CREATE INDEX idx_research_runs_frozen     ON research_runs(frozen_fingerprint);
+CREATE INDEX idx_research_runs_algo       ON research_runs(algorithm_id, version, target, model_stage);
+CREATE INDEX idx_research_metrics_run     ON research_metrics(run_id);
+CREATE INDEX idx_research_wf_run          ON research_walk_forward(run_id);
+CREATE INDEX idx_research_calib_run       ON research_calibration(run_id);
+CREATE INDEX idx_research_coef_run        ON research_coefficients(run_id);
+`;
+
 const MIGRATIONS = [
   { version: 1, up: (db) => { db.exec(SCHEMA_V1); } },
   { version: 2, up: (db) => { db.exec(SCHEMA_V2); } },
+  { version: 3, up: (db) => { db.exec(SCHEMA_V3); } },
 ];
 
 const LATEST_VERSION = MIGRATIONS[MIGRATIONS.length - 1].version;

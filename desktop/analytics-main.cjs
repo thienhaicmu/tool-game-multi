@@ -38,6 +38,7 @@ const exporter = require('./analytics/export/exporter.cjs');
 const { WebLogQuery, NetworkReport, normalizeNetworkFilter } = require('./analytics/query/web-log-query.cjs');
 const { JackpotReport } = require('./analytics/query/jackpot-report.cjs');
 const { ForwardResearch } = require('./analytics/forward-research/forward-research.cjs');
+const { ResearchService } = require('./analytics/research/research-service.cjs');
 
 const PRODUCT_NAME = 'Aviator Analytics';
 
@@ -73,6 +74,7 @@ let webLog = null;
 let netReport = null;
 let jackpotReport = null;
 let forwardResearch = null;
+let research = null;
 
 function analyticsRoot() { return path.join(ANALYTICS_USERDATA, 'analytics'); }
 
@@ -88,6 +90,7 @@ function ensureStore() {
   netReport = new NetworkReport({ store });
   jackpotReport = new JackpotReport({ store });
   forwardResearch = new ForwardResearch({ store });
+  research = new ResearchService({ store });
   return store;
 }
 
@@ -274,6 +277,21 @@ function registerIpc() {
   // Forward Research V1 — leakage-safe, time-split, out-of-sample RESEARCH (not a predictor).
   ipcMain.handle('analytics-fwd-run', (_e, opts) => { ensureRuntime(); const o = opts || {}; try { return forwardResearch.run({ modelStage: String(o.modelStage || 'ROUND_OPEN'), target: o.target || { name: 'reached_2x', threshold: 2 }, browserId: o.browserId != null ? String(o.browserId) : null }); } catch (err) { return { error: { code: 'FWD_FAILED', message: String(err && err.message || err) } }; } });
   ipcMain.handle('analytics-fwd-matrix', (_e, opts) => { ensureRuntime(); const o = opts || {}; try { return forwardResearch.matrix({ browserId: o.browserId != null ? String(o.browserId) : null }); } catch (err) { return { error: { code: 'FWD_FAILED', message: String(err && err.message || err) } }; } });
+
+  // ---- Prediction Research & Evaluation platform (descriptive/research only; NO action surface) ----
+  const rsvc = (fn) => (_e, ...args) => { ensureRuntime(); try { return fn(research, ...args); } catch (err) { return { error: { code: 'RESEARCH_FAILED', message: String(err && err.message || err) } }; } };
+  const str = (v) => (v != null ? String(v) : null);
+  ipcMain.handle('analytics-research-algorithms', rsvc((s) => ({ algorithms: s.algorithms(), targets: s.targetList(), stages: s.stages() })));
+  ipcMain.handle('analytics-research-overview', rsvc((s) => s.overview()));
+  ipcMain.handle('analytics-research-readiness-matrix', rsvc((s, o) => s.readinessMatrix({ browserScope: str((o || {}).browserScope) })));
+  ipcMain.handle('analytics-research-readiness', rsvc((s, o) => s.readiness({ algorithmId: String((o || {}).algorithmId), modelStage: String((o || {}).modelStage || 'ROUND_OPEN'), target: String((o || {}).target || 'reached_2x'), browserScope: str((o || {}).browserScope) })));
+  ipcMain.handle('analytics-research-evaluate', rsvc((s, o) => s.evaluate({ algorithmId: String((o || {}).algorithmId), modelStage: String((o || {}).modelStage || 'ROUND_OPEN'), target: String((o || {}).target || 'reached_2x'), browserScope: str((o || {}).browserScope), persist: (o || {}).persist !== false })));
+  ipcMain.handle('analytics-research-evaluate-all', rsvc((s, o) => s.evaluateAll({ browserScope: str((o || {}).browserScope), persist: (o || {}).persist !== false })));
+  ipcMain.handle('analytics-research-history', rsvc((s, o) => s.history({ algorithmId: String((o || {}).algorithmId), version: (o || {}).version, target: String((o || {}).target || 'reached_2x'), modelStage: String((o || {}).modelStage || 'ROUND_OPEN'), browserScope: str((o || {}).browserScope) })));
+  ipcMain.handle('analytics-research-run', rsvc((s, runId) => s.getRun(runId)));
+  ipcMain.handle('analytics-research-compare', rsvc((s, o) => s.compare({ runIds: Array.isArray((o || {}).runIds) ? (o || {}).runIds : [] })));
+  ipcMain.handle('analytics-research-drift', rsvc((s, o) => s.drift({ algorithmId: String((o || {}).algorithmId), version: (o || {}).version, target: String((o || {}).target || 'reached_2x'), modelStage: String((o || {}).modelStage || 'ROUND_OPEN'), browserScope: str((o || {}).browserScope) })));
+  ipcMain.handle('analytics-research-monitoring', rsvc((s) => s.monitoring()));
   ipcMain.handle('analytics-export-weblog', async (_e, filter) => {
     ensureRuntime();
     const out = await chooseSave('aviator-weblog.csv', [{ name: 'CSV', extensions: ['csv'] }]);

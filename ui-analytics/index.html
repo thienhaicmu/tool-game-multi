@@ -15,6 +15,7 @@
       <button class="tab active" data-tab="home">HOME</button>
       <button class="tab" data-tab="report">BÁO CÁO</button>
       <button class="tab" data-tab="history">LỊCH SỬ</button>
+      <button class="tab" data-tab="research">NGHIÊN CỨU</button>
       <button class="tab" data-tab="advanced">NÂNG CAO</button>
     </nav>
   </header>
@@ -120,6 +121,31 @@
           <tbody id="rounds-body"></tbody>
         </table>
       </div>
+    </section>
+
+    <!-- RESEARCH: Algorithm Research & Evaluation (descriptive, out-of-sample; no action surface) -->
+    <section class="main hidden" id="view-research">
+      <div class="rs-head">
+        <div>
+          <div class="live-name">Nghiên cứu &amp; Đánh giá thuật toán</div>
+          <div class="live-meta muted">Đánh giá ngoài mẫu, an toàn rò rỉ, có phiên bản &amp; lịch sử. Chỉ mô tả &amp; nghiên cứu — không phải khuyến cáo hành động.</div>
+        </div>
+        <div class="home-actions">
+          <label class="rs-scope muted">Phạm vi
+            <select id="rs-scope"><option value="">Tất cả trình duyệt</option></select>
+          </label>
+          <button id="rs-run-all" class="btn-primary">Chạy đánh giá toàn bộ</button>
+        </div>
+      </div>
+      <nav class="subtabs">
+        <button class="subtab active" data-rs="overview">Tổng quan</button>
+        <button class="subtab" data-rs="algorithms">Thuật toán</button>
+        <button class="subtab" data-rs="compare">So sánh</button>
+        <button class="subtab" data-rs="history">Lịch sử đánh giá</button>
+        <button class="subtab" data-rs="stability">Độ ổn định</button>
+        <button class="subtab" data-rs="readiness">Chất lượng dữ liệu</button>
+      </nav>
+      <div id="rs-panel" class="analytics-panel"></div>
     </section>
 
     <!-- ADVANCED -->

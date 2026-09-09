@@ -77,11 +77,13 @@ function switchTab(name) {
   $('view-home').classList.toggle('hidden', name !== 'home');
   $('view-report').classList.toggle('hidden', name !== 'report');
   $('view-history').classList.toggle('hidden', name !== 'history');
+  $('view-research').classList.toggle('hidden', name !== 'research');
   $('view-advanced').classList.toggle('hidden', name !== 'advanced');
   if (selectedId) api.browser.view(selectedId, { x: 0, y: 0, width: 0, height: 0 }, name === 'home');
   if (name === 'home') { reportViewBounds(); refreshHome(); }
   if (name === 'report') loadReport();
   if (name === 'history') loadRounds();
+  if (name === 'research') loadResearch();
   if (name === 'advanced') loadAdvanced();
 }
 
@@ -545,6 +547,309 @@ $('d-export-round').onclick = async () => { if (lastOpenedRoundId == null) { $('
 $('d-export-raw').onclick = async () => dataResult(await api.export.rawEvents({ browserId: selectedId || null }), 'jsonl');
 $('d-export-weblog').onclick = async () => dataResult(await api.export.webLog({ browserId: selectedId || null }), 'weblog');
 $('d-backup').onclick = async () => dataResult(await api.backup.database(), 'backup');
+
+// ===========================================================================
+// NGHIÊN CỨU & ĐÁNH GIÁ THUẬT TOÁN (Algorithm Research & Evaluation)
+// Descriptive, out-of-sample research evidence only. Registry-driven, fingerprinted,
+// persisted & versioned. NOT a betting/action surface and NOT a recommendation.
+// ===========================================================================
+let rsSub = 'overview';
+let rsScope = '';
+let rsSel = { algorithmId: null, modelStage: 'ROUND_OPEN', target: 'reached_2x' };
+let rsAlgos = null;           // cached registry view
+let rsTargets = null;
+let rsCompareCell = { modelStage: 'ROUND_OPEN', target: 'reached_2x' };
+
+const RS_STAGE_VI = { ROUND_OPEN: 'Lúc mở vòng', ROUND_LOCK: 'Lúc khóa' };
+const RS_TARGET_VI = { reached_2x: '≥2×', reached_5x: '≥5×', reached_10x: '≥10×', reached_20x: '≥20×', reached_50x: '≥50×', reached_100x: '≥100×' };
+const RS_QUALITY_VI = {
+  NOT_EVALUATED: 'Chưa đánh giá', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu', INVALID: 'Không hợp lệ (rò rỉ)',
+  NO_IMPROVEMENT: 'Không cải thiện so với nền', SMALL_UNSTABLE_IMPROVEMENT: 'Cải thiện nhỏ, chưa ổn định',
+  SMALL_STABLE_IMPROVEMENT: 'Cải thiện nhỏ, ổn định', MATERIAL_STABLE_IMPROVEMENT: 'Cải thiện rõ rệt, ổn định',
+};
+const RS_QUALITY_CLS = { MATERIAL_STABLE_IMPROVEMENT: 'ms-yes', SMALL_STABLE_IMPROVEMENT: 'ms-yes', NO_IMPROVEMENT: '', INVALID: 'ms-no', INSUFFICIENT_DATA: '' };
+const RS_STABILITY_VI = { STABLE: 'Ổn định', MIXED: 'Chưa rõ ràng', UNSTABLE: 'Không ổn định', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu' };
+const RS_DRIFT_VI = { NO_MATERIAL_CHANGE: 'Không đổi đáng kể', POSSIBLE_DRIFT: 'Có thể biến động', MATERIAL_DEGRADATION: 'Suy giảm đáng kể', IMPROVEMENT: 'Cải thiện', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu' };
+const RS_DRIFT_CLS = { MATERIAL_DEGRADATION: 'ms-no', POSSIBLE_DRIFT: 'warn', IMPROVEMENT: 'ms-yes', NO_MATERIAL_CHANGE: '', INSUFFICIENT_DATA: '' };
+const RS_READY_VI = { READY: 'Đủ dữ liệu', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu', INSUFFICIENT_POSITIVES: 'Chưa đủ sự kiện dương', FEATURE_UNAVAILABLE: 'Thiếu biến', INVALID: 'Không hợp lệ' };
+const RS_STATUS_VI = { OK: 'OK', INSUFFICIENT_DATA: 'Chưa đủ dữ liệu', INSUFFICIENT_POSITIVES: 'Chưa đủ sự kiện dương', INVALID: 'Không hợp lệ' };
+const leakVi = (s) => (s === 'PASS' ? '<b class="ms-yes">ĐẠT</b>' : '<b class="ms-no">KHÔNG ĐẠT</b>');
+const rsTime = (ms) => (ms ? new Date(ms).toLocaleString([], { hour12: false }) : '—');
+const rsFp = (s) => (s ? `<code class="rs-fp">${escapeHtml(s)}</code>` : '—');
+
+for (const b of document.querySelectorAll('#view-research .subtab')) b.addEventListener('click', () => { rsSub = b.dataset.rs; for (const s of document.querySelectorAll('#view-research .subtab')) s.classList.toggle('active', s === b); renderResearch(); });
+$('rs-run-all').addEventListener('click', async () => { const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang chạy đánh giá toàn bộ thuật toán × giai đoạn × mục tiêu…</div>'; await api.research.evaluateAll({ browserScope: rsScope || null }); renderResearch(); });
+$('rs-scope').addEventListener('change', () => { rsScope = $('rs-scope').value; renderResearch(); });
+
+async function loadResearch() {
+  if (!rsAlgos) { const r = await api.research.algorithms(); rsAlgos = r.algorithms || []; rsTargets = r.targets || []; if (!rsSel.algorithmId && rsAlgos.length) rsSel.algorithmId = rsAlgos[0].algorithmId; }
+  // scope options mirror the browser rail
+  const sc = $('rs-scope'); const cur = rsScope;
+  sc.innerHTML = '<option value="">Tất cả trình duyệt</option>' + browsers.map((b) => `<option value="${escapeHtml(b.browserId)}"${cur === b.browserId ? ' selected' : ''}>${escapeHtml(b.displayName)}</option>`).join('');
+  renderResearch();
+}
+
+function renderResearch() {
+  if (rsSub === 'overview') return rsRenderOverview();
+  if (rsSub === 'algorithms') return rsRenderAlgorithms();
+  if (rsSub === 'compare') return rsRenderCompare();
+  if (rsSub === 'history') return rsRenderHistory();
+  if (rsSub === 'stability') return rsRenderStability();
+  if (rsSub === 'readiness') return rsRenderReadiness();
+}
+
+// ---- Overview (§43) ----
+async function rsRenderOverview() {
+  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  const o = await api.research.overview();
+  if (o.error) { box.innerHTML = bailText(o); return; }
+  const cov = o.coverage || {};
+  const cards = [
+    ['Thuật toán đã đăng ký', cnt(o.registeredAlgorithms)],
+    ['Thí nghiệm đã đánh giá', cnt(o.evaluatedExperiments)],
+    ['Ô đủ dữ liệu', `${cnt(o.dataReadyCells)} / ${cnt(o.readyCellsTotal)}`],
+    ['Cải thiện ổn định', cnt(o.stableImprovement)],
+    ['Không cải thiện', cnt(o.noImprovement)],
+    ['Chưa đủ dữ liệu', cnt(o.insufficientData)],
+    ['Lần đánh giá gần nhất', rsTime(o.latestEvaluationMs)],
+  ];
+  let html = `<div class="section-h">Tổng quan nghiên cứu</div><div class="cards">` + cards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('') + '</div>';
+  const covCards = [['Vòng hoàn tất', cnt(cov.completeRounds)], ['Số trình duyệt', cnt(cov.browsers)], ['Từ', rsTime(cov.earliestMs)], ['Đến', rsTime(cov.latestMs)], ['Schema', cov.schemaVersion]];
+  html += `<div class="section-h">Phạm vi dữ liệu quan sát</div><div class="cards">` + covCards.map(([l, v]) => `<div class="card"><div class="c-label">${l}</div><div class="c-value">${escapeHtml(v)}</div></div>`).join('') + '</div>';
+  html += `<div class="section-h">Cảnh báo biến động hiệu năng</div>`;
+  if (!o.driftWarnings || !o.driftWarnings.length) html += `<div class="muted">Không có cảnh báo biến động ngoài mẫu.</div>`;
+  else { html += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Giai đoạn</th><th>Mục tiêu</th><th>Trạng thái</th></tr></thead><tbody>` + o.driftWarnings.map((d) => `<tr><td>${escapeHtml(d.algorithmId)}</td><td>${RS_STAGE_VI[d.modelStage] || d.modelStage}</td><td>${RS_TARGET_VI[d.target] || d.target}</td><td class="${RS_DRIFT_CLS[d.status] || ''}">${RS_DRIFT_VI[d.status] || d.status}</td></tr>`).join('') + `</tbody></table>`; }
+  if (!o.evaluatedExperiments) html += `<div class="fwd-conclusion muted">Chưa có lần đánh giá nào được lưu. Bấm "Chạy đánh giá toàn bộ" để đánh giá mọi thuật toán trên dữ liệu hiện có.</div>`;
+  html += `<div class="muted" style="margin-top:10px">Mọi kết quả là bằng chứng nghiên cứu lịch sử ngoài mẫu — mô tả và so sánh, không phải lời khuyên hành động.</div>`;
+  box.innerHTML = html;
+}
+
+// ---- Algorithms list + detail (§44/§45) ----
+async function rsRenderAlgorithms() {
+  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  const mon = await api.research.monitoring();
+  const latestByKey = {};
+  if (Array.isArray(mon)) for (const m of mon) latestByKey[`${m.algorithmId}|${m.modelStage}|${m.target}`] = m;
+  let html = `<div class="section-h">Thuật toán đã đăng ký</div>`;
+  html += `<table class="atable"><thead><tr><th>Tên</th><th>Họ</th><th>Phiên bản</th><th>Giai đoạn</th><th>Tập biến</th></tr></thead><tbody>`;
+  for (const a of rsAlgos) {
+    const active = a.algorithmId === rsSel.algorithmId ? ' class="rs-row-active"' : '';
+    html += `<tr data-algo="${escapeHtml(a.algorithmId)}"${active}><td><a href="#" data-algo="${escapeHtml(a.algorithmId)}">${escapeHtml(a.name)}</a></td><td>${escapeHtml(a.family)}</td><td>v${a.version}</td><td>${a.supportedStages.map((s) => RS_STAGE_VI[s] || s).join(', ')}</td><td class="muted">${escapeHtml(a.featureSetId)}</td></tr>`;
+  }
+  html += `</tbody></table>`;
+  html += `<div id="rs-algo-detail"></div>`;
+  box.innerHTML = html;
+  for (const a of document.querySelectorAll('#rs-panel a[data-algo]')) a.onclick = (e) => { e.preventDefault(); rsSel.algorithmId = a.dataset.algo; rsRenderAlgorithms(); };
+  rsRenderAlgoDetail();
+}
+
+async function rsRenderAlgoDetail() {
+  const host = $('rs-algo-detail'); if (!host) return;
+  const a = rsAlgos.find((x) => x.algorithmId === rsSel.algorithmId); if (!a) return;
+  const stageOpt = a.supportedStages.map((s) => `<option value="${s}"${rsSel.modelStage === s ? ' selected' : ''}>${RS_STAGE_VI[s] || s}</option>`).join('');
+  const tgtOpt = rsTargets.map((t) => `<option value="${t.targetId}"${rsSel.target === t.targetId ? ' selected' : ''}>${RS_TARGET_VI[t.targetId] || t.targetId}</option>`).join('');
+  const feats = (a.featuresByStage && a.featuresByStage[rsSel.modelStage]) || [];
+  let html = `<div class="section-h">${escapeHtml(a.name)} <span class="muted">v${a.version} · ${escapeHtml(a.family)}</span></div>`;
+  html += `<div class="muted" style="margin-bottom:6px">${escapeHtml(a.description)}</div>`;
+  html += kv([['Tập biến', a.featureSetId], ['Tiền xử lý', a.preprocessing], ['Chính sách tách', a.trainingPolicy], ['Biến (giai đoạn này)', feats.length ? feats.join(', ') : '(baseline — không biến)']]);
+  html += `<div class="fwd-controls"><label class="fwd-lab">Giai đoạn <select id="rs-d-stage">${stageOpt}</select></label>` +
+    `<label class="fwd-lab">Mục tiêu <select id="rs-d-target">${tgtOpt}</select></label>` +
+    `<button id="rs-d-run" class="mbtn">Đánh giá</button></div>`;
+  html += `<div id="rs-d-result" class="muted">Chọn giai đoạn/mục tiêu rồi bấm "Đánh giá". Đánh giá ngoài mẫu (train/validation/test theo thời gian) và được lưu lại kèm dấu vân tay thuật toán + dữ liệu.</div>`;
+  host.innerHTML = html;
+  $('rs-d-stage').onchange = (e) => { rsSel.modelStage = e.target.value; rsRenderAlgoDetail(); };
+  $('rs-d-target').onchange = (e) => { rsSel.target = e.target.value; };
+  $('rs-d-run').onclick = async () => {
+    const rb = $('rs-d-result'); rb.innerHTML = '<div class="muted">Đang đánh giá…</div>';
+    const res = await api.research.evaluate({ algorithmId: a.algorithmId, modelStage: rsSel.modelStage, target: rsSel.target, browserScope: rsScope || null });
+    if (res.error) { rb.innerHTML = bailText(res); return; }
+    rb.innerHTML = rsRenderEvaluation(res.evaluation, res.run);
+  };
+}
+
+// Full evaluation evidence renderer (train/val/test, baseline, calibration, walk-forward,
+// coefficients, leakage, quality, fingerprints). Shared by detail + history drill-in.
+function rsRenderEvaluation(ev, run) {
+  let html = '';
+  html += `<div class="fwd-summary"><b>Dấu vân tay</b> — thuật toán ${rsFp(ev.algorithmFingerprint)} · dữ liệu ${rsFp(ev.datasetFingerprint)}` + (run ? ` · ${run.deduped ? 'đã có (tái dùng)' : 'đã lưu'} #${run.runId}` : '') + `</div>`;
+  html += `<div class="muted">Rò rỉ dữ liệu: ${leakVi(ev.leakageStatus)} (policy v${ev.leakagePolicyVersion}) · Trạng thái: ${RS_STATUS_VI[ev.status] || ev.status}</div>`;
+  if (ev.status !== 'OK') { html += `<div class="fwd-conclusion muted">${RS_STATUS_VI[ev.status] || ev.status}: chưa đủ điều kiện đánh giá ngoài mẫu (train≥${ev.split && ev.split.train ? '' : ''}). Kết quả được ghi nhận trung thực, không thay bằng số 0.</div>`; return html; }
+  const t = ev.testMetrics || {}, b = (ev.baseline && ev.baseline.test) || {};
+  html += `<div class="section-h">Bằng chứng ngoài mẫu (tập test)</div>`;
+  html += `<table class="atable"><thead><tr><th>Chỉ số</th><th>Mô hình</th><th>Baseline (nền)</th></tr></thead><tbody>` +
+    `<tr><td>n / dương</td><td>${cnt(t.n)} / ${cnt(t.positives)}</td><td>${cnt(b.n)} / ${cnt(b.positives)}</td></tr>` +
+    `<tr><td>Tỉ lệ nền</td><td>${pct(t.prevalence)}</td><td>${pct(b.prevalence)}</td></tr>` +
+    `<tr><td>ROC AUC</td><td>${fx(t.auc, 3)}</td><td>—</td></tr>` +
+    `<tr><td>PR AUC</td><td>${fx(t.prAuc, 3)}</td><td>${fx(b.prAuc, 3)}</td></tr>` +
+    `<tr><td>Brier</td><td>${fx(t.brier, 4)}</td><td>${fx(b.brier, 4)}</td></tr>` +
+    `<tr><td>Log loss</td><td>${fx(t.logLoss, 4)}</td><td>${fx(b.logLoss, 4)}</td></tr>` +
+    `<tr><td>Δ Brier so với nền</td><td colspan="2" class="${ev.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(ev.deltaBrierTest, 4)}</td></tr>` +
+    `</tbody></table>`;
+  if (ev.aucCI && ev.aucCI.status === 'OK') html += `<div class="muted">Khoảng tin cậy AUC (bootstrap khối): ${fx(ev.aucCI.low, 3)}–${fx(ev.aucCI.high, 3)}</div>`;
+  // Split sizes
+  if (ev.split) html += `<div class="muted">Tách theo thời gian — train ${cnt(ev.split.train.n)} (${cnt(ev.split.train.positives)} dương) · validation ${cnt(ev.split.validation.n)} · test ${cnt(ev.split.test.n)}</div>`;
+  // Calibration
+  html += rsCalibrationBlock(ev.calibration);
+  // Walk-forward
+  html += rsWalkForwardBlock(ev.walkForward, ev.stability);
+  // Coefficients
+  html += rsCoefBlock(ev.coefficientStability);
+  // Quality + conclusion
+  const q = ev.quality || {};
+  html += `<div class="fwd-conclusion"><b>Chất lượng:</b> <span class="${RS_QUALITY_CLS[q.status] || ''}">${RS_QUALITY_VI[q.status] || q.status}</span>` +
+    (q.reasons && q.reasons.length ? ` <span class="muted">(${q.reasons.join('; ')})</span>` : '') +
+    `. <span class="muted">Độ ổn định: ${RS_STABILITY_VI[ev.stability ? ev.stability.status : ''] || '—'}. Chỉ là mô tả nghiên cứu ngoài mẫu.</span></div>`;
+  return html;
+}
+
+function rsCalibrationBlock(cal) {
+  const bins = (cal || []).filter((c) => c.n >= 1);
+  if (!bins.length) return '';
+  let html = `<div class="section-h">Hiệu chỉnh xác suất (calibration)</div>`;
+  html += `<table class="atable"><thead><tr><th>Khoảng dự tính</th><th>TB dự tính</th><th>Tỉ lệ quan sát</th><th>n</th><th>Lệch</th></tr></thead><tbody>`;
+  for (const c of bins) html += `<tr><td>${pct(c.lo)}–${pct(c.hi)}</td><td>${fx(c.meanPredicted, 3)}</td><td>${fx(c.observedRate, 3)}</td><td class="${nCls(c.n)}">${cnt(c.n)}</td><td>${fx(c.diff, 3)}</td></tr>`;
+  html += `</tbody></table><div class="muted">Chỉ hiển thị độ chính xác vừa phải cho ô nhỏ; ô ít mẫu không nên diễn giải quá mức.</div>`;
+  return html;
+}
+function rsWalkForwardBlock(wf, stability) {
+  if (!wf || !wf.length) return '';
+  let html = `<div class="section-h">Kiểm định trượt theo thời gian (walk-forward) — ${RS_STABILITY_VI[stability ? stability.status : ''] || '—'}</div>`;
+  html += `<table class="atable"><thead><tr><th>Fold</th><th>Train n</th><th>Test n</th><th>Tỉ lệ nền</th><th>AUC</th><th>PR AUC</th><th>Brier</th><th>Δ Brier</th></tr></thead><tbody>`;
+  for (const f of wf) html += `<tr><td>${f.fold}</td><td>${cnt(f.trainN)}</td><td>${cnt(f.testN)}</td><td>${pct(f.prevalence)}</td><td>${fx(f.auc, 3)}</td><td>${fx(f.prAuc, 3)}</td><td>${fx(f.brier, 4)}</td><td class="${f.deltaBrier > 0 ? 'ms-yes' : ''}">${fx(f.deltaBrier, 4)}</td></tr>`;
+  html += `</tbody></table>`;
+  return html;
+}
+function rsCoefBlock(coef) {
+  if (!coef || !coef.length) return '';
+  let html = `<div class="section-h">Độ ổn định hệ số theo fold</div>`;
+  html += `<table class="atable"><thead><tr><th>Biến</th><th>Hệ số TB</th><th>Đổi dấu</th><th>Ổn định</th></tr></thead><tbody>`;
+  for (const c of coef) html += `<tr><td>${escapeHtml(c.feature)}</td><td>${fx(c.meanCoef, 3)}</td><td>${c.signFlips ? '<b class="ms-no">Có</b>' : 'Không'}</td><td>${c.stable ? '<b class="ms-yes">Ổn định</b>' : 'Không'}</td></tr>`;
+  html += `</tbody></table><div class="muted">Biến đổi dấu hệ số qua các fold được đánh dấu là không ổn định.</div>`;
+  return html;
+}
+
+// ---- Compare (§50) ----
+async function rsRenderCompare() {
+  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  const stageOpt = Object.keys(RS_STAGE_VI).map((s) => `<option value="${s}"${rsCompareCell.modelStage === s ? ' selected' : ''}>${RS_STAGE_VI[s]}</option>`).join('');
+  const tgtOpt = (rsTargets || []).map((t) => `<option value="${t.targetId}"${rsCompareCell.target === t.targetId ? ' selected' : ''}>${RS_TARGET_VI[t.targetId] || t.targetId}</option>`).join('');
+  let html = `<div class="section-h">So sánh thuật toán (cùng mục tiêu · giai đoạn · dữ liệu)</div>`;
+  html += `<div class="fwd-controls"><label class="fwd-lab">Giai đoạn <select id="rs-c-stage">${stageOpt}</select></label><label class="fwd-lab">Mục tiêu <select id="rs-c-target">${tgtOpt}</select></label></div>`;
+  // Gather latest run per algorithm for this cell.
+  const picks = [];
+  for (const a of rsAlgos) {
+    const hist = await api.research.history({ algorithmId: a.algorithmId, target: rsCompareCell.target, modelStage: rsCompareCell.modelStage, browserScope: rsScope || null });
+    if (Array.isArray(hist) && hist.length) picks.push({ algo: a, run: hist[hist.length - 1] });
+  }
+  if (!picks.length) { html += `<div class="muted">Chưa có lần đánh giá nào đã lưu cho ô này. Hãy đánh giá ở tab "Thuật toán" hoặc "Chạy đánh giá toàn bộ".</div>`; box.innerHTML = html; rsWireCompareControls(); return; }
+  html += `<table class="atable"><thead><tr><th>Chọn</th><th>Thuật toán</th><th>Chất lượng</th><th>Test n</th><th>AUC</th><th>Brier</th><th>Δ Brier</th><th>Rò rỉ</th></tr></thead><tbody>`;
+  for (const p of picks) html += `<tr><td><input type="checkbox" class="rs-c-pick" value="${p.run.runId}" checked></td><td>${escapeHtml(p.algo.name)}</td><td class="${RS_QUALITY_CLS[p.run.quality] || ''}">${RS_QUALITY_VI[p.run.quality] || p.run.quality || '—'}</td><td>${cnt(p.run.testN)}</td><td>${fx(p.run.auc, 3)}</td><td>${fx(p.run.brier, 4)}</td><td class="${p.run.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(p.run.deltaBrierTest, 4)}</td><td>${leakVi(p.run.leakageStatus)}</td></tr>`;
+  html += `</tbody></table><button id="rs-c-run" class="mbtn">So sánh các mục đã chọn</button><div id="rs-c-out"></div>`;
+  box.innerHTML = html; rsWireCompareControls();
+  $('rs-c-run').onclick = async () => {
+    const ids = [...document.querySelectorAll('.rs-c-pick:checked')].map((c) => Number(c.value));
+    const out = $('rs-c-out'); if (ids.length < 2) { out.innerHTML = '<div class="muted">Chọn ít nhất 2 mục để so sánh.</div>'; return; }
+    const r = await api.research.compare({ runIds: ids });
+    out.innerHTML = rsRenderComparison(r);
+  };
+}
+function rsWireCompareControls() {
+  const ss = $('rs-c-stage'); if (ss) ss.onchange = (e) => { rsCompareCell.modelStage = e.target.value; rsRenderCompare(); };
+  const ts = $('rs-c-target'); if (ts) ts.onchange = (e) => { rsCompareCell.target = e.target.value; rsRenderCompare(); };
+}
+function rsRenderComparison(r) {
+  if (r.error) return bailText(r);
+  if (!r.comparable) {
+    const reasons = (r.reasons || []).join(', ');
+    return `<div class="fwd-conclusion warn">Không so sánh trực tiếp được (${r.verdict}${reasons ? ': ' + reasons : ''}). Các kết quả phải cùng mục tiêu, giai đoạn, chính sách và cùng dấu vân tay dữ liệu.</div>`;
+  }
+  let html = `<div class="section-h">Kết quả so sánh (cùng ${RS_TARGET_VI[r.target] || r.target} · ${RS_STAGE_VI[r.modelStage] || r.modelStage} · dữ liệu ${rsFp(r.datasetFingerprint)})</div>`;
+  html += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Phiên bản</th><th>Test n</th><th>AUC</th><th>PR AUC</th><th>Brier</th><th>Δ Brier</th><th>Log loss</th><th>Ổn định</th><th>Rò rỉ</th><th>Chất lượng</th></tr></thead><tbody>`;
+  for (const x of r.rows) html += `<tr><td>${escapeHtml(x.algorithmName || x.algorithmId)}</td><td>v${x.version}</td><td>${cnt(x.testN)}</td><td>${fx(x.auc, 3)}</td><td>${fx(x.prAuc, 3)}</td><td>${fx(x.brier, 4)}</td><td class="${x.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(x.deltaBrierTest, 4)}</td><td>${fx(x.logLoss, 4)}</td><td>${RS_STABILITY_VI[x.stabilityStatus] || '—'}</td><td>${leakVi(x.leakageStatus)}</td><td class="${RS_QUALITY_CLS[x.quality] || ''}">${RS_QUALITY_VI[x.quality] || x.quality || '—'}</td></tr>`;
+  html += `</tbody></table><div class="muted">Sắp xếp theo Brier chỉ để trình bày — không phải xếp hạng chất lượng. Chất lượng là đánh giá đa tiêu chí theo từng thuật toán.</div>`;
+  return html;
+}
+
+// ---- History / Trend (§46) + drift (§51) ----
+async function rsRenderHistory() {
+  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  box.innerHTML = rsCellControls('h') + `<div id="rs-h-out"></div>`;
+  rsWireCellControls('h', rsRenderHistory);
+  const out = $('rs-h-out');
+  const hist = await api.research.history({ algorithmId: rsSel.algorithmId, target: rsSel.target, modelStage: rsSel.modelStage, browserScope: rsScope || null });
+  const drift = await api.research.drift({ algorithmId: rsSel.algorithmId, target: rsSel.target, modelStage: rsSel.modelStage, browserScope: rsScope || null });
+  let html = '';
+  if (!Array.isArray(hist) || !hist.length) { out.innerHTML = `<div class="muted">Chưa có lần đánh giá nào đã lưu cho ô này.</div>`; return; }
+  html += `<div class="section-h">Lịch sử đánh giá (cũ → mới)</div>`;
+  html += `<table class="atable"><thead><tr><th>Thời điểm</th><th>Dữ liệu</th><th>Test n</th><th>Tỉ lệ nền</th><th>AUC</th><th>Brier</th><th>Δ Brier</th><th>Ổn định</th><th>Chất lượng</th></tr></thead><tbody>`;
+  for (const r of hist) html += `<tr><td>${rsTime(r.evaluatedAtMs)}</td><td>${rsFp(r.datasetFingerprint)}</td><td>${cnt(r.testN)}</td><td>${pct(r.prevalence)}</td><td>${fx(r.auc, 3)}</td><td>${fx(r.brier, 4)}</td><td class="${r.deltaBrierTest > 0 ? 'ms-yes' : ''}">${fx(r.deltaBrierTest, 4)}</td><td>${RS_STABILITY_VI[r.stabilityStatus] || '—'}</td><td class="${RS_QUALITY_CLS[r.quality] || ''}">${RS_QUALITY_VI[r.quality] || r.quality || '—'}</td></tr>`;
+  html += `</tbody></table>`;
+  html += rsDriftBlock(drift);
+  out.innerHTML = html;
+}
+function rsDriftBlock(d) {
+  if (!d || d.error) return '';
+  let html = `<div class="section-h">Biến động hiệu năng so với lần trước</div>`;
+  if (d.previousEvaluation === 'NONE') return html + `<div class="muted">Chưa có lần đánh giá trước để so sánh (PREVIOUS_EVALUATION = NONE).</div>`;
+  html += `<div class="fwd-conclusion ${RS_DRIFT_CLS[d.status] || ''}">Trạng thái: <b>${RS_DRIFT_VI[d.status] || d.status}</b></div>`;
+  if (d.deltas) html += kv([['Δ Brier', fx(d.deltas.brier, 4)], ['Δ AUC', fx(d.deltas.auc, 3)], ['Δ Tỉ lệ nền', fx(d.deltas.prevalence, 4)], ['Δ Test n', cnt(d.deltas.testN)]]);
+  if (d.baseRate) html += `<div class="muted">Tỉ lệ nền: trước ${pct(d.baseRate.previous)} → nay ${pct(d.baseRate.current)} (Δ ${fx(d.baseRate.delta, 4)})${d.baseRate.materialShift ? ' — thay đổi đáng kể' : ''}.</div>`;
+  return html;
+}
+
+// ---- Stability (§47) ----
+async function rsRenderStability() {
+  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  box.innerHTML = rsCellControls('s') + `<div id="rs-s-out"></div>`;
+  rsWireCellControls('s', rsRenderStability);
+  const out = $('rs-s-out');
+  const hist = await api.research.history({ algorithmId: rsSel.algorithmId, target: rsSel.target, modelStage: rsSel.modelStage, browserScope: rsScope || null });
+  if (!Array.isArray(hist) || !hist.length) { out.innerHTML = `<div class="muted">Chưa có lần đánh giá nào đã lưu cho ô này.</div>`; return; }
+  const full = await api.research.run(hist[hist.length - 1].runId);
+  if (!full || full.error) { out.innerHTML = bailText(full || {}); return; }
+  const ev = JSON.parse(full.resultJson);
+  let html = `<div class="muted">Lần đánh giá gần nhất: ${rsTime(full.evaluatedAtMs)} · dữ liệu ${rsFp(full.datasetFingerprint)}</div>`;
+  html += rsWalkForwardBlock(ev.walkForward, ev.stability);
+  html += rsCoefBlock(ev.coefficientStability);
+  if (!ev.walkForward || !ev.walkForward.length) html += `<div class="muted">Không đủ dữ liệu cho walk-forward.</div>`;
+  out.innerHTML = html;
+}
+
+// ---- Readiness (§49) ----
+async function rsRenderReadiness() {
+  const box = $('rs-panel'); box.innerHTML = '<div class="muted">Đang tải…</div>';
+  const m = await api.research.readinessMatrix({ browserScope: rsScope || null });
+  if (m.error) { box.innerHTML = bailText(m); return; }
+  let html = `<div class="section-h">Chất lượng dữ liệu theo thuật toán × giai đoạn × mục tiêu</div>`;
+  html += `<table class="atable"><thead><tr><th>Thuật toán</th><th>Giai đoạn</th><th>Mục tiêu</th><th>Trạng thái</th><th>Train n</th><th>Test n</th><th>Dương (train/test)</th><th>Thiếu</th></tr></thead><tbody>`;
+  for (const c of m.cells) {
+    const r = c.readiness; const ok = r.status === 'READY';
+    const deficits = [];
+    if (r.trainDeficit) deficits.push(`train −${cnt(r.trainDeficit)}`);
+    if (r.testDeficit) deficits.push(`test −${cnt(r.testDeficit)}`);
+    if (r.positiveDeficit) deficits.push(`dương −${cnt(r.positiveDeficit)}`);
+    html += `<tr><td>${escapeHtml(c.algorithmId)}</td><td>${RS_STAGE_VI[c.modelStage] || c.modelStage}</td><td>${RS_TARGET_VI[c.target] || c.target}</td>` +
+      `<td class="${ok ? 'ms-yes' : 'ms-no'}">${RS_READY_VI[r.status] || r.status}</td><td>${cnt(r.train ? r.train.n : null)}</td><td>${cnt(r.test ? r.test.n : null)}</td>` +
+      `<td>${cnt(r.train ? r.train.positives : null)} / ${cnt(r.test ? r.test.positives : null)}</td><td class="muted">${deficits.join(', ') || '—'}</td></tr>`;
+  }
+  html += `</tbody></table><div class="muted">Không đánh giá nào được coi là hợp lệ khi chưa đạt ngưỡng mẫu tối thiểu (train ${m.cells[0] ? cnt(m.cells[0].readiness.guards.MIN_TRAIN) : ''}, test ${m.cells[0] ? cnt(m.cells[0].readiness.guards.MIN_TEST) : ''}, dương mỗi tập ${m.cells[0] ? cnt(m.cells[0].readiness.guards.MIN_POS_PER_SET) : ''}).</div>`;
+  box.innerHTML = html;
+}
+
+// Shared algorithm/stage/target selector for History + Stability.
+function rsCellControls(pfx) {
+  const aOpt = rsAlgos.map((a) => `<option value="${a.algorithmId}"${rsSel.algorithmId === a.algorithmId ? ' selected' : ''}>${escapeHtml(a.name)}</option>`).join('');
+  const sOpt = Object.keys(RS_STAGE_VI).map((s) => `<option value="${s}"${rsSel.modelStage === s ? ' selected' : ''}>${RS_STAGE_VI[s]}</option>`).join('');
+  const tOpt = (rsTargets || []).map((t) => `<option value="${t.targetId}"${rsSel.target === t.targetId ? ' selected' : ''}>${RS_TARGET_VI[t.targetId] || t.targetId}</option>`).join('');
+  return `<div class="fwd-controls"><label class="fwd-lab">Thuật toán <select id="rs-${pfx}-algo">${aOpt}</select></label>` +
+    `<label class="fwd-lab">Giai đoạn <select id="rs-${pfx}-stage">${sOpt}</select></label>` +
+    `<label class="fwd-lab">Mục tiêu <select id="rs-${pfx}-target">${tOpt}</select></label></div>`;
+}
+function rsWireCellControls(pfx, rerender) {
+  $(`rs-${pfx}-algo`).onchange = (e) => { rsSel.algorithmId = e.target.value; rerender(); };
+  $(`rs-${pfx}-stage`).onchange = (e) => { rsSel.modelStage = e.target.value; rerender(); };
+  $(`rs-${pfx}-target`).onchange = (e) => { rsSel.target = e.target.value; rerender(); };
+}
 
 // ---------- boot ----------
 populateJpRanges();

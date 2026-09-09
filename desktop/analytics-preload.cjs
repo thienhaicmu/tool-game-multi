@@ -61,6 +61,22 @@ contextBridge.exposeInMainWorld('analytics', {
     run: (opts) => ipcRenderer.invoke('analytics-fwd-run', opts),
     matrix: (opts) => ipcRenderer.invoke('analytics-fwd-matrix', opts),
   },
+  // Prediction Research & Evaluation platform — DESCRIPTIVE research evidence only
+  // (registry + fingerprinted, persisted, versioned out-of-sample evaluation). No
+  // prediction action / betting / cashout channel of any kind.
+  research: {
+    algorithms: () => ipcRenderer.invoke('analytics-research-algorithms'),
+    overview: () => ipcRenderer.invoke('analytics-research-overview'),
+    readinessMatrix: (opts) => ipcRenderer.invoke('analytics-research-readiness-matrix', opts),
+    readiness: (opts) => ipcRenderer.invoke('analytics-research-readiness', opts),
+    evaluate: (opts) => ipcRenderer.invoke('analytics-research-evaluate', opts),
+    evaluateAll: (opts) => ipcRenderer.invoke('analytics-research-evaluate-all', opts),
+    history: (opts) => ipcRenderer.invoke('analytics-research-history', opts),
+    run: (runId) => ipcRenderer.invoke('analytics-research-run', runId),
+    compare: (opts) => ipcRenderer.invoke('analytics-research-compare', opts),
+    drift: (opts) => ipcRenderer.invoke('analytics-research-drift', opts),
+    monitoring: () => ipcRenderer.invoke('analytics-research-monitoring'),
+  },
   export: {
     rounds: (filter) => ipcRenderer.invoke('analytics-export-rounds', filter),
     roundDetail: (roundId) => ipcRenderer.invoke('analytics-export-round-detail', roundId),
