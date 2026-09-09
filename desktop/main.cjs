@@ -34,6 +34,7 @@ const { RoundHistoryCollector } = require('./browser-run/round-history-collector
 const { AutoExecutionHistoryStore } = require('./browser-run/auto-execution-history-store.cjs');
 const { AutoExecutionCollector } = require('./browser-run/auto-execution-collector.cjs');
 const { AutoSequenceController } = require('./browser-run/auto-sequence-controller.cjs');
+const { AutoStartIntent } = require('./browser-run/auto-start-intent.cjs');
 const { DiagnosticLog } = require('./diagnostics/diagnostic-log.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
@@ -526,12 +527,13 @@ function buildProtocolSubsystem(run) {
   // its OWN socket context (the enter request rides only this run's connection).
   const entryGate = new AviatorEntryGate({
     roundTracker: aviator,
-    // Sealed site-owned entry: RESOLVE-BEFORE-INVOKE onClickBaseMiniGameNode(learned gameId). The
-    // site performs the authenticated game-act + 10002 + 100000. descriptor is THIS run's learned,
-    // validated Aviator gameId (never caller-supplied); the gate confirms only on fresh server evidence.
-    // onDiag logs ONLY non-secret resolve facts (no page state / no tokens).
+    // Sealed Cocos in-engine entry: RESOLVE-BEFORE-INVOKE the Aviator scene node's OWN cc.Button
+    // (resolved by the learned gameId == node name). The site's own click handlers perform the
+    // authenticated game-act + 10002 + 100000. descriptor is THIS run's learned, validated Aviator
+    // gameId (never caller-supplied); the gate confirms only on fresh server evidence. onDiag logs
+    // ONLY non-secret resolve facts (no page state / no tokens).
     enterAviator: (ctx, descriptor) => wsReplay.enterAviator(ctx, descriptor, (f) => {
-      try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: f.event, meta: { requireAvailable: f.requireAvailable, moduleResolved: f.moduleResolved, instanceResolved: f.instanceResolved, methodResolved: f.methodResolved, tileRegistered: f.tileRegistered } }); } catch { /* best effort */ }
+      try { runDiag(run).log({ level: 'INFO', category: 'RECOVERY', event: f.event, meta: { ccAvailable: f.ccAvailable, directorAvailable: f.directorAvailable, nodeResolved: f.nodeResolved, buttonResolved: f.buttonResolved, resolvedBy: f.resolvedBy } }); } catch { /* best effort */ }
     }),
     getDescriptor: () => run._aviatorEntryDescriptor || null,
     getContext: () => { const tid = run.selectedTargetId; return tid != null ? aviator.socketContext(tid) : null; },
@@ -642,7 +644,11 @@ function buildProtocolSubsystem(run) {
     catch { /* outer-loop best-effort */ }
   });
 
-  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery, aviatorContext };
+  // AUTO_START_PENDING_ENTRY owner — models the "START AUTO RUN pressed while not yet ACTIVE"
+  // intent so a STOP during a pending Lobby→Aviator entry cancels the start (no AutoRunner start
+  // when ACTIVE later arrives) and a duplicate START while pending is a no-op. Bound to THIS run.
+  const autoStartIntent = new AutoStartIntent();
+  return { aviator, protocolContext, observer, harness, autoRunner, amountValidator, entryGate, jackpotObserver, jackpotGate, stop1000, historyCollector, autoExecutionCollector, autoSequence, recovery, aviatorContext, autoStartIntent };
 }
 
 // Recovery thresholds are centralised (never scattered). Conservative in production; a fast
@@ -706,6 +712,9 @@ function ensureRunManager() {
     // WU-C.4 — free the concurrent runtime slot when the run terminates (user close,
     // Chrome exit/crash, cleanup). Idempotent; never double-releases.
     const run = summary && runManager.get(summary.id);
+    // Run close cancels any pending START-from-Lobby intent so a late ACTIVE can never start Auto,
+    // and invalidates the recovery generation (the health timers/listeners go next).
+    try { if (run && run.autoStartIntent) run.autoStartIntent.cancel(); } catch { /* best effort */ }
     releaseRunCapacity(run);
     stopRecoveryWatch(summary && summary.id); // tear down the per-run health tick + wc listeners
     broadcastRuns(); broadcastBrowsers();
@@ -970,10 +979,14 @@ function applyAviatorContextAction(run, action, ev) {
       run._ctxReentryInFlight = true;
       run._ctxResumeAfterReentry = wasRunning;   // WAITING_ROUND resumes the SAME execution once ACTIVE
       try { runDiag(run).log({ level: 'WARN', category: 'RECOVERY', event: 'AVIATOR_CONTEXT_LOST_REENTER', autoExecutionId: (run.autoRunner && run.autoRunner.autoExecutionId) ? run.autoRunner.autoExecutionId() : null }); } catch { /* best effort */ }
-      // Invalidate ONLY entry readiness so ensureEntered requires FRESH server evidence (§5 invariant:
-      // cmd100000 SENT != ENTERED). Never invalidate the Jackpot gate/observer here — the WAITING_JACKPOT
-      // wait must survive with its SAME configured threshold (§6).
-      try { if (run.entryGate) run.entryGate.onDisconnect(); } catch { /* best effort */ }
+      // Invalidate ONLY a stale entry-readiness flag so ensureEntered requires FRESH server evidence
+      // (§5 invariant: entry INVOKED != ENTERED). BUT if an entry attempt is ALREADY in flight — e.g.
+      // an explicit START AUTO RUN from Lobby that is waiting on entry — do NOT tear it down: the
+      // onDisconnect() below would reject that attempt and the user's START would silently fail while
+      // the watchdog re-enters. Skipping it lets the ensureEntered() below JOIN the SAME canonical
+      // _pending attempt (one entry, one Cocos invocation). Never invalidate the Jackpot gate/observer
+      // here — the WAITING_JACKPOT wait must survive with its SAME configured threshold (§6).
+      try { if (run.entryGate && !run.entryGate.isEntering()) run.entryGate.onDisconnect(); } catch { /* best effort */ }
       const done = () => { run._ctxReentryInFlight = false; try { if (run.aviatorContext) run.aviatorContext.reentryFinished(); } catch { /* best effort */ } };
       try {
         if (run.entryGate && run.entryGate.ensureEntered) {
@@ -1649,7 +1662,11 @@ handle('autotest-environment', (_event, runId, targetId) => { const run = viewRu
 function autoSnapshot(run) {
   const base = run && run.autoRunner && run.autoRunner.snapshot ? run.autoRunner.snapshot() : {};
   const sequence = run && run.autoSequence && run.autoSequence.snapshot ? run.autoSequence.snapshot() : null;
-  return { ...base, sequence };
+  // Non-secret observability: is a START AUTO RUN waiting on Aviator ACTIVE (Lobby entry pending),
+  // and the last-derived Aviator context state. Display-only; never an authority.
+  const autoStartPendingEntry = !!(run && run.autoStartIntent && run.autoStartIntent.pending());
+  const aviatorContextState = (run && run.aviatorContextState) || null;
+  return { ...base, sequence, autoStartPendingEntry, aviatorContextState };
 }
 
 // WU-AUTO-SEQUENCE — the legitimate SINGLE-execution start orchestration, shared by the
@@ -1694,6 +1711,15 @@ async function startAutoExecution(run, config = {}, opts = {}) {
   const C = unsealProtocolClasses();
   const cfgCheck = C.validateConfig(config || {});
   if (cfgCheck.error) return { error: cfgCheck.error };
+  // AUTO_START_PENDING_ENTRY — the user pressed START AUTO RUN but Aviator ACTIVE is not yet
+  // confirmed (it may be sitting in Lobby). Capture a cancel token BEFORE any async entry/jackpot
+  // wait so a STOP pressed while entry is pending prevents the AutoRunner from ever starting (§8,
+  // CASE 4/5). The token is a monotonic generation — a stale (older-gen) completion never starts Auto.
+  const intent = run.autoStartIntent;
+  const token = intent ? intent.begin() : 0;
+  const cancelled = () => (intent ? intent.cancelled(token) : false) || run.status === RUN_STATUS.CLOSED;
+  const cancelledError = () => ({ error: { code: 'AUTO_START_CANCELLED', message: 'Đã dừng trước khi vào game.' } });
+  try {
   let jackpotThreshold = null;
   if (config && config.waitForJackpot) {
     // WU-C.4 — Jackpot Gate requires the signed jackpotGate (which implies jackpotLive).
@@ -1707,11 +1733,21 @@ async function startAutoExecution(run, config = {}, opts = {}) {
   if (run.entryGate && !(run.entryGate.isEntered && run.entryGate.isEntered()) && looksLikeLoginUrl(currentRunUrl(run))) {
     return { error: { code: 'LOGIN_REQUIRED', message: 'Cần đăng nhập — hãy đăng nhập vào game trước khi Chạy tự động.' } };
   }
-  // WU-C.1.1 — Aviator entry prerequisite: ensure THIS run's socket is in the game before
-  // any bet. Never sends through another run.
+  // WU-C.1.1 — Aviator entry prerequisite: ensure THIS run's socket is in the game before any bet.
+  // START-FROM-LOBBY (§2/§4/§18): if NOT freshly authoritative ACTIVE, invalidate a possibly-stale
+  // entered flag so ensureEntered must invoke the sealed seam and prove FRESH post-attempt SERVER
+  // evidence (a stale flag from before a silent lobby kick must not confirm ACTIVE). Never disturb
+  // an in-flight watchdog re-entry (it already owns the attempt boundary).
+  if (run.entryGate && run.entryGate.isEntered && run.entryGate.isEntered() && !run._ctxReentryInFlight) {
+    const aviatorFresh = run._lastAviatorFrameMono != null && (perfNow() - run._lastAviatorFrameMono) <= CONTEXT_CONFIG.freshMs;
+    if (!aviatorFresh) { try { run.entryGate.onDisconnect(); } catch { /* best effort */ } }
+  }
   if (run.entryGate) {
     const gate = await run.entryGate.ensureEntered();
     if (gate && gate.error) return { error: gate.error };
+    // §8/CASE 5 — a STOP (or run close) pressed while the entry was pending cancels the start:
+    // ACTIVE has arrived but the user no longer wants Auto, so do NOT start the runner.
+    if (cancelled()) return cancelledError();
   }
   // WU-C.3 — optional Jackpot gate AFTER entry.
   // §6 — WAITING_JACKPOT must survive an Aviator-context loss. On the healthy-page light re-entry
@@ -1733,7 +1769,13 @@ async function startAutoExecution(run, config = {}, opts = {}) {
       }
       break;
     }
+    // §8 — STOP during the (possibly long) jackpot wait also cancels the pending start.
+    if (cancelled()) return cancelledError();
   }
+  // §5/§8 — final cancellation checkpoint immediately before the ONLY side-effect that starts
+  // wagering. Past this line BET/CASHOUT can occur, so a STOP after here is the runner's own
+  // stop; up to here it must abort with zero BET/zero CASHOUT.
+  if (cancelled()) return cancelledError();
   // WU-D — snapshot the effective execution config for THIS run (§8.3).
   const effectiveConfig = { ...(config || {}) };
   // Part E — next-round random BET delay (0..1000ms) for authorized LOCAL/TEST endpoints.
@@ -1754,6 +1796,10 @@ async function startAutoExecution(run, config = {}, opts = {}) {
   // WU-D — arm the Stop-1000x session kill switch from the snapshot config.
   if (run.stop1000) run.stop1000.arm(run._runConfig);
   return { ok: true, autoExecutionId: res.autoExecutionId, snapshot: autoSnapshot(run) };
+  } finally {
+    // The pending-entry intent settled (started, failed, or cancelled) — clear the pending flag.
+    if (intent) intent.finish();
+  }
 }
 
 handle('autotest-start', async (_event, runId, config = {}) => {
@@ -1766,16 +1812,30 @@ handle('autotest-start', async (_event, runId, config = {}) => {
   const rows = Array.isArray(config && config.sequence) && config.sequence.length ? config.sequence : [config || {}];
   const C = unsealProtocolClasses();
   for (const row of rows) { const chk = C.validateConfig(row || {}); if (chk.error) return { error: chk.error }; }
+  // §5/CASE-4 — DUPLICATE START guard: a second START click while a prior START's Lobby→Aviator
+  // entry is still pending is a no-op (no second entry invocation, no second AutoSequence execution).
+  if (run.autoStartIntent && run.autoStartIntent.inFlight()) return autoSnapshot(run);
+  if (run.autoStartIntent) run.autoStartIntent.markInFlight(true);
   // The controller snapshots the rows (immutable), binds to THIS run, and starts row 0 through
   // the shared orchestration above. The first row's start result (error or snapshot) is returned;
   // advancement to rows 2..N is owned by the controller on each NORMAL executionFinalized.
-  const res = await run.autoSequence.start(rows);
-  if (res && res.error) return res;
-  return autoSnapshot(run);
+  try {
+    const res = await run.autoSequence.start(rows);
+    if (res && res.error) return res;
+    return autoSnapshot(run);
+  } finally {
+    if (run.autoStartIntent) run.autoStartIntent.markInFlight(false);
+  }
 });
 handle('autotest-stop', (_event, runId) => {
   const r = execRun(runId); if (r.error) return r;
   const run = r.run;
+  // §8/CASE-5 — STOP cancels any pending START-from-Lobby intent so a later ACTIVE never starts
+  // (nor resumes) the AutoRunner. Bumps the intent's cancel generation; the pending orchestration
+  // bails out at its next cancellation checkpoint. Also drop any pending context re-entry resume.
+  const pendingStart = !!(run.autoStartIntent && run.autoStartIntent.pending());
+  if (run.autoStartIntent) run.autoStartIntent.cancel();
+  run._ctxResumeAfterReentry = false;
   // WU-AUTO-SEQUENCE — STOP ends the WHOLE sequence. Disarm the controller FIRST (bumps its
   // generation) so neither this stop's finalize emit nor any queued next-row fire can start a
   // further row. Race-safe: USER_STOP → NO_NEXT_ROW.
@@ -1785,7 +1845,9 @@ handle('autotest-stop', (_event, runId) => {
   if (run.jackpotGate) run.jackpotGate.cancel('STOPPED');
   if (run.stop1000) run.stop1000.disarm();
   const res = run.autoRunner.stop();
-  if (res.error && wasWaiting) return autoSnapshot(run); // stopped while gate-waiting
+  // A STOP is authoritative even when nothing was running yet (e.g. cancelling a pending entry) —
+  // never surface AUTO_TEST_NOT_RUNNING as a STOP failure in that case.
+  if (res.error && (wasWaiting || pendingStart)) return autoSnapshot(run);
   return res.error ? res : autoSnapshot(run);
 });
 handle('autotest-snapshot', (_event, runId) => autoSnapshot(viewRun(runId)));

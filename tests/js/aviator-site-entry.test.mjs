@@ -12,99 +12,136 @@ const { AnalyticsAviatorEntryGate } = require('../../desktop/analytics/analytics
 const { EntryOnlyTransport } = require('../../desktop/analytics/entry-only-transport.cjs');
 
 const DESCRIPTOR = { gameActUrl: 'https://host.example/gwms/v1/game-act', gameId: 'vgmn_221' };
+const KNOWN_PATH = 'Canvas/MainUIParent/NewLobby/Main/ScrollView/view/Content/NodeSpines/vgmn_221';
 
-// Execute the sealed page hook in an isolated realm with a mocked window.__require + a fake
-// LobbyViewController, so we observe the EXACT resolve-before-invoke behaviour.
-function runHook({ descriptor = DESCRIPTOR, module: mod, noRequire = false } = {}) {
-  const calls = [];
-  const sandbox = {}; sandbox.globalThis = sandbox; sandbox.console = console;
-  if (!noRequire) {
-    const modules = { LobbyViewController: mod === undefined ? defaultModule(calls) : mod };
-    sandbox.__require = (name) => { if (name in modules) { if (modules[name] === 'THROW') throw new Error('boom'); return modules[name]; } throw new Error('no module ' + name); };
+// Build a fake live Cocos `cc` for the sandbox. Scenarios control how the Aviator node resolves,
+// mirroring the LIVE-PROVEN operation: cc.find(known path) OR a bounded scene search for a node
+// named GID that carries a cc.Button, then emitEvents(btn.clickEvents,node) + node.emit('click').
+function makeCC({ pathHit = true, sceneNode = false, nodeHasButton = true, hasClickEvents = true,
+  noCc = false, noDirector = false, noEmitter = false, depth = 3 } = {}) {
+  const calls = { emitEvents: [], emit: [] };
+  if (noCc) return { cc: undefined, calls };
+  function Button() {}
+  const mkNode = (name, hasBtn) => {
+    const btn = hasBtn ? { clickEvents: hasClickEvents ? [1, 2, 3] : undefined } : null;
+    const n = { name, children: [] };
+    n.getComponent = (T) => (T === Button ? btn : null);
+    n.emit = (ev) => calls.emit.push({ ev, name });
+    return n;
+  };
+  const aviator = (pathHit || sceneNode) ? mkNode('vgmn_221', nodeHasButton) : null;
+  const scene = mkNode('Scene', false);
+  if (aviator && sceneNode) {
+    let cur = scene;
+    for (let i = 0; i < depth; i++) { const c = mkNode('lvl' + i, false); cur.children.push(c); cur = c; }
+    cur.children.push(aviator);
   }
+  const pathMap = new Map();
+  if (aviator && pathHit) pathMap.set(KNOWN_PATH, aviator);
+  const cc = {
+    Button,
+    find: (p) => pathMap.get(p) || null,
+    director: noDirector ? {} : { getScene: () => scene },
+    Component: noEmitter ? {} : { EventHandler: { emitEvents: (evts, node) => calls.emitEvents.push({ count: evts && evts.length, name: node && node.name }) } },
+  };
+  return { cc, calls };
+}
+
+// Execute the sealed page hook in an isolated realm with a mocked `cc`, so we observe the EXACT
+// resolve-before-invoke behaviour and the proven double event invocation.
+function runHook({ descriptor = DESCRIPTOR, ...scenario } = {}) {
+  const { cc, calls } = makeCC(scenario);
+  const sandbox = {}; sandbox.globalThis = sandbox; sandbox.console = console; sandbox.cc = cc;
   vm.createContext(sandbox);
   vm.runInContext(desc.buildEnterAviatorHook(descriptor), sandbox);
   const val = vm.runInContext('globalThis.__avEnterAviator()', sandbox);
   return { val, calls };
 }
-// Fake LobbyViewController: default.Instance.onClickIConGame(t,e) + gameLaunchHandler.mapClickLobby,
-// a CUSTOM map with .get/.set only (NO .has/.size — matches the live client). `tile` controls
-// whether mapClickLobby.get(gameId) returns a value.
-function defaultModule(calls, { hasInstance = true, hasMethod = true, tile = true, hasMap = true } = {}) {
-  const glh = { launchSceneGame: () => {}, mapClickLobby: hasMap ? { get: (id) => (tile && id === 'vgmn_221' ? { node: {}, sceneName: 's' } : null), set: () => {} } : undefined };
-  const inst = { gameLaunchHandler: glh };
-  if (hasMethod) inst.onClickIConGame = (t, e) => { calls.push({ t, e }); };
-  return { default: { Instance: hasInstance ? inst : null } };
-}
 
-// ---- 1: exact accessor resolution + invoke once with the learned gameId ----
-test('T1: resolves __require("LobbyViewController").default.Instance.onClickIConGame and invokes it once (null, gameId)', () => {
+// ---- 1: known-path resolution + the LIVE-PROVEN double click invocation ----
+test('T1: resolves the known NewLobby Cocos path and fires BOTH proven click calls once', () => {
   const h = runHook();
   assert.equal(h.val.ok, true);
   assert.equal(h.val.invoked, true);
-  assert.equal(h.val.resolve.requireAvailable, true);
-  assert.equal(h.val.resolve.moduleResolved, true);
-  assert.equal(h.val.resolve.instanceResolved, true);
-  assert.equal(h.val.resolve.methodResolved, true);
-  assert.equal(h.val.resolve.tileRegistered, true);
-  assert.equal(h.calls.length, 1, 'invoked exactly once');
-  assert.equal(h.calls[0].t, null, 'first arg is null (unused by the site)');
-  assert.equal(h.calls[0].e, 'vgmn_221', 'invoked with the baked learned gameId');
+  assert.equal(h.val.resolve.ccAvailable, true);
+  assert.equal(h.val.resolve.directorAvailable, true);
+  assert.equal(h.val.resolve.nodeResolved, true);
+  assert.equal(h.val.resolve.buttonResolved, true);
+  assert.equal(h.val.resolve.resolvedBy, 'path');
+  // Proven operation: emitEvents(btn.clickEvents, node) THEN node.emit('click', btn) — both, once.
+  assert.equal(h.calls.emitEvents.length, 1);
+  assert.equal(h.calls.emitEvents[0].count, 3);       // btn.clickEvents.length (live had 3)
+  assert.equal(h.calls.emitEvents[0].name, 'vgmn_221');
+  assert.equal(h.calls.emit.length, 1);
+  assert.equal(h.calls.emit[0].ev, 'click');
+  assert.equal(h.calls.emit[0].name, 'vgmn_221');
 });
 
-// ---- 2: resolve-before-invoke fails safe at every missing step; NOTHING invoked ----
-test('T2: missing __require => no-require, invokes nothing', () => {
-  const h = runHook({ noRequire: true });
-  assert.equal(h.val.ok, false); assert.equal(h.val.step, 'no-require');
-  assert.equal(h.val.resolve.requireAvailable, false);
-  assert.equal(h.calls.length, 0);
-});
-test('T2: __require throws for module => no-module, invokes nothing', () => {
-  const h = runHook({ module: 'THROW' });
-  assert.equal(h.val.ok, false); assert.equal(h.val.step, 'no-module');
-  assert.equal(h.val.resolve.requireAvailable, true);
-  assert.equal(h.calls.length, 0);
-});
-test('T2: no module.default => no-default, invokes nothing', () => {
-  const h = runHook({ module: {} });
-  assert.equal(h.val.ok, false); assert.equal(h.val.step, 'no-default');
-  assert.equal(h.calls.length, 0);
-});
-test('T2: no instance => no-instance, invokes nothing', () => {
-  const calls = [];
-  const h = runHook({ module: defaultModule(calls, { hasInstance: false }) });
-  assert.equal(h.val.ok, false); assert.equal(h.val.step, 'no-instance');
-  assert.equal(h.val.resolve.moduleResolved, true);
-  assert.equal(h.calls.length, 0);
-});
-test('T2: method missing => no-method, invokes nothing', () => {
-  const calls = [];
-  const h = runHook({ module: defaultModule(calls, { hasMethod: false }) });
-  assert.equal(h.val.ok, false); assert.equal(h.val.step, 'no-method');
-  assert.equal(h.val.resolve.instanceResolved, true);
-  assert.equal(h.val.resolve.methodResolved, false);
-  assert.equal(h.calls.length, 0);
-});
-test('T2: Aviator tile NOT registered => tile-not-registered, invokes nothing', () => {
-  const calls = [];
-  const h = runHook({ module: defaultModule(calls, { tile: false }) });
-  assert.equal(h.val.ok, false); assert.equal(h.val.step, 'tile-not-registered');
-  assert.equal(h.val.resolve.methodResolved, true);
-  assert.equal(h.val.resolve.tileRegistered, false);
-  assert.equal(h.calls.length, 0);
+// ---- 2: bounded live-scene fallback finds name===GID + cc.Button ----
+test('T2: when the known path is absent, the bounded scene search finds vgmn_221 + cc.Button', () => {
+  const h = runHook({ pathHit: false, sceneNode: true, depth: 4 });
+  assert.equal(h.val.ok, true);
+  assert.equal(h.val.resolve.resolvedBy, 'scene');
+  assert.equal(h.calls.emitEvents.length, 1);
+  assert.equal(h.calls.emit.length, 1);
 });
 
-// ---- 5 & 6: the sealed hook performs NO fetch and sends NO WS frame itself ----
-test('T5/T6: the built hook contains NO fetch, NO game-act, and NO direct 10002/100000/plugin sends', () => {
+// ---- 3: a same-name node WITHOUT cc.Button is rejected (fail closed, nothing fired) ----
+test('T3: same-name node without cc.Button is rejected => node-not-found, invokes nothing', () => {
+  const h = runHook({ pathHit: false, sceneNode: true, nodeHasButton: false });
+  assert.equal(h.val.ok, false);
+  assert.equal(h.val.step, 'node-not-found');
+  assert.equal(h.val.resolve.nodeResolved, false);
+  assert.equal(h.calls.emitEvents.length, 0);
+  assert.equal(h.calls.emit.length, 0);
+});
+
+// ---- 4/5: missing cc / missing director fail closed ----
+test('T4: missing cc (or missing emitter) fails closed => no-cc, invokes nothing', () => {
+  const h1 = runHook({ noCc: true });
+  assert.equal(h1.val.ok, false);
+  assert.equal(h1.val.step, 'no-cc');
+  assert.equal(h1.val.resolve.ccAvailable, false);
+  const h2 = runHook({ noEmitter: true });
+  assert.equal(h2.val.step, 'no-cc');                 // emitEvents unavailable is part of the cc gate
+  assert.equal(h2.calls.emitEvents.length, 0);
+});
+test('T5: missing cc.director fails closed => no-director, invokes nothing', () => {
+  const h = runHook({ noDirector: true });
+  assert.equal(h.val.ok, false);
+  assert.equal(h.val.step, 'no-director');
+  assert.equal(h.val.resolve.directorAvailable, false);
+});
+test('T5c: a node without btn.clickEvents fails closed => no-clickevents, invokes nothing', () => {
+  const h = runHook({ hasClickEvents: false });
+  assert.equal(h.val.ok, false);
+  assert.equal(h.val.step, 'no-clickevents');
+  assert.equal(h.calls.emitEvents.length, 0);
+});
+test('T5d: the scene search is depth-bounded (a node nested past the cap is not found)', () => {
+  const h = runHook({ pathHit: false, sceneNode: true, depth: 15 });
+  assert.equal(h.val.ok, false);
+  assert.equal(h.val.step, 'node-not-found');
+});
+
+// ---- 6: the built hook performs NO fetch, NO frame send, NO coordinate click ----
+test('T6: the built hook contains NO fetch/game-act/plugin/cmd/secret and NO coordinate click', () => {
   const hook = desc.buildEnterAviatorHook(DESCRIPTOR);
   assert.equal(/fetch\s*\(/.test(hook), false, 'no fetch in the sealed hook');
   assert.equal(/game-act/.test(hook), false, 'no game-act in the sealed hook');
   assert.equal(/lobbyPlugin|aviatorPlugin/.test(hook), false, 'no plugin frame construction');
   assert.equal(/\b10002\b|\b100000\b|\b100002\b|\b100003\b/.test(hook), false, 'no cmd literals');
   assert.equal(/X-TOKEN|X-FG-ID|session_id/i.test(hook), false, 'no secret/header handling');
-  assert.ok(/onClickIConGame/.test(hook) && /LobbyViewController/.test(hook) && hook.includes('vgmn_221'));
+  assert.equal(/dispatchEvent|elementFromPoint|clientX|screenX|mousedown|touchstart/i.test(hook), false, 'no coordinate/DOM click');
+  // It IS the proven Cocos operation, baked with the learned gameId + known path.
+  assert.ok(/cc\.find/.test(hook), 'resolves via cc.find');
+  assert.ok(hook.includes('vgmn_221'), 'bakes the learned gameId (== node name)');
+  assert.ok(hook.includes('NodeSpines/vgmn_221'), 'bakes the known NewLobby path');
+  assert.ok(/emitEvents/.test(hook) && /clickEvents/.test(hook), 'fires the wired click handlers');
+  assert.ok(/emit\('click'|emit\("click"/.test(hook), 'fires the node click event');
+  assert.ok(/getComponent/.test(hook) && /cc\.Button|Button\)/.test(hook), 'requires a cc.Button');
 });
-test('T5b: the recovery graph retired the hand-crafted game-act fetch (module source has no fetch)', () => {
+test('T6b: the module source has no fetch / credentialed request anywhere', () => {
   const src = fs.readFileSync(path.resolve(process.cwd(), 'desktop', 'protocol', 'aviator-entry-descriptor.cjs'), 'utf8');
   const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
   assert.equal(/fetch\s*\(/.test(stripped), false, 'no fetch( anywhere in the seam');
@@ -116,19 +153,19 @@ function fakeClient(value) {
   const exprs = [];
   return { exprs, Runtime: { evaluate: async ({ expression }) => { exprs.push(expression); return { result: { value } }; } } };
 }
-test('T4: runEnterAviatorViaSite invokes the sealed op once and surfaces ONLY non-secret resolve facts', async () => {
+test('T7: runEnterAviatorViaSite runs the sealed op once and surfaces ONLY non-secret resolve facts', async () => {
   const facts = [];
-  const c = fakeClient({ ok: true, invoked: true, resolve: { requireAvailable: true, moduleResolved: true, instanceResolved: true, methodResolved: true, tileRegistered: true } });
+  const c = fakeClient({ ok: true, invoked: true, resolve: { ccAvailable: true, directorAvailable: true, nodeResolved: true, buttonResolved: true, resolvedBy: 'path' } });
   const res = await desc.runEnterAviatorViaSite(c, undefined, DESCRIPTOR, (f) => facts.push(f));
   assert.equal(res.ok, true);
   assert.ok(c.exprs.some((e) => /__avEnterAviator\s*=/.test(e)) && c.exprs.some((e) => /__avEnterAviator\(\)/.test(e)));
-  const resolve = facts.find((f) => f.event === 'SITE_ENTRY_SEAM_RESOLVE');
-  assert.ok(resolve && resolve.methodResolved === true && resolve.tileRegistered === true);
-  assert.ok(facts.some((f) => f.event === 'SITE_ENTRY_INVOKED'));
+  const resolve = facts.find((f) => f.event === 'COCOS_ENTRY_SEAM_RESOLVE');
+  assert.ok(resolve && resolve.nodeResolved === true && resolve.buttonResolved === true && resolve.resolvedBy === 'path');
+  assert.ok(facts.some((f) => f.event === 'COCOS_ENTRY_INVOKED'));
   // Non-secret only: the diag facts carry no page object/token/session fields.
-  assert.deepEqual(Object.keys(resolve).sort(), ['event', 'instanceResolved', 'methodResolved', 'moduleResolved', 'requireAvailable', 'tileRegistered']);
+  assert.deepEqual(Object.keys(resolve).sort(), ['buttonResolved', 'ccAvailable', 'directorAvailable', 'event', 'nodeResolved', 'resolvedBy']);
 });
-test('T3: no learned gameId => ENTER_NO_DESCRIPTOR, nothing evaluated', async () => {
+test('T8: no learned gameId => ENTER_NO_DESCRIPTOR, nothing evaluated; no client => ENTER_NO_CLIENT', async () => {
   const c = fakeClient({ ok: true });
   assert.equal((await desc.runEnterAviatorViaSite(c, undefined, null)).error.code, 'ENTER_NO_DESCRIPTOR');
   assert.equal(c.exprs.length, 0);
@@ -136,15 +173,15 @@ test('T3: no learned gameId => ENTER_NO_DESCRIPTOR, nothing evaluated', async ()
 });
 test('resolve-gate failure => ENTRY_SITE_SEAM_UNAVAILABLE with the failed step (no invoke, no fallback)', async () => {
   const facts = [];
-  const c = fakeClient({ ok: false, step: 'no-method', resolve: { requireAvailable: true, moduleResolved: true, instanceResolved: true, methodResolved: false, tileRegistered: null } });
+  const c = fakeClient({ ok: false, step: 'node-not-found', resolve: { ccAvailable: true, directorAvailable: true, nodeResolved: false, buttonResolved: false, resolvedBy: null } });
   const res = await desc.runEnterAviatorViaSite(c, undefined, DESCRIPTOR, (f) => facts.push(f));
   assert.equal(res.error.code, 'ENTRY_SITE_SEAM_UNAVAILABLE');
-  assert.equal(res.error.step, 'no-method');
-  assert.ok(facts.some((f) => f.event === 'SITE_ENTRY_SEAM_RESOLVE' && f.methodResolved === false));
-  assert.equal(facts.some((f) => f.event === 'SITE_ENTRY_INVOKED'), false, 'never logs INVOKED when a check failed');
+  assert.equal(res.error.step, 'node-not-found');
+  assert.ok(facts.some((f) => f.event === 'COCOS_ENTRY_SEAM_RESOLVE' && f.nodeResolved === false));
+  assert.equal(facts.some((f) => f.event === 'COCOS_ENTRY_INVOKED'), false, 'never logs INVOKED when a check failed');
 });
 
-// ---- 3: descriptor learning + validation (no arbitrary gameId) ----
+// ---- descriptor learning + validation (no arbitrary gameId / node) ----
 test('descriptor learns/validates ONLY a real game-act game_id (fail safe otherwise)', () => {
   assert.deepEqual(desc.parseGameActDescriptor('https://x/gwms/v1/game-act', '{"game_id":"vgmn_221"}'), { gameActUrl: 'https://x/gwms/v1/game-act', gameId: 'vgmn_221' });
   assert.equal(desc.parseGameActDescriptor('https://x/steal', '{"game_id":"vgmn_221"}'), null);
@@ -153,7 +190,7 @@ test('descriptor learns/validates ONLY a real game-act game_id (fail safe otherw
   assert.throws(() => desc.buildEnterAviatorHook({ gameActUrl: 'https://x/steal', gameId: 'y' }));
 });
 
-// ---- 7/8/9: SENT != ENTERED via the Control gate over the site-open seam ----
+// ---- INVOKED != ENTERED via the Control gate over the sealed Cocos seam ----
 function controlGate({ enter, timeoutMs = 30 } = {}) {
   const bus = new (require('node:events').EventEmitter)();
   const captured = [];
@@ -166,31 +203,31 @@ function controlGate({ enter, timeoutMs = 30 } = {}) {
   });
   return { gate, bus, captured };
 }
-test('T7: site-open invocation alone does NOT mark entered — times out without server evidence', async () => {
+test('T-invoked-not-active: a successful click alone does NOT mark entered — times out without server evidence', async () => {
   const { gate } = controlGate({ timeoutMs: 20 });
   const res = await gate.ensureEntered();
   assert.equal(res.error.code, 'AVIATOR_ENTRY_TIMEOUT');
   assert.equal(gate.isEntered(), false);
 });
-test('T9: fresh authoritative server round frame AFTER the attempt confirms ACTIVE', async () => {
+test('T-fresh-active: fresh authoritative server round frame AFTER the attempt confirms ACTIVE', async () => {
   const { gate, bus, captured } = controlGate({ timeoutMs: 1000 });
   const p = gate.ensureEntered();
   await new Promise((r) => setTimeout(r, 5));
   assert.equal(gate.isEntered(), false);
-  assert.deepEqual(captured[0], DESCRIPTOR, 'gate forwarded the learned descriptor to the site-open seam');
+  assert.deepEqual(captured[0], DESCRIPTOR, 'gate forwarded the learned descriptor to the sealed seam');
   bus.emit('frame', { direction: 'recv', cmd: 100005, sid: 7 });
   const res = await p;
   assert.equal(res.ready, true);
   assert.equal(gate.isEntered(), true);
 });
-test('T10(bounded): a resolve-gate failure fails the attempt (bounded retry/escalation applies)', async () => {
-  const { gate } = controlGate({ enter: () => ({ error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', step: 'no-method' } }), timeoutMs: 1000 });
+test('T-bounded: a resolve-gate failure fails the attempt (bounded retry/escalation applies)', async () => {
+  const { gate } = controlGate({ enter: () => ({ error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', step: 'node-not-found' } }), timeoutMs: 1000 });
   const res = await gate.ensureEntered();
   assert.equal(res.error.code, 'ENTRY_SITE_SEAM_UNAVAILABLE');
   assert.equal(gate.isEntered(), false);
 });
 
-// ---- 13/14: sealed surface + per-browser isolation ----
+// ---- sealed surface + per-browser isolation ----
 test('T13: EntryOnlyTransport exposes ONLY sendEntry (no bet/cashout/fetch/eval/send method)', () => {
   const t = new EntryOnlyTransport({ resolveClient: () => null });
   const proto = Object.getOwnPropertyNames(Object.getPrototypeOf(t)).filter((n) => n !== 'constructor');

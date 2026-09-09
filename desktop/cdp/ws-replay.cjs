@@ -123,11 +123,12 @@ class WsReplay {
     }
   }
 
-  // Semantic recovery operation: RESOLVE-BEFORE-INVOKE the site's OWN authenticated minigame entry
-  // (onClickBaseMiniGameNode) through this run's own game CDP session. The site then performs the
-  // authenticated game-act + lobby 10002 + aviator 100000 — we transmit nothing ourselves. descriptor
-  // = the run's LEARNED, validated Aviator gameId (never caller-supplied). onDiag receives non-secret
-  // resolve facts only. Reuses the run's resolveClient; all logic lives in the shared sealed seam.
+  // Semantic recovery operation: RESOLVE-BEFORE-INVOKE the Aviator Cocos scene node's OWN cc.Button
+  // (the live-proven in-engine entry) through this run's own game CDP session. The site's own click
+  // handlers then perform the authenticated game-act + lobby 10002 + aviator 100000 — we transmit
+  // nothing ourselves. descriptor = the run's LEARNED, validated Aviator gameId (== the node name,
+  // never caller-supplied). onDiag receives non-secret resolve facts only. Reuses the run's
+  // resolveClient; all logic lives in the shared sealed seam.
   async enterAviator(ctx, descriptor, onDiag) {
     if (!ctx || !ctx.targetId) return { error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for entry' } };
     const client = this._resolveClient(ctx.targetId);
