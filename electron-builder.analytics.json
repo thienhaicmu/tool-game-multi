@@ -22,7 +22,7 @@
   ],
   "extraMetadata": {
     "main": "desktop/analytics-main.cjs",
-    "version": "0.1.0"
+    "version": "3.0.0"
   },
   "artifactName": "Aviator Analytics Setup ${version}.${ext}",
   "npmRebuild": false,
