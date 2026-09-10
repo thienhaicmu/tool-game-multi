@@ -50,9 +50,28 @@ const SHEET_HEADERS = Object.freeze([
   'rawPayloadJson',
 ]);
 
+// Date columns are written as real Google Sheets date values (not raw epochs) and
+// paired with a DATE_TIME cell format so the ledger reads naturally for the seller.
+const UTC_PLUS_7_OFFSET_SECONDS = 7 * 60 * 60;
+const SHEETS_EPOCH_DAY = 25569; // serial day number of 1970-01-01 (days since 1899-12-30)
+const DATE_COLUMNS = Object.freeze(['issuedAt', 'expiresAt', 'createdAt']);
+
+function toEpochSeconds(value) {
+  if (value == null || value === '') return Math.floor(Date.now() / 1000);
+  if (typeof value === 'number') return value > 1e12 ? Math.floor(value / 1000) : Math.floor(value);
+  const ms = Date.parse(String(value));
+  return Number.isFinite(ms) ? Math.floor(ms / 1000) : Math.floor(Date.now() / 1000);
+}
+
+// Epoch seconds -> Google Sheets serial date in UTC+7 wall clock (Vietnam-local).
+function epochToSheetSerial(epochSeconds) {
+  if (epochSeconds == null || !Number.isFinite(Number(epochSeconds))) return '';
+  return SHEETS_EPOCH_DAY + (Number(epochSeconds) + UTC_PLUS_7_OFFSET_SECONDS) / 86400;
+}
+
 // ---- PURE mapping: signed payload + exact token + metadata -> sheet row object ----
-// No mutation of the payload. Booleans/numbers keep native types here; the write
-// layer stringifies for the cell. Defensive for legacy v1 payloads too.
+// No mutation of the payload. Dates become Sheets serials; the exact signed epochs
+// remain in rawPayloadJson (+ the signed token). Defensive for legacy v1 payloads too.
 function licenseToSheetRow({ payload, license, metadata = {} } = {}) {
   if (!payload || typeof payload !== 'object') throw new Error('licenseToSheetRow: payload is required');
   if (typeof license !== 'string' || !license) throw new Error('licenseToSheetRow: license token is required');
@@ -63,8 +82,8 @@ function licenseToSheetRow({ payload, license, metadata = {} } = {}) {
     customerName: metadata.customerName != null ? String(metadata.customerName) : '',
     phone: metadata.phone != null ? String(metadata.phone) : '',
     plan: payload.plan != null ? payload.plan : (payload.v === 1 ? 'LEGACY' : ''),
-    issuedAt: payload.issuedAt,
-    expiresAt: payload.expiresAt,
+    issuedAt: epochToSheetSerial(payload.issuedAt),
+    expiresAt: epochToSheetSerial(payload.expiresAt),
     maxBrowsers: payload.maxBrowsers != null ? payload.maxBrowsers : '',
     maxConcurrentBrowsers: payload.maxConcurrentBrowsers != null ? payload.maxConcurrentBrowsers : '',
     autoRun: f.autoRun === true,
@@ -75,7 +94,7 @@ function licenseToSheetRow({ payload, license, metadata = {} } = {}) {
     schemaVersion: payload.v,
     licenseKey: license, // EXACT successful token — never reconstructed
     note: metadata.note != null ? String(metadata.note) : '',
-    createdAt: metadata.createdAt || new Date().toISOString(),
+    createdAt: epochToSheetSerial(toEpochSeconds(metadata.createdAt)),
     rawPayloadJson: JSON.stringify(payload),
   };
 }
@@ -87,9 +106,14 @@ function toCell(value) {
   return String(value);
 }
 
-// Order a row object into the header-aligned array of cell strings.
+function numericCell(value) {
+  return (value === '' || value == null || !Number.isFinite(Number(value))) ? '' : Number(value);
+}
+
+// Order a row object into the header-aligned array of cells. Date columns stay numeric
+// (Sheets serials) so a DATE_TIME format renders them; everything else is stringified.
 function rowToValues(rowObject, headers = SHEET_HEADERS) {
-  return headers.map((h) => toCell(rowObject[h]));
+  return headers.map((h) => (DATE_COLUMNS.includes(h) ? numericCell(rowObject[h]) : toCell(rowObject[h])));
 }
 
 // ---- credential resolution (external, seller-side only) ----
@@ -243,7 +267,27 @@ class GoogleSheetClient {
       query: '?valueInputOption=RAW',
       body: { values: [SHEET_HEADERS.slice()] },
     });
+    try { await this.applyFormatting(); } catch { /* formatting is best-effort, never blocks a save */ }
     return { created: true, headers: SHEET_HEADERS.slice() };
+  }
+
+  // Make the ledger readable: frozen bold header, date columns as dd/mm/yyyy hh:mm,
+  // clipped overflow, and the technical rawPayloadJson column hidden. Idempotent.
+  async applyFormatting() {
+    await this._resolveSheetTitle();
+    const gid = Number(this._sheetId);
+    const col = (h) => SHEET_HEADERS.indexOf(h);
+    const dateFormat = { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } };
+    const requests = [
+      { updateSheetProperties: { properties: { sheetId: gid, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } },
+      { repeatCell: { range: { sheetId: gid }, cell: { userEnteredFormat: { wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat.wrapStrategy' } },
+      { repeatCell: { range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.17, green: 0.24, blue: 0.31 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)' } },
+      { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: col('rawPayloadJson'), endIndex: col('rawPayloadJson') + 1 }, properties: { hiddenByUser: true }, fields: 'hiddenByUser' } },
+    ];
+    for (const h of DATE_COLUMNS) {
+      requests.push({ repeatCell: { range: { sheetId: gid, startRowIndex: 1, startColumnIndex: col(h), endColumnIndex: col(h) + 1 }, cell: { userEnteredFormat: dateFormat }, fields: 'userEnteredFormat.numberFormat' } });
+    }
+    await this._api(':batchUpdate', { method: 'POST', body: { requests } });
   }
 
   // Find the 1-based sheet row index for a licenseId (column A), or null.
@@ -322,9 +366,12 @@ module.exports = {
   SPREADSHEET_ID,
   SHEET_ID,
   SHEET_HEADERS,
+  DATE_COLUMNS,
   licenseToSheetRow,
   rowToValues,
   toCell,
+  epochToSheetSerial,
+  toEpochSeconds,
   columnLetter,
   resolveCredentialPath,
   loadServiceAccount,

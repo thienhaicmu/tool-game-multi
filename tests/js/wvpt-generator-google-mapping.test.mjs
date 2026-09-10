@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { licenseToSheetRow, rowToValues, toCell, SHEET_HEADERS } = require('../../tools/license-generator/google-sheet.cjs');
+const { licenseToSheetRow, rowToValues, toCell, SHEET_HEADERS, epochToSheetSerial } = require('../../tools/license-generator/google-sheet.cjs');
 const { buildLicensePayloadV2 } = require('../../desktop/licensing/entitlements.cjs');
 
 function samplePayload() {
@@ -31,8 +31,11 @@ test('every signed v2 field is mapped exactly (no reconstruction, no loss)', () 
   assert.equal(row.licenseId, payload.licenseId);
   assert.equal(row.machineId, payload.machineId);
   assert.equal(row.plan, payload.plan);
-  assert.equal(row.issuedAt, payload.issuedAt);
-  assert.equal(row.expiresAt, payload.expiresAt);
+  // Dates are stored as Google Sheets serials (UTC+7); exact epochs live in rawPayloadJson.
+  assert.equal(row.issuedAt, epochToSheetSerial(payload.issuedAt));
+  assert.equal(row.expiresAt, epochToSheetSerial(payload.expiresAt));
+  assert.equal(JSON.parse(row.rawPayloadJson).issuedAt, payload.issuedAt);
+  assert.equal(JSON.parse(row.rawPayloadJson).expiresAt, payload.expiresAt);
   assert.equal(row.maxBrowsers, payload.maxBrowsers);
   assert.equal(row.maxConcurrentBrowsers, payload.maxConcurrentBrowsers);
   assert.equal(row.autoRun, payload.features.autoRun);
@@ -53,7 +56,7 @@ test('management-only columns come from metadata and never touch the payload', (
   assert.equal(row.customerName, 'Nguyễn A');
   assert.equal(row.phone, '0900000000');
   assert.equal(row.note, 'khách VIP');
-  assert.equal(row.createdAt, META.createdAt);
+  assert.equal(row.createdAt, epochToSheetSerial(Math.floor(Date.parse(META.createdAt) / 1000)));
   // payload must be unmutated and must not have acquired management fields
   assert.equal(JSON.stringify(payload), before);
   assert.equal('customerName' in payload, false);
@@ -71,6 +74,9 @@ test('rowToValues is header-aligned, complete, and stringifies booleans as TRUE/
   assert.equal(values[idx('jackpotGate')], 'FALSE');
   assert.equal(values[idx('schemaVersion')], '2');
   assert.equal(values[idx('licenseKey')], TOKEN);
+  // date columns are numeric serials (not stringified), so Sheets renders them as dates
+  assert.equal(typeof values[idx('issuedAt')], 'number');
+  assert.equal(values[idx('issuedAt')], epochToSheetSerial(samplePayload().issuedAt));
 });
 
 test('rawPayloadJson round-trips to the exact signed payload', () => {
@@ -79,9 +85,10 @@ test('rawPayloadJson round-trips to the exact signed payload', () => {
   assert.deepEqual(JSON.parse(row.rawPayloadJson), payload);
 });
 
-test('createdAt defaults to an ISO timestamp when metadata omits it', () => {
+test('createdAt defaults to a Sheets date serial (now) when metadata omits it', () => {
   const row = licenseToSheetRow({ payload: samplePayload(), license: TOKEN, metadata: {} });
-  assert.match(row.createdAt, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(typeof row.createdAt, 'number');
+  assert.ok(row.createdAt > 40000, 'a plausible modern serial date'); // ~2009+
 });
 
 test('toCell renders booleans and null deterministically', () => {
