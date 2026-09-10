@@ -1,6 +1,6 @@
 'use strict';
 
-const { runEnterAviatorViaSite } = require('../protocol/aviator-entry-descriptor.cjs');
+const { runEnterAviatorViaSite, runProbeAviatorSceneViaSite } = require('../protocol/aviator-entry-descriptor.cjs');
 
 // CDP has NO command to inject a WebSocket frame, so resending a captured frame
 // means calling `.send()` on the page's own live socket. We install a tiny hook
@@ -133,6 +133,15 @@ class WsReplay {
     if (!ctx || !ctx.targetId) return { error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for entry' } };
     const client = this._resolveClient(ctx.targetId);
     return runEnterAviatorViaSite(client, ctx.cdpSessionId || undefined, descriptor, onDiag);
+  }
+
+  // READ-ONLY companion of enterAviator: resolve the game's OWN Cocos scene state (in Aviator vs
+  // back at NewLobby / reconnecting) through this run's game CDP session. Clicks nothing, sends
+  // nothing. Reuses the run's resolveClient; all logic lives in the shared sealed seam.
+  async probeScene(ctx, descriptor, onDiag) {
+    if (!ctx || !ctx.targetId) return { error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for probe' } };
+    const client = this._resolveClient(ctx.targetId);
+    return runProbeAviatorSceneViaSite(client, ctx.cdpSessionId || undefined, descriptor, onDiag);
   }
 
   async sendProtocol(ctx, payload) {

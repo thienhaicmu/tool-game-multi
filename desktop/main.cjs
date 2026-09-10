@@ -718,13 +718,30 @@ function buildProtocolSubsystem(run) {
 const RECOVERY_CONFIG = process.env.OBSERVATORY_RECOVERY_FAST === '1'
   ? { suspectNoAviatorMs: 4000, verifyWindowMs: 2000, waitPageMs: 12000, waitAviatorMs: 12000, maxAttempts: 3, retryDelayMs: 1500 }
   : { suspectNoAviatorMs: 20000, verifyWindowMs: 6000, waitPageMs: 20000, waitAviatorMs: 20000, maxAttempts: 3, retryDelayMs: 3000 };
-const RECOVERY_TICK_MS = process.env.OBSERVATORY_RECOVERY_FAST === '1' ? 1000 : 3000;
-// Aviator-context thresholds (§2/§3). freshMs MUST exceed a normal between-round gap so quiet
-// pauses never read as loss. Conservative in production; fast profile for the acceptance harness.
+// Positive env int override (>0 wins; otherwise the default). Lets the field tune recovery
+// responsiveness without a rebuild — nothing here is a scattered magic number.
+const _envInt = (name, dflt) => { const v = parseInt(process.env[name] || '', 10); return Number.isFinite(v) && v > 0 ? v : dflt; };
+const RECOVERY_TICK_MS = process.env.OBSERVATORY_RECOVERY_FAST === '1' ? 1000 : _envInt('OBSERVATORY_RECOVERY_TICK_MS', 3000);
+// Aviator-context thresholds (§2/§3) — the "browser healthy but kicked to lobby" LIGHT re-entry tier.
+// freshMs MUST exceed a normal ROUND_END → next ROUND_OPEN gap so quiet between-round pauses never
+// read as loss. RESTORED to the conservative 20s/6s default: the brief 10s/3s experiment made normal
+// between-round gaps look like context loss, which escalated to a RELOAD that ejected an in-game
+// player to login and could not re-enter (field-reported). The RIGHT detector for reconnect→lobby is
+// the read-only Cocos scene probe (sceneProbeTick), NOT tighter ODD-silence timing — the game
+// self-reconnects, so a reload is the wrong recovery. Still env-tunable for deliberate field changes.
 const CONTEXT_CONFIG = process.env.OBSERVATORY_RECOVERY_FAST === '1'
   ? { freshMs: 4000, verifyWindowMs: 2000, maxReentryAttempts: 3 }
-  : { freshMs: 20000, verifyWindowMs: 6000, maxReentryAttempts: 3 };
+  : {
+      freshMs: _envInt('OBSERVATORY_CONTEXT_FRESH_MS', 20000),
+      verifyWindowMs: _envInt('OBSERVATORY_CONTEXT_VERIFY_MS', 6000),
+      maxReentryAttempts: 3,
+    };
 const perfNow = () => performance.now();
+// OBSERVE-ONLY read-only Cocos scene probe cadence (ms). This reads the game's OWN authoritative UI
+// state (in Aviator vs back at NewLobby / "Đang kết nối lại" reconnect banner) to root-cause the
+// reconnect→lobby drop that the ODD-freshness heuristic misses. It changes NO behavior yet — it
+// only logs on change. Env-tunable; 0/absent → 3000ms.
+const SCENE_PROBE_MS = _envInt('OBSERVATORY_SCENE_PROBE_MS', 3000);
 const _recoveryWatch = new Map(); // runId -> { interval, wc, listeners:[{ev,fn}] } — per-run, no global timer
 
 // A run's endpoint is "local/test" (auto-resume allowed) when its configured URL host is a
@@ -948,6 +965,51 @@ function recoveryTick(run) {
   // HEALTHY (renderer/WS/login failures are the watchdog's domain; this handles the healthy-page
   // lobby-kick the watchdog misses). This ordering guarantees the two never fight over one run.
   aviatorContextTick(run);
+  // OBSERVE-ONLY — read the game's OWN Cocos scene state (fire-and-forget; changes no behavior).
+  sceneProbeTick(run).catch(() => {});
+}
+
+// OBSERVE-ONLY read-only Cocos scene probe for ONE run. Reads the game's authoritative UI state via
+// the SAME sealed CDP seam as entry — "in Aviator" vs "back at NewLobby" vs a "Đang kết nối lại"
+// reconnect banner — instead of inferring from WS/ODD traffic (which keeps flowing at the lobby and
+// fools the freshness heuristic). Bounded, throttled, per-run, non-overlapping. Logs on change only;
+// it does NOT drive pause/re-entry/reload yet — this is the evidence-gathering step (§khoanh-vùng).
+async function sceneProbeTick(run) {
+  try {
+    if (!run || run.status === RUN_STATUS.CLOSED) return;
+    if (!run._everConfirmedAviator) return;            // only probe runs that have genuinely been in Aviator
+    if (run._sceneProbeInFlight) return;               // never overlap probes for one run
+    const now = perfNow();
+    if (now - (run._sceneProbeAtMono || 0) < SCENE_PROBE_MS) return;
+    const tid = run.selectedTargetId;
+    const ctx = (tid != null && run.aviator && run.aviator.socketContext) ? run.aviator.socketContext(tid) : null;
+    if (!ctx || !ctx.targetId) return;
+    run._sceneProbeInFlight = true;
+    run._sceneProbeAtMono = now;
+    let res;
+    try { res = await wsReplay.probeScene(ctx, run._aviatorEntryDescriptor || null); }
+    finally { run._sceneProbeInFlight = false; }
+    if (!res || res.error || !res.facts) return;
+    const f = res.facts;
+    run._sceneProbe = f;
+    // ODD-freshness the current heuristic trusts — logged alongside so a divergence (fresh ODD BUT
+    // lobby tile active / reconnect banner) is the exact signature we're hunting.
+    const aviatorFresh = run._lastAviatorFrameMono != null && (perfNow() - run._lastAviatorFrameMono) <= CONTEXT_CONFIG.freshMs;
+    const sig = `${f.ok ? 1 : 0}|${f.sceneName}|${f.lobbyTileActive ? 1 : 0}|${f.reconnectBanner ? 1 : 0}|${aviatorFresh ? 1 : 0}`;
+    if (sig !== run._sceneProbeSig) {
+      run._sceneProbeSig = sig;
+      try {
+        runDiag(run).log({
+          level: f.reconnectBanner || f.lobbyTileActive ? 'WARN' : 'INFO',
+          category: 'SCENE_PROBE', event: 'COCOS_SCENE_STATE',
+          sceneName: f.sceneName, lobbyTilePresent: f.lobbyTilePresent, lobbyTileActive: f.lobbyTileActive,
+          reconnectBanner: f.reconnectBanner, resolvedBy: f.resolvedBy, nodesScanned: f.nodesScanned,
+          ccAvailable: f.ccAvailable, directorAvailable: f.directorAvailable,
+          aviatorFreshHeuristic: aviatorFresh,
+        });
+      } catch { /* best effort */ }
+    }
+  } catch { /* observe-only: never disturb the recovery tick */ }
 }
 function applyRecoveryAction(run, action, ev) {
   const wc = chromeRuntime.webContents(run.id);

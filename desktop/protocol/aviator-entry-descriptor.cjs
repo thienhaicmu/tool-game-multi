@@ -190,9 +190,127 @@ async function runEnterAviatorViaSite(client, sessionId, descriptor, onDiag) {
   return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: 'Aviator Cocos node did not resolve', step: v && v.step } };
 }
 
+// ---------------------------------------------------------------------------
+// READ-ONLY Cocos scene probe — the OBSERVE sibling of buildEnterAviatorHook.
+//
+// Root-cause insight (live-confirmed by screenshots): a game-server WebSocket drop makes the game
+// show its OWN "Bị mất kết nối tới máy chủ / Đang kết nối lại" banner, reconnect, and land back at
+// the NewLobby instead of auto-rejoining Aviator. The round ODD broadcast keeps flowing, so any
+// "am I in Aviator?" answer inferred from WS/ODD traffic is WRONG. The authoritative answer is the
+// game's OWN Cocos UI state, which we can read directly and passively.
+//
+// This probe RESOLVES (never invokes) three non-secret facts:
+//   - sceneName            cc.director.getScene().name (which scene is live)
+//   - lobbyTile{Present,Active}  the Aviator tile node under NewLobby (present + activeInHierarchy
+//                          ⇒ the lobby is on screen ⇒ we were kicked out)
+//   - reconnectBanner      any ACTIVE cc.Label whose text matches the game's reconnect/disconnect
+//                          banner keywords (⇒ the socket dropped and the game is reconnecting)
+// It clicks nothing, sends no frame, reads no balance/token/text wholesale (only a keyword test),
+// and is bounded (depth + node cap). The gameId (== tile node name) + path prefix + depth are baked.
+// ---------------------------------------------------------------------------
+
+// Lowercased banner keywords the game itself renders in a cc.Label when the game socket drops.
+const RECONNECT_BANNER_KEYWORDS = ['kết nối lại', 'mất kết nối', 'đang kết nối', 'reconnect', 'connecting', 'disconnected'];
+
+function buildProbeSceneHook(descriptor) {
+  const gid = descriptor && isValidGameId(descriptor.gameId) ? descriptor.gameId : KNOWN_AVIATOR_GAME_ID;
+  const GID = JSON.stringify(gid);
+  const PATH = JSON.stringify(COCOS_KNOWN_PATH_PREFIX + gid);
+  const MAXD = String(COCOS_MAX_DEPTH | 0);
+  const KW = JSON.stringify(RECONNECT_BANNER_KEYWORDS);
+  return `(() => {
+  try {
+    var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof self !== 'undefined') ? self : this;
+    if (!g) return;
+    var GID = ${GID}, PATH = ${PATH}, MAXD = ${MAXD}, KW = ${KW};
+    g.__avProbeScene = function () {
+      var r = { ok:false, ccAvailable:false, directorAvailable:false, sceneName:null,
+                lobbyTilePresent:false, lobbyTileActive:false, reconnectBanner:false,
+                nodesScanned:0, resolvedBy:null };
+      try {
+        var cc = g.cc;
+        if (!cc || typeof cc.find !== 'function') return r;
+        r.ccAvailable = true;
+        var dir = cc.director;
+        if (!dir || typeof dir.getScene !== 'function') return r;
+        r.directorAvailable = true;
+        var Label = cc.Label || null;
+        var sc = null; try { sc = dir.getScene(); } catch (e) { sc = null; }
+        try { r.sceneName = (sc && sc.name != null) ? String(sc.name) : null; } catch (e) {}
+        // Primary tile resolve: the live-proven known NewLobby path.
+        var tile = null, by = null;
+        try { var p = cc.find(PATH); if (p) { tile = p; by = 'path'; } } catch (e) {}
+        // Bounded traversal: (a) tile-by-name fallback, (b) ACTIVE reconnect-banner Label scan.
+        var scanned = 0;
+        (function w(n, d) {
+          if (!n || d > MAXD || scanned > 6000) return;
+          var ch = n.children || [];
+          for (var i = 0; i < ch.length; i++) {
+            var c = ch[i]; if (!c) continue; scanned++;
+            try {
+              if (!tile && c.name === GID) { tile = c; by = 'scene'; }
+              if (!r.reconnectBanner && Label && typeof c.getComponent === 'function' && c.activeInHierarchy !== false) {
+                var lb = c.getComponent(Label);
+                if (lb && lb.string) {
+                  var t = String(lb.string).toLowerCase();
+                  for (var k = 0; k < KW.length; k++) { if (t.indexOf(KW[k]) !== -1) { r.reconnectBanner = true; break; } }
+                }
+              }
+            } catch (e) {}
+            w(c, d + 1);
+          }
+        })(sc, 0);
+        r.nodesScanned = scanned;
+        if (tile) {
+          r.lobbyTilePresent = true; r.resolvedBy = by;
+          try { r.lobbyTileActive = (tile.activeInHierarchy === true); } catch (e) { r.lobbyTileActive = false; }
+        }
+        r.ok = true;
+        return r;
+      } catch (e) { return r; }
+    };
+  } catch (e) {}
+})();`;
+}
+
+// Execute the read-only probe through a target's OWN CDP client/session (same seam as entry).
+// Returns { ok:true, facts:{...} } | { error:{ code } }. Never clicks, never sends.
+async function runProbeAviatorSceneViaSite(client, sessionId, descriptor, onDiag) {
+  const diag = typeof onDiag === 'function' ? onDiag : () => {};
+  if (!client || !client.Runtime || typeof client.Runtime.evaluate !== 'function') {
+    return { error: { code: 'PROBE_NO_CLIENT' } };
+  }
+  let hook;
+  try { hook = buildProbeSceneHook(descriptor || {}); } catch (e) { return { error: { code: 'PROBE_BUILD_FAILED', message: String(e && e.message || e) } }; }
+  try { await client.Runtime.evaluate({ expression: hook, includeCommandLineAPI: false }, sessionId); } catch { /* worker/detached — the call below still reports */ }
+  const expr = "globalThis.__avProbeScene ? globalThis.__avProbeScene() : ({ ok:false, step:'no-hook' })";
+  let v;
+  try {
+    const res = await client.Runtime.evaluate({ expression: expr, returnByValue: true }, sessionId);
+    v = res && res.result && res.result.value;
+  } catch (e) {
+    return { error: { code: 'PROBE_EVAL_FAILED', message: String(e && e.message || e) } };
+  }
+  if (!v) return { error: { code: 'PROBE_NO_RESULT' } };
+  const facts = {
+    ok: !!v.ok,
+    ccAvailable: !!v.ccAvailable,
+    directorAvailable: !!v.directorAvailable,
+    sceneName: v.sceneName == null ? null : String(v.sceneName),
+    lobbyTilePresent: !!v.lobbyTilePresent,
+    lobbyTileActive: !!v.lobbyTileActive,
+    reconnectBanner: !!v.reconnectBanner,
+    nodesScanned: Number(v.nodesScanned) || 0,
+    resolvedBy: v.resolvedBy == null ? null : String(v.resolvedBy),
+  };
+  diag({ event: 'COCOS_SCENE_PROBE', ...facts });
+  return { ok: true, facts };
+}
+
 module.exports = {
-  COCOS_KNOWN_PATH_PREFIX, COCOS_MAX_DEPTH,
+  COCOS_KNOWN_PATH_PREFIX, COCOS_MAX_DEPTH, RECONNECT_BANNER_KEYWORDS,
   LOBBY_ENVELOPE, ENTER_ENVELOPE, LOBBY_FRAME, ENTER_FRAME,
   GAME_ACT_PATH, GAME_ID_RE, KNOWN_AVIATOR_GAME_ID, isGameActUrl,
   parseGameActDescriptor, isValidDescriptor, isValidGameId, buildEnterAviatorHook, runEnterAviatorViaSite,
+  buildProbeSceneHook, runProbeAviatorSceneViaSite,
 };
