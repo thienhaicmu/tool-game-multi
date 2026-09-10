@@ -137,15 +137,17 @@ function buildEnterAviatorHook(descriptor) {
           })(sc, 0);
           if (found) { node = found; by = 'scene'; }
         }
-        if (!node) return { ok:false, step:'node-not-found', resolve:r };
+        if (!node) { try { console.log('[COCOS-CLICK page] node NOT found for tile', GID, '(scene=', (dir.getScene && dir.getScene() && dir.getScene().name), ')'); } catch(e){} return { ok:false, step:'node-not-found', resolve:r }; }
         r.nodeResolved = true; r.resolvedBy = by;
         var btn = node.getComponent(Button);
-        if (!btn) return { ok:false, step:'no-button', resolve:r };
+        if (!btn) { try { console.log('[COCOS-CLICK page] node found but no cc.Button', GID); } catch(e){} return { ok:false, step:'no-button', resolve:r }; }
         r.buttonResolved = true;
-        if (!btn.clickEvents) return { ok:false, step:'no-clickevents', resolve:r };
+        if (!btn.clickEvents) { try { console.log('[COCOS-CLICK page] button has no clickEvents', GID); } catch(e){} return { ok:false, step:'no-clickevents', resolve:r }; }
         // All read-only checks passed — fire the node's OWN wired click (LIVE-PROVEN, both calls).
+        try { console.log('[COCOS-CLICK page] 👉 CLICKING tile', GID, 'resolvedBy=' + by); } catch(e){}
         cc.Component.EventHandler.emitEvents(btn.clickEvents, node);
         node.emit('click', btn);
+        try { console.log('[COCOS-CLICK page] ✅ clicked tile', GID); } catch(e){}
         return { ok:true, invoked:true, resolve:r };
       } catch (e) { return { ok:false, step:'invoke-error', resolve:r }; }
     };
@@ -183,8 +185,12 @@ async function runEnterAviatorViaSite(client, sessionId, descriptor, onDiag) {
   // Surface ONLY non-secret booleans + resolvedBy (never the returned object wholesale / page state).
   const rf = (v && v.resolve) || {};
   diag({ event: 'COCOS_ENTRY_SEAM_RESOLVE', ccAvailable: !!rf.ccAvailable, directorAvailable: !!rf.directorAvailable, nodeResolved: !!rf.nodeResolved, buttonResolved: !!rf.buttonResolved, resolvedBy: rf.resolvedBy == null ? null : String(rf.resolvedBy), fallbackGameId: usedFallbackGameId });
+  // eslint-disable-next-line no-console
+  console.log(`[COCOS-CLICK] gameId=${gameId} fallback=${usedFallbackGameId} ok=${!!(v && v.ok)} step=${v && v.step || '-'} cc=${!!rf.ccAvailable} dir=${!!rf.directorAvailable} node=${!!rf.nodeResolved} btn=${!!rf.buttonResolved} by=${rf.resolvedBy || '-'}`);
   if (v && v.ok === true) {
     diag({ event: 'COCOS_ENTRY_INVOKED' });
+    // eslint-disable-next-line no-console
+    console.log(`[COCOS-CLICK] ✅ ĐÃ CLICK vào game (tile ${gameId})`);
     return { ok: true };
   }
   return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: 'Aviator Cocos node did not resolve', step: v && v.step } };

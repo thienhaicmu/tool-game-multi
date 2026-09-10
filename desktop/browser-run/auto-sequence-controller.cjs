@@ -5,9 +5,15 @@
 //
 // Per-BrowserRun owner of a user-defined MULTI-ROW Auto Run sequence. The user adds
 // N config rows in the Auto panel; pressing START runs each row as its OWN AutoRunner
-// execution (a NEW autoExecutionId), in display order, EXACTLY ONCE each, then stops.
-// It NEVER loops back to row 1 and NEVER repeats a row — N is the user's row count,
-// nothing is hardcoded.
+// execution (a NEW autoExecutionId), in display order, EXACTLY ONCE each. N is the user's
+// row count, nothing is hardcoded.
+//
+// LOOP (opt-in, start({ loop:true })): when the LAST row completes NORMALLY the sequence
+// wraps back to row 0 and runs the whole sequence again, indefinitely, until a user STOP or
+// a non-continuable terminal reason ends it. Each looped row is still a NEW execution (new
+// autoExecutionId) and still waits for a real authoritative ROUND_OPEN — nothing is fabricated
+// and no round/BET/CASHOUT/roundCount semantics change. With loop OFF (the default) the final
+// row completing ends the sequence exactly as before (no repeat).
 //
 // AutoRunner still owns exactly ONE execution (one start() == one autoExecutionId ==
 // one lifecycle). This controller is a thin OUTER owner that decides ONLY whether to
@@ -49,6 +55,8 @@ class AutoSequenceController {
 
     this._rows = [];              // immutable snapshot of the row configs at START
     this._index = 0;             // 0-based index of the row currently executing
+    this._loop = false;          // when true, the final row wraps back to row 0 (set per START)
+    this._loopCount = 0;         // how many full sequence passes have completed (display-only)
     this._running = false;
     this._generation = 0;        // race guard: bumped on every start()/stop()
     this._advancedIds = new Set(); // idempotency: finalized ids already advanced/handled
@@ -79,6 +87,8 @@ class AutoSequenceController {
       index: this._index,
       total: this._rows.length,
       roundCount: cur && cur.roundCount != null ? cur.roundCount : null,
+      loop: this._loop,
+      loopCount: this._loopCount,
       ownerRunId: this._ownerRunId,
     };
   }
@@ -87,13 +97,16 @@ class AutoSequenceController {
   // edits/add/remove never mutate an in-flight sequence). Starts row 0 through the owning
   // run's start orchestration and returns its result verbatim, so the IPC caller surfaces
   // the SAME start errors a single-row start would (validation/login/entry/jackpot).
-  async start(rows) {
+  async start(rows, opts = {}) {
     const snapshot = Array.isArray(rows) ? rows.map((r) => ({ ...r })) : [];
     if (snapshot.length === 0) return { error: { code: 'AUTO_SEQUENCE_EMPTY', message: 'No Auto Run rows configured' } };
     this._generation += 1;               // invalidate any prior pending advance
     this._clearPending();
     this._rows = snapshot;
     this._index = 0;
+    // LOOP is decided ONCE per START (immutable for this run, like the row snapshot).
+    this._loop = !!(opts && opts.loop);
+    this._loopCount = 0;
     this._running = true;
     this._advancedIds = new Set();
     this._winHandledIds = new Set();
@@ -155,9 +168,20 @@ class AutoSequenceController {
     }
     const nextIndex = this._index + 1;
     if (nextIndex >= this._rows.length) {
-      // Final row completed — sequence done. Never loops back to row 0.
-      this._running = false;
-      this._log('INFO', 'AUTO_SEQUENCE_COMPLETE', { total: this._rows.length });
+      if (!this._loop) {
+        // Final row completed — sequence done (loop OFF: never repeats).
+        this._running = false;
+        this._log('INFO', 'AUTO_SEQUENCE_COMPLETE', { total: this._rows.length });
+        return;
+      }
+      // LOOP ON — the final row completed: wrap back to row 0 and run the whole sequence again.
+      if (!this._isRunValid()) { this.stop('RUN_INVALID'); return; }
+      this._loopCount += 1;
+      this._index = 0;
+      const loopGen = this._generation;
+      this._log('INFO', 'AUTO_SEQUENCE_LOOP', { total: this._rows.length, loopCount: this._loopCount });
+      // Same deferred, generation-guarded fire as a normal advance (no synchronous re-entry).
+      this._pending = this._scheduler.setTimeout(() => this._fireNext(loopGen), 0);
       return;
     }
     if (!this._isRunValid()) { this.stop('RUN_INVALID'); return; }

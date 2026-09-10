@@ -38,6 +38,7 @@ const { AutoExecutionCollector } = require('./browser-run/auto-execution-collect
 const { AutoSequenceController } = require('./browser-run/auto-sequence-controller.cjs');
 const { AutoStartIntent } = require('./browser-run/auto-start-intent.cjs');
 const { DiagnosticLog } = require('./diagnostics/diagnostic-log.cjs');
+const { TrafficStore } = require('./browser-run/traffic-store.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { parseGameActDescriptor, isGameActUrl } = require('./protocol/aviator-entry-descriptor.cjs');
@@ -72,6 +73,7 @@ let roundHistoryStore = null;
 // Part A/C — Auto execution history + background diagnostics (per-instance, lazy).
 let autoExecutionStore = null;
 let diagnosticLog = null;
+let trafficStore = null;
 // WU-D: persistent per-browser user operating configuration (Auto settings),
 // separate from registry (identity) and history (evidence).
 let browserConfigStore = null;
@@ -149,11 +151,41 @@ function ensureDiagnosticLog() {
   try { diagnosticLog.log({ level: 'INFO', category: 'APP', event: 'DIAGNOSTICS_STARTED', sessionId }); } catch { /* best effort */ }
   return diagnosticLog;
 }
+// Full-traffic evidence store (WU-TRAFFIC). Persists the EXISTING CaptureCorrelator
+// stream per BrowserRun, bounded for long runs. Under the instance root so it is
+// isolated per profile and cleaned with it. Reuses the shared redaction policy.
+function ensureTrafficStore() {
+  if (trafficStore) return trafficStore;
+  trafficStore = new TrafficStore({ dir: path.join(appInstance.paths.root, 'traffic') });
+  return trafficStore;
+}
+
+// Structural per-run ownership for evidence (browserId/runId/autoExecutionId/
+// recoveryGeneration + emitting target/session/request). NEVER from UI selection.
+function trafficOwner(run, req) {
+  const ar = run && run.autoRunner;
+  return {
+    browserId: run && run.browserId,
+    runId: run && run.id,
+    autoExecutionId: (ar && ar.autoExecutionId) ? ar.autoExecutionId() : null,
+    recoveryGeneration: (run && run.recovery && run.recovery.attempts) ? run.recovery.attempts() : null,
+    targetId: req && req.targetId,
+    sessionId: req && req.cdpSessionId,
+    requestId: req && req.cdpRequestId,
+  };
+}
+
 // A per-run child logger that stamps browserId/runId onto every record (structural
 // correlation, never UI selection). Safe no-op if diagnostics are unavailable.
+// It ALSO tees every lifecycle marker into the TrafficStore so a disconnect/re-entry
+// episode export carries both the network evidence and the recovery timeline — with
+// ZERO new call sites and no behaviour change (best-effort, additive).
 function runDiag(run) {
   const base = ensureDiagnosticLog();
-  return { log: (e) => { try { base.log({ browserId: run.browserId, runId: run.id, ...e }); } catch { /* best effort */ } } };
+  return { log: (e) => {
+    try { base.log({ browserId: run.browserId, runId: run.id, ...e }); } catch { /* best effort */ }
+    try { ensureTrafficStore().recordMarker(trafficOwner(run, null), { category: e && e.category, event: e && e.event, level: e && e.level, meta: e && e.meta }); } catch { /* best effort */ }
+  } };
 }
 
 // ---- WU-PROFILE-DATA-LIFECYCLE, Part B: automatic 48h retention ----
@@ -179,6 +211,8 @@ function runRetentionCleanup(reason = 'periodic') {
     try { summary.autoExec = ensureAutoExecutionStore().purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.autoExec = { error: String(e && e.message || e) }; }
     // Diagnostics purge writes NO per-record diagnostics (no cleanup recursion, §23).
     try { summary.diagnostics = log.purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.diagnostics = { error: String(e && e.message || e) }; }
+    // Traffic evidence: same 48h age retention (bounded independently by per-run size rotation).
+    try { summary.traffic = ensureTrafficStore().purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.traffic = { error: String(e && e.message || e) }; }
     try {
       if (summary.history && summary.history.deleted) log.log({ level: 'INFO', category: 'HISTORY', event: 'RETENTION_HISTORY_DELETED', deleted: summary.history.deleted, kept: summary.history.kept });
       if (summary.autoExec && summary.autoExec.deleted) log.log({ level: 'INFO', category: 'HISTORY', event: 'RETENTION_AUTO_EXEC_DELETED', deleted: summary.autoExec.deleted });
@@ -1025,15 +1059,18 @@ function applyRecoveryAction(run, action, ev) {
       try { chromeRuntime.focus(run.id); } catch {}
       break;
     case RECOVERY_ACTION.RELOAD:
-      run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
-      try { if (wc && !wc.isDestroyed()) wc.reload(); } catch {}
-      break;
     case RECOVERY_ACTION.NAVIGATE_CONFIGURED:
-      run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
-      try { if (wc && !wc.isDestroyed() && run.launchUrl) wc.loadURL(run.launchUrl); } catch {}
+      // RELOAD REMOVED — a page reload ejected an in-game player to login and could not re-enter.
+      // The game reconnects on its own; instead of reloading we click back INTO the game via the
+      // same Cocos tile entry. pageLoaded is stamped now (no navigation happens) so the watchdog
+      // does not wait forever for a page (re)load that will never fire.
+      run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = ev.monoNow;
+      console.log(`[ENTER] recovery(${action}) → CLICK vào game (no reload) run=${run.id} target=${run.selectedTargetId}`);
+      try { if (run.entryGate && run.entryGate.ensureEntered) run.entryGate.ensureEntered().then((r) => console.log(`[ENTER] recovery ensureEntered result run=${run.id}:`, JSON.stringify(r))).catch((e) => console.log('[ENTER] recovery ensureEntered error', e && e.message)); } catch (e) { console.log('[ENTER] recovery ensureEntered threw', e && e.message); }
       break;
     case RECOVERY_ACTION.REENTER:
-      try { if (run.entryGate && run.entryGate.ensureEntered) run.entryGate.ensureEntered().catch(() => {}); } catch {}
+      console.log(`[ENTER] recovery REENTER → CLICK vào game run=${run.id} target=${run.selectedTargetId}`);
+      try { if (run.entryGate && run.entryGate.ensureEntered) run.entryGate.ensureEntered().then((r) => console.log(`[ENTER] recovery REENTER result run=${run.id}:`, JSON.stringify(r))).catch((e) => console.log('[ENTER] recovery REENTER error', e && e.message)); } catch (e) { console.log('[ENTER] recovery REENTER threw', e && e.message); }
       break;
     case RECOVERY_ACTION.MARK_READY:
       break; // state broadcast covers UI; readiness proven by fresh protocol evidence
@@ -1139,12 +1176,13 @@ function applyAviatorContextAction(run, action, ev) {
       // _pending attempt (one entry, one Cocos invocation). Never invalidate the Jackpot gate/observer
       // here — the WAITING_JACKPOT wait must survive with its SAME configured threshold (§6).
       try { if (run.entryGate && !run.entryGate.isEntering()) run.entryGate.onDisconnect(); } catch { /* best effort */ }
+      console.log(`[ENTER] context-lost → CLICK vào game (light re-entry, no reload) run=${run.id} target=${run.selectedTargetId} wasRunning=${wasRunning}`);
       const done = () => { run._ctxReentryInFlight = false; try { if (run.aviatorContext) run.aviatorContext.reentryFinished(); } catch { /* best effort */ } };
       try {
         if (run.entryGate && run.entryGate.ensureEntered) {
-          run.entryGate.ensureEntered().then((res) => { done(); if (res && res.ready) onAviatorReentered(run); }).catch(() => done());
+          run.entryGate.ensureEntered().then((res) => { console.log(`[ENTER] light re-entry result run=${run.id}:`, JSON.stringify(res)); done(); if (res && res.ready) onAviatorReentered(run); }).catch((e) => { console.log('[ENTER] light re-entry error', e && e.message); done(); });
         } else { done(); }
-      } catch { done(); }
+      } catch (e) { console.log('[ENTER] light re-entry threw', e && e.message); done(); }
       break;
     }
     case CTX_ACTION.ESCALATE_FULL_RECOVERY:
@@ -1310,6 +1348,8 @@ async function deletePersistentBrowser(browserId) {
   try { const r = ensureAutoExecutionStore().removeBrowser(bid); if (r && r.error) failures.push({ store: 'autoExec', ...r.error }); } catch (e) { failures.push({ store: 'autoExec', message: String(e && e.message || e) }); }
   // 2d) Diagnostics (shared store: remove only THIS browser's records, §8).
   try { log.purgeBrowser(bid); } catch (e) { failures.push({ store: 'diagnostics', message: String(e && e.message || e) }); }
+  // 2d.1) Traffic evidence (§8).
+  try { ensureTrafficStore().purgeBrowser(bid); } catch (e) { failures.push({ store: 'traffic', message: String(e && e.message || e) }); }
   // 2e) Operating config (per-browser entry).
   try { ensureBrowserConfigStore(); const r = browserConfigStore.remove(bid); if (r && r.error) failures.push({ store: 'config', ...r.error }); } catch (e) { failures.push({ store: 'config', message: String(e && e.message || e) }); }
   // 2f) Vestigial registry profile directory (external-Chrome era). Remove if present.
@@ -1431,6 +1471,49 @@ capture.on('request', req => {
 });
 capture.on('response', req => { if (!req.response) return; emit({ kind: 'response', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, url: safeDisplayUrl(req.url), status: req.response.status, duration: Math.round(req.durationMs || 0), timestamp: new Date().toISOString() }); });
 capture.on('update', req => { if (req.state === 'BODY_AVAILABLE' && req.response) emit({ kind: 'response', id: req.id, requestId: req.cdpRequestId, targetId: req.targetId, url: safeDisplayUrl(req.url), status: req.response.status, duration: Math.round(req.durationMs || 0), timestamp: new Date().toISOString() }); });
+
+// WU-TRAFFIC: persist the EXISTING captured evidence stream per BrowserRun (bounded,
+// redacted). This adds NO new CDP subscription — it serialises records the correlator
+// already emits. Ownership is resolved from the emitting target's run (never UI).
+// Response bodies are fetched only for game-entry (game-act) requests to keep long-run
+// load minimal; all other bodies are recorded as metadata-only.
+capture.on('request', req => {
+  try {
+    if (!runManager) return;
+    const run = runManager.runForTarget(req.targetId);
+    if (!run) return;
+    const ts = ensureTrafficStore();
+    const owner = trafficOwner(run, req);
+    if (req.isWebSocket) {
+      if (req.wsDirection) ts.recordWsFrame(owner, req); else ts.recordWsCreated(owner, req);
+    } else {
+      ts.recordHttpRequest(owner, req);
+    }
+  } catch { /* evidence persistence must never break capture */ }
+});
+capture.on('response', req => {
+  try {
+    if (!runManager || req.isWebSocket || !req.response) return;
+    const run = runManager.runForTarget(req.targetId);
+    if (run) ensureTrafficStore().recordHttpResponse(trafficOwner(run, req), req);
+  } catch { /* best effort */ }
+});
+capture.on('update', req => {
+  try {
+    if (!runManager) return;
+    const run = runManager.runForTarget(req.targetId);
+    if (!run) return;
+    const ts = ensureTrafficStore();
+    if (req.isWebSocket) { if (req.state === 'FINISHED') ts.recordWsClosed(trafficOwner(run, req), req); return; }
+    if (req.state === 'BODY_AVAILABLE' && req.response) {
+      ts.recordHttpResponse(trafficOwner(run, req), req);
+      // Entry evidence (§10): fetch + persist the game-act response body specifically.
+      if (String(req.method || '').toUpperCase() === 'POST' && isGameActUrl(req.url)) {
+        capture.getResponseBody(req.id).then(body => { try { ts.recordHttpBody(trafficOwner(run, req), req, body); } catch { /* best effort */ } }).catch(() => {});
+      }
+    }
+  } catch { /* best effort */ }
+});
 
 // WU2: attach full network capture to a target's own CDP client and route every
 // event through the shared correlator, tagged with this target's id.
@@ -1717,6 +1800,23 @@ handle('browser-auto-executions', (_event, browserId, options = {}) => { if (!cu
 handle('diagnostics-info', () => { ensureDiagnosticLog(); return { ...diagnosticLog.retentionPolicy(), totalBytes: diagnosticLog.totalBytes(), files: diagnosticLog.files() }; });
 handle('diagnostics-open-folder', () => { ensureDiagnosticLog(); try { require('electron').shell.openPath(diagnosticLog.retentionPolicy().directory); return { ok: true }; } catch (e) { return { error: { code: 'DIAGNOSTICS_OPEN_FAILED', message: String(e && e.message || e) } }; } });
 handle('diagnostics-clear', () => { ensureDiagnosticLog(); try { diagnosticLog.clear(); return { ok: true }; } catch (e) { return { error: { code: 'DIAGNOSTICS_CLEAR_FAILED', message: String(e && e.message || e) } }; } });
+// WU-TRAFFIC — Advanced/Diagnostics: capture status + open folder + export one run's
+// (optionally windowed) evidence as redacted JSONL for offline/AI analysis. Read-only.
+handle('traffic-info', () => { const ts = ensureTrafficStore(); const s = ts.stats(); return { on: true, ...s }; });
+handle('traffic-open-folder', () => { const ts = ensureTrafficStore(); try { require('electron').shell.openPath(ts.stats().directory || ''); return { ok: true }; } catch (e) { return { error: { code: 'TRAFFIC_OPEN_FAILED', message: String(e && e.message || e) } }; } });
+handle('traffic-export-episode', async (_event, spec = {}) => {
+  const ts = ensureTrafficStore();
+  const runId = String(spec.runId || '');
+  if (!runId) return { error: { code: 'TRAFFIC_EXPORT_NO_RUN', message: 'runId is required' } };
+  try {
+    const { dialog } = require('electron');
+    const def = `traffic-${runId}-${new Date().toISOString().replace(/[:.]/g, '-')}.jsonl`;
+    const res = await dialog.showSaveDialog(shell && !shell.isDestroyed() ? shell : undefined, { defaultPath: def, filters: [{ name: 'JSONL', extensions: ['jsonl'] }] });
+    if (res.canceled || !res.filePath) return { ok: false, canceled: true };
+    return ts.exportEpisode({ runId, fromMs: spec.fromMs != null ? Number(spec.fromMs) : null, toMs: spec.toMs != null ? Number(spec.toMs) : null }, res.filePath);
+  } catch (e) { return { error: { code: 'TRAFFIC_EXPORT_FAILED', message: String(e && e.message || e) } }; }
+});
+handle('traffic-summary', (_event, spec = {}) => { const ts = ensureTrafficStore(); return ts.summarizeEpisode({ runId: String(spec.runId || ''), fromMs: spec.fromMs != null ? Number(spec.fromMs) : null, toMs: spec.toMs != null ? Number(spec.toMs) : null }); });
 // WU-D — per-browser operating configuration (Auto settings). The store owns only
 // user-entered config; it holds NO runtime truth and NO license authority. A saved
 // waitForJackpot:true is a REQUEST — autotest-start still enforces features.jackpotGate.
@@ -1991,7 +2091,9 @@ handle('autotest-start', async (_event, runId, config = {}) => {
   // the shared orchestration above. The first row's start result (error or snapshot) is returned;
   // advancement to rows 2..N is owned by the controller on each NORMAL executionFinalized.
   try {
-    const res = await run.autoSequence.start(rows);
+    // LOOP (default ON; renderer opt-out via config.loop === false): the last Level completing wraps
+    // back to Level 1 and re-runs the whole sequence until STOP / a non-continuable terminal reason.
+    const res = await run.autoSequence.start(rows, { loop: config && config.loop !== false });
     if (res && res.error) return res;
     return autoSnapshot(run);
   } finally {

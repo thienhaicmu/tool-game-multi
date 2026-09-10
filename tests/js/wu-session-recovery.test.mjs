@@ -239,5 +239,11 @@ test('wiring: evidence + actuators mapped to the current runtime (reuse, no seco
   assert.match(main, /run\.autoRunner\.stop\(\{ reason: 'SESSION_RECOVERY' \}\)/, 'pauses existing AutoRunner');
   assert.match(main, /invalidateRunProtocolState\(run\)/, 'invalidates stale protocol state');
   assert.match(main, /run\.entryGate\.ensureEntered\(\)/, 'reuses AviatorEntryGate for re-entry');
-  assert.match(main, /wc\.loadURL\(run\.launchUrl\)/, 'navigates to the configured URL when the page is lost');
+  // RELOAD REMOVED — recovery no longer reloads/navigates the page (a reload ejected an in-game
+  // player to login). It clicks back INTO the game via the Cocos tile entry instead.
+  assert.match(main, /RELOAD REMOVED/, 'recovery reload is explicitly removed');
+  assert.ok(!/wc\.loadURL\(run\.launchUrl\)/.test(main), 'recovery must not navigate to the launch URL');
+  // The recovery action handler must not call wc.reload() — extract applyRecoveryAction and check.
+  const seg = main.slice(main.indexOf('function applyRecoveryAction'), main.indexOf('function resumePausedAuto'));
+  assert.ok(!/wc\.reload\(\)/.test(seg), 'applyRecoveryAction must not reload the page');
 });

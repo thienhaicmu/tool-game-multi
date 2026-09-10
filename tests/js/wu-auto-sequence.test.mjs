@@ -619,3 +619,81 @@ test('WIN T24 (mock) — a win in one run does not reset another run', async () 
   assert.equal(B.starts.length, 2, 'B2 no extra start');
   assert.ok(B.starts.every((s) => s.execId.startsWith('AX-B2-')), 'no cross-run retarget');
 });
+
+// ---------------------------------------------------------------------------
+// LOOP — start({ loop:true }): the final row wrapping back to row 0, indefinitely.
+// ---------------------------------------------------------------------------
+
+// LOOP-1 — the last row completing wraps back to row 0 and keeps running (NEW execution).
+test('LOOP last row complete → wraps to row 0 and keeps running', async () => {
+  const { ctrl, starts, finalize, advance } = mockCtrl();
+  await ctrl.start([ROW(1000), ROW(500)], { loop: true });
+  finalize(); await advance();                 // L1 done → L2
+  assert.equal(ctrl.index(), 1);
+  finalize(); await advance();                 // L2 (last) done → LOOP back to L1
+  assert.equal(ctrl.index(), 0, 'wrapped back to the first Level');
+  assert.equal(ctrl.isRunning(), true, 'still running after the last Level');
+  assert.equal(starts.length, 3, 'a NEW execution started for the looped row 0');
+  assert.deepEqual(starts.map((s) => s.cfg.roundCount), [1000, 500, 1000]);
+  assert.equal(starts[2].first, false, 'a looped row is never a resume-capable first row');
+});
+
+// LOOP-2 — multiple full passes; each looped row is a distinct NEW execution; loopCount tracks.
+test('LOOP runs the whole sequence repeatedly with distinct execution ids', async () => {
+  const { ctrl, starts, finalize, advance } = mockCtrl();
+  await ctrl.start([ROW(10), ROW(20), ROW(30)], { loop: true });
+  // Drive 2 full passes (6 completions) + into a 3rd pass' first row.
+  for (let i = 0; i < 7; i++) { finalize(); await advance(); }
+  assert.equal(ctrl.isRunning(), true);
+  assert.equal(starts.length, 8, '3+3+2 executions across the looped passes');
+  assert.deepEqual(starts.map((s) => s.cfg.roundCount), [10, 20, 30, 10, 20, 30, 10, 20]);
+  const ids = starts.map((s) => s.execId);
+  assert.equal(new Set(ids).size, ids.length, 'every looped execution id is distinct');
+  assert.equal(ctrl.snapshot().loopCount, 2, 'two full passes completed');
+  assert.equal(ctrl.snapshot().loop, true);
+});
+
+// LOOP-3 — single-row sequence also loops (last Level == only Level).
+test('LOOP single row repeats after each completion', async () => {
+  const { ctrl, starts, finalize, advance } = mockCtrl();
+  await ctrl.start([ROW(1000)], { loop: true });
+  finalize(); await advance();
+  finalize(); await advance();
+  assert.equal(starts.length, 3, 'the one row restarted each completion');
+  assert.equal(ctrl.isRunning(), true);
+});
+
+// LOOP-4 — default (no loop opt) still STOPS after the last row (contract preserved).
+test('LOOP default OFF — last row still ends the sequence', async () => {
+  const { ctrl, starts, finalize, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2)]);          // no { loop:true }
+  finalize(); await advance();
+  finalize(); await advance();
+  assert.equal(ctrl.isRunning(), false, 'no loop by default');
+  assert.equal(starts.length, 2);
+  assert.equal(ctrl.snapshot().loop, false);
+});
+
+// LOOP-5 — a user STOP after the last row completes (but before the wrapped fire) blocks the
+// restart via the generation guard, even with a leaky scheduler that still runs queued timers.
+test('LOOP STOP race — a STOP before the wrapped row fires prevents the restart', async () => {
+  const sch = fakeScheduler({ leaky: true });
+  const { ctrl, starts, finalize, advance } = mockCtrl({ scheduler: sch });
+  await ctrl.start([ROW(1), ROW(2)], { loop: true });
+  finalize(); await advance();                 // → L2
+  finalize();                                  // L2 done → schedules the LOOP wrap (not yet fired)
+  ctrl.stop('USER_STOP');                      // user STOP wins the race (bumps generation)
+  await advance();                             // leaky timer still runs, but the guard rejects it
+  assert.equal(ctrl.isRunning(), false);
+  assert.equal(starts.length, 2, 'no looped restart after STOP');
+});
+
+// LOOP-6 — a non-continuable terminal reason on the last row halts (never loops).
+test('LOOP non-continuable terminal on the last row halts (no wrap)', async () => {
+  const { ctrl, starts, finalize, advance } = mockCtrl();
+  await ctrl.start([ROW(1), ROW(2)], { loop: true });
+  finalize(); await advance();                 // → L2
+  finalize('USER_STOP'); await advance();      // last row ended by a STOP, not a normal completion
+  assert.equal(ctrl.isRunning(), false, 'a non-continuable terminal never loops');
+  assert.equal(starts.length, 2);
+});
