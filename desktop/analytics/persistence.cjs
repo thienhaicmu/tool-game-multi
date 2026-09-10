@@ -2,6 +2,9 @@
 
 const { classifyFrame } = require('../protocol/frame-classify.cjs');
 const { RoundAssembler, CAUSE } = require('./round-assembler.cjs');
+// Shared canonical redaction — secret header VALUES (Authorization/Cookie/X-TOKEN/…)
+// must never reach the SQLite evidence at rest (§11/§12). Header names are kept.
+const { redactHeaders } = require('../diagnostics/redaction.cjs');
 
 // ---------------------------------------------------------------------------
 // AnalyticsPersistence — the write path. For each browser it owns:
@@ -143,7 +146,7 @@ class AnalyticsPersistence {
       requestId: req.cdpRequestId, loaderId: req.loaderId, timestampMs: wallOf(req.startedAt, this._now()),
       monotonicMs: Number.isFinite(req.startMonotonic) ? req.startMonotonic : null,
       resourceType: req.resourceType, method: req.method, url: req.url, scheme: req.scheme, host: req.host, path: req.path,
-      requestHeaders: req.headers || null, requestBody: req.body && req.body.raw ? req.body.raw : null,
+      requestHeaders: req.headers ? redactHeaders(req.headers) : null, requestBody: req.body && req.body.raw ? req.body.raw : null,
       initiatorType: req.initiator && req.initiator.type ? req.initiator.type : null,
       redirectFromRequestId: req.redirectFromId != null ? (this._netReqByCaptured.get(req.redirectFromId) || null) : null,
     });
@@ -163,7 +166,7 @@ class AnalyticsPersistence {
       networkRequestId: netId, timestampMs: this._now(),
       status: resp ? resp.status : null, statusText: resp ? resp.statusText : null,
       mimeType: resp ? resp.mimeType : null, protocol: resp ? resp.protocol : null,
-      responseHeaders: resp ? resp.headers : null, remoteIp: resp ? resp.remoteIP : null, remotePort: resp ? resp.remotePort : null,
+      responseHeaders: resp ? redactHeaders(resp.headers) : null, remoteIp: resp ? resp.remoteIP : null, remotePort: resp ? resp.remotePort : null,
       fromDiskCache: resp ? resp.fromDiskCache : false, fromServiceWorker: resp ? resp.fromServiceWorker : false,
       encodedDataLength: resp ? resp.encodedSize : null, timingJson: resp ? resp.timing : null,
       failed, failureReason: req.failure ? req.failure.errorText : null, durationMs: req.durationMs,

@@ -1491,13 +1491,8 @@ capture.on('request', req => {
     }
   } catch { /* evidence persistence must never break capture */ }
 });
-capture.on('response', req => {
-  try {
-    if (!runManager || req.isWebSocket || !req.response) return;
-    const run = runManager.runForTarget(req.targetId);
-    if (run) ensureTrafficStore().recordHttpResponse(trafficOwner(run, req), req);
-  } catch { /* best effort */ }
-});
+// Response + close are recorded ONCE at a terminal state (mirrors the analytics
+// finalize pattern) so a request never yields duplicate response rows.
 capture.on('update', req => {
   try {
     if (!runManager) return;
@@ -1505,10 +1500,11 @@ capture.on('update', req => {
     if (!run) return;
     const ts = ensureTrafficStore();
     if (req.isWebSocket) { if (req.state === 'FINISHED') ts.recordWsClosed(trafficOwner(run, req), req); return; }
-    if (req.state === 'BODY_AVAILABLE' && req.response) {
+    if (req.state === 'BODY_AVAILABLE' || req.state === 'FINISHED' || req.state === 'FAILED') {
       ts.recordHttpResponse(trafficOwner(run, req), req);
-      // Entry evidence (§10): fetch + persist the game-act response body specifically.
-      if (String(req.method || '').toUpperCase() === 'POST' && isGameActUrl(req.url)) {
+      // Entry evidence (§10): fetch + persist the game-act response body specifically
+      // (bounded — only game entry, not every asset — to keep long-run load minimal).
+      if (req.state === 'BODY_AVAILABLE' && String(req.method || '').toUpperCase() === 'POST' && isGameActUrl(req.url)) {
         capture.getResponseBody(req.id).then(body => { try { ts.recordHttpBody(trafficOwner(run, req), req, body); } catch { /* best effort */ } }).catch(() => {});
       }
     }
