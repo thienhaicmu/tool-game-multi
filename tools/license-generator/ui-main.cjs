@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, dialog, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const crypto = require('node:crypto');
@@ -9,30 +9,63 @@ const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-
 const { TrustedTimeProvider } = require('../../desktop/licensing/trusted-time.cjs');
 const { parseLicense } = require('../../desktop/licensing/license-verifier.cjs');
 const { PLAN_PRESETS, PLANS, buildLicensePayloadV2, validateEntitlementInput, normalizeEntitlement } = require('../../desktop/licensing/entitlements.cjs');
+const { resolveExpiresAt, formatUtcPlus7 } = require('./duration.cjs');
+const { PLAN_UI_DEFAULTS } = require('./plan-ui-defaults.cjs');
+const { resolveSellerResources } = require('./seller-resources.cjs');
+const { loadServiceAccount, GoogleSheetClient, trySaveRecord } = require('./google-sheet.cjs');
 let PUBLIC_KEY_PEM = null;
 try { PUBLIC_KEY_PEM = require('../../desktop/licensing/public-key.cjs').PUBLIC_KEY_PEM; } catch { /* optional */ }
 
 let win;
-let privateKeyPath = process.env.WVPT_PRIVATE_KEY_PATH || defaultPrivateKeyPath();
 const trustedTime = new TrustedTimeProvider();
 
-function defaultPrivateKeyPath() {
-  if (app && app.isPackaged) return path.join(process.resourcesPath, 'private', 'wvpt-ed25519-private.pem');
-  return path.join(__dirname, 'private', 'wvpt-ed25519-private.pem');
+// ---- self-contained seller resource resolution (signing key + Google cred) ----
+// Packaged: bundled under process.resourcesPath/private. Dev: generator source dir,
+// with optional env overrides. The renderer NEVER sees any of these paths/secrets.
+function sellerResources() {
+  return resolveSellerResources({
+    isPackaged: !!(app && app.isPackaged),
+    resourcesPath: process.resourcesPath,
+    dirname: __dirname,
+    env: process.env,
+  });
 }
 
 function readPrivateKey() {
-  const direct = process.env.WVPT_PRIVATE_KEY;
+  const direct = process.env.WVPT_PRIVATE_KEY; // dev/CI inline override only
   if (direct) return direct.replace(/\\n/g, '\n');
-  if (!privateKeyPath || !fs.existsSync(privateKeyPath)) throw new Error(`Private key not found: ${privateKeyPath}`);
-  return fs.readFileSync(privateKeyPath, 'utf8');
+  const p = sellerResources().privateKeyPath;
+  if (!p || !fs.existsSync(p)) throw new Error(`Private key not found: ${p}`);
+  return fs.readFileSync(p, 'utf8');
 }
 
-function utcDateSeconds(dateText) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(dateText || ''))) throw new Error('Custom expiry must be YYYY-MM-DD');
-  const ms = Date.parse(`${dateText}T00:00:00.000+07:00`);
-  if (!Number.isFinite(ms)) throw new Error('Invalid expiry date');
-  return Math.floor(ms / 1000);
+function signingReady() {
+  if (process.env.WVPT_PRIVATE_KEY) return true;
+  const p = sellerResources().privateKeyPath;
+  return !!(p && fs.existsSync(p));
+}
+
+// ---- Google Sheet client (seller-side; lazy; credentials never cross IPC) ----
+let sheetClient = null;
+let sheetClientCredPath = null;
+
+function resolveCred() {
+  const p = sellerResources().googleCredentialPath;
+  return p && fs.existsSync(p) ? p : null;
+}
+// Returns a ready client or null (not configured). Throws only on a bad credential file.
+function getSheetClient() {
+  const p = resolveCred();
+  if (!p) return null;
+  if (sheetClient && sheetClientCredPath === p) return sheetClient;
+  const sa = loadServiceAccount(p); // may throw GOOGLE_CREDENTIAL_*
+  const { spreadsheetId, sheetId } = sellerResources();
+  sheetClient = new GoogleSheetClient({ serviceAccount: sa, spreadsheetId, sheetId });
+  sheetClientCredPath = p;
+  return sheetClient;
+}
+function credentialEmail(p) {
+  try { return loadServiceAccount(p).client_email || null; } catch { return null; }
 }
 
 function normalizeMachineId(input) {
@@ -52,12 +85,17 @@ async function trustedIssuedAt() {
   return Math.floor(result.nowMs / 1000);
 }
 
+// Accept the GUI duration spec ({ unit:'days'|'months'|'custom', value/expires }).
+// Falls back to the legacy { mode, durationDays, expires } shape for safety.
+function durationSpecFrom(input) {
+  if (input && input.duration && typeof input.duration === 'object') return input.duration;
+  if (input && input.mode === 'custom') return { unit: 'custom', expires: input.expires };
+  return { unit: 'days', value: Number(input && input.durationDays || 30) };
+}
+
 async function buildPayload(input) {
   const issuedAt = await trustedIssuedAt();
-  const mode = input.mode === 'custom' ? 'custom' : 'duration';
-  const expiresAt = mode === 'custom'
-    ? utcDateSeconds(input.expires)
-    : issuedAt + Number(input.durationDays || 30) * 24 * 60 * 60;
+  const expiresAt = resolveExpiresAt(issuedAt, durationSpecFrom(input));
   if (!Number.isInteger(expiresAt) || expiresAt <= issuedAt) throw new Error('Ngày hết hạn phải ở tương lai.');
   const machineId = normalizeMachineId(input.machineId);
   const licenseId = 'LIC-' + randomBytes(4).toString('hex').toUpperCase();
@@ -88,9 +126,9 @@ function createLicense(payload) {
   return `WVPT1.${base64url(canonical)}.${base64url(signature)}`;
 }
 
-// Signature-verifying inspector (§47/§48). Verifies with the public key that matches
-// the loaded signing key (round-trip), falling back to the bundled public key. Reports
-// exactly what the key grants — independent of the customer machine/expiry.
+// Signature-verifying inspector. Verifies with the public key that matches the loaded
+// signing key (round-trip), falling back to the bundled Control public key. Requires
+// NO manual key selection — resolved automatically from bundled resources.
 function inspectLicense(license) {
   let parsed;
   try { parsed = parseLicense(license); } catch { return { ok: false, error: 'Định dạng khóa không hợp lệ.' }; }
@@ -103,12 +141,21 @@ function inspectLicense(license) {
   return { ok: true, signatureValid, payload: parsed.payload, entitlement: normalizeEntitlement(parsed.payload) };
 }
 
+// ---- Google Sheet save (idempotent by licenseId). Never throws to the caller;
+// a Google failure NEVER destroys the already-created license. ----
+async function saveRecordToSheet(record) {
+  let client;
+  try { client = getSheetClient(); }
+  catch (e) { return { synced: false, error: { code: e.code || 'GOOGLE_CREDENTIAL_ERROR', message: e.message } }; }
+  return trySaveRecord(client, record);
+}
+
 function createWindow() {
   win = new BrowserWindow({
-    width: 760,
-    height: 680,
-    minWidth: 680,
-    minHeight: 560,
+    width: 780,
+    height: 860,
+    minWidth: 720,
+    minHeight: 620,
     backgroundColor: '#f6f7fb',
     webPreferences: {
       preload: path.join(__dirname, 'ui-preload.cjs'),
@@ -119,31 +166,31 @@ function createWindow() {
   win.loadFile(path.join(__dirname, 'ui.html'));
 }
 
-ipcMain.handle('key-status', () => ({
-  privateKeyPath,
-  exists: !!(privateKeyPath && fs.existsSync(privateKeyPath)),
-  envKey: !!process.env.WVPT_PRIVATE_KEY,
-  packagedHint: app.isPackaged ? path.join(path.dirname(process.execPath), 'private', 'wvpt-ed25519-private.pem') : null,
-}));
-
-ipcMain.handle('choose-private-key', async () => {
-  const choice = await dialog.showOpenDialog(win, {
-    title: 'Select WVPT Ed25519 private key',
-    filters: [{ name: 'PEM private key', extensions: ['pem'] }],
-    properties: ['openFile'],
-  });
-  if (!choice.canceled && choice.filePaths && choice.filePaths[0]) privateKeyPath = choice.filePaths[0];
-  return { privateKeyPath, exists: !!(privateKeyPath && fs.existsSync(privateKeyPath)) };
-});
+// ---- IPC: only SAFE state/operations. No secret paths or key material cross here. ----
+ipcMain.handle('signing-status', () => ({ ready: signingReady() }));
 
 ipcMain.handle('generate-license', async (_event, input) => {
   try {
     const payload = await buildPayload(input || {});
-    return { ok: true, payload, license: createLicense(payload) };
+    const license = createLicense(payload);
+    const metadata = {
+      customerName: (input && input.customerName) || '',
+      phone: (input && input.phone) || '',
+      note: (input && input.note) || '',
+      createdAt: new Date().toISOString(), // management timestamp; fixed for retries
+    };
+    const record = { payload, license, metadata };
+    // License is CREATED regardless of Google outcome. Attempt the ledger save now.
+    const sheet = await saveRecordToSheet(record);
+    return { ok: true, payload, license, metadata, sheet };
   } catch (error) {
     return { ok: false, error: { code: 'LICENSE_GENERATE_FAILED', message: String(error && error.message || error) } };
   }
 });
+
+// Retry / explicit sync of an ALREADY-generated license — no regeneration. Same
+// licenseId => idempotent upsert => never a duplicate row.
+ipcMain.handle('sheet-sync', async (_event, record) => saveRecordToSheet(record));
 
 ipcMain.handle('inspect-license', (_event, license) => {
   try { return inspectLicense(String(license || '')); }
@@ -151,12 +198,54 @@ ipcMain.handle('inspect-license', (_event, license) => {
 });
 
 ipcMain.handle('plan-presets', () => PLAN_PRESETS);
+ipcMain.handle('plan-defaults', () => PLAN_UI_DEFAULTS);
+
+// Expiry preview: exact when trusted time is cached, otherwise a clearly-flagged
+// estimate from local time (the SIGNED value always uses trusted time at generate).
+ipcMain.handle('preview-expiry', (_event, input) => {
+  let issuedAt;
+  let estimated = false;
+  const cached = trustedTime.cachedNowMs();
+  if (process.env.WVPT_TRUSTED_TIME_MS && Number.isFinite(Number(process.env.WVPT_TRUSTED_TIME_MS))) {
+    issuedAt = Math.floor(Number(process.env.WVPT_TRUSTED_TIME_MS) / 1000);
+  } else if (cached != null) {
+    issuedAt = Math.floor(cached / 1000);
+  } else {
+    issuedAt = Math.floor(Date.now() / 1000);
+    estimated = true;
+  }
+  try {
+    const expiresAt = resolveExpiresAt(issuedAt, (input && input.duration) || { unit: 'days', value: 30 });
+    return { ok: true, issuedAt, expiresAt, estimated, issuedText: formatUtcPlus7(issuedAt), expiresText: formatUtcPlus7(expiresAt) };
+  } catch (e) {
+    return { ok: false, estimated, error: { message: e.message } };
+  }
+});
+
+// Google Sheet connection status (auto-resolved; no private_key ever leaves main).
+ipcMain.handle('sheet-status', async () => {
+  const p = resolveCred();
+  if (!p) return { configured: false, state: 'disconnected' };
+  let client;
+  try { client = getSheetClient(); }
+  catch (e) { return { configured: true, state: 'error', error: { code: e.code || 'GOOGLE_CREDENTIAL_ERROR', message: e.message } }; }
+  try {
+    const ping = await client.ping();
+    return { configured: true, state: 'connected', email: ping.email, spreadsheetTitle: ping.spreadsheetTitle, sheetTitle: ping.sheetTitle };
+  } catch (e) {
+    return { configured: true, state: 'error', email: credentialEmail(p), error: { code: e.code || 'GOOGLE_ERROR', message: e.message } };
+  }
+});
 
 ipcMain.handle('copy', (_event, text) => {
   clipboard.writeText(String(text || ''));
   return true;
 });
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  // Warm the trusted-time cache so expiry previews become exact quickly.
+  trustedTime.now().catch(() => {});
+});
 app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
 app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });

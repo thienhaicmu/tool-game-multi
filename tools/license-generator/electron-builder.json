@@ -10,6 +10,10 @@
     "tools/license-generator/ui.html",
     "tools/license-generator/ui.css",
     "tools/license-generator/ui.js",
+    "tools/license-generator/duration.cjs",
+    "tools/license-generator/plan-ui-defaults.cjs",
+    "tools/license-generator/google-sheet.cjs",
+    "tools/license-generator/seller-resources.cjs",
     "desktop/licensing/canonical-json.cjs",
     "desktop/licensing/trusted-time.cjs",
     "desktop/licensing/license-verifier.cjs",
@@ -24,6 +28,10 @@
       "filter": [
         "*.pem"
       ]
+    },
+    {
+      "from": "tools/license-generator/private/google-service-account.json",
+      "to": "private/google-service-account.json"
     }
   ],
   "extraMetadata": {

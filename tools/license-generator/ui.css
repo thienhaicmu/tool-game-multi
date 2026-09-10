@@ -42,3 +42,28 @@ button:disabled{opacity:.5;cursor:default}
 .feat.off{color:#98a2b3}
 .ok{color:var(--ok);background:#ecfdf3;border:1px solid #b7e4c7;border-radius:6px;padding:9px 11px;font-weight:700;margin-top:8px}
 .inspect-body{display:flex;flex-direction:column;gap:2px}
+/* Generator V2 — plan cards, duration chips, preview, google status */
+.opt{font-weight:500;color:#9aa4b2;font-size:11px}
+.plan-cards{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+.plan-card{display:flex;flex-direction:column;align-items:center;gap:3px;padding:14px 8px;border:2px solid var(--line);border-radius:10px;background:#fff;cursor:pointer}
+.plan-card:hover{border-color:#aebfe0}
+.plan-card .pc-name{font-weight:800;font-size:15px;letter-spacing:.03em}
+.plan-card .pc-sub{font-weight:600;color:var(--muted);font-size:12px}
+.plan-card.selected{border-color:var(--accent);background:#eef3ff;box-shadow:0 0 0 3px rgba(37,99,235,.12)}
+.plan-card.selected .pc-name{color:var(--accent)}
+.chips-row{display:flex;flex-wrap:wrap;gap:8px}
+.dur-chip{padding:8px 14px;border:1px solid var(--line);border-radius:999px;background:#fff;font-weight:700;cursor:pointer}
+.dur-chip:hover{border-color:#aebfe0}
+.dur-chip.selected{border-color:var(--accent);background:var(--accent);color:#fff}
+.preview{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px}
+.readiness{display:flex;align-items:center;gap:22px;flex-wrap:wrap;padding:12px 16px}
+.ready-item{display:flex;align-items:center;gap:8px;font-weight:700;color:var(--muted)}
+.google-status{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px;border:1px solid var(--line);border-radius:8px;background:#fbfcfe;font-weight:600;color:var(--muted)}
+.dot-chip{font-weight:800;font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:#fff}
+.dot-chip.on{color:var(--ok);background:#ecfdf3;border-color:#b7e4c7}
+.dot-chip.off{color:#98622a;background:#fff7ed;border-color:#fed7aa}
+.dot-chip.err{color:var(--err);background:#fff1f0;border-color:#ffccc7}
+.link-btn{border:none;background:none;color:var(--accent);padding:0;font-weight:700;text-decoration:underline;width:auto;margin-left:auto}
+.link-btn:hover{border:none}
+.warn{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#98622a;background:#fff7ed;border:1px solid #fed7aa;border-radius:6px;padding:9px 11px;font-weight:700;margin-top:8px}
+.warn button{border-color:#fed7aa;background:#fff}

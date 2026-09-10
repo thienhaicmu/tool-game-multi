@@ -13,16 +13,11 @@
         <h1>TRÌNH TẠO KHÓA BẢN QUYỀN</h1>
         <p>Công cụ ký khóa ngoại tuyến cho Aviator Control Studio (WVPT).</p>
       </div>
-      <span id="key-chip" class="chip off">CHƯA CÓ KHÓA KÝ</span>
     </header>
 
-    <section class="panel">
-      <div class="panel-head">
-        <b>Khóa ký</b>
-        <button id="choose-key" type="button">Chọn khóa ký</button>
-      </div>
-      <div id="key-path" class="path">Đang tải...</div>
-      <div class="hint">Khóa ký riêng KHÔNG nằm trong ứng dụng khách. Không commit, không đóng gói kèm bản khách.</div>
+    <section class="panel readiness">
+      <div class="ready-item"><span>Ký license:</span><span id="signing-chip" class="dot-chip">Đang kiểm tra…</span></div>
+      <div class="ready-item"><span>Google Sheet:</span><span id="sheet-chip" class="dot-chip">Đang kiểm tra…</span></div>
     </section>
 
     <div class="tabs">
@@ -38,38 +33,52 @@
         </label>
 
         <div class="grid">
-          <label>Gói bản quyền
-            <select id="plan">
-              <option value="TRIAL">Dùng thử (TRIAL)</option>
-              <option value="STANDARD" selected>Tiêu chuẩn (STANDARD)</option>
-              <option value="PRO">Pro (PRO)</option>
-            </select>
+          <label>Khách hàng <span class="opt">(không bắt buộc)</span>
+            <input id="customer-name" placeholder="Tên khách hàng">
           </label>
-          <label>Thời hạn
-            <select id="duration">
-              <option value="30">1 tháng</option>
-              <option value="60" selected>2 tháng</option>
-              <option value="90">3 tháng</option>
-              <option value="180">6 tháng</option>
-              <option value="365">12 tháng</option>
-              <option value="custom">Tùy chỉnh</option>
-            </select>
+          <label>Số điện thoại <span class="opt">(không bắt buộc)</span>
+            <input id="customer-phone" placeholder="09xx xxx xxx">
           </label>
         </div>
 
-        <div class="grid">
-          <label id="custom-wrap" hidden>Ngày hết hạn
-            <input id="custom-expiry" type="date">
-          </label>
-          <div class="stat"><span>Ngày hết hạn</span><b id="expires">Tính khi tạo khóa</b></div>
+        <div class="section-title">GÓI BẢN QUYỀN</div>
+        <div id="plan-cards" class="plan-cards">
+          <button type="button" class="plan-card" data-plan="TRIAL">
+            <span class="pc-name">TRIAL</span><span class="pc-sub">7 ngày</span>
+          </button>
+          <button type="button" class="plan-card selected" data-plan="STANDARD">
+            <span class="pc-name">STANDARD</span><span class="pc-sub">1 tháng</span>
+          </button>
+          <button type="button" class="plan-card" data-plan="PRO">
+            <span class="pc-name">PRO</span><span class="pc-sub">1 tháng</span>
+          </button>
         </div>
 
-        <div class="section-title">GIỚI HẠN TRÌNH DUYỆT</div>
+        <div class="section-title">THỜI HẠN</div>
+        <div id="duration-options" class="chips-row">
+          <button type="button" class="dur-chip" data-unit="days" data-value="7">7 ngày</button>
+          <button type="button" class="dur-chip selected" data-unit="months" data-value="1">1 tháng</button>
+          <button type="button" class="dur-chip" data-unit="months" data-value="3">3 tháng</button>
+          <button type="button" class="dur-chip" data-unit="months" data-value="6">6 tháng</button>
+          <button type="button" class="dur-chip" data-unit="months" data-value="12">1 năm</button>
+          <button type="button" class="dur-chip" data-unit="custom">Tùy chỉnh</button>
+        </div>
+        <label id="custom-wrap" hidden>Ngày hết hạn
+          <input id="custom-expiry" type="date">
+        </label>
+
+        <div class="preview">
+          <div class="stat"><span>Ngày cấp</span><b id="preview-issued">—</b></div>
+          <div class="stat"><span>Hết hạn</span><b id="preview-expires">—</b></div>
+        </div>
+        <div id="preview-note" class="hint"></div>
+
+        <div class="section-title">GIỚI HẠN</div>
         <div class="grid">
-          <label>Số hồ sơ tối đa
+          <label>Số Profile tối đa
             <input id="max-browsers" class="mono" type="number" min="1" max="100000" step="1" value="5">
           </label>
-          <label>Số trình duyệt chạy đồng thời
+          <label>Browser mở cùng lúc
             <input id="max-concurrent" class="mono" type="number" min="1" max="100000" step="1" value="2">
           </label>
         </div>
@@ -83,7 +92,11 @@
         </div>
         <div id="feature-note" class="hint"></div>
 
-        <button id="generate" class="primary" type="button">TẠO KHÓA KÍCH HOẠT</button>
+        <label>Ghi chú <span class="opt">(không bắt buộc)</span>
+          <textarea id="note" rows="2" placeholder="Ghi chú nội bộ cho khách hàng này"></textarea>
+        </label>
+
+        <button id="generate" class="primary" type="button">TẠO KEY</button>
         <div id="error" class="error" hidden></div>
       </section>
 
@@ -93,14 +106,22 @@
           <button id="copy-license" type="button" disabled>SAO CHÉP KHÓA</button>
         </div>
         <textarea id="license-output" class="mono" rows="6" readonly></textarea>
-        <div id="generate-ok" class="ok" hidden>Đã tạo khóa thành công.</div>
+        <div id="generate-ok" class="ok" hidden></div>
+        <div id="sync-warn" class="warn" hidden>
+          <span id="sync-warn-text">Chưa lưu được Google Sheet.</span>
+          <button id="retry-sync" type="button">Thử đồng bộ lại</button>
+        </div>
         <div class="grid">
           <div class="stat"><span>Mã giấy phép</span><b id="license-id">—</b></div>
           <div class="stat"><span>Gói</span><b id="license-plan">—</b></div>
         </div>
         <div class="grid">
-          <div class="stat"><span>Số hồ sơ tối đa</span><b id="license-maxbrowsers">—</b></div>
-          <div class="stat"><span>Chạy đồng thời</span><b id="license-maxconcurrent">—</b></div>
+          <div class="stat"><span>Số Profile tối đa</span><b id="license-maxbrowsers">—</b></div>
+          <div class="stat"><span>Browser mở cùng lúc</span><b id="license-maxconcurrent">—</b></div>
+        </div>
+        <div class="grid">
+          <div class="stat"><span>Ngày hết hạn</span><b id="expires">—</b></div>
+          <div class="stat"><span></span><b></b></div>
         </div>
       </section>
     </div>
@@ -121,8 +142,8 @@
           <div class="stat"><span>Mã máy</span><b id="i-machine">—</b></div>
           <div class="stat"><span>Gói</span><b id="i-plan">—</b></div>
           <div class="stat"><span>Ngày hết hạn</span><b id="i-expires">—</b></div>
-          <div class="stat"><span>Số hồ sơ tối đa</span><b id="i-maxbrowsers">—</b></div>
-          <div class="stat"><span>Chạy đồng thời</span><b id="i-maxconcurrent">—</b></div>
+          <div class="stat"><span>Số Profile tối đa</span><b id="i-maxbrowsers">—</b></div>
+          <div class="stat"><span>Browser mở cùng lúc</span><b id="i-maxconcurrent">—</b></div>
           <div class="section-title">Tính năng</div>
           <div id="i-features" class="features-view"></div>
         </div>

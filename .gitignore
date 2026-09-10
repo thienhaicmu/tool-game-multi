@@ -29,6 +29,10 @@ tools/private/
 tools/private*
 *.private.pem
 *-private.pem
+# Google service-account credentials (seller-side, NEVER tracked / NEVER in Control)
+*service-account*.json
+aviator-license-management-*.json
+google-service-account.json
 # Issued license assignments / generated license artifacts (seller-side, sensitive)
 tools/assign_*.json
 *.rar
