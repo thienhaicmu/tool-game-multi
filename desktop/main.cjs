@@ -1061,12 +1061,13 @@ function applyRecoveryAction(run, action, ev) {
     case RECOVERY_ACTION.RELOAD:
     case RECOVERY_ACTION.NAVIGATE_CONFIGURED:
       // RELOAD REMOVED — a page reload ejected an in-game player to login and could not re-enter.
-      // The game reconnects on its own; instead of reloading we click back INTO the game via the
-      // same Cocos tile entry. pageLoaded is stamped now (no navigation happens) so the watchdog
-      // does not wait forever for a page (re)load that will never fire.
-      run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = ev.monoNow;
-      console.log(`[ENTER] recovery(${action}) → CLICK vào game (no reload) run=${run.id} target=${run.selectedTargetId}`);
-      try { if (run.entryGate && run.entryGate.ensureEntered) run.entryGate.ensureEntered().then((r) => console.log(`[ENTER] recovery ensureEntered result run=${run.id}:`, JSON.stringify(r))).catch((e) => console.log('[ENTER] recovery ensureEntered error', e && e.message)); } catch (e) { console.log('[ENTER] recovery ensureEntered threw', e && e.message); }
+      // The game reconnects on its own, so there is nothing to (re)load: mark the page "ready" WITHOUT
+      // resetting recoveryStart (it was stamped one tick earlier by INVALIDATE, so it stays strictly
+      // BEFORE pageLoaded). That keeps `pageLoaded > recoveryStart` TRUE so the watchdog advances to
+      // REENTER (the Cocos tile click below) instead of stalling into RECOVERY_FAILED — the exact bug
+      // that equal timestamps caused. The actual re-entry click happens in the REENTER case.
+      run._pageLoadedMono = ev.monoNow;
+      console.log(`[ENTER] recovery(${action}) → skip reload → REENTER run=${run.id} target=${run.selectedTargetId}`);
       break;
     case RECOVERY_ACTION.REENTER:
       console.log(`[ENTER] recovery REENTER → CLICK vào game run=${run.id} target=${run.selectedTargetId}`);
