@@ -42,6 +42,8 @@ const { TrafficStore } = require('./browser-run/traffic-store.cjs');
 const { BrowserConfigStore } = require('./browser-run/browser-config-store.cjs');
 const { AviatorEntryGate } = require('./protocol/aviator-entry.cjs');
 const { parseGameActDescriptor, isGameActUrl } = require('./protocol/aviator-entry-descriptor.cjs');
+const { classifyFrame } = require('./protocol/frame-classify.cjs');
+const { wsKeyOf, isAviatorEvidence, isOwningClose } = require('./browser-run/aviator-socket-owner.cjs');
 const { SessionRecoveryWatchdog, ACTION: RECOVERY_ACTION } = require('./browser-run/session-recovery.cjs');
 const { BrowserRuntimeHealth } = require('./browser-run/browser-runtime-health.cjs');
 const { AviatorContextTracker, ACTION: CTX_ACTION, AVIATOR_EVIDENCE_CMDS } = require('./protocol/aviator-context.cjs');
@@ -845,7 +847,15 @@ function ensureRunManager() {
     // flowing (§1: lastWsRecvMono = ANY recv WS traffic, incl. lobby/website chatter). Recorded
     // per-run (monotonic), never global. Aviator-CLASSIFIED freshness (lastAviatorFrameMono) is
     // tracked separately from the classified frame stream — lobby chatter is NOT Aviator freshness.
-    if (run && req.wsDirection === 'recv') { run._lastWsRecvMono = perfNow(); run._wsConnected = true; }
+    if (run && req.wsDirection === 'recv') {
+      run._lastWsRecvMono = perfNow(); run._wsConnected = true;
+      // §12 CONNECTION-AWARE: bind the OWNING Aviator socket = the exact socket delivering
+      // classified Aviator SERVER evidence. Only THIS socket's close means Aviator context is
+      // lost; unrelated lobby/side-channel socket churn must never trigger a false recovery.
+      try {
+        if (isAviatorEvidence(classifyFrame(req.body && req.body.raw))) run._aviatorWsKey = wsKeyOf(req);
+      } catch { /* classification best-effort */ }
+    }
   });
   // Learn the Aviator entry descriptor (game-act URL + game_id) from the site's OWN game-act POST.
   // Per-run, in-memory, never persisted, never caller-supplied; refreshed by any later genuine
@@ -861,15 +871,22 @@ function ensureRunManager() {
     run._aviatorEntryDescriptor = d;
     try { runDiag(run).log({ level: 'INFO', category: 'AVIATOR_ENTRY', event: 'ENTRY_DESCRIPTOR_LEARNED', meta: { host: hostOf(d.gameActUrl), gameId: d.gameId } }); } catch { /* best effort */ }
   });
-  // Recovery evidence: a WebSocket close means the owning Aviator socket is gone (page may stay).
+  // Recovery evidence: only the OWNING Aviator socket closing means the game context is gone.
+  // §12 CONNECTION-AWARE disconnect — a page holds many unrelated sockets (portal/card lobby,
+  // gemsdatapi, millicast video, side channels) that open & close constantly. Treating ANY close
+  // as Aviator loss caused false recoveries that reloaded a HEALTHY live round (observed: the
+  // portal lobby socket closed while the Aviator socket was still streaming odds 0.3s earlier,
+  // yet the watchdog paused Auto + reloaded, ejecting the player — "đăng ký rời phòng"). Whole-
+  // page/target loss is still handled by target-removed. We match the closed socket by identity.
   capture.on('update', req => {
     if (!req || !req.isWebSocket || req.state !== 'FINISHED') return;
     const run = runManager.runForTarget(req.targetId);
-    if (run) {
-      run._wsConnected = false;
-      // Part C/§31 — WS close as a bounded edge event (never per-frame ODD dumps).
-      try { runDiag(run).log({ level: 'WARN', category: 'WEBSOCKET', event: 'WS_CLOSE', url: req.url }); } catch { /* best effort */ }
-    }
+    if (!run) return;
+    const owning = isOwningClose(run._aviatorWsKey, req);
+    if (owning) { run._wsConnected = false; run._aviatorWsKey = null; }
+    // Part C/§31 — WS close as a bounded edge event (never per-frame ODD dumps). `aviatorSocket`
+    // distinguishes the owning game socket from unrelated side-channel churn in diagnostics.
+    try { runDiag(run).log({ level: 'WARN', category: 'WEBSOCKET', event: 'WS_CLOSE', url: req.url, aviatorSocket: owning }); } catch { /* best effort */ }
   });
   // Part C/§30 — HTTP failure diagnostics (safe host/path only; status/error/duration).
   // Bounded to failures so healthy high-volume traffic is not persisted.
@@ -1055,7 +1072,7 @@ function applyRecoveryAction(run, action, ev) {
       break;
     case RECOVERY_ACTION.INVALIDATE_STATE:
       invalidateRunProtocolState(run);
-      run._wsConnected = false; run._lastAviatorFrameMono = null; run._lastWsRecvMono = null; run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
+      run._wsConnected = false; run._aviatorWsKey = null; run._lastAviatorFrameMono = null; run._lastWsRecvMono = null; run._recoveryStartMono = ev.monoNow; run._pageLoadedMono = null;
       break;
     case RECOVERY_ACTION.FOCUS_VIEW:
       try { chromeRuntime.focus(run.id); } catch {}
@@ -1615,7 +1632,7 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
     runManager.unregisterTarget(id);
     if (run.selectedTargetId === id) {
       run.selectedTargetId = null;
-      run._wsConnected = false; // recovery evidence: owning socket/target gone
+      run._wsConnected = false; run._aviatorWsKey = null; // recovery evidence: owning socket/target gone
       if (run.protocolContext) run.protocolContext.reset();
       // WU-C.1.1 — the owning socket is gone: entry readiness must not be trusted.
       if (run.entryGate) run.entryGate.onDisconnect();
