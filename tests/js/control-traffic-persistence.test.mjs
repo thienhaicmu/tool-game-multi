@@ -188,13 +188,14 @@ test('recovery episode export contains ordered markers + traffic (success and fa
   assert.ok(s.contextLostAt && s.gameActAt && s.freshActiveAt && s.resumeAt);
   assert.ok(s.contextLostAt < s.gameActAt && s.gameActAt < s.resumeAt);
 
-  // FAILURE episode: pinned on RECOVERY_FAILED and exportable.
+  // FAILURE markers of the SAME incident coalesce into the already-open episode (dedup):
+  // context-loss above pinned g1; these later markers must NOT spawn extra episode files.
   store.recordMarker(owner, { category: 'RECOVERY', event: 'RELOAD_STARTED' });
   store.recordMarker(owner, { category: 'RECOVERY', event: 'REENTRY_FAILED' });
   store.recordMarker(owner, { category: 'RECOVERY', event: 'RECOVERY_FAILED' });
   const epDir = path.join(dir, 'B-1', 'run-1', 'episodes');
-  const eps = fs.readdirSync(epDir).filter((n) => /REENTRY_FAILED|RECOVERY_FAILED/.test(n));
-  assert.ok(eps.length >= 1, 'failure episode was pinned');
+  const eps = fs.readdirSync(epDir).filter((n) => n.endsWith('.jsonl'));
+  assert.equal(eps.length, 1, 'one physical incident → one pinned episode');
   const failSummary = store.summarizeEpisode({ runId: 'run-1' });
   assert.ok(failSummary.failedAt != null, 'failure detectable in summary');
   fs.rmSync(dir, { recursive: true, force: true });
@@ -253,5 +254,99 @@ test('purgeExpired drops old archives/episodes but keeps active; purgeBrowser is
   store.purgeBrowser('B-1');
   assert.ok(!fs.existsSync(path.join(dir, 'B-1')));
   assert.ok(fs.existsSync(path.join(dir, 'B-2')));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// §6 — side-channel WS churn must NOT pin episodes; a genuine Aviator context
+// loss pins exactly one.
+// ---------------------------------------------------------------------------
+test('unrelated side-channel WS closes persist raw but pin ZERO episodes; Aviator context loss pins one', () => {
+  const dir = tmp();
+  let now = 1000;
+  const store = new TrafficStore({ dir, now: () => (now += 1) });
+  const owner = { browserId: 'B-1', runId: 'run-1' };
+  const epDir = path.join(dir, 'B-1', 'run-1', 'episodes');
+  // Aviator socket + two unrelated side channels (chat/telemetry) that open and close.
+  store.recordWsCreated(owner, { cdpRequestId: '1', url: 'wss://mynisketgw.hytsocesk.com/ws', targetId: 'T' });
+  store.recordWsCreated(owner, { cdpRequestId: '2', url: 'wss://gemsdatapi.genesockezlyfeapy.com/x', targetId: 'T' });
+  store.recordWsCreated(owner, { cdpRequestId: '3', url: 'wss://live-sgp-1.millicast.com/y', targetId: 'T' });
+  store.recordWsClosed(owner, { cdpRequestId: '2', url: 'wss://gemsdatapi.genesockezlyfeapy.com/x', targetId: 'T' });
+  store.recordMarker(owner, { category: 'WEBSOCKET', event: 'WS_CLOSE', url: 'wss://gemsdatapi.genesockezlyfeapy.com/x' });
+  store.recordWsClosed(owner, { cdpRequestId: '3', url: 'wss://live-sgp-1.millicast.com/y', targetId: 'T' });
+  store.recordMarker(owner, { category: 'WEBSOCKET', event: 'WS_CLOSE', url: 'wss://live-sgp-1.millicast.com/y' });
+  // No episodes pinned by side-channel churn.
+  const epsAfterSideChannels = fs.existsSync(epDir) ? fs.readdirSync(epDir).filter((n) => n.endsWith('.jsonl')) : [];
+  assert.equal(epsAfterSideChannels.length, 0, 'side-channel WS close must NOT pin a failure episode');
+  // But the raw closes + markers ARE persisted.
+  const rows = store.readRun('run-1');
+  assert.equal(rows.filter((r) => r.kind === 'ws-closed').length, 2, 'raw WS close events persisted');
+  assert.equal(rows.filter((r) => r.kind === 'marker' && r.event === 'WS_CLOSE').length, 2, 'WS_CLOSE markers persisted (raw)');
+
+  // Now a genuine Aviator context loss → exactly one pinned episode.
+  store.recordMarker(owner, { category: 'RECOVERY', event: 'AVIATOR_CONTEXT_LOST_REENTER' });
+  const eps = fs.readdirSync(epDir).filter((n) => n.endsWith('.jsonl'));
+  assert.equal(eps.length, 1, 'Aviator context loss pins exactly one episode');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// §7 — one physical incident emitting several failure markers → one episode.
+// ---------------------------------------------------------------------------
+test('one incident with multiple failure markers yields exactly one pinned episode (with recoveryEpisodeId)', () => {
+  const dir = tmp();
+  let now = 1000;
+  const store = new TrafficStore({ dir, now: () => now });
+  const owner = { browserId: 'B-1', runId: 'run-1' };
+  const epDir = path.join(dir, 'B-1', 'run-1', 'episodes');
+  // Four markers of ONE incident, all within the post-window.
+  store.recordMarker(owner, { category: 'RECOVERY', event: 'AVIATOR_CONTEXT_LOST_REENTER' });
+  now += 500; store.recordMarker(owner, { category: 'RECOVERY', event: 'REENTRY_FAILED' });
+  now += 500; store.recordMarker(owner, { category: 'RECOVERY', event: 'RECOVERY_FAILED' });
+  now += 500; store.recordMarker(owner, { category: 'RECOVERY', event: 'AUTO_RESUME_FAILED' });
+  const eps = fs.readdirSync(epDir).filter((n) => n.endsWith('.jsonl'));
+  assert.equal(eps.length, 1, 'PHYSICAL_INCIDENT_COUNT=1 → LOGICAL_PINNED_EPISODE_COUNT=1');
+  // All four lifecycle markers are still preserved inside the single episode file.
+  const epLines = fs.readFileSync(path.join(epDir, eps[0]), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const events = epLines.filter((l) => l.kind === 'marker').map((l) => l.event);
+  for (const e of ['AVIATOR_CONTEXT_LOST_REENTER', 'REENTRY_FAILED', 'RECOVERY_FAILED', 'AUTO_RESUME_FAILED']) {
+    assert.ok(events.includes(e), `episode preserves marker ${e}`);
+  }
+  // recoveryEpisodeId minted once for the incident.
+  assert.equal(epLines[0].kind, 'episode-pin');
+  assert.equal(epLines[0].recoveryEpisodeId, 1);
+
+  // A genuinely NEW incident (after the window closes) mints a second episode.
+  now += store.retentionPolicy().failureWindowMs + 10;
+  store.recordMarker(owner, { category: 'RECOVERY', event: 'AVIATOR_CONTEXT_LOST_REENTER' });
+  assert.equal(fs.readdirSync(epDir).filter((n) => n.endsWith('.jsonl')).length, 2, 'a distinct later incident pins a new episode');
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// ---------------------------------------------------------------------------
+// §5 — reload survival: two socket generations reusing the same cdp requestId
+// across different targets stay distinguishable (not merged).
+// ---------------------------------------------------------------------------
+test('socket generations across a reload are distinguishable even when requestId repeats', () => {
+  const dir = tmp();
+  let now = 1000;
+  const store = new TrafficStore({ dir, now: () => (now += 1) });
+  const owner1 = { browserId: 'B-1', runId: 'run-1', targetId: 'T-old' };
+  // First generation (target T-old), cdp requestId '9'.
+  store.recordWsCreated(owner1, { cdpRequestId: '9', url: 'wss://mynisketgw.hytsocesk.com/ws', targetId: 'T-old' });
+  store.recordWsFrame(owner1, { cdpRequestId: '9', wsDirection: 'recv', url: 'wss://mynisketgw.hytsocesk.com/ws', body: { raw: '[100002,1]' }, targetId: 'T-old' });
+  store.recordWsClosed(owner1, { cdpRequestId: '9', url: 'wss://mynisketgw.hytsocesk.com/ws', targetId: 'T-old' });
+  // Reload → new target T-new, but CDP reuses requestId '9'.
+  const owner2 = { browserId: 'B-1', runId: 'run-1', targetId: 'T-new' };
+  store.recordWsCreated(owner2, { cdpRequestId: '9', url: 'wss://mynisketgw.hytsocesk.com/ws', targetId: 'T-new' });
+  store.recordWsFrame(owner2, { cdpRequestId: '9', wsDirection: 'recv', url: 'wss://mynisketgw.hytsocesk.com/ws', body: { raw: '[100002,2]' }, targetId: 'T-new' });
+
+  // Same BrowserRun evidence (append-only; old events retained).
+  const rows = store.readRun('run-1');
+  assert.equal(rows.filter((r) => r.kind === 'ws-created').length, 2, 'both generations retained (no overwrite on reload)');
+  // Summary keeps them as TWO distinct socket generations, not one merged row.
+  const gens = store.summarizeEpisode({ runId: 'run-1' }).socketGenerations;
+  assert.equal(gens.length, 2, 'two distinct socket generations across the reload');
+  assert.deepEqual(gens.map((g) => g.targetId).sort(), ['T-new', 'T-old']);
   fs.rmSync(dir, { recursive: true, force: true });
 });

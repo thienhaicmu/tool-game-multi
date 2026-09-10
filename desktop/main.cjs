@@ -168,7 +168,9 @@ function trafficOwner(run, req) {
     browserId: run && run.browserId,
     runId: run && run.id,
     autoExecutionId: (ar && ar.autoExecutionId) ? ar.autoExecutionId() : null,
-    recoveryGeneration: (run && run.recovery && run.recovery.attempts) ? run.recovery.attempts() : null,
+    // attempts() is a retry counter within one incident (not a unique generation) — recorded
+    // honestly as recoveryAttempt; a unique recoveryEpisodeId is minted recorder-side at pin time.
+    recoveryAttempt: (run && run.recovery && run.recovery.attempts) ? run.recovery.attempts() : null,
     targetId: req && req.targetId,
     sessionId: req && req.cdpSessionId,
     requestId: req && req.cdpRequestId,

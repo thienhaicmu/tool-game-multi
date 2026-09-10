@@ -40,9 +40,14 @@ const DEFAULTS = Object.freeze({
 const AVIATOR_CMDS = new Set([100000, 100001, 100002, 100003, 100005, 100006, 100007, 100008, 100009, 100010, 100016]);
 const LOBBY_CMDS = new Set([10000, 10001, 10002, 10003, 10004]);
 
-// Failure markers whose arrival must pin the surrounding evidence window.
+// Failure markers whose arrival pins the surrounding evidence window. These are all
+// Aviator-context-CORRELATED recovery signals (emitted by the context tracker / recovery
+// machine on the OWNING game socket), never a generic WS close. A raw WS close on an
+// unrelated side channel (chat / telemetry / video / gemsdatapi / millicast) is still
+// persisted as raw traffic + a marker, but must NOT pin a failure episode by itself —
+// otherwise constant side-channel churn would explode episode storage.
 const FAILURE_EVENTS = new Set([
-  'WS_CLOSE', 'AVIATOR_CONTEXT_LOST_REENTER', 'AVIATOR_CONTEXT_ESCALATE_FULL_RECOVERY',
+  'AVIATOR_CONTEXT_LOST_REENTER', 'AVIATOR_CONTEXT_ESCALATE_FULL_RECOVERY',
   'AVIATOR_CONTEXT_REQUIRE_USER_ACTION', 'REENTRY_FAILED', 'RECOVERY_FAILED',
   'AUTO_RESUME_FAILED', 'LOGIN_REQUIRED',
 ]);
@@ -111,7 +116,10 @@ class TrafficStore {
       browserId: owner.browserId != null ? String(owner.browserId) : null,
       runId: owner.runId != null ? String(owner.runId) : null,
       autoExecutionId: owner.autoExecutionId != null ? String(owner.autoExecutionId) : null,
-      recoveryGeneration: Number.isFinite(owner.recoveryGeneration) ? owner.recoveryGeneration : null,
+      // NOTE: run.recovery.attempts() is a RETRY COUNTER within one incident (resets to 0 on
+      // READY/reset), NOT a unique recovery-generation id. Recorded honestly as recoveryAttempt.
+      // A unique incident id (recoveryEpisodeId) is minted recorder-side at pin time (see pinEpisode).
+      recoveryAttempt: Number.isFinite(owner.recoveryAttempt) ? owner.recoveryAttempt : null,
       targetId: owner.targetId != null ? String(owner.targetId) : null,
       sessionId: owner.sessionId != null ? String(owner.sessionId) : null,
       requestId: owner.requestId != null ? String(owner.requestId) : null,
@@ -243,21 +251,35 @@ class TrafficStore {
 
   // Snapshot the pre-failure ring window into an episode file and keep teeing for postWindowMs.
   // Episode files are exempt from size rotation (only age-purged) so the failure window survives.
+  //
+  // DEDUP (one physical incident → one episode): a single recovery incident emits several failure
+  // markers in quick succession (context-lost → reenter → reenter-failed → recovery-failed). If an
+  // episode is still within its post-window we EXTEND it instead of writing a second full window —
+  // those later markers are already teed into the open file. A genuinely new incident (arriving
+  // after the window closed) mints a fresh recoveryEpisodeId and a new file.
   pinEpisode(runId, { reason = 'FAILURE', at = null, postWindowMs = null } = {}) {
     if (!this._dir || runId == null) return null;
     const id = String(runId);
     const when = at != null ? at : this._now();
     const s = this._runState(id);
+    const post = postWindowMs != null ? postWindowMs : this._postWindowMs;
+    const open = s.episodes.find((ep) => when <= ep.until);
+    if (open) { // coalesce into the in-flight incident
+      open.until = Math.max(open.until, when + post);
+      if (open.reason !== reason) { open.reasons = open.reasons || [open.reason]; open.reasons.push(reason); }
+      return { file: open.file, reason, coalesced: true, recoveryEpisodeId: open.recoveryEpisodeId };
+    }
+    const episodeId = (s.recoveryEpisodeSeq = (s.recoveryEpisodeSeq || 0) + 1);
     const dir = path.join(this._runDir(id), 'episodes');
     const stamp = new Date(when).toISOString().replace(/[:.]/g, '-');
-    const file = path.join(dir, `episode-${stamp}-${String(reason).slice(0, 40)}.jsonl`);
+    const file = path.join(dir, `episode-${stamp}-g${episodeId}-${String(reason).slice(0, 40)}.jsonl`);
     try {
       this._fs.mkdirSync(dir, { recursive: true });
       const pre = s.ring.filter((r) => r.ts >= when - this._ringWindowMs);
-      const header = JSON.stringify({ seq: -1, ts: when, kind: 'episode-pin', runId: id, reason, preWindowMs: this._ringWindowMs, postWindowMs: postWindowMs != null ? postWindowMs : this._postWindowMs }) + '\n';
+      const header = JSON.stringify({ seq: -1, ts: when, kind: 'episode-pin', runId: id, recoveryEpisodeId: episodeId, reason, preWindowMs: this._ringWindowMs, postWindowMs: post }) + '\n';
       this._fs.writeFileSync(file, header + pre.map((r) => JSON.stringify(r)).join('\n') + (pre.length ? '\n' : ''), 'utf8');
-      s.episodes.push({ file, until: when + (postWindowMs != null ? postWindowMs : this._postWindowMs) });
-      return { file, reason, preRecords: pre.length };
+      s.episodes.push({ file, until: when + post, reason, recoveryEpisodeId: episodeId });
+      return { file, reason, preRecords: pre.length, recoveryEpisodeId: episodeId };
     } catch { return null; }
   }
 
@@ -302,20 +324,26 @@ class TrafficStore {
       socketGenerations: [], markers: [],
     };
     const socks = new Map();
+    // A socket generation is identified by target:session:request — NOT requestId alone. CDP
+    // resets requestId per target, so after a reload a new socket can reuse an old requestId;
+    // keying on the composite keeps generations across reloads distinguishable (§5).
+    const skey = (r) => `${r.targetId != null ? r.targetId : ''}:${r.sessionId != null ? r.sessionId : ''}:${r.requestId != null ? r.requestId : ''}`;
     for (const r of rows) {
       if (r.kind === 'ws-frame') {
         const aviator = Array.isArray(r.tags) && r.tags.includes('AVIATOR_PROTOCOL');
         if (r.direction === 'send') sum.lastWsSendAt = r.ts;
         if (r.direction === 'recv') { sum.lastWsRecvAt = r.ts; if (aviator) sum.lastAviatorFrameAt = r.ts; }
-        const g = socks.get(r.requestId) || { requestId: r.requestId, url: r.url, firstAt: r.ts, lastAt: r.ts, send: 0, recv: 0 };
+        const k = skey(r);
+        const g = socks.get(k) || { key: k, requestId: r.requestId, targetId: r.targetId, sessionId: r.sessionId, url: r.url, firstAt: r.ts, lastAt: r.ts, send: 0, recv: 0 };
         g.lastAt = r.ts; if (r.direction === 'send') g.send++; else g.recv++;
-        socks.set(r.requestId, g);
+        socks.set(k, g);
       } else if (r.kind === 'ws-created') {
-        socks.set(r.requestId, socks.get(r.requestId) || { requestId: r.requestId, url: r.url, firstAt: r.ts, lastAt: r.ts, send: 0, recv: 0 });
-      } else if (r.kind === 'ws-closed') { sum.wsCloseAt = r.ts; const g = socks.get(r.requestId); if (g) g.closedAt = r.ts; }
+        const k = skey(r);
+        socks.set(k, socks.get(k) || { key: k, requestId: r.requestId, targetId: r.targetId, sessionId: r.sessionId, url: r.url, firstAt: r.ts, lastAt: r.ts, send: 0, recv: 0 });
+      } else if (r.kind === 'ws-closed') { sum.wsCloseAt = r.ts; const g = socks.get(skey(r)); if (g) g.closedAt = r.ts; }
       else if (r.kind === 'http-request' && Array.isArray(r.tags) && r.tags.includes('GAME_ACT')) sum.gameActAt = r.ts;
       else if (r.kind === 'marker') {
-        sum.markers.push({ ts: r.ts, event: r.event, recoveryGeneration: r.recoveryGeneration });
+        sum.markers.push({ ts: r.ts, event: r.event, recoveryAttempt: r.recoveryAttempt });
         const e = r.event;
         if (e === 'AVIATOR_CONTEXT_LOST_REENTER' || e === 'AVIATOR_CONTEXT_ESCALATE_FULL_RECOVERY') sum.contextLostAt = sum.contextLostAt || r.ts;
         if (e === 'REENTRY_STARTED' || e === 'AVIATOR_CONTEXT_LOST_REENTER' || e === 'COCOS_ENTRY_ATTEMPT') sum.reentryAttemptAt = sum.reentryAttemptAt || r.ts;
