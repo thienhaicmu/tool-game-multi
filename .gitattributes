@@ -1,2 +1,0 @@
-runtime/phom-chromium/** filter=lfs diff=lfs merge=lfs -text
-runtime/phom-chromium/runtime-manifest.json !filter !diff !merge text

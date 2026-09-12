@@ -49,5 +49,8 @@ tools/win-unpacked.zip
 # License generator script (seller-side, sensitive)
 tools/license-gen.cjs
 
-# PHOM custom Chromium runtime is now tracked via Git LFS (see .gitattributes),
-# NOT ignored. Only the packaging output stays ignored (release-phom/ above).
+# PHOM custom Chromium runtime is distributed as a versioned archive (not committed).
+# The local runtime + built archives stay out of Git; only the tracked artifact
+# manifest (runtime-manifests/) + prepare/archive scripts + validator are committed.
+runtime/phom-chromium/
+runtime-archives/

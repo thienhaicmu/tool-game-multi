@@ -4,16 +4,29 @@
 The Phỏm QA app launches a **project-owned custom Chromium** (never system Chrome):
 
 - Version: **149.0.7827.55** · arch **x64**
-- Bundle: 260 files, ~537 MB (chrome.exe + chrome.dll + icudtl.dat + *.pak + snapshot bins + locales/ + GPU/MSVC DLLs)
-- Lives at `runtime/phom-chromium/` — **gitignored** (binaries are never committed). Tracked instead: the validator (`desktop/browser/phom-chromium-runtime.cjs`), the prepare script, this doc, and the generated `runtime-manifest.json` metadata (checksums).
+- Bundle: ~260 files, ~537 MB (chrome.exe + chrome.dll + icudtl.dat + *.pak + snapshot bins + locales/ + GPU/MSVC DLLs)
+- Distributed as a **versioned archive**, NOT committed to Git. The local runtime `runtime/phom-chromium/` and built archives `runtime-archives/` are **gitignored**. Git tracks only: the artifact manifest `runtime-manifests/phom-chromium-<ver>-win-x64.json` (version + archive SHA-256 + file checksums + provider), the validator (`desktop/browser/phom-chromium-runtime.cjs`), the artifact module (`desktop/browser/phom-runtime-artifact.cjs`), the prepare/archive scripts, and this doc.
 
-### Prepare on a new machine
+### Build the archive (maintainer, once per Chromium version)
 ```
-# copies + validates + writes runtime-manifest.json (version + sha256 checksums)
-node tools/prepare-phom-chromium.mjs --source <path-to-chromium-runtime>
-# or: PHOM_CHROMIUM_SOURCE=<dir> npm run prepare:phom-chromium
+# validate local runtime -> forbidden-file scan -> Compress-Archive -> SHA-256 ->
+# update runtime-manifests/*.json (provider stays NOT_CONFIGURED until you host it)
+npm run archive:phom-chromium
 ```
-Default source is the reference bundle `D:\m-profile\dist\chromium-runtime` (read-only reference; adjust per machine). The app does **not** depend on `D:\m-profile` at runtime.
+Output: `runtime-archives/phom-chromium-149.0.7827.55-win-x64.zip` (~221 MB). Upload it to a host (GitHub Release asset / HTTPS / object storage) and set `download.provider` + `download.url` in the tracked manifest.
+
+### Prepare on a new dev/package machine
+```
+# A. local archive (works today, provider NOT_CONFIGURED):
+node tools/prepare-phom-chromium.mjs --archive <path>\phom-chromium-149.0.7827.55-win-x64.zip
+# B. configured remote (once download.url is set + host allowlisted via PHOM_RUNTIME_DOWNLOAD_HOSTS):
+npm run prepare:phom-chromium
+```
+Prepare verifies the archive SHA-256, rejects unsafe zip entries, extracts to a temp dir, validates the extracted runtime + file checksums, then **atomically** replaces `runtime/phom-chromium/` (the previous runtime is preserved on any failure). It **never** defaults to `D:\m-profile`; the app has no `D:\m-profile` dependency at dev or runtime.
+
+### Two machine flows (§13)
+- **End user**: installs `Phom-QA Setup <ver>.exe` — Chromium is already inside the installer (`resources/phom-chromium/`). No Node.js, no system Chrome, no prepare step, no `D:\m-profile`.
+- **Dev/package machine**: clone source → `npm ci` → `npm run prepare:phom-chromium -- --archive <zip>` (or configured remote) → `npm run dist:phom`.
 
 ### Resolution + validation
 - Dev: `PHOM_CHROMIUM_PATH` → else `runtime/phom-chromium/`.

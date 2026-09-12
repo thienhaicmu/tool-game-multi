@@ -14,6 +14,7 @@
     "dev:phom": "electron desktop/phom-main.cjs",
     "dist:phom": "electron-builder --config electron-builder.phom.json --win nsis --x64",
     "prepare:phom-chromium": "node tools/prepare-phom-chromium.mjs",
+    "archive:phom-chromium": "node tools/archive-phom-chromium.mjs",
     "proof:phom-runtime": "node tools/phom-runtime-proof.mjs",
     "test": "node --test --test-concurrency=1 \"tests/js/**/*.test.mjs\"",
     "seal": "node tools/seal-modules.mjs",
