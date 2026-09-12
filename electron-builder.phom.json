@@ -16,6 +16,8 @@
     "desktop/browser-run/proxy-tester.cjs",
     "desktop/browser-run/proxy-auth-handler.cjs",
     "desktop/browser-run/ip-parse.cjs",
+    "desktop/browser-run/device-profile.cjs",
+    "desktop/browser-run/phom-profile-store.cjs",
     "desktop/cdp/**/*",
     "desktop/protocol/phom/**/*",
     "desktop/licensing/**/*",

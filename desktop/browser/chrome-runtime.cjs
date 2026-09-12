@@ -112,6 +112,8 @@ class ChromeRuntime {
       env: this._env,
       windowSize: rect ? { width: rect.width, height: rect.height } : this._windowSize,
       windowPosition: rect ? { x: rect.x, y: rect.y } : null,
+      // PHOM mobile: browser-level touch events for a consistent mobile web view.
+      mobileTouch: !!(run && run.mobileTouch),
       spawn: this._spawn || undefined,
       cdp: this._cdp || undefined,
       // Per-run credential-free proxy resolved by the owner before launch (run.proxy).

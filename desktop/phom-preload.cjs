@@ -19,6 +19,12 @@ contextBridge.exposeInMainWorld('phomQA', {
   proxyTest: (id) => ipcRenderer.invoke('phom:proxy-test', id),
   proxyTestAll: (ids) => ipcRenderer.invoke('phom:proxy-test-all', ids),
   onProxyAuth: (cb) => ipcRenderer.on('phom:proxy-auth', (_e, p) => cb(p)),
+  // mobile device profiles (per slot)
+  devicePresets: () => ipcRenderer.invoke('phom:device-presets'),
+  profileList: () => ipcRenderer.invoke('phom:profile-list'),
+  profileUpsert: (slot, input) => ipcRenderer.invoke('phom:profile-upsert', slot, input),
+  profileDelete: (slot) => ipcRenderer.invoke('phom:profile-delete', slot),
+  onDeviceApplied: (cb) => ipcRenderer.on('phom:device-applied', (_e, p) => cb(p)),
   // browser + HOST/FOLLOWER controlled-table session
   openProfile: (cfg) => ipcRenderer.invoke('phom:open-profile', cfg),
   startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),

@@ -19,6 +19,24 @@ function typedError(code, message, extra = {}) { return { ok: false, error: { co
 
 function isPort(p) { return Number.isInteger(p) && p >= 1 && p <= 65535; }
 
+// Parse the convenience input formats (§2):
+//   host:port
+//   host:port:username:password
+//   protocol://host:port
+//   protocol://username:password@host:port
+// Returns { ok, parts } with credentials separated so the caller routes the password
+// into secure storage — never the URL. Never throws.
+function parseFlexibleProxy(raw, defaultProtocol = 'http') {
+  const text = String(raw == null ? '' : raw).trim();
+  if (!text) return typedError('PROXY_FORMAT_INVALID', 'Empty proxy value');
+  if (text.includes('://') || text.includes('@')) return parseProxyUrl(text);
+  // No scheme/userinfo: treat as colon-separated host:port[:user:pass].
+  const segs = text.split(':');
+  if (segs.length === 2) return { ok: true, parts: { protocol: defaultProtocol, host: segs[0], port: Number(segs[1]), username: '', password: '' } };
+  if (segs.length === 4) return { ok: true, parts: { protocol: defaultProtocol, host: segs[0], port: Number(segs[1]), username: segs[2], password: segs[3] } };
+  return parseProxyUrl(text); // fall through (may still be host:port with weird chars)
+}
+
 // Parse a proxy URL like "socks5://user:pass@host:1080". Returns credential parts
 // SEPARATELY so the caller routes the password into secure storage — never the URL.
 function parseProxyUrl(raw) {
@@ -43,7 +61,18 @@ function parseProxyUrl(raw) {
  */
 function normalizeProxyConfig(input = {}) {
   const src = { ...input };
-  // Allow a single URL field to populate protocol/host/port/creds.
+  // Allow a single raw string (any of the convenience formats) OR a url field to
+  // populate protocol/host/port/creds. Password is separated out, never persisted raw.
+  if (src.input && !src.url) {
+    const parsed = parseFlexibleProxy(src.input, src.protocol || 'http');
+    if (!parsed.ok) return parsed;
+    const p = parsed.parts;
+    if (src.protocol == null) src.protocol = p.protocol;
+    if (src.host == null) src.host = p.host;
+    if (src.port == null) src.port = p.port;
+    if (src.username == null && p.username) src.username = p.username;
+    if (src.password == null && p.password) src.password = p.password;
+  }
   if (src.url) {
     const parsed = parseProxyUrl(src.url);
     if (!parsed.ok) return parsed;
@@ -153,5 +182,5 @@ function resolveLaunchProxy(profileConfig = {}, getConfig) {
 
 module.exports = {
   SUPPORTED_PROTOCOLS, CHROME_SCHEME,
-  parseProxyUrl, normalizeProxyConfig, toChromeArgs, toRunProxy, publicSnapshot, resolveLaunchProxy,
+  parseProxyUrl, parseFlexibleProxy, normalizeProxyConfig, toChromeArgs, toRunProxy, publicSnapshot, resolveLaunchProxy,
 };

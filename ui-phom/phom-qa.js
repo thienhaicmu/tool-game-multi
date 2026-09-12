@@ -12,6 +12,8 @@
   let session = null;
   let hands = [];
   let proxies = [];
+  let presets = [];          // mobile device presets
+  let profiles = {};         // slot -> saved profile (device + proxyRef)
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
   let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
@@ -68,6 +70,8 @@
     $('workspace').hidden = false;
     try { caps = await api.capabilities(); } catch { caps = {}; }
     try { const p = await api.proxyList(); proxies = (p && p.proxies) || []; } catch { proxies = []; }
+    try { const pr = await api.devicePresets(); presets = (pr && pr.presets) || []; } catch { presets = []; }
+    try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch { profiles = {}; }
     try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
     renderAll();
   }
@@ -79,47 +83,128 @@
     const body = $('body-' + slot); if (!body) return;
     body.innerHTML = '';
     const a = assign[slot];
-    const prof = session ? (session.profiles || []).find((p) => p.__slot === slot || (a.runId && p.id === a.runId)) : null;
+    const saved = profiles[slot] || {};
+    // keep the in-memory assign proxyRef in sync with the saved profile
+    if (a.proxyRef == null && saved.proxyRef) a.proxyRef = saved.proxyRef;
+    const prof = session ? (session.profiles || []).find((p) => a.runId && p.id === a.runId) : null;
+    const dev = saved.device;
     body.appendChild(el('div', { class: 'prow' },
+      // device row
+      el('div', null, el('b', null, 'Thiết bị '),
+        el('span', null, dev ? `${dev.name} · ${dev.resolution} · Ngang · Touch` : '(chưa tạo)'),
+      ),
+      el('div', null,
+        el('button', { class: 'btn', onclick: () => openDeviceModal(slot) }, dev ? 'Sửa thiết bị' : 'Tạo thiết bị'),
+      ),
+      // proxy row
       el('div', null, el('b', null, 'Proxy '), proxySelector(slot)),
       el('div', null,
         el('button', { class: 'btn', onclick: () => testProxy(slot) }, 'Test'),
-        el('button', { class: 'btn', onclick: () => addProxyPrompt(slot) }, '+ Proxy'),
+        el('button', { class: 'btn', onclick: () => openProxyModal(slot, null) }, '+ Proxy'),
+        a.proxyRef ? el('button', { class: 'btn', onclick: () => openProxyModal(slot, a.proxyRef) }, 'Sửa') : null,
+        a.proxyRef ? el('button', { class: 'btn danger', onclick: () => deleteProxy(a.proxyRef) }, 'Xóa') : null,
         el('span', { class: 'badge ' + testBadge(a.testState) }, a.testState),
         a.ip ? el('span', { class: 'faint' }, ' IP ' + a.ip) : null,
       ),
+      // browser row
       el('div', null,
         el('span', { class: 'dot ' + (prof && prof.socketReady ? 'on' : 'off') }), ' Browser ',
         el('button', { class: 'btn', onclick: () => openOne(slot) }, prof ? 'Mở lại' : 'Mở game'),
+        a.runId ? el('button', { class: 'btn', onclick: () => api.focusBrowser(a.runId) }, 'Focus') : null,
+        el('span', { class: 'faint' }, ' Ngang'),
       ),
       el('div', { class: 'faint' }, 'Ghế ', el('b', null, prof && prof.seat != null ? String(prof.seat) : '—'),
         ' · ', (prof && prof.ready ? 'Sẵn sàng' : 'Chưa'), prof && prof.lastError ? el('span', { class: 'warnrow' }, ' ' + prof.lastError.code) : null),
     ));
-    // The game itself is in a managed external Chrome window — this cell is live status,
-    // not an embedded webview.
-    body.appendChild(el('div', { class: 'faint', style: 'margin-top:6px;font-size:11px' }, 'Game mở ở cửa sổ Chrome riêng (thao tác bài thủ công tại đó).'));
+    body.appendChild(el('div', { class: 'faint', style: 'margin-top:6px;font-size:11px' }, 'Game mở ở cửa sổ Chrome riêng (mobile landscape, thao tác thủ công tại đó).'));
   }
 
   function proxySelector(slot) {
-    const sel = el('select', { class: 'sel', onchange: (e) => { assign[slot].proxyRef = e.target.value; } });
+    const sel = el('select', { class: 'sel', onchange: (e) => { assign[slot].proxyRef = e.target.value; api.profileUpsert(slot, { proxyRef: e.target.value || null }); } });
     sel.appendChild(el('option', { value: '' }, '— chọn proxy —'));
     for (const p of proxies) sel.appendChild(el('option', { value: p.id, selected: assign[slot].proxyRef === p.id }, `${p.label} (${p.protocol})`));
     return sel;
   }
   function testBadge(s) { return ({ PASS: 'good', FAILED: 'bad', AUTH_FAILED: 'bad', TIMEOUT: 'warn', TESTING: 'warn' })[s] || 'faint'; }
 
-  async function addProxyPrompt(slot) {
-    // Minimal inline form in the control note area.
-    const host = prompt('Proxy host:'); if (!host) return;
-    const port = Number(prompt('Port (1-65535):') || '0');
-    const protocol = (prompt('Protocol (http/https/socks4/socks5):', 'http') || 'http').toLowerCase();
-    const username = prompt('Username (bỏ trống nếu không):', '') || '';
-    const password = username ? (prompt('Password:', '') || '') : '';
-    const res = await api.proxyUpsert({ label: `${protocol}://${host}:${port}`, protocol, host, port, username: username || null, password: password || null });
-    if (!res || !res.ok) { note(errText(res), true); return; }
-    assign[slot].proxyRef = res.id;
-    const p = await api.proxyList(); proxies = (p && p.proxies) || [];
+  // Proxy form modal (add or edit). Password goes straight to the secure store; the
+  // form never shows an existing password back.
+  function openProxyModal(slot, editId) {
+    const existing = editId ? proxies.find((p) => p.id === editId) : null;
+    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
+    const ov = el('div', { class: 'phq-analyzer' });
+    const close = () => ov.remove();
+    const f = (id, ph, val) => el('input', { class: 'f', id, placeholder: ph, value: val != null ? val : '' });
+    const proto = el('select', { class: 'sel', id: 'px-proto' });
+    for (const p of ['http', 'https', 'socks5', 'socks4']) proto.appendChild(el('option', { value: p, selected: existing && existing.protocol === p }, p));
+    const card = el('div', { class: 'anz-card' },
+      el('div', { class: 'section-t' }, existing ? 'SỬA PROXY' : 'THÊM PROXY'),
+      el('div', { class: 'note' }, 'Dán nhanh: host:port hoặc host:port:user:pass hoặc protocol://user:pass@host:port'),
+      f('px-quick', 'dán chuỗi proxy (tuỳ chọn)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'Tên'), f('px-label', 'tên proxy', existing && existing.label)),
+      el('div', { class: 'phq-row' }, el('span', null, 'Protocol'), proto),
+      el('div', { class: 'phq-row' }, el('span', null, 'Host'), f('px-host', 'host', existing && existing.host)),
+      el('div', { class: 'phq-row' }, el('span', null, 'Port'), f('px-port', 'port', existing && existing.port)),
+      el('div', { class: 'phq-row' }, el('span', null, 'Username'), f('px-user', 'username (nếu có)', existing && existing.username && '')),
+      el('div', { class: 'phq-row' }, el('span', null, 'Password'), el('input', { class: 'f', id: 'px-pass', type: 'password', placeholder: existing && existing.hasAuth ? '(giữ nguyên nếu để trống)' : 'password (nếu có)' })),
+      el('details', { class: 'adv' }, el('summary', null, 'Advanced'), el('div', { class: 'phq-row' }, el('span', null, 'Bypass'), f('px-bypass', 'a.com,b.com', existing && (existing.bypassList || []).join(',')))),
+      el('div', { class: 'phq-row' },
+        el('button', { class: 'btn primary', onclick: async () => {
+          const quick = $('px-quick').value.trim();
+          const input = quick
+            ? { id: editId || undefined, label: $('px-label').value.trim() || undefined, protocol: $('px-proto').value, input: quick, bypassList: $('px-bypass').value }
+            : { id: editId || undefined, label: $('px-label').value.trim() || undefined, protocol: $('px-proto').value, host: $('px-host').value.trim(), port: Number($('px-port').value), username: $('px-user').value.trim() || null, password: $('px-pass').value || (existing ? undefined : null), bypassList: $('px-bypass').value };
+          const res = await api.proxyUpsert(input);
+          if (!res || !res.ok) { note(errText(res), true); return; }
+          assign[slot].proxyRef = res.id; await api.profileUpsert(slot, { proxyRef: res.id });
+          const pl = await api.proxyList(); proxies = (pl && pl.proxies) || [];
+          const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x]));
+          close(); renderAll();
+        } }, 'Lưu'),
+        el('button', { class: 'btn', onclick: close }, 'Hủy'),
+      ),
+    );
+    ov.appendChild(card); document.body.appendChild(ov);
+  }
+
+  async function deleteProxy(id) {
+    if (!confirm('Xóa proxy này?')) return;
+    const res = await api.proxyRemove(id);
+    if (!res || !res.ok) return note(errText(res), true);
+    for (const s of SLOTS) if (assign[s].proxyRef === id) assign[s].proxyRef = '';
+    const pl = await api.proxyList(); proxies = (pl && pl.proxies) || [];
+    const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x]));
     renderAll();
+  }
+
+  // Device modal: pick a mobile preset (orientation fixed Ngang) + name; preview.
+  function openDeviceModal(slot) {
+    const saved = profiles[slot] || {};
+    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
+    const ov = el('div', { class: 'phq-analyzer' });
+    const close = () => ov.remove();
+    const sel = el('select', { class: 'sel', id: 'dev-preset' });
+    for (const p of presets) sel.appendChild(el('option', { value: p.id, selected: saved.device && saved.device.presetId === p.id }, `${p.name} · ${p.viewportWidth}×${p.viewportHeight}`));
+    const preview = el('div', { class: 'note' });
+    const renderPrev = () => { const p = presets.find((x) => x.id === sel.value) || presets[0]; preview.textContent = p ? `Màn hình: ${p.viewportWidth} × ${p.viewportHeight} · DSF ${p.deviceScaleFactor} · Ngang · Touch: Bật` : ''; };
+    sel.onchange = renderPrev;
+    const card = el('div', { class: 'anz-card' },
+      el('div', { class: 'section-t' }, 'TẠO THIẾT BỊ (MOBILE — NGANG)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'Tên hồ sơ'), el('input', { class: 'f', id: 'dev-name', value: saved.name || ('Profile ' + slot) })),
+      el('div', { class: 'phq-row' }, el('span', null, 'Thiết bị'), sel),
+      preview,
+      el('div', { class: 'phq-row' },
+        el('button', { class: 'btn primary', onclick: async () => {
+          const res = await api.profileUpsert(slot, { name: $('dev-name').value.trim(), device: { presetId: sel.value, regenerate: !(saved.device && saved.device.presetId === sel.value) } });
+          if (!res || !res.ok) { note(errText(res), true); return; }
+          const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x]));
+          close(); renderAll();
+        } }, 'Lưu'),
+        el('button', { class: 'btn', onclick: close }, 'Hủy'),
+      ),
+    );
+    ov.appendChild(card); document.body.appendChild(ov);
+    renderPrev();
   }
 
   async function testProxy(slot) {

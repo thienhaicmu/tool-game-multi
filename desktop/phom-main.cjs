@@ -31,6 +31,8 @@ const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
+const { PhomProfileStore } = require('./browser-run/phom-profile-store.cjs');
+const deviceProfile = require('./browser-run/device-profile.cjs');
 const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
@@ -73,6 +75,7 @@ else {
   var proxyConfigStore = null;
   var proxySecretStore = null;
   var proxyTester = null;
+  var profileStore = null;
   var phomSessions = null;
 
   const phomRoot = () => path.join(PHOM_USERDATA, 'phom');
@@ -94,6 +97,7 @@ else {
     ensureDir(phomRoot());
     proxySecretStore = new ProxySecretStore({ filePath: path.join(phomRoot(), 'proxy-secrets.dat'), safeStorage });
     proxyConfigStore = new ProxyConfigStore({ filePath: path.join(phomRoot(), 'proxies.json'), secretStore: proxySecretStore });
+    profileStore = new PhomProfileStore({ filePath: path.join(phomRoot(), 'phom-profiles.json') });
     proxyTester = new ProxyTester({
       allowlist: IP_CHECK_ALLOWLIST,
       ipCheckUrl: IP_CHECK_URL,
@@ -237,6 +241,9 @@ else {
       runManager.registerTarget(target.cdpTargetId, run);
       if (!run.selectedTargetId) run.selectedTargetId = target.cdpTargetId;
       attachCapture(client, target);
+      // Apply this run's mobile device emulation (viewport/screen/DSF/mobile/touch/UA)
+      // on the run's OWN client, and reapply on navigation / new targets.
+      if (run.deviceProfile) applyDeviceEmulation(client, run.deviceProfile, run).catch(() => {});
       // Ensure the WS send-hook is present before the game opens its socket.
       wsReplay.injectSession(client, undefined).catch(() => {});
       // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).
@@ -257,6 +264,32 @@ else {
     return manager.start ? manager.start() : { ok: true };
   }
 
+  // Apply CDP mobile emulation to a run's client (per-run ownership). Each command is
+  // optional/guarded so an unsupported one never crashes the profile; the applied
+  // capabilities are reported. Reapply on main-frame navigation (bounded — one
+  // listener per client, torn down when the target detaches).
+  async function applyDeviceEmulation(client, device, run) {
+    if (!client || !client.Emulation) return { applied: [], unsupported: ['Emulation'] };
+    const cmds = deviceProfile.emulationCommands(device);
+    const metricsCmd = cmds.find((c) => c.method === 'Emulation.setDeviceMetricsOverride');
+    const applied = [], unsupported = [];
+    for (const c of cmds) {
+      const short = c.method.split('.')[1];
+      try { await client.Emulation[short](c.params); applied.push(short); } catch { unsupported.push(short); }
+    }
+    // Reapply metrics after a real navigation creates a fresh context (once per client).
+    try {
+      if (client.Page && metricsCmd && !client.__phomEmuNav) {
+        client.__phomEmuNav = true;
+        await client.Page.enable().catch(() => {});
+        client.Page.frameNavigated((p) => { if (p && p.frame && !p.frame.parentId) client.Emulation.setDeviceMetricsOverride(metricsCmd.params).catch(() => {}); });
+      }
+    } catch { /* best effort */ }
+    if (run) { run._deviceEmuApplied = applied; run._deviceEmuUnsupported = unsupported; }
+    try { send('phom:device-applied', { runId: run && run.id, applied, unsupported, device: deviceProfile.publicSnapshot(device) }); } catch {}
+    return { applied, unsupported };
+  }
+
   function attachCapture(client, target) {
     const { Network } = client;
     const tid = target.cdpTargetId;
@@ -271,20 +304,28 @@ else {
     Network.webSocketClosed((p, sid) => capture.onWebSocketClosed(tid, p, sid));
   }
 
-  // §6 — open ONE profile's browser with its resolved proxy (no direct fallback).
+  // §4/§6 — open ONE profile's browser with its resolved proxy (no direct fallback)
+  // AND its saved mobile device profile (viewport emulation is separate from the
+  // native 2×2 window size). The device belongs to the slot (browser profile), so the
+  // same device is reapplied every time this slot's browser is (re)opened.
   async function openProfile({ slot, url, proxyRef, proxyRequired, label, username }) {
-    ensureRunManager(); ensurePhomSessions();
-    const gate = resolveLaunchProxy({ proxyRef: proxyRef || null, proxyRequired: proxyRequired !== false }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
+    ensureRunManager(); ensurePhomSessions(); ensureStores();
+    // Prefer the saved profile's proxy/device; explicit args override.
+    const saved = profileStore.get(slot) || {};
+    const effProxyRef = proxyRef !== undefined ? proxyRef : (saved.proxyRef || null);
+    const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired !== false }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
     if (!gate.ok) return gate; // PROXY_CONFIG_REQUIRED / NOT_FOUND — launch blocked
-    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect: gridRectForSlot(slot) });
-    run.profileLabel = label || `Profile ${slot}`;
+    const device = profileStore.deviceFor(slot);
+    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect: gridRectForSlot(slot), mobileTouch: !!(device && device.touch) });
+    run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
+    run.deviceProfile = device || null; // reapplied on every attach/navigation
     run.proxyUsername = username || (gate.config && gate.config.username) || null;
     const launched = await run.launcher.open(String(url || ''));
     if (!launched.ok) { runManager.failRun(run, launched.error); return { ok: false, error: launched.error }; }
     run.cdpEndpoint = launched.endpoint;
     connectRunEndpoint(run, launched.endpoint).catch(() => {});
-    return { ok: true, runId: run.id, proxy: gate.runProxy };
+    return { ok: true, runId: run.id, proxy: gate.runProxy, device: device ? deviceProfile.publicSnapshot(device) : null };
   }
 
   // ---- license gate ----
@@ -344,7 +385,22 @@ else {
     // Proxy config (metadata only; passwords never returned to the renderer).
     ipcMain.handle('phom:proxy-list', guarded(() => { ensureStores(); return { ok: true, proxies: proxyConfigStore.list() }; }));
     ipcMain.handle('phom:proxy-upsert', guarded((_e, input) => { ensureStores(); return proxyConfigStore.upsert(input || {}); }));
-    ipcMain.handle('phom:proxy-remove', guarded((_e, id) => { ensureStores(); return proxyConfigStore.remove(String(id)); }));
+    // §2 — delete guarded: refuse while a BrowserRun uses this proxy (stop first). A
+    // saved profile reference alone doesn't block; it's cleared on delete.
+    ipcMain.handle('phom:proxy-remove', guarded((_e, id) => {
+      ensureStores();
+      const pid = String(id);
+      const inUse = runManager && runManager.list().some((r) => r.status !== RUN_STATUS.CLOSED && (() => { const run = runManager.get(r.id); return run && run.proxy && run.proxy.id === pid; })());
+      if (inUse) return { ok: false, error: { code: 'PHOM_PROXY_IN_USE', message: 'Proxy đang được một browser sử dụng. Hãy Dừng/đóng browser đó trước.' } };
+      // clear any saved profile references to this proxy
+      for (const slot of profileStore.slotsUsingProxy(pid)) { const p = profileStore.get(slot); profileStore.upsert(slot, { proxyRef: null }); void p; }
+      return proxyConfigStore.remove(pid);
+    }));
+    // Device presets + per-slot profile persistence (device belongs to the browser profile).
+    ipcMain.handle('phom:device-presets', () => ({ ok: true, presets: deviceProfile.listPresets() }));
+    ipcMain.handle('phom:profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: profileStore.list() }; }));
+    ipcMain.handle('phom:profile-upsert', guarded((_e, slot, input) => { ensureStores(); return profileStore.upsert(String(slot), input || {}); }));
+    ipcMain.handle('phom:profile-delete', guarded((_e, slot) => { ensureStores(); return profileStore.remove(String(slot)); }));
     ipcMain.handle('phom:proxy-test', guarded(async (_e, id) => {
       ensureStores();
       const cfg = proxyConfigStore.get(String(id));
