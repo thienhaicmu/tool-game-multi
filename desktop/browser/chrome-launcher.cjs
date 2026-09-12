@@ -21,9 +21,13 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 const { allocateFreePort } = require('./port-allocator.cjs');
+const { toChromeArgs } = require('../browser-run/proxy-config.cjs');
 const CDP = require('chrome-remote-interface');
 
 const DEFAULT_WINDOW = Object.freeze({ width: 720, height: 405 });
+
+// Credential-free --proxy-server / --proxy-bypass-list for a run's proxy (or []).
+function proxyArgs(proxy) { return toChromeArgs(proxy); }
 
 const canRead = (p) => { try { return !!p && fs.existsSync(p); } catch { return false; } };
 
@@ -95,7 +99,7 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP } = {}) {
+  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
     this.profilePath = profilePath;               // per-run persistent user-data-dir
     this.env = env;
     this.windowSize = windowSize || DEFAULT_WINDOW;
@@ -103,6 +107,9 @@ class ChromeLauncher {
     this.onExit = onExit;
     this._spawn = spawnFn;        // injectable for tests
     this._cdp = cdp;              // injectable for tests
+    // Credential-free proxy descriptor { protocol, host, port, bypassList } for THIS
+    // run only. null = direct (existing behaviour). Credentials are NEVER on the CLI.
+    this.proxy = proxy || null;
     this.process = null;
     this.port = null;
   }
@@ -132,6 +139,9 @@ class ChromeLauncher {
       '--no-first-run',
       '--no-default-browser-check',
       `--window-size=${w},${h}`,   // DEFAULT opening size only; Chrome stays resizable
+      // Per-run proxy (credential-free). Placed before --new-window/url so it applies to
+      // THIS chrome.exe only; a null proxy adds nothing (unchanged direct behaviour).
+      ...proxyArgs(this.proxy),
       '--new-window',
       url,
     ];

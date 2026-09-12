@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'">
+  <title>Phỏm QA</title>
+  <link rel="stylesheet" href="phom-qa.css">
+</head>
+<body>
+  <!-- Activation screen (shown until a valid PHOM license is active) -->
+  <section id="activation" class="activation" hidden>
+    <div class="act-card">
+      <h1>Phỏm QA</h1>
+      <p class="act-sub">Cần giấy phép <b>Phỏm QA</b> để sử dụng. Key Aviator không dùng được ở đây.</p>
+      <label>Mã máy
+        <div class="act-row"><input id="act-machine" class="mono" readonly><button id="act-copy" type="button">Sao chép</button></div>
+      </label>
+      <label>Activation Key
+        <input id="act-key" class="mono" placeholder="WVPT1...">
+      </label>
+      <button id="act-go" class="primary" type="button">Kích hoạt</button>
+      <div id="act-error" class="act-error" hidden></div>
+      <div id="act-exp" class="act-exp"></div>
+    </div>
+  </section>
+
+  <!-- 2×2 workspace: 3 browser status cells + control -->
+  <main id="workspace" class="grid2x2" hidden>
+    <section class="cell browser" id="cell-A"><div class="cell-h">Browser 1 · Profile A</div><div class="cell-body" id="body-A"></div></section>
+    <section class="cell browser" id="cell-B"><div class="cell-h">Browser 2 · Profile B</div><div class="cell-body" id="body-B"></div></section>
+    <section class="cell browser" id="cell-C"><div class="cell-h">Browser 3 · Profile C</div><div class="cell-body" id="body-C"></div></section>
+    <section class="cell control" id="cell-control"><div id="phq-root"></div></section>
+  </main>
+
+  <script src="phom-qa.js"></script>
+</body>
+</html>

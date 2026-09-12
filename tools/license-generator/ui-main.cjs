@@ -8,7 +8,7 @@ const { randomBytes, sign } = crypto;
 const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
 const { TrustedTimeProvider } = require('../../desktop/licensing/trusted-time.cjs');
 const { parseLicense } = require('../../desktop/licensing/license-verifier.cjs');
-const { PLAN_PRESETS, PLANS, buildLicensePayloadV2, validateEntitlementInput, normalizeEntitlement } = require('../../desktop/licensing/entitlements.cjs');
+const { PLAN_PRESETS, PLANS, GAME_PRODUCTS, buildLicensePayloadV2, validateEntitlementInput, normalizeEntitlement } = require('../../desktop/licensing/entitlements.cjs');
 const { resolveExpiresAt, formatUtcPlus7 } = require('./duration.cjs');
 const { PLAN_UI_DEFAULTS } = require('./plan-ui-defaults.cjs');
 const { resolveSellerResources } = require('./seller-resources.cjs');
@@ -117,7 +117,11 @@ async function buildPayload(input) {
   const features = input.features && typeof input.features === 'object' ? input.features : preset.features;
   const check = validateEntitlementInput({ plan, maxBrowsers, maxConcurrentBrowsers, features });
   if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
-  return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId });
+  // Signed game entitlement (§5). The seller must pick a game; default AVIATOR keeps
+  // existing UX but every NEW v2 key now carries a signed gameProduct.
+  const gameProduct = String(input.gameProduct || 'AVIATOR').toUpperCase();
+  if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('Quyền game không hợp lệ (AVIATOR/PHOM/ALL).');
+  return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct });
 }
 
 function createLicense(payload) {

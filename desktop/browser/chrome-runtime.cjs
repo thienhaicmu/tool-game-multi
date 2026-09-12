@@ -112,6 +112,9 @@ class ChromeRuntime {
       windowSize: this._windowSize,
       spawn: this._spawn || undefined,
       cdp: this._cdp || undefined,
+      // Per-run credential-free proxy resolved by the owner before launch (run.proxy).
+      // null for Control/Aviator runs — unchanged direct behaviour.
+      proxy: run && run.proxy ? run.proxy : null,
       onExit: () => {
         // Chrome process gone. Mark the page dead so recovery/health see it. If WE did
         // not initiate the close, tell main.cjs so it can run the safe-stop teardown for

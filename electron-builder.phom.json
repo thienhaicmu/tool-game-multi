@@ -1,0 +1,46 @@
+{
+  "appId": "com.phomqa.desktop",
+  "productName": "Phom QA",
+  "directories": {
+    "output": "release-phom"
+  },
+  "files": [
+    "desktop/phom-main.cjs",
+    "desktop/phom-preload.cjs",
+    "desktop/window-bounds.cjs",
+    "desktop/browser/**/*",
+    "desktop/browser-run/browser-run-manager.cjs",
+    "desktop/browser-run/proxy-config.cjs",
+    "desktop/browser-run/proxy-config-store.cjs",
+    "desktop/browser-run/proxy-secret-store.cjs",
+    "desktop/browser-run/proxy-tester.cjs",
+    "desktop/browser-run/proxy-auth-handler.cjs",
+    "desktop/cdp/**/*",
+    "desktop/protocol/phom/**/*",
+    "desktop/licensing/**/*",
+    "ui-phom/**/*",
+    "package.json"
+  ],
+  "extraMetadata": {
+    "main": "desktop/phom-main.cjs",
+    "version": "3.0.4"
+  },
+  "artifactName": "Phom-QA Setup ${version}.${ext}",
+  "npmRebuild": false,
+  "buildDependenciesFromSource": false,
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64"
+        ]
+      }
+    ]
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "createDesktopShortcut": true
+  }
+}

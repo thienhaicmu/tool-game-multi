@@ -121,6 +121,7 @@
       result = await api.generateLicense({
         machineId: $('machine-id').value,
         schema: 2,
+        gameProduct: $('game-product').value,
         plan: selectedPlan(),
         duration: selectedDurationSpec(),
         maxBrowsers: Number($('max-browsers').value),
@@ -143,6 +144,7 @@
     lastRecord = { payload: p, license: result.license, metadata: result.metadata };
     $('license-output').value = result.license;
     $('license-id').textContent = p.licenseId;
+    if ($('license-game')) $('license-game').textContent = p.gameProduct || 'AVIATOR';
     $('license-plan').textContent = p.plan || '—';
     $('license-maxbrowsers').textContent = p.maxBrowsers != null ? p.maxBrowsers : '—';
     $('license-maxconcurrent').textContent = p.maxConcurrentBrowsers != null ? p.maxConcurrentBrowsers : '—';
@@ -197,6 +199,7 @@
     $('inspect-body').hidden = false;
     $('i-license-id').textContent = p.licenseId || '—';
     $('i-machine').textContent = p.machineId || '—';
+    if ($('i-game')) $('i-game').textContent = ent.gameProduct || 'AVIATOR';
     $('i-plan').textContent = ent.plan || (p.v === 1 ? 'LEGACY' : '—');
     $('i-expires').textContent = p.expiresAt ? fmt(p.expiresAt) : '—';
     $('i-maxbrowsers').textContent = ent.maxBrowsers == null ? 'Không giới hạn' : ent.maxBrowsers;

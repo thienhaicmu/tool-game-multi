@@ -13,11 +13,15 @@ function errorResult(code, message, extra = {}) {
 }
 
 class LicenseGuard {
-  constructor({ userDataPath, safeStorage = null, machineIdProvider = getMachineId, nowMs = null, trustedTimeProvider = null, store = null, publicKeyPem = null } = {}) {
+  constructor({ userDataPath, safeStorage = null, machineIdProvider = getMachineId, nowMs = null, trustedTimeProvider = null, store = null, publicKeyPem = null, expectedGameProduct = null } = {}) {
     this._nowMs = nowMs;
     this._trustedTimeProvider = trustedTimeProvider || (nowMs ? null : new TrustedTimeProvider());
     this._machineIdProvider = machineIdProvider;
     this._publicKeyPem = publicKeyPem;
+    // Which game this application is (AVIATOR / PHOM). When set, a license that does
+    // not grant this game is rejected with a typed mismatch (§3). Aviator apps leave
+    // this null or 'AVIATOR' to preserve legacy-key behaviour.
+    this._expectedGameProduct = expectedGameProduct;
     this._machine = null;
     this._status = { active: false, checking: true };
     this._store = store || new LicenseStore({
@@ -107,7 +111,7 @@ class LicenseGuard {
     const nowMs = nowResult && Number.isFinite(nowResult.nowMs) ? nowResult.nowMs : this._nowMs();
     const nowSeconds = Math.floor(nowMs / 1000);
     const state = this._store.loadState();
-    const result = verifyLicense(license, { machineId, nowMs, lastTrustedSeenAt: state.lastTrustedSeenAt || 0, rollbackToleranceSeconds: DEFAULT_TOLERANCE_SECONDS, publicKeyPem: this._publicKeyPem || undefined });
+    const result = verifyLicense(license, { machineId, nowMs, lastTrustedSeenAt: state.lastTrustedSeenAt || 0, rollbackToleranceSeconds: DEFAULT_TOLERANCE_SECONDS, publicKeyPem: this._publicKeyPem || undefined, expectedGameProduct: this._expectedGameProduct || undefined });
     if (!result.ok) return { ...result, machineId };
     const fingerprint = this._licenseFingerprint(license);
     const launchState = state.launch || {};

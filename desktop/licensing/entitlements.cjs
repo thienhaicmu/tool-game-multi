@@ -18,6 +18,10 @@
 
 const PLANS = Object.freeze(['TRIAL', 'STANDARD', 'PRO']);
 const FEATURE_KEYS = Object.freeze(['autoRun', 'jackpotLive', 'jackpotGate', 'roundHistory']);
+// Signed game-product entitlement. A payload with no gameProduct predates the split
+// and is AVIATOR-only (legacy policy §4); PHOM requires an explicit signed value.
+const GAME_PRODUCTS = Object.freeze(['AVIATOR', 'PHOM', 'ALL']);
+const LEGACY_GAME_PRODUCT = 'AVIATOR';
 
 function isInt(n) { return Number.isInteger(n); }
 function toCap(v) { return v != null && Number.isFinite(Number(v)) ? Math.max(0, Number(v)) : null; }
@@ -29,6 +33,7 @@ function legacyV1Entitlement(payload) {
     schemaVersion: 1,
     legacy: true,
     licenseId: payload && payload.licenseId || null,
+    gameProduct: LEGACY_GAME_PRODUCT, // legacy keys run AVIATOR only (never PHOM)
     plan: 'LEGACY',
     expiresAt: payload ? payload.expiresAt : null,
     // v1 had no per-browser capacity concept beyond an optional maxBrowsers seam.
@@ -53,6 +58,7 @@ function normalizeEntitlement(payload) {
       schemaVersion: 2,
       legacy: false,
       licenseId: payload.licenseId || null,
+      gameProduct: GAME_PRODUCTS.includes(payload.gameProduct) ? payload.gameProduct : LEGACY_GAME_PRODUCT,
       plan: PLANS.includes(payload.plan) ? payload.plan : 'STANDARD',
       expiresAt: payload.expiresAt,
       maxBrowsers: toCap(payload.maxBrowsers),
@@ -72,7 +78,7 @@ function normalizeEntitlement(payload) {
 
 // A no-license / invalid snapshot: everything denied. Used as the fail-closed default.
 function deniedEntitlement() {
-  return { valid: false, schemaVersion: null, legacy: false, licenseId: null, plan: null, expiresAt: null, maxBrowsers: 0, maxConcurrentBrowsers: 0, features: { autoRun: false, jackpotLive: false, jackpotGate: false, roundHistory: false } };
+  return { valid: false, schemaVersion: null, legacy: false, licenseId: null, gameProduct: null, plan: null, expiresAt: null, maxBrowsers: 0, maxConcurrentBrowsers: 0, features: { autoRun: false, jackpotLive: false, jackpotGate: false, roundHistory: false } };
 }
 
 // ---- seller-side pre-sign validation (shared by CLI + GUI) ----
@@ -92,9 +98,9 @@ function validateEntitlementInput(input = {}) {
 }
 
 // The exact signed v2 payload (canonicalJson later sorts keys; signature covers all).
-function buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId }) {
+function buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct }) {
   const f = features || {};
-  return {
+  const payload = {
     v: 2,
     product: 'WVPT',
     machineId,
@@ -111,6 +117,13 @@ function buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowse
     },
     licenseId,
   };
+  // Only include the signed game entitlement when the seller specified it, so
+  // callers that omit it produce byte-identical legacy-shaped payloads.
+  if (gameProduct != null) {
+    if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error(`Invalid gameProduct: ${gameProduct}`);
+    payload.gameProduct = gameProduct;
+  }
+  return payload;
 }
 
 // Default per-plan presets (seller convenience only — NOT runtime authority). Kept in
@@ -122,7 +135,7 @@ const PLAN_PRESETS = Object.freeze({
 });
 
 module.exports = {
-  PLANS, FEATURE_KEYS, PLAN_PRESETS,
+  PLANS, FEATURE_KEYS, PLAN_PRESETS, GAME_PRODUCTS, LEGACY_GAME_PRODUCT,
   normalizeEntitlement, deniedEntitlement, legacyV1Entitlement,
   validateEntitlementInput, buildLicensePayloadV2,
 };

@@ -36,6 +36,13 @@
           <label>Khách hàng <span class="opt">(không bắt buộc)</span>
             <input id="customer-name" placeholder="Tên khách hàng">
           </label>
+          <label>Sản phẩm game
+            <select id="game-product">
+              <option value="AVIATOR" selected>Aviator</option>
+              <option value="PHOM">Phỏm QA</option>
+              <option value="ALL">Cả hai (AVIATOR + PHOM)</option>
+            </select>
+          </label>
           <label>Số điện thoại <span class="opt">(không bắt buộc)</span>
             <input id="customer-phone" placeholder="09xx xxx xxx">
           </label>
@@ -113,6 +120,7 @@
         </div>
         <div class="grid">
           <div class="stat"><span>Mã giấy phép</span><b id="license-id">—</b></div>
+          <div class="stat"><span>Quyền game</span><b id="license-game">—</b></div>
           <div class="stat"><span>Gói</span><b id="license-plan">—</b></div>
         </div>
         <div class="grid">
@@ -140,6 +148,7 @@
         <div id="inspect-body" class="inspect-body" hidden>
           <div class="stat"><span>Mã giấy phép</span><b id="i-license-id">—</b></div>
           <div class="stat"><span>Mã máy</span><b id="i-machine">—</b></div>
+          <div class="stat"><span>Quyền game</span><b id="i-game">—</b></div>
           <div class="stat"><span>Gói</span><b id="i-plan">—</b></div>
           <div class="stat"><span>Ngày hết hạn</span><b id="i-expires">—</b></div>
           <div class="stat"><span>Số Profile tối đa</span><b id="i-maxbrowsers">—</b></div>

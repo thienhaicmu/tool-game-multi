@@ -6,7 +6,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
 const { TrustedTimeProvider, utcPlus7Date } = require('../../desktop/licensing/trusted-time.cjs');
-const { PLAN_PRESETS, PLANS, buildLicensePayloadV2, validateEntitlementInput } = require('../../desktop/licensing/entitlements.cjs');
+const { PLAN_PRESETS, PLANS, GAME_PRODUCTS, buildLicensePayloadV2, validateEntitlementInput } = require('../../desktop/licensing/entitlements.cjs');
 
 function arg(name, fallback = null) {
   const idx = process.argv.indexOf(name);
@@ -90,7 +90,11 @@ async function buildPayload({ machineId, durationDays, expires }) {
   };
   const check = validateEntitlementInput({ plan, maxBrowsers, maxConcurrentBrowsers, features });
   if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
-  return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId });
+  // Signed game entitlement. Defaults to AVIATOR for backward-compatible seller UX;
+  // a Phỏm key MUST be issued with --game-product PHOM. New v2 keys always carry it.
+  const gameProduct = String(arg('--game-product', 'AVIATOR')).toUpperCase();
+  if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('game-product must be AVIATOR, PHOM or ALL');
+  return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct });
 }
 
 function createSignedLicense(payload, privateKeyPem) {

@@ -24,11 +24,23 @@ function parseLicense(license) {
 const SUPPORTED_SCHEMAS = new Set([1, 2]);
 const PLANS = new Set(['TRIAL', 'STANDARD', 'PRO']);
 const FEATURE_KEYS = ['autoRun', 'jackpotLive', 'jackpotGate', 'roundHistory'];
+// Signed game-product entitlement (schema v2+). A license with no `gameProduct`
+// field predates this split and is treated as AVIATOR-only (legacy policy §4).
+const GAME_PRODUCTS = new Set(['AVIATOR', 'PHOM', 'ALL']);
+const LEGACY_GAME_PRODUCT = 'AVIATOR';
+
+// The effective, signed game entitlement of a verified payload. Absent => AVIATOR.
+function effectiveGameProduct(payload) {
+  return payload && payload.gameProduct != null ? payload.gameProduct : LEGACY_GAME_PRODUCT;
+}
 
 function validatePayloadShape(payload, nowSeconds) {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return 'LICENSE_INVALID_FORMAT';
   if (!SUPPORTED_SCHEMAS.has(payload.v)) return 'LICENSE_INVALID_FORMAT';
   if (payload.product !== PRODUCT) return 'LICENSE_WRONG_PRODUCT';
+  // gameProduct is optional (legacy keys omit it) but, when present, must be a known
+  // enum — an unknown value is a hard format failure, never silently coerced.
+  if (payload.gameProduct !== undefined && !GAME_PRODUCTS.has(payload.gameProduct)) return 'LICENSE_GAME_PRODUCT_INVALID';
   if (!/^WVPT-PC-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(String(payload.machineId || ''))) return 'LICENSE_INVALID_FORMAT';
   if (!/^LIC-[0-9A-F]{8,32}$/.test(String(payload.licenseId || ''))) return 'LICENSE_INVALID_FORMAT';
   if (!Number.isInteger(payload.issuedAt) || !Number.isInteger(payload.expiresAt)) return 'LICENSE_INVALID_FORMAT';
@@ -69,6 +81,20 @@ function verifyLicense(license, options = {}) {
   if (parsed.payload.machineId !== options.machineId) {
     return typed('LICENSE_MACHINE_MISMATCH', 'License does not match this device', { payload: parsed.payload, licenseMachineId: parsed.payload.machineId, currentMachineId: options.machineId });
   }
+  // Signed game-product entitlement (§3/§4). Only enforced when the calling app
+  // states which game it is (Aviator app -> AVIATOR, Phom-QA app -> PHOM). Absent
+  // when the caller does not care (e.g. generic status reads).
+  if (options.expectedGameProduct) {
+    const expected = String(options.expectedGameProduct).toUpperCase();
+    const effective = effectiveGameProduct(parsed.payload);
+    if (effective !== 'ALL' && effective !== expected) {
+      // A legacy key (no signed gameProduct) may run AVIATOR but NEVER PHOM.
+      if (parsed.payload.gameProduct == null && expected === 'PHOM') {
+        return typed('LICENSE_PHOM_ENTITLEMENT_REQUIRED', 'This license predates Phỏm QA and does not grant Phỏm access', { payload: parsed.payload });
+      }
+      return typed('LICENSE_GAME_PRODUCT_MISMATCH', 'License is for a different game product', { payload: parsed.payload, licenseGameProduct: effective, expectedGameProduct: expected });
+    }
+  }
   if (nowSeconds > parsed.payload.expiresAt) return typed('LICENSE_EXPIRED', 'License has expired', { payload: parsed.payload, expiredAt: parsed.payload.expiresAt });
   if (options.lastTrustedSeenAt && nowSeconds < options.lastTrustedSeenAt - (options.rollbackToleranceSeconds || 300)) {
     return typed('LICENSE_CLOCK_ROLLBACK', 'System clock appears to have moved backwards', { payload: parsed.payload, lastTrustedSeenAt: options.lastTrustedSeenAt, nowSeconds });
@@ -76,4 +102,4 @@ function verifyLicense(license, options = {}) {
   return { ok: true, active: true, payload: parsed.payload, license };
 }
 
-module.exports = { PREFIX, PRODUCT, verifyLicense, parseLicense, validatePayloadShape };
+module.exports = { PREFIX, PRODUCT, GAME_PRODUCTS, LEGACY_GAME_PRODUCT, effectiveGameProduct, verifyLicense, parseLicense, validatePayloadShape };
