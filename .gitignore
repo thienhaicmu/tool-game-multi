@@ -19,6 +19,7 @@ pytest-cache-files-*/
 dist-electron/
 release/
 release-analytics/
+release-phom/
 release2/
 release3/
 release4/

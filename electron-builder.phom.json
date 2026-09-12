@@ -15,6 +15,7 @@
     "desktop/browser-run/proxy-secret-store.cjs",
     "desktop/browser-run/proxy-tester.cjs",
     "desktop/browser-run/proxy-auth-handler.cjs",
+    "desktop/browser-run/ip-parse.cjs",
     "desktop/cdp/**/*",
     "desktop/protocol/phom/**/*",
     "desktop/licensing/**/*",

@@ -99,10 +99,12 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
+  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
     this.profilePath = profilePath;               // per-run persistent user-data-dir
     this.env = env;
     this.windowSize = windowSize || DEFAULT_WINDOW;
+    // Optional { x, y } opening position for 2×2 workspace tiling (null = OS default).
+    this.windowPosition = windowPosition && Number.isFinite(windowPosition.x) && Number.isFinite(windowPosition.y) ? { x: Math.round(windowPosition.x), y: Math.round(windowPosition.y) } : null;
     this.onRuntime = onRuntime;
     this.onExit = onExit;
     this._spawn = spawnFn;        // injectable for tests
@@ -139,6 +141,8 @@ class ChromeLauncher {
       '--no-first-run',
       '--no-default-browser-check',
       `--window-size=${w},${h}`,   // DEFAULT opening size only; Chrome stays resizable
+      // Optional 2×2 tiling position (null adds nothing — unchanged behaviour).
+      ...(this.windowPosition ? [`--window-position=${this.windowPosition.x},${this.windowPosition.y}`] : []),
       // Per-run proxy (credential-free). Placed before --new-window/url so it applies to
       // THIS chrome.exe only; a null proxy adds nothing (unchanged direct behaviour).
       ...proxyArgs(this.proxy),

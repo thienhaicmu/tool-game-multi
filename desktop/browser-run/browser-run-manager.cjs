@@ -59,7 +59,7 @@ class BrowserRunManager extends EventEmitter {
   // ---- run creation ----
   // Builds the per-run launcher + protocol subsystem. The TargetManager is
   // attached later (once the launcher yields a CDP endpoint) via setTargetManager.
-  createRun({ launchUrl = '', browserId = null, profileDir = null, proxy = null } = {}) {
+  createRun({ launchUrl = '', browserId = null, profileDir = null, proxy = null, windowRect = null } = {}) {
     const id = this._nextId();
     const ordinal = this._order.length; // 0 for the first run
     const run = {
@@ -72,6 +72,8 @@ class BrowserRunManager extends EventEmitter {
       // PHOM-NEXT-2: credential-free per-run proxy descriptor { protocol, host, port,
       // bypassList, requiresAuth } resolved by the owner before launch. null = direct.
       proxy: proxy || null,
+      // PHOM 2×2 workspace: optional { x, y, width, height } opening geometry. null = OS default.
+      windowRect: windowRect || null,
       status: STATUS.STARTING,
       createdAt: new Date(this._now()).toISOString(),
       endedAt: null,

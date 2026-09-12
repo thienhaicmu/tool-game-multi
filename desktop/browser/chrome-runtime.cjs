@@ -106,10 +106,12 @@ class ChromeRuntime {
   launcher(run) {
     const rec = this._rec(run);
     const profile = this._profileFor(run);
+    const rect = run && run.windowRect ? run.windowRect : null;
     const real = new ChromeLauncher({
       profilePath: profile,
       env: this._env,
-      windowSize: this._windowSize,
+      windowSize: rect ? { width: rect.width, height: rect.height } : this._windowSize,
+      windowPosition: rect ? { x: rect.x, y: rect.y } : null,
       spawn: this._spawn || undefined,
       cdp: this._cdp || undefined,
       // Per-run credential-free proxy resolved by the owner before launch (run.proxy).

@@ -8,9 +8,13 @@
   const SUIT_RED = new Set(['♦', '♥']);
   const SLOTS = ['A', 'B', 'C'];
   let caps = {};
+  let licenseMode = 'LICENSED';
   let session = null;
   let hands = [];
   let proxies = [];
+  let hostId = null;         // runId of the chosen HOST (or slot label before open)
+  let selectedStake = null;
+  let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
   let assign = { A: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' }, B: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' }, C: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' } };
 
   function el(tag, attrs, ...kids) {
@@ -31,6 +35,7 @@
   async function boot() {
     let status = {};
     try { status = await api.licenseStatus(); } catch { status = {}; }
+    licenseMode = (status && status.mode) || 'LICENSED';
     if (status && status.active) return showWorkspace();
     return showActivation(status);
   }
@@ -141,6 +146,7 @@
     const r = $('phq-root'); if (!r) return;
     r.innerHTML = '';
     const s = session || {};
+    if (licenseMode === 'DEVELOPMENT_BYPASS') r.appendChild(el('div', { class: 'dev-banner' }, 'DEV MODE — LICENSE BYPASS'));
     r.appendChild(el('div', null,
       el('b', { style: 'font-size:16px' }, 'PHỎM QA'),
       el('span', { class: 'faint', style: 'margin-left:8px' }, s.state || 'IDLE'),
@@ -155,24 +161,28 @@
     ));
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
 
-    // table controls
-    r.appendChild(el('div', { class: 'section-t' }, 'BÀN & MỨC CƯỢC'));
-    const chans = collectChannels(s);
-    const sel = el('select', { class: 'sel', id: 'phq-chan' });
-    sel.appendChild(el('option', { value: '' }, '— mức cược —'));
-    for (const c of chans) sel.appendChild(el('option', { value: c.rid }, `${c.rn || 'Phom'} · rid ${c.rid} · b=${c.b}`));
-    r.appendChild(el('div', null, sel,
-      el('button', { class: 'btn', onclick: step(() => api.requestChannels(), 'Đã lấy mức cược.') }, 'Lấy mức cược'),
-      el('button', { class: 'btn', onclick: () => testAllProxies() }, 'Test tất cả proxy'),
-    ));
-    r.appendChild(el('button', { class: 'btn primary', disabled: !ctaEnabled(s), onclick: joinTogether }, 'VÀO CHUNG BÀN'));
+    // HOST + stake controls
+    r.appendChild(el('div', { class: 'section-t' }, 'HOST & MỨC CƯỢC'));
+    const hostSel = el('select', { class: 'sel', id: 'phq-host', onchange: (e) => { hostId = e.target.value; api.setHost(hostId); } });
+    for (const slot of SLOTS) hostSel.appendChild(el('option', { value: assign[slot].runId || slot, selected: hostId === (assign[slot].runId || slot) }, 'HOST = Profile ' + slot));
+    const stakeInput = el('input', { class: 'f', id: 'phq-stake', type: 'number', value: selectedStake || '', placeholder: 'Mức cược' });
+    r.appendChild(el('div', null, hostSel, stakeInput,
+      el('button', { class: 'btn', onclick: () => testAllProxies() }, 'Test tất cả proxy')));
+    if (s.hostTableIdentity) r.appendChild(el('div', { class: 'faint' }, `Bàn HOST: rid ${s.hostTableIdentity.channelRid} · stake ${s.hostTableIdentity.selectedStake} · người ${s.playerCount || 0}`));
+
+    r.appendChild(el('button', { class: 'btn primary', disabled: !ctaEnabled(s), onclick: bringThreeIn }, 'TÌM BÀN VÀ ĐƯA 3 TÀI KHOẢN VÀO'));
     r.appendChild(el('div', null,
-      el('button', { class: 'btn', onclick: step(() => api.rejoin(), 'ReJoin lệch bàn.') }, 'ReJoin'),
-      el('button', { class: 'btn', onclick: step(() => api.readyAll(), 'Đã gửi Sẵn sàng.') }, 'Sẵn sàng'),
-      el('button', { class: 'btn', onclick: step(() => api.leaveAll(), 'Đã rời bàn.') }, 'Rời bàn'),
+      el('button', { class: 'btn', onclick: step(() => api.acquireHost(), 'HOST đang tìm bàn.') }, 'HOST tìm bàn'),
+      el('button', { class: 'btn', onclick: step(() => api.joinFollowers(), 'Follower vào bàn HOST.') }, 'Follower vào bàn'),
+      el('button', { class: 'btn', onclick: step(() => api.applyReady(), 'Áp dụng Sẵn sàng.') }, 'Sẵn sàng'),
+    ));
+    r.appendChild(el('div', null,
+      el('button', { class: 'btn', onclick: rejoinKicked }, 'ReJoin bị kick'),
+      el('button', { class: 'btn', onclick: step(() => api.recoverHost(), 'Khôi phục HOST.') }, 'Khôi phục HOST'),
+      el('button', { class: 'btn', onclick: step(() => api.leaveAll(), 'Đã rời bàn.') }, 'Rời tất cả'),
       el('button', { class: 'btn danger', onclick: step(() => api.stop(), 'Đã dừng.') }, 'Dừng'),
     ));
-    r.appendChild(el('div', { class: 'note ' + (s.sameTable ? 'ok' : '') }, 'Kết luận bàn: ' + (s.tableVerdict || '—')));
+    r.appendChild(el('div', { class: 'note ' + (s.sameTable ? 'ok' : '') }, `Kết luận: ${s.tableVerdict || '—'} · ${s.state || 'IDLE'}`));
     if (!ctaEnabled(s)) r.appendChild(el('div', { class: 'warnrow' }, ctaReason(s)));
 
     // hands
@@ -181,9 +191,39 @@
     if (!list.length) r.appendChild(el('div', { class: 'faint' }, 'Chưa nhận bài.'));
     for (const h of list) r.appendChild(handRow(h));
 
+    r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
+    r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
+
     const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
     det.appendChild(el('pre', { style: 'font-size:11px;color:#9fb0cc;max-height:180px;overflow:auto;white-space:pre-wrap' }, session ? JSON.stringify(session, null, 2) : '(chưa có phiên)'));
     r.appendChild(det);
+  }
+
+  // Offline rule analyzer (§16/§23) — a separate mode, refused while any live run exists.
+  async function openAnalyzer() {
+    let status = {}; try { status = await api.analyzerStatus(); } catch { status = {}; }
+    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
+    const overlay = el('div', { class: 'phq-analyzer' });
+    const close = () => overlay.remove();
+    const card = el('div', { class: 'anz-card' });
+    card.appendChild(el('div', { class: 'dev-banner' }, 'SIMULATOR / QA OFFLINE'));
+    card.appendChild(el('div', { class: 'note' }, 'Mạng: ĐÃ KHÓA · Browser: KHÔNG KẾT NỐI'));
+    if (!status.available) {
+      card.appendChild(el('div', { class: 'warnrow' }, 'Không chạy được khi còn phiên/live browser (PHOM_ANALYZER_OFFLINE_ONLY). Hãy Dừng/đóng browser trước.'));
+      card.appendChild(el('button', { class: 'btn', onclick: close }, 'Đóng'));
+      overlay.appendChild(card); document.body.appendChild(overlay); return;
+    }
+    const fixture = { sourceKind: 'TEST_FIXTURE', knownHands: [[10, 14, 18, 27, 31, 35, 0, 4, 8], [1, 5, 9, 13, 17, 21, 2, 6, 40], [3, 7, 11, 15, 19, 23, 44, 48, 12]], currentHand: [10, 14, 18, 0, 4, 8], otherHands: [[1, 5, 9, 22], [3, 7, 11, 26]], serverMelds: [10, 14, 18, 27, 31, 35] };
+    const ta = el('textarea', { class: 'mono anz-ta' }); ta.value = JSON.stringify(fixture, null, 2);
+    const result = el('pre', { class: 'anz-result' }, '(kết quả sẽ hiện ở đây)');
+    card.appendChild(el('div', { class: 'section-t' }, 'DATASET (fixture / replay)'));
+    card.appendChild(ta);
+    card.appendChild(el('div', null,
+      el('button', { class: 'btn primary', onclick: async () => { let input; try { input = JSON.parse(ta.value); } catch { result.textContent = 'JSON không hợp lệ.'; return; } const res = await api.analyzerAnalyze(input); result.textContent = JSON.stringify(res, null, 2); } }, 'Phân tích'),
+      el('button', { class: 'btn', onclick: close }, 'Đóng'),
+    ));
+    card.appendChild(result);
+    overlay.appendChild(card); document.body.appendChild(overlay);
   }
 
   function handRow(h) {
@@ -201,11 +241,35 @@
   // ---------- actions ----------
   const step = (fn, ok) => async () => { const res = await fn(); if (res && res.ok === false) note(errText(res), true); else if (ok) note(ok); refresh(); };
   async function refresh() { try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {} renderAll(); }
-  async function joinTogether() {
-    const ch = $('phq-chan').value; if (!ch) return note('Chọn mức cược trước.', true);
-    await api.selectChannel(Number(ch));
-    const res = await api.joinTogether(Number(ch));
-    if (res && res.ok === false) note(errText(res), true); else note('Đã gửi JOIN cho 3 hồ sơ.');
+
+  // Primary CTA: start the session over the 3 opened runs, pick HOST + stake, then run
+  // the happy path (acquire -> join -> ready) advanced from authoritative snapshots.
+  async function bringThreeIn() {
+    const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
+    if (runIds.length !== 3) return note('Cần mở đủ 3 browser trước.', true);
+    const stake = Number(($('phq-stake') && $('phq-stake').value) || selectedStake);
+    if (!stake) return note('Nhập mức cược.', true);
+    selectedStake = stake;
+    const host = hostId && runIds.includes(hostId) ? hostId : runIds[0];
+    hostId = host;
+    const start = await api.startSession({ runIds, hostId: host, selectedStake: stake });
+    if (start && start.ok === false) return note(errText(start), true);
+    autoFlow = true;
+    const acq = await api.acquireHost();
+    if (acq && acq.ok === false) { autoFlow = false; return note(errText(acq), true); }
+    note('HOST đang tìm bàn trống…');
+    refresh();
+  }
+  // Advance the happy path when authoritative state confirms each stage.
+  function advanceAutoFlow(s) {
+    if (!autoFlow || !s) return;
+    if (s.state === 'HOST_ACQUIRED') { api.joinFollowers().then(refresh); }
+    else if (s.sameTable && s.controlledReadyCount < (s.playerCount >= 4 ? 3 : 2)) { api.applyReady().then(refresh); autoFlow = false; }
+  }
+  async function rejoinKicked() {
+    const kicked = (session && session.profiles || []).filter((p) => p.state === 'KICKED');
+    if (!kicked.length) return note('Không có profile bị kick.');
+    for (const p of kicked) { const res = await api.rejoinFollower(p.id); if (res && res.ok === false) note(`${p.displayName}: ${errText(res)}`, true); }
     refresh();
   }
   async function testAllProxies() {
@@ -234,7 +298,7 @@
   function note(msg, warn) { const n = $('phq-note'); if (n) { n.textContent = msg; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
 
   // ---------- boot ----------
-  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; if (!$('workspace').hidden) renderAll(); });
+  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; advanceAutoFlow(snap); if (!$('workspace').hidden) renderAll(); });
   if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden) renderControl(); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   document.addEventListener('DOMContentLoaded', boot);

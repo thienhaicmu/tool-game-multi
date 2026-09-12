@@ -10,7 +10,7 @@
 //   - ChromeRuntime + BrowserRunManager  (per-run chrome.exe / profile / CDP port)
 //   - CaptureCorrelator                  (shared, target-keyed WS/HTTP capture)
 //   - WsReplay.sendProtocol              (the ONLY send seam — the run's own socket)
-//   - PhomSessionManager + phom domain   (coordinator / reducer / classifier)
+//   - HostSessionManager + phom domain   (host coordinator / reducer / classifier)
 //   - proxy-config / proxy-secret-store / proxy-tester / proxy-auth-handler
 //   - licensing/*                        (verifier + guard, expectedGameProduct PHOM)
 //
@@ -18,7 +18,7 @@
 // Aviator UI/coordinator, or any Control/Analytics singleton.
 // ===========================================================================
 
-const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -26,13 +26,17 @@ const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
-const { PhomSessionManager } = require('./protocol/phom/phom-session-manager.cjs');
+const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
 const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
+const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
+const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
+const { rectForSlot } = require('./protocol/phom/grid-layout.cjs');
+const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { normalizeWindowBounds } = require('./window-bounds.cjs');
 
 const PRODUCT_NAME = 'Phom QA';
@@ -62,6 +66,9 @@ else {
 
   var shell = null;
   var licenseGuard = null;
+  // Development-only license bypass decision (§3). Computed once at startup from the
+  // real packaged/env context; forbidden (and startup-blocking) in a packaged build.
+  var devBypass = resolveDevBypass({ isPackaged: app.isPackaged, env: process.env });
   var runManager = null;
   var proxyConfigStore = null;
   var proxySecretStore = null;
@@ -94,11 +101,47 @@ else {
     });
   }
 
-  // Proxy observed-IP transport via Electron net through the run's proxy. This is the
-  // real transport but is UNVERIFIED in this phase (no authorized proxy available).
-  async function netProxyTransport(/* { proxy, url, timeoutMs, signal, auth } */) {
-    return { ok: false, error: { code: 'PROXY_TRANSPORT_UNVERIFIED', message: 'Observed-IP transport needs an authorized proxy + IP-check endpoint' } };
+  // Proxy observed-IP transport (§6): a dedicated, throwaway Electron session with the
+  // run's proxy applied, fetching the allowlisted IP-check URL. It NEVER touches the
+  // default session (no shared cookies), NEVER falls back to direct, and NEVER logs
+  // credentials. Real code; RUNTIME-UNVERIFIED until an authorized proxy is supplied.
+  async function netProxyTransport({ proxy, url, timeoutMs, auth } = {}) {
+    if (!proxy || !proxy.host) return { ok: false, error: { code: 'PROXY_CONFIG_REQUIRED', message: 'no proxy' } };
+    let ses;
+    const partition = `phom-proxy-test-${proxy.id || Math.random().toString(36).slice(2)}-${Date.now()}`;
+    try { ses = session.fromPartition(partition); } catch (e) { return { ok: false, error: { code: 'PROXY_SESSION_CREATE_FAILED', message: safeMsg(e) } }; }
+    const rules = `${proxy.protocol}://${proxy.host}:${proxy.port}`;
+    // proxy auth via the session 'login' event, bound to THIS session only.
+    const onLogin = (event, _details, authInfo, callback) => {
+      if (authInfo && authInfo.isProxy && auth && auth.password) { event.preventDefault(); callback(auth.username || '', auth.password); }
+      // else: let it fail (no direct fallback, no origin creds)
+    };
+    ses.on('login', onLogin);
+    try {
+      await ses.setProxy({ proxyRules: rules, proxyBypassRules: '<-loopback>' });
+      const body = await new Promise((resolve, reject) => {
+        let done = false; const chunks = [];
+        const timer = setTimeout(() => { if (!done) { done = true; try { req.abort(); } catch {} const e = new Error('timeout'); e.code = 'PROXY_TEST_TIMEOUT'; reject(e); } }, timeoutMs || 8000);
+        const req = net.request({ url, session: ses, useSessionCookies: false });
+        req.on('response', (res) => {
+          if (res.statusCode === 407) { const e = new Error('proxy auth'); e.code = 'PROXY_AUTH_FAILED'; clearTimeout(timer); done = true; return reject(e); }
+          res.on('data', (d) => chunks.push(d));
+          res.on('end', () => { if (!done) { done = true; clearTimeout(timer); resolve(Buffer.concat(chunks).toString('utf8')); } });
+        });
+        req.on('error', (e) => { if (!done) { done = true; clearTimeout(timer); const err = new Error(safeMsg(e)); err.code = /ERR_PROXY/.test(String(e)) ? 'PROXY_CONNECT_FAILED' : 'PROXY_CONNECT_FAILED'; reject(err); } });
+        req.end();
+      });
+      const ip = parseObservedIp(body);
+      if (!ip) return { ok: false, error: { code: 'PROXY_IP_RESPONSE_INVALID', message: 'IP-check response had no usable IP' } };
+      return { ok: true, ip };
+    } catch (e) {
+      return { ok: false, error: { code: e.code || 'PROXY_CONNECT_FAILED', message: safeMsg(e) } };
+    } finally {
+      try { ses.off('login', onLogin); } catch {}
+      try { await ses.setProxy({ mode: 'direct' }); await ses.clearStorageData(); } catch {}
+    }
   }
+  function safeMsg(e) { return String((e && e.message) || e || '').slice(0, 200); }
 
   function ensureRunManager() {
     if (runManager) return runManager;
@@ -113,7 +156,7 @@ else {
   function ensurePhomSessions() {
     if (phomSessions) return phomSessions;
     ensureStores();
-    phomSessions = new PhomSessionManager({
+    phomSessions = new HostSessionManager({
       wsReplay,
       featureEnabled: () => true,
       authorized: phomAuthorizedEnv,
@@ -124,6 +167,7 @@ else {
     });
     phomSessions.on('update', (snap) => send('phom:session', snap));
     phomSessions.on('hands', (hands) => send('phom:hands', hands));
+    phomSessions.on('kick', (k) => send('phom:kick', k));
     return phomSessions;
   }
 
@@ -133,6 +177,51 @@ else {
   }
 
   function send(channel, payload) { try { if (shell && !shell.isDestroyed()) shell.webContents.send(channel, payload); } catch { /* best effort */ } }
+
+  // 2×2 workspace geometry for a profile slot, resolved against the control window's
+  // current display work area. Browsers tile TL/TR/BL; the control window sits BR.
+  function currentWorkArea() {
+    try { const b = shell && !shell.isDestroyed() ? shell.getBounds() : null; const d = b ? screen.getDisplayMatching(b) : screen.getPrimaryDisplay(); return d.workArea; } catch { return { x: 0, y: 0, width: 1280, height: 800 }; }
+  }
+  function gridRectForSlot(slot) { return rectForSlot(currentWorkArea(), slot, { gap: 8 }); }
+  // Re-tile all owned session runs into the 2×2 grid + place the control window BR.
+  function restoreLayout() {
+    try {
+      const wa = currentWorkArea();
+      const control = rectForSlot(wa, 'control', { gap: 8 }) || require('./protocol/phom/grid-layout.cjs').computeGridLayout(wa, { gap: 8 }).control;
+      if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: control.x, y: control.y, width: control.width, height: control.height });
+      // Owned browser windows are external Chrome; re-applying geometry to a running
+      // chrome.exe requires reopening. We report the target rects so the UI can guide
+      // a reopen; we never move a window that is not one of our runs.
+    } catch { /* best effort */ }
+    return { ok: true };
+  }
+  function focusBrowser(runId) {
+    try { const wc = chromeRuntime.webContents(runId); if (wc && !wc.isDestroyed() && typeof wc.focus === 'function') wc.focus(); return { ok: true }; } catch { return { ok: false }; }
+  }
+
+  // Count non-terminal BrowserRuns — the analyzer is refused whenever ANY exist.
+  function liveRunCount() { try { return runManager ? runManager.list().filter((r) => r.status !== RUN_STATUS.CLOSED).length : 0; } catch { return 0; } }
+
+  // Run the offline analyzer with a hard offline context (§16/§23). It never touches
+  // the network and refuses if a live run/session is present.
+  function runOfflineAnalyzer(input) {
+    const ctx = { sourceKind: input.sourceKind || 'TEST_FIXTURE', networkEnabled: false, liveRunCount: liveRunCount(), liveSessionId: (phomSessions && phomSessions.active()) ? 'ACTIVE' : null, endpoint: null };
+    const consistency = offlineAnalyzer.analyzeConsistency({ knownHands: input.knownHands || [], publicCards: input.publicCards || [] }, ctx);
+    if (consistency && consistency.ok === false) return consistency; // PHOM_ANALYZER_OFFLINE_ONLY
+    const out = { ok: true, consistency, hands: [] };
+    for (const hand of (input.knownHands || [])) out.hands.push({ cards: hand, melds: offlineAnalyzer.findMelds(hand) });
+    if (input.serverMelds) out.serverMeldsValidation = offlineAnalyzer.validateServerMelds(input.serverMelds, ctx);
+    // safe-discard: for a chosen player hand, which discards form a phom for others.
+    if (Array.isArray(input.currentHand) && Array.isArray(input.otherHands)) {
+      out.safeDiscard = input.currentHand.map((card) => {
+        let eatable = false;
+        for (const other of input.otherHands) { const r = offlineAnalyzer.discardFormsPhom(other, card, ctx); if (r && r.forms) { eatable = true; break; } }
+        return { card, status: eatable ? 'EATABLE_BY_SIMULATED_PLAYER' : 'NOT_EATABLE_BY_SIMULATED_OTHERS' };
+      });
+    }
+    return out;
+  }
 
   // ---- per-run capture attach + phom frame routing (mirrors Control's seam) ----
   capture.on('request', (req) => {
@@ -187,8 +276,9 @@ else {
     ensureRunManager(); ensurePhomSessions();
     const gate = resolveLaunchProxy({ proxyRef: proxyRef || null, proxyRequired: proxyRequired !== false }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
     if (!gate.ok) return gate; // PROXY_CONFIG_REQUIRED / NOT_FOUND — launch blocked
-    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy });
+    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect: gridRectForSlot(slot) });
     run.profileLabel = label || `Profile ${slot}`;
+    run.slot = slot;
     run.proxyUsername = username || (gate.config && gate.config.username) || null;
     const launched = await run.launcher.open(String(url || ''));
     if (!launched.ok) { runManager.failRun(run, launched.error); return { ok: false, error: launched.error }; }
@@ -198,12 +288,20 @@ else {
   }
 
   // ---- license gate ----
-  function licenseActive() { const s = licenseGuard && licenseGuard.status(); return Boolean(s && s.active); }
+  function licenseActive() {
+    if (devBypass.forbidden) return false; // packaged + bypass flag → hard block
+    const s = licenseGuard && licenseGuard.status();
+    return Boolean(s && s.active);
+  }
   async function licenseStatus() {
+    // Startup assertion (§3): a bypass flag in a packaged build is forbidden.
+    if (devBypass.forbidden) return { active: false, error: { code: DEV_BYPASS_FORBIDDEN, message: 'Development license bypass is not allowed in a packaged build.' }, gameProduct: GAME_PRODUCT };
     if (!licenseGuard) return { active: false, error: { code: 'LICENSE_MISSING', message: 'License guard not ready' }, gameProduct: GAME_PRODUCT };
     let status = licenseGuard.status();
-    if (status.active) status = await licenseGuard.refreshAsync({ consumeLaunch: false });
-    else status = await licenseGuard.refreshAsync();
+    if (!devBypass.allowed) {
+      if (status.active) status = await licenseGuard.refreshAsync({ consumeLaunch: false });
+      else status = await licenseGuard.refreshAsync();
+    }
     return { ...status, gameProduct: GAME_PRODUCT };
   }
 
@@ -241,7 +339,7 @@ else {
     ipcMain.handle('phom:license-activate', async (_e, key) => { if (!licenseGuard) return licenseStatus(); const s = await licenseGuard.activateAsync(String(key || '')); return { ...s, gameProduct: GAME_PRODUCT }; });
     ipcMain.handle('phom:machine-id', () => ({ machineId: licenseGuard ? licenseGuard.machineId() : null }));
     ipcMain.handle('phom:instance-info', () => ({ productName: PRODUCT_NAME, gameProduct: GAME_PRODUCT, userData: PHOM_USERDATA, ipcPrefix: 'phom:' }));
-    ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), proxySecret: (ensureStores(), proxySecretStore.capability()) }));
+    ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), devBypass: devBypass.allowed === true, licenseMode: devBypass.allowed ? 'DEVELOPMENT_BYPASS' : 'LICENSED', proxySecret: (ensureStores(), proxySecretStore.capability()) }));
 
     // Proxy config (metadata only; passwords never returned to the renderer).
     ipcMain.handle('phom:proxy-list', guarded(() => { ensureStores(); return { ok: true, proxies: proxyConfigStore.list() }; }));
@@ -267,16 +365,27 @@ else {
 
     // Browser + session lifecycle.
     ipcMain.handle('phom:open-profile', guarded((_e, cfg) => openProfile(cfg || {})));
-    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [] }); }));
-    ipcMain.handle('phom:request-channels', guarded(() => ensurePhomSessions().requestChannels()));
-    ipcMain.handle('phom:select-channel', guarded((_e, ch) => ({ ok: true, selected: ensurePhomSessions().selectChannel(ch) })));
-    ipcMain.handle('phom:join-together', guarded((_e, ch) => ensurePhomSessions().joinTogether(ch)));
-    ipcMain.handle('phom:rejoin', guarded(() => ensurePhomSessions().rejoinMismatched()));
-    ipcMain.handle('phom:ready-all', guarded(() => ensurePhomSessions().readyAll()));
+    // HOST/FOLLOWER controlled-table flow.
+    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
+    ipcMain.handle('phom:set-host', guarded((_e, hostId) => ensurePhomSessions().setHost(hostId)));
+    ipcMain.handle('phom:select-stake', guarded((_e, stake) => ensurePhomSessions().selectStake(stake)));
+    ipcMain.handle('phom:acquire-host', guarded(() => ensurePhomSessions().acquireHost()));
+    ipcMain.handle('phom:join-followers', guarded(() => ensurePhomSessions().joinFollowers()));
+    ipcMain.handle('phom:apply-ready', guarded(() => ensurePhomSessions().applyReady()));
+    ipcMain.handle('phom:rejoin-follower', guarded((_e, id) => ensurePhomSessions().rejoinFollower(id)));
+    ipcMain.handle('phom:recover-host', guarded(() => ensurePhomSessions().recoverHost()));
     ipcMain.handle('phom:leave-all', guarded(() => ensurePhomSessions().leaveAll()));
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
-    ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifyTable() : { result: 'IDLE' }));
+    ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
+    // 2×2 workspace layout controls (§9/§21).
+    ipcMain.handle('phom:restore-layout', guarded(() => restoreLayout()));
+    ipcMain.handle('phom:focus-browser', guarded((_e, runId) => focusBrowser(runId)));
+
+    // Offline rule analyzer (§16/§23). The domain enforces the boundary again, but we
+    // also refuse at the IPC edge whenever ANY live BrowserRun / session exists.
+    ipcMain.handle('phom:analyzer-status', () => ({ available: liveRunCount() === 0 && !(phomSessions && phomSessions.active()), liveRunCount: liveRunCount() }));
+    ipcMain.handle('phom:analyzer-analyze', (_e, input = {}) => runOfflineAnalyzer(input || {}));
   }
 
   app.whenReady().then(() => {
@@ -284,7 +393,7 @@ else {
       const pathname = new URL(request.url).pathname.replace(/^\/+/, '');
       callback({ path: path.join(__dirname, '..', 'ui-phom', pathname.replace(/^ui\//, '')) });
     });
-    licenseGuard = new LicenseGuard({ userDataPath: PHOM_USERDATA, safeStorage, expectedGameProduct: GAME_PRODUCT });
+    licenseGuard = new LicenseGuard({ userDataPath: PHOM_USERDATA, safeStorage, expectedGameProduct: GAME_PRODUCT, devBypass: devBypass.allowed });
     licenseGuard.initialize();
     licenseGuard.initializeAsync().then((status) => { send('phom:license', { ...status, gameProduct: GAME_PRODUCT }); }).catch(() => {});
     registerIpc();

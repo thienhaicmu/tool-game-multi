@@ -43,3 +43,8 @@ body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: #0
 details.adv { margin-top: 10px; } details.adv summary { cursor: pointer; color: #9aa4ba; font-size: 12px; }
 .prow { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin: 4px 0; padding: 6px; background: #0e1320; border: 1px solid #212838; border-radius: 8px; }
 input.f { background: #0e1320; color: #dfe4ee; border: 1px solid #2b3450; border-radius: 6px; padding: 5px; font-size: 12px; }
+.dev-banner { background: #7a5a12; color: #ffe6a6; border: 1px solid #b9862f; border-radius: 6px; padding: 5px 10px; font-size: 12px; font-weight: 700; letter-spacing: .5px; margin-bottom: 6px; text-align: center; }
+.phq-analyzer { position: fixed; inset: 0; background: rgba(6,9,15,.85); display: flex; align-items: center; justify-content: center; z-index: 50; }
+.anz-card { background: #111623; border: 1px solid #2b3450; border-radius: 12px; padding: 16px; width: min(720px, 92vw); max-height: 90vh; overflow: auto; }
+.anz-ta { width: 100%; height: 150px; background: #0e1320; color: #dfe4ee; border: 1px solid #2b3450; border-radius: 8px; padding: 8px; font-size: 12px; }
+.anz-result { background: #0e1320; border: 1px solid #212838; border-radius: 8px; padding: 8px; font-size: 11px; color: #9fb0cc; max-height: 260px; overflow: auto; white-space: pre-wrap; }

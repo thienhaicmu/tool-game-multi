@@ -7,13 +7,14 @@ const { verifyLicense } = require('./license-verifier.cjs');
 const { LicenseStore } = require('./license-store.cjs');
 const { DEFAULT_TOLERANCE_SECONDS, nextTrustedSeenAt } = require('./clock-guard.cjs');
 const { TrustedTimeProvider } = require('./trusted-time.cjs');
+const { developmentBypassContext } = require('./dev-bypass.cjs');
 
 function errorResult(code, message, extra = {}) {
   return { active: false, error: { code, message, ...extra } };
 }
 
 class LicenseGuard {
-  constructor({ userDataPath, safeStorage = null, machineIdProvider = getMachineId, nowMs = null, trustedTimeProvider = null, store = null, publicKeyPem = null, expectedGameProduct = null } = {}) {
+  constructor({ userDataPath, safeStorage = null, machineIdProvider = getMachineId, nowMs = null, trustedTimeProvider = null, store = null, publicKeyPem = null, expectedGameProduct = null, devBypass = false } = {}) {
     this._nowMs = nowMs;
     this._trustedTimeProvider = trustedTimeProvider || (nowMs ? null : new TrustedTimeProvider());
     this._machineIdProvider = machineIdProvider;
@@ -22,6 +23,10 @@ class LicenseGuard {
     // not grant this game is rejected with a typed mismatch (§3). Aviator apps leave
     // this null or 'AVIATOR' to preserve legacy-key behaviour.
     this._expectedGameProduct = expectedGameProduct;
+    // Development-only bypass (§3). NEVER derived here — the caller (phom-main) proves
+    // the dev context via resolveDevBypass and passes the boolean in. When true, the
+    // guard reports a DEVELOPMENT_BYPASS context WITHOUT verifying any signature.
+    this._devBypass = devBypass === true;
     this._machine = null;
     this._status = { active: false, checking: true };
     this._store = store || new LicenseStore({
@@ -31,8 +36,15 @@ class LicenseGuard {
     });
   }
 
+  // A dev bypass short-circuits every entry point to a clearly-marked, non-shippable
+  // context. No store read, no signature verification.
+  _bypassStatus() {
+    return developmentBypassContext(this._expectedGameProduct || 'PHOM', this.machineId());
+  }
+
   initialize() {
     this._machine = this._machineIdProvider();
+    if (this._devBypass) { this._status = this._bypassStatus(); return this.status(); }
     if (!this._machine || !this._machine.ok) {
       this._status = errorResult('MACHINE_ID_UNAVAILABLE', 'Machine ID is unavailable');
       return this.status();
@@ -46,6 +58,7 @@ class LicenseGuard {
 
   async initializeAsync() {
     this._machine = this._machineIdProvider();
+    if (this._devBypass) { this._status = this._bypassStatus(); return this.status(); }
     if (!this._machine || !this._machine.ok) {
       this._status = errorResult('MACHINE_ID_UNAVAILABLE', 'Machine ID is unavailable');
       return this.status();
@@ -54,6 +67,7 @@ class LicenseGuard {
   }
 
   refresh(options = {}) {
+    if (this._devBypass) { this._status = this._bypassStatus(); return this.status(); }
     const machineId = this.machineId();
     if (!machineId) return this.status();
     const license = this._store.loadLicense();
@@ -72,6 +86,7 @@ class LicenseGuard {
   }
 
   async refreshAsync(options = {}) {
+    if (this._devBypass) { this._status = this._bypassStatus(); return this.status(); }
     const machineId = this.machineId();
     if (!machineId) return this.status();
     const license = this._store.loadLicense();
