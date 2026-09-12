@@ -65,10 +65,13 @@ class ChromeRuntime {
   //   onRunExit(runId)    - called when a run's Chrome exits WITHOUT the app asking
   //                         (user closed the window / crash) so main.cjs can safe-stop
   //   cdp / spawn         - injectable for tests
-  constructor({ env = process.env, windowSize = DEFAULT_WINDOW, chromeProfileFallback = null, onRunExit = () => {}, cdp = null, spawn = null } = {}) {
+  constructor({ env = process.env, windowSize = DEFAULT_WINDOW, chromeProfileFallback = null, chromeExecutable = null, onRunExit = () => {}, cdp = null, spawn = null } = {}) {
     this._env = env;
     this._windowSize = windowSize || DEFAULT_WINDOW;
     this._profileFallback = chromeProfileFallback;
+    // Pinned Chromium executable used by every run this runtime launches (PHOM custom
+    // Chromium). null = discover system Chrome (Control/Aviator unchanged).
+    this._chromeExecutable = chromeExecutable || null;
     this._onRunExit = typeof onRunExit === 'function' ? onRunExit : () => {};
     this._cdp = cdp;         // undefined -> TargetManager/ChromeLauncher use the real CDP
     this._spawn = spawn;     // undefined -> ChromeLauncher uses child_process.spawn
@@ -114,6 +117,8 @@ class ChromeRuntime {
       windowPosition: rect ? { x: rect.x, y: rect.y } : null,
       // PHOM mobile: browser-level touch events for a consistent mobile web view.
       mobileTouch: !!(run && run.mobileTouch),
+      // Pinned Chromium executable (per-run override wins, else the runtime default).
+      chromeExecutable: (run && run.chromeExecutable) || this._chromeExecutable || null,
       spawn: this._spawn || undefined,
       cdp: this._cdp || undefined,
       // Per-run credential-free proxy resolved by the owner before launch (run.proxy).

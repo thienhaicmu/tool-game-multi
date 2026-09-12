@@ -23,10 +23,12 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
+const phomChromium = require('./browser/phom-chromium-runtime.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
 const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs');
+const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-manager.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
@@ -77,6 +79,7 @@ else {
   var proxyTester = null;
   var profileStore = null;
   var phomSessions = null;
+  const SLOTS_ABC = ['A', 'B', 'C'];
 
   const phomRoot = () => path.join(PHOM_USERDATA, 'phom');
   const ensureDir = (d) => { try { fs.mkdirSync(d, { recursive: true }); } catch { /* best effort */ } };
@@ -84,7 +87,18 @@ else {
   // ---- capture + send seam (shared, target-keyed) ----
   const capture = new CaptureCorrelator({ resolveClient: (tid) => resolveTargetClient(tid) });
   const wsReplay = new WsReplay({ resolveClient: (tid) => resolveTargetClient(tid), getCaptured: (id) => capture.get(id) });
-  const chromeRuntime = new ChromeRuntime({ onRunExit: (runId) => { try { if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); } catch { /* best effort */ } } });
+  // Resolve + validate the pinned custom Chromium runtime once (dev vs packaged). No
+  // system-Chrome fallback: an invalid runtime blocks browser launches with a typed error.
+  var _chromiumRuntime = null;
+  function chromiumRuntime() {
+    if (_chromiumRuntime) return _chromiumRuntime;
+    _chromiumRuntime = phomChromium.resolveAndValidate({ env: process.env, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, projectRoot: path.join(__dirname, '..') });
+    return _chromiumRuntime;
+  }
+  const chromeRuntime = new ChromeRuntime({
+    chromeExecutable: (() => { const r = chromiumRuntime(); return r && r.ok ? r.executable : null; })(),
+    onRunExit: (runId) => { try { if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); } catch { /* best effort */ } },
+  });
 
   function resolveTargetClient(targetId) {
     const run = runManager && runManager.runForTarget(targetId);
@@ -180,6 +194,41 @@ else {
     return process.env.PHOM_QA_AUTHORIZED === '1' || IP_CHECK_ALLOWLIST.length > 0;
   }
 
+  // ---- PhomClusterCdpManager: control-plane over the three independent CDP clients ----
+  var phomCluster = null;
+  function runClientFor(runId) {
+    const run = runManager && runManager.get(runId);
+    const s = run && run.targetManager && run.targetManager.getSession(run.selectedTargetId);
+    return s ? s.client : null;
+  }
+  function runInfoFor(runId) {
+    const run = runManager && runManager.get(runId);
+    let snap = {}; try { if (run && run.launcher && run.launcher.snapshot) snap = run.launcher.snapshot() || {}; } catch { snap = {}; }
+    return { pid: snap.chromePid != null ? snap.chromePid : null, port: snap.cdpPort != null ? snap.cdpPort : (run && run.cdpEndpoint ? run.cdpEndpoint.port : null), userDataDir: snap.chromeProfile || (run ? run.profileDir : null) };
+  }
+  async function testProxyById(id) {
+    ensureStores();
+    const cfg = proxyConfigStore.get(String(id));
+    if (!cfg) return { state: 'NOT_CONFIGURED' };
+    const { toRunProxy } = require('./browser-run/proxy-config.cjs');
+    return proxyTester.test(toRunProxy(cfg), { resolveAuth: () => ({ username: cfg.username, password: proxyConfigStore.resolvePassword(cfg.id) }) });
+  }
+  function ensureCluster() {
+    if (phomCluster) return phomCluster;
+    ensureRunManager(); ensurePhomSessions(); ensureStores();
+    phomCluster = new PhomClusterCdpManager({
+      openProfile: (slot, cfg) => openProfile({ slot, url: 'about:blank', proxyRef: (cfg && cfg.proxyRef) || undefined, proxyRequired: true, label: `Profile ${slot}` }),
+      getRunClient: runClientFor,
+      applyDeviceToClient: (client, device) => applyDeviceEmulation(client, device, null),
+      testProxy: (ref) => testProxyById(ref),
+      closeRun: (runId) => runManager.closeRun(runId),
+      getRunInfo: runInfoFor,
+      hostSession: ensurePhomSessions(),
+    });
+    phomCluster.on('update', (snap) => send('phom:cluster', snap));
+    return phomCluster;
+  }
+
   function send(channel, payload) { try { if (shell && !shell.isDestroyed()) shell.webContents.send(channel, payload); } catch { /* best effort */ } }
 
   // 2×2 workspace geometry for a profile slot, resolved against the control window's
@@ -231,7 +280,16 @@ else {
   capture.on('request', (req) => {
     if (!req || !req.isWebSocket || !req.wsDirection || !runManager) return;
     const run = runManager.runForTarget(req.targetId);
-    try { if (run && phomSessions) phomSessions.routeFrame(run, req); } catch { /* never break capture */ }
+    if (!run) return;
+    try {
+      // When a cluster is active, frames flow through the cluster envelope (validation +
+      // aggregate), which routes to the host session; otherwise route directly.
+      if (phomCluster && phomCluster.active()) {
+        phomCluster.ingestEvent(run.id, { raw: req.body && req.body.raw, direction: req.wsDirection, seq: req.seq, targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url });
+      } else if (phomSessions) {
+        phomSessions.routeFrame(run, req);
+      }
+    } catch { /* never break capture */ }
   });
 
   async function connectRunEndpoint(run, endpoint) {
@@ -309,6 +367,9 @@ else {
   // native 2×2 window size). The device belongs to the slot (browser profile), so the
   // same device is reapplied every time this slot's browser is (re)opened.
   async function openProfile({ slot, url, proxyRef, proxyRequired, label, username }) {
+    // §6 — the pinned custom Chromium runtime must validate; never fall back to system Chrome.
+    const rt = chromiumRuntime();
+    if (!rt.ok) return rt;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
     // Prefer the saved profile's proxy/device; explicit args override.
     const saved = profileStore.get(slot) || {};
@@ -397,6 +458,7 @@ else {
       return proxyConfigStore.remove(pid);
     }));
     // Device presets + per-slot profile persistence (device belongs to the browser profile).
+    ipcMain.handle('phom:chromium-status', () => { const r = chromiumRuntime(); return r.ok ? { ok: true, version: r.version, architecture: r.architecture, root: r.root, checksumVerified: r.checksumVerified } : r; });
     ipcMain.handle('phom:device-presets', () => ({ ok: true, presets: deviceProfile.listPresets() }));
     ipcMain.handle('phom:profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: profileStore.list() }; }));
     ipcMain.handle('phom:profile-upsert', guarded((_e, slot, input) => { ensureStores(); return profileStore.upsert(String(slot), input || {}); }));
@@ -434,6 +496,18 @@ else {
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
     ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
+    // PhomClusterCdpManager — control-plane over the three independent CDP clients.
+    ipcMain.handle('phom:cluster-create', guarded((_e, config) => { ensureStores(); const c = config || {}; const profiles = SLOTS_ABC.map((s) => { const p = profileStore.get(s) || {}; return { slot: s, proxyRef: (c.proxyRefs && c.proxyRefs[s]) || p.proxyRef || null, device: profileStore.deviceFor(s) }; }); return ensureCluster().createCluster({ hostSlot: c.hostSlot || 'A', selectedStake: c.selectedStake, profiles }); }));
+    ipcMain.handle('phom:cluster-open', guarded(() => ensureCluster().openCluster()));
+    ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
+    ipcMain.handle('phom:cluster-apply-devices', guarded(() => ensureCluster().applyClusterDevices()));
+    ipcMain.handle('phom:cluster-test-proxies', guarded(() => ensureCluster().testClusterProxies()));
+    ipcMain.handle('phom:cluster-acquire-host', guarded(() => ensureCluster().acquireHostTable()));
+    ipcMain.handle('phom:cluster-join-followers', guarded(() => ensureCluster().joinFollowers()));
+    ipcMain.handle('phom:cluster-apply-ready', guarded(() => ensureCluster().applyReadyPolicy()));
+    ipcMain.handle('phom:cluster-leave', guarded(() => ensureCluster().leaveCluster()));
+    ipcMain.handle('phom:cluster-stop', guarded(() => ensureCluster().stopCluster()));
+    ipcMain.handle('phom:cluster-snapshot', () => (phomCluster ? phomCluster.getClusterSnapshot() : null));
     // 2×2 workspace layout controls (§9/§21).
     ipcMain.handle('phom:restore-layout', guarded(() => restoreLayout()));
     ipcMain.handle('phom:focus-browser', guarded((_e, runId) => focusBrowser(runId)));

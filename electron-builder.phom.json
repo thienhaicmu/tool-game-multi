@@ -24,6 +24,13 @@
     "ui-phom/**/*",
     "package.json"
   ],
+  "extraResources": [
+    {
+      "from": "runtime/phom-chromium",
+      "to": "phom-chromium",
+      "filter": ["**/*"]
+    }
+  ],
   "extraMetadata": {
     "main": "desktop/phom-main.cjs",
     "version": "3.0.4"

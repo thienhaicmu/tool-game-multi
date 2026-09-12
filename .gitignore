@@ -48,3 +48,6 @@ tools/win-unpacked/
 tools/win-unpacked.zip
 # License generator script (seller-side, sensitive)
 tools/license-gen.cjs
+
+# PHOM custom Chromium runtime is now tracked via Git LFS (see .gitattributes),
+# NOT ignored. Only the packaging output stays ignored (release-phom/ above).

@@ -99,9 +99,11 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, mobileTouch = false, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
+  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, mobileTouch = false, chromeExecutable = null, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
     this.profilePath = profilePath;               // per-run persistent user-data-dir
     this.env = env;
+    // Explicit pinned Chromium executable (PHOM custom runtime). null = discover system Chrome.
+    this.chromeExecutable = chromeExecutable || null;
     this.windowSize = windowSize || DEFAULT_WINDOW;
     // Optional { x, y } opening position for 2×2 workspace tiling (null = OS default).
     this.windowPosition = windowPosition && Number.isFinite(windowPosition.x) && Number.isFinite(windowPosition.y) ? { x: Math.round(windowPosition.x), y: Math.round(windowPosition.y) } : null;
@@ -126,7 +128,9 @@ class ChromeLauncher {
   }
 
   async open(url) {
-    const executable = findChromeExecutable(this.env);
+    // Prefer an explicit pinned executable (PHOM custom Chromium runtime); otherwise
+    // discover the system Chrome (unchanged Control/Aviator behaviour).
+    const executable = this.chromeExecutable || findChromeExecutable(this.env);
     if (!executable) return { ok: false, error: { code: 'CHROME_NOT_FOUND', message: 'Chrome executable was not found' } };
     if (!this.profilePath) return { ok: false, error: { code: 'CHROME_PROFILE_MISSING', message: 'No profile directory for this run' } };
     const port = await this.cdpPort();
@@ -138,6 +142,8 @@ class ChromeLauncher {
     const w = Math.max(1, Number(this.windowSize.width) || DEFAULT_WINDOW.width);
     const h = Math.max(1, Number(this.windowSize.height) || DEFAULT_WINDOW.height);
     const args = [
+      // Loopback-only CDP (§11): never bind the debugging port to 0.0.0.0.
+      '--remote-debugging-address=127.0.0.1',
       `--remote-debugging-port=${port}`,
       `--user-data-dir=${profile}`,
       '--no-first-run',
