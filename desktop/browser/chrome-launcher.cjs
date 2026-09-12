@@ -99,7 +99,7 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, mobileTouch = false, chromeExecutable = null, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
+  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, mobileTouch = false, chromeExecutable = null, sandboxDisabled = false, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
     this.profilePath = profilePath;               // per-run persistent user-data-dir
     this.env = env;
     // Explicit pinned Chromium executable (PHOM custom runtime). null = discover system Chrome.
@@ -109,6 +109,10 @@ class ChromeLauncher {
     this.windowPosition = windowPosition && Number.isFinite(windowPosition.x) && Number.isFinite(windowPosition.y) ? { x: Math.round(windowPosition.x), y: Math.round(windowPosition.y) } : null;
     // PHOM mobile: browser-level touch events (all tabs) for a consistent mobile view.
     this.mobileTouch = !!mobileTouch;
+    // Chromium sandbox is ON by default. This is set true ONLY by the fully-gated
+    // dev diagnostic path (resolveSandboxPolicy) — NEVER a production default. The
+    // real 0x5 fix is an AppContainer ACL grant on the runtime, not this flag.
+    this.sandboxDisabled = !!sandboxDisabled;
     this.onRuntime = onRuntime;
     this.onExit = onExit;
     this._spawn = spawnFn;        // injectable for tests
@@ -153,6 +157,11 @@ class ChromeLauncher {
       ...(this.windowPosition ? [`--window-position=${this.windowPosition.x},${this.windowPosition.y}`] : []),
       // Optional browser-level touch events for mobile emulation (null adds nothing).
       ...(this.mobileTouch ? ['--touch-events=enabled'] : []),
+      // Sandbox stays ON by default (security boundary). The copied-runtime "Access
+      // denied (0x5)" is fixed by granting AppContainer read+execute on the runtime
+      // (ensureSandboxAccess), NOT by --no-sandbox. --no-sandbox is added ONLY when the
+      // fully-gated dev diagnostic policy set sandboxDisabled — never in production.
+      ...(this.sandboxDisabled ? ['--no-sandbox'] : []),
       // Per-run proxy (credential-free). Placed before --new-window/url so it applies to
       // THIS chrome.exe only; a null proxy adds nothing (unchanged direct behaviour).
       ...proxyArgs(this.proxy),

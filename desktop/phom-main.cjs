@@ -24,6 +24,7 @@ const fs = require('node:fs');
 
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
 const phomChromium = require('./browser/phom-chromium-runtime.cjs');
+const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -196,6 +197,29 @@ else {
 
   // ---- PhomClusterCdpManager: control-plane over the three independent CDP clients ----
   var phomCluster = null;
+  // LOCAL RUNTIME TEST (§3): dev-only, opens browsers WITHOUT a proxy for browser/CDP/
+  // device verification against a local page. Honored ONLY when the development license
+  // bypass is active — it never relaxes the production proxy gate or any live workflow.
+  var clusterLocalTest = false;
+  function localTestActive() { return clusterLocalTest && devBypass.allowed === true; }
+
+  // Decide the Chromium sandbox policy for a specific launch. Sandbox is ON by default;
+  // the dev diagnostic bypass is refused in packaged/production and requires every guard
+  // (dev bypass + local runtime test + no game endpoint + no live proxy). See
+  // chromium-sandbox-policy.cjs. Returns the pure decision object.
+  function sandboxPolicyFor({ url, runProxy } = {}) {
+    const hasGameEndpoint = !!(url && !/^about:blank$/i.test(String(url).trim()));
+    return resolveSandboxPolicy({
+      isPackaged: app.isPackaged,
+      nodeEnv: process.env.NODE_ENV || (app.isPackaged ? 'production' : 'development'),
+      devBypassAllowed: devBypass.allowed === true,
+      localTest: localTestActive(),
+      diagnosticFlag: process.env[DIAGNOSTIC_ENV] === '1',
+      hasGameEndpoint,
+      hasLiveProxy: !!runProxy,
+    });
+  }
+  var lastSandboxPolicy = { mode: 'SANDBOX_ENABLED', sandboxDisabled: false };
   function runClientFor(runId) {
     const run = runManager && runManager.get(runId);
     const s = run && run.targetManager && run.targetManager.getSession(run.selectedTargetId);
@@ -217,7 +241,9 @@ else {
     if (phomCluster) return phomCluster;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
     phomCluster = new PhomClusterCdpManager({
-      openProfile: (slot, cfg) => openProfile({ slot, url: 'about:blank', proxyRef: (cfg && cfg.proxyRef) || undefined, proxyRequired: true, label: `Profile ${slot}` }),
+      // In LOCAL RUNTIME TEST the browser opens with proxyRequired=false (about:blank,
+      // no live endpoint); otherwise the production proxy gate stays in force.
+      openProfile: (slot, cfg) => openProfile({ slot, url: 'about:blank', proxyRef: (cfg && cfg.proxyRef) || undefined, proxyRequired: !localTestActive(), label: `Profile ${slot}` }),
       getRunClient: runClientFor,
       applyDeviceToClient: (client, device) => applyDeviceEmulation(client, device, null),
       testProxy: (ref) => testProxyById(ref),
@@ -319,7 +345,17 @@ else {
       if (run.selectedTargetId === id) run.selectedTargetId = null;
       if (!runManager.targetsForRun(run.id).length) { runManager.disconnectRun(run); try { phomSessions.routeDisconnect(run.id); } catch { /* best effort */ } }
     });
-    return manager.start ? manager.start() : { ok: true };
+    if (!manager.start) return { ok: true };
+    try { await manager.start(); return { ok: true }; }
+    catch (e) { return { ok: false, error: { code: 'PHOM_CHROMIUM_CDP_TIMEOUT', message: safeMsg(e) } }; }
+  }
+  // Newly launched Chromium needs ~1-2s before its CDP endpoint answers; retry connect.
+  async function connectRunEndpointWithRetry(run, endpoint, attempt = 0) {
+    const result = await connectRunEndpoint(run, endpoint);
+    if ((!result || !result.ok) && attempt < 15 && run.status !== RUN_STATUS.CLOSED) {
+      setTimeout(() => { connectRunEndpointWithRetry(run, endpoint, attempt + 1).catch(() => {}); }, 1000);
+    }
+    return result;
   }
 
   // Apply CDP mobile emulation to a run's client (per-run ownership). Each command is
@@ -377,7 +413,21 @@ else {
     const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired !== false }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
     if (!gate.ok) return gate; // PROXY_CONFIG_REQUIRED / NOT_FOUND — launch blocked
     const device = profileStore.deviceFor(slot);
-    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect: gridRectForSlot(slot), mobileTouch: !!(device && device.touch) });
+    // Chromium sandbox policy for THIS launch (sandbox ON unless the fully-gated dev
+    // diagnostic bypass applies). When the sandbox stays ON we self-heal the runtime's
+    // AppContainer ACL so it launches WITHOUT --no-sandbox (the real 0x5 fix).
+    const sandbox = sandboxPolicyFor({ url, runProxy: gate.runProxy });
+    lastSandboxPolicy = sandbox;
+    if (!sandbox.sandboxDisabled) {
+      const acl = phomChromium.ensureSandboxAccess(rt.root);
+      if (!acl.ok && phomChromium.sandboxAccessPresent(rt.root) === false) {
+        return { ok: false, error: { code: 'PHOM_CHROMIUM_SANDBOX_REQUIRED', message: 'Chromium sandbox cannot be enabled: runtime filesystem permissions (AppContainer read+execute) could not be granted. Launch blocked (no silent --no-sandbox retry).' } };
+      }
+    }
+    // Per-slot persistent user-data-dir so reopening slot A reuses A's dir (§12).
+    const profileDir = path.join(phomRoot(), 'browser-profiles', slot || 'X');
+    try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
+    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect: gridRectForSlot(slot), mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
     run.deviceProfile = device || null; // reapplied on every attach/navigation
@@ -385,7 +435,7 @@ else {
     const launched = await run.launcher.open(String(url || ''));
     if (!launched.ok) { runManager.failRun(run, launched.error); return { ok: false, error: launched.error }; }
     run.cdpEndpoint = launched.endpoint;
-    connectRunEndpoint(run, launched.endpoint).catch(() => {});
+    connectRunEndpointWithRetry(run, launched.endpoint).catch(() => {});
     return { ok: true, runId: run.id, proxy: gate.runProxy, device: device ? deviceProfile.publicSnapshot(device) : null };
   }
 
@@ -441,7 +491,7 @@ else {
     ipcMain.handle('phom:license-activate', async (_e, key) => { if (!licenseGuard) return licenseStatus(); const s = await licenseGuard.activateAsync(String(key || '')); return { ...s, gameProduct: GAME_PRODUCT }; });
     ipcMain.handle('phom:machine-id', () => ({ machineId: licenseGuard ? licenseGuard.machineId() : null }));
     ipcMain.handle('phom:instance-info', () => ({ productName: PRODUCT_NAME, gameProduct: GAME_PRODUCT, userData: PHOM_USERDATA, ipcPrefix: 'phom:' }));
-    ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), devBypass: devBypass.allowed === true, licenseMode: devBypass.allowed ? 'DEVELOPMENT_BYPASS' : 'LICENSED', proxySecret: (ensureStores(), proxySecretStore.capability()) }));
+    ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), devBypass: devBypass.allowed === true, licenseMode: devBypass.allowed ? 'DEVELOPMENT_BYPASS' : 'LICENSED', proxySecret: (ensureStores(), proxySecretStore.capability()), chromiumSandbox: { mode: lastSandboxPolicy.mode, disabled: !!lastSandboxPolicy.sandboxDisabled, banner: lastSandboxPolicy.banner || null } }));
 
     // Proxy config (metadata only; passwords never returned to the renderer).
     ipcMain.handle('phom:proxy-list', guarded(() => { ensureStores(); return { ok: true, proxies: proxyConfigStore.list() }; }));
@@ -497,7 +547,7 @@ else {
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
     ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.
-    ipcMain.handle('phom:cluster-create', guarded((_e, config) => { ensureStores(); const c = config || {}; const profiles = SLOTS_ABC.map((s) => { const p = profileStore.get(s) || {}; return { slot: s, proxyRef: (c.proxyRefs && c.proxyRefs[s]) || p.proxyRef || null, device: profileStore.deviceFor(s) }; }); return ensureCluster().createCluster({ hostSlot: c.hostSlot || 'A', selectedStake: c.selectedStake, profiles }); }));
+    ipcMain.handle('phom:cluster-create', guarded((_e, config) => { ensureStores(); const c = config || {}; clusterLocalTest = !!(c.localTest && devBypass.allowed); const profiles = SLOTS_ABC.map((s) => { const p = profileStore.get(s) || {}; return { slot: s, proxyRef: (c.proxyRefs && c.proxyRefs[s]) || p.proxyRef || null, device: profileStore.deviceFor(s) }; }); const res = ensureCluster().createCluster({ hostSlot: c.hostSlot || 'A', selectedStake: c.selectedStake, profiles }); return res && res.ok ? { ...res, localTest: localTestActive() } : res; }));
     ipcMain.handle('phom:cluster-open', guarded(() => ensureCluster().openCluster()));
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
     ipcMain.handle('phom:cluster-apply-devices', guarded(() => ensureCluster().applyClusterDevices()));

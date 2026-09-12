@@ -134,3 +134,54 @@ test('close() kills the owned process; closeGraceful() asks Chrome to close then
     assert.equal(cdp._client._closed, true, 'requested a graceful Browser.close over CDP');
   } finally { fs.rmSync(profile, { recursive: true, force: true }); }
 });
+
+// --- Chromium sandbox policy (SECURITY) --------------------------------------
+// The sandbox is ON by default for EVERYONE. The copied-runtime "Access denied 0x5"
+// is fixed by an AppContainer ACL grant on the runtime (ensureSandboxAccess), NOT by
+// --no-sandbox. --no-sandbox appears ONLY when the caller passes sandboxDisabled:true
+// (the fully-gated dev diagnostic path). Nobody gets it by default.
+test('sandbox is ON by default for custom Chromium AND system Chrome (no --no-sandbox)', async () => {
+  const profile = tmpProfile();
+  try {
+    const spawnCustom = makeFakeSpawn();
+    const custom = new ChromeLauncher({ profilePath: profile, env: {}, spawn: spawnCustom, cdp: makeFakeCdp(), chromeExecutable: process.execPath });
+    await custom.open('about:blank');
+    assert.equal(spawnCustom.calls[0].exe, process.execPath, 'used the pinned custom executable');
+    assert.ok(!spawnCustom.calls[0].args.includes('--no-sandbox'), 'custom Chromium keeps its sandbox by default');
+
+    const spawnSystem = makeFakeSpawn();
+    const system = new ChromeLauncher({ profilePath: profile, env: envWithChrome(), spawn: spawnSystem, cdp: makeFakeCdp() });
+    await system.open('about:blank');
+    assert.ok(!spawnSystem.calls[0].args.includes('--no-sandbox'), 'system Chrome keeps its sandbox by default');
+  } finally { fs.rmSync(profile, { recursive: true, force: true }); }
+});
+
+test('--no-sandbox appears ONLY when sandboxDisabled is explicitly set (dev diagnostic)', async () => {
+  const profile = tmpProfile();
+  try {
+    const spawn = makeFakeSpawn();
+    const l = new ChromeLauncher({ profilePath: profile, env: {}, spawn, cdp: makeFakeCdp(), chromeExecutable: process.execPath, sandboxDisabled: true });
+    await l.open('about:blank');
+    assert.ok(spawn.calls[0].args.includes('--no-sandbox'), 'the explicit dev diagnostic bypass adds --no-sandbox');
+  } finally { fs.rmSync(profile, { recursive: true, force: true }); }
+});
+
+// §11 loopback-only CDP + PHOM mobile/tiling opening args are opt-in and correct.
+test('CDP debugging binds loopback only; mobile-touch and 2x2 window-position are opt-in', async () => {
+  const profile = tmpProfile();
+  try {
+    const spawn = makeFakeSpawn();
+    const l = new ChromeLauncher({ profilePath: profile, env: envWithChrome(), spawn, cdp: makeFakeCdp(), mobileTouch: true, windowPosition: { x: 964, y: 0 } });
+    await l.open('about:blank');
+    const { args } = spawn.calls[0];
+    assert.ok(args.includes('--remote-debugging-address=127.0.0.1'), 'debugging port is bound to loopback, never 0.0.0.0');
+    assert.ok(args.includes('--touch-events=enabled'), 'mobile-touch opt-in adds browser-level touch events');
+    assert.equal(argValue(args, '--window-position'), '964,0', 'window-position tiles the opening window');
+
+    // Off by default: a plain launcher adds none of these.
+    const spawn2 = makeFakeSpawn();
+    const plain = new ChromeLauncher({ profilePath: profile, env: envWithChrome(), spawn: spawn2, cdp: makeFakeCdp() });
+    await plain.open('about:blank');
+    assert.ok(!spawn2.calls[0].args.some((a) => /--touch-events|--window-position/.test(a)), 'no mobile/tiling flags unless requested');
+  } finally { fs.rmSync(profile, { recursive: true, force: true }); }
+});

@@ -119,6 +119,9 @@ class ChromeRuntime {
       mobileTouch: !!(run && run.mobileTouch),
       // Pinned Chromium executable (per-run override wins, else the runtime default).
       chromeExecutable: (run && run.chromeExecutable) || this._chromeExecutable || null,
+      // Sandbox disabled ONLY when the owner's gated dev diagnostic policy set it on
+      // the run. Default false ⇒ sandbox ON (production behaviour).
+      sandboxDisabled: !!(run && run.sandboxDisabled),
       spawn: this._spawn || undefined,
       cdp: this._cdp || undefined,
       // Per-run credential-free proxy resolved by the owner before launch (run.proxy).

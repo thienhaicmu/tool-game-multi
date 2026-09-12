@@ -59,7 +59,7 @@ class BrowserRunManager extends EventEmitter {
   // ---- run creation ----
   // Builds the per-run launcher + protocol subsystem. The TargetManager is
   // attached later (once the launcher yields a CDP endpoint) via setTargetManager.
-  createRun({ launchUrl = '', browserId = null, profileDir = null, proxy = null, windowRect = null, mobileTouch = false } = {}) {
+  createRun({ launchUrl = '', browserId = null, profileDir = null, proxy = null, windowRect = null, mobileTouch = false, sandboxDisabled = false } = {}) {
     const id = this._nextId();
     const ordinal = this._order.length; // 0 for the first run
     const run = {
@@ -76,6 +76,9 @@ class BrowserRunManager extends EventEmitter {
       windowRect: windowRect || null,
       // PHOM mobile: request browser-level touch events (--touch-events=enabled). false = default.
       mobileTouch: !!mobileTouch,
+      // Chromium sandbox disabled for THIS run — set only by the owner's gated dev
+      // diagnostic policy. false = sandbox ON (production behaviour, the default).
+      sandboxDisabled: !!sandboxDisabled,
       status: STATUS.STARTING,
       createdAt: new Date(this._now()).toISOString(),
       endedAt: null,

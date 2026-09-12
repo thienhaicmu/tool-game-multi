@@ -3,6 +3,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 
 // ---------------------------------------------------------------------------
 // Pinned custom Chromium runtime resolution + validation (§4/§6). The Phỏm QA app
@@ -81,6 +82,41 @@ function validateRuntime(root, { deep = false } = {}) {
   return { ok: true, root, executable: exe, version: version || EXPECTED_VERSION, architecture: ARCHITECTURE, checksumVerified: !!expected['chrome.exe'] };
 }
 
+// Windows AppContainer SIDs the Chromium sandbox's restricted token needs to READ +
+// EXECUTE the runtime. A standard Chrome install grants these; a copied runtime loses
+// them, which is the REAL cause of "Sandbox cannot access executable … (0x5)".
+const SID_ALL_APP_PACKAGES = '*S-1-15-2-1';            // ALL APPLICATION PACKAGES
+const SID_ALL_RESTRICTED_APP_PACKAGES = '*S-1-15-2-2'; // ALL RESTRICTED APPLICATION PACKAGES
+
+// Is the AppContainer read+execute grant already present on chrome.exe? (idempotency
+// guard so we never re-run icacls once the runtime is prepared.)
+function sandboxAccessPresent(root) {
+  if (process.platform !== 'win32') return true; // sandbox-ACL is a Windows concern only
+  const exe = executablePath(root);
+  if (!fs.existsSync(exe)) return false;
+  try {
+    const res = spawnSync('icacls', [exe], { encoding: 'utf8', windowsHide: true });
+    const out = (res && res.stdout) || '';
+    return /APPLICATION PACKAGES/i.test(out) || /S-1-15-2-1/.test(out);
+  } catch { return false; }
+}
+
+// Grant READ+EXECUTE (never Write/Full) to the AppContainer SIDs on the runtime dir so
+// the Chromium sandbox works WITHOUT --no-sandbox. Idempotent, best-effort, Windows-only,
+// scoped strictly to the project runtime directory. This is the sanctioned 0x5 fix — it
+// does NOT run as admin, touch UAC, grant Everyone, or disable the sandbox.
+function ensureSandboxAccess(root) {
+  if (process.platform !== 'win32') return { ok: true, changed: false, reason: 'non-windows' };
+  if (!root || !fs.existsSync(root)) return { ok: false, changed: false, reason: 'runtime-missing' };
+  if (sandboxAccessPresent(root)) return { ok: true, changed: false, reason: 'already-granted' };
+  try {
+    const res = spawnSync('icacls', [root, '/grant', `${SID_ALL_APP_PACKAGES}:(OI)(CI)(RX)`, `${SID_ALL_RESTRICTED_APP_PACKAGES}:(OI)(CI)(RX)`, '/T', '/C', '/Q'],
+      { encoding: 'utf8', windowsHide: true });
+    const ok = res && res.status === 0;
+    return { ok: !!ok, changed: !!ok, reason: ok ? 'granted' : 'icacls-failed' };
+  } catch (e) { return { ok: false, changed: false, reason: 'icacls-threw' }; }
+}
+
 // Resolve + validate in one call — the launcher's entry point.
 function resolveAndValidate(opts = {}) {
   const root = resolveRuntimeRoot(opts);
@@ -112,4 +148,5 @@ function generateManifest(root) {
 module.exports = {
   EXPECTED_VERSION, ARCHITECTURE, EXECUTABLE, REQUIRED_FILES, REQUIRED_DIRECTORIES,
   resolveRuntimeRoot, executablePath, loadManifest, validateRuntime, resolveAndValidate, generateManifest,
+  sandboxAccessPresent, ensureSandboxAccess, SID_ALL_APP_PACKAGES, SID_ALL_RESTRICTED_APP_PACKAGES,
 };

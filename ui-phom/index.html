@@ -24,12 +24,11 @@
     </div>
   </section>
 
-  <!-- 2×2 workspace: 3 browser status cells + control -->
-  <main id="workspace" class="grid2x2" hidden>
-    <section class="cell browser" id="cell-A"><div class="cell-h">Browser 1 · Profile A</div><div class="cell-body" id="body-A"></div></section>
-    <section class="cell browser" id="cell-B"><div class="cell-h">Browser 2 · Profile B</div><div class="cell-body" id="body-B"></div></section>
-    <section class="cell browser" id="cell-C"><div class="cell-h">Browser 3 · Profile C</div><div class="cell-body" id="body-C"></div></section>
-    <section class="cell control" id="cell-control"><div id="phq-root"></div></section>
+  <!-- Single tool surface. SETUP shows only setup rows + one CTA; after the cluster
+       opens the SAME surface re-renders into a compact CONTROL panel. The three browsers
+       are ALWAYS separate native Chromium windows — never embedded placeholder cells. -->
+  <main id="workspace" hidden>
+    <div id="phq-root"></div>
   </main>
 
   <script src="phom-qa.js"></script>

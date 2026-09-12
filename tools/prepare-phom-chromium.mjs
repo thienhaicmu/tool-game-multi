@@ -120,6 +120,13 @@ async function main() {
     const fin = rt.validateRuntime(RUNTIME);
     if (!fin.ok) die('PHOM_RUNTIME_VALIDATION_FAILED', fin.error.code);
     console.log('Installed + validated:', fin.version, fin.architecture, 'at', RUNTIME);
+
+    // Grant the AppContainer read+execute ACL the Chromium sandbox needs (a copied
+    // runtime loses it → "Sandbox cannot access executable … 0x5"). This keeps the
+    // sandbox ON in production; it is NOT a --no-sandbox workaround. RX only, project dir.
+    const acl = rt.ensureSandboxAccess(RUNTIME);
+    console.log('Sandbox ACL (AppContainer RX):', acl.ok ? (acl.changed ? 'granted' : 'already present') : `WARN ${acl.reason}`);
+    if (!acl.ok && rt.sandboxAccessPresent(RUNTIME) === false) die('PHOM_CHROMIUM_SANDBOX_REQUIRED', 'could not grant AppContainer read+execute on the runtime (sandbox would fail).');
     console.log('DONE.');
   } finally {
     try { fs.rmSync(work, { recursive: true, force: true }); } catch { /* best effort */ }

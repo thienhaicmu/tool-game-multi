@@ -1,12 +1,27 @@
 'use strict';
 
 // Phỏm QA standalone renderer. Talks ONLY to window.phomQA (typed preload). No raw
-// WS sender, no CDP, no proxy password. 2×2 workspace: 3 managed external browser
-// status cells + a control cell. No gameplay automation / no strategy controls.
+// WS sender, no CDP, no proxy password.
+//
+// SETUP-FIRST UX (state machine, one tool window):
+//   SETUP           — the idle tool: license, 3 profile setup rows (device + proxy),
+//                     proxy Add/Edit/Delete/Test, ONE open-all CTA, Analyzer link,
+//                     Advanced (closed). NO browser placeholders, NO per-slot open-game
+//                     button, NO seat/ready/hand placeholders, NO host controls.
+//   OPENING_CLUSTER — transient while the three native Chromium windows are launched.
+//   CONTROL         — compact control panel AFTER the cluster is open: compact per-slot
+//                     status rows + Focus/Restore/Stop + HOST/stake/Join/Ready/kick.
+//   STOPPING        — transient while the cluster closes.
+//   ERROR           — an open/stop failure with a "back to setup" path.
+// The three managed browsers are ALWAYS separate native Chromium windows — never
+// embedded cells. No gameplay automation / no strategy controls.
 (function () {
   const api = window.phomQA || {};
   const SUIT_RED = new Set(['♦', '♥']);
   const SLOTS = ['A', 'B', 'C'];
+  const UI = { SETUP: 'SETUP', OPENING_CLUSTER: 'OPENING_CLUSTER', CONTROL: 'CONTROL', STOPPING: 'STOPPING', ERROR: 'ERROR' };
+  let uiState = UI.SETUP;
+  let errorMsg = '';
   let caps = {};
   let licenseMode = 'LICENSED';
   let session = null;
@@ -17,6 +32,8 @@
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
   let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
+  let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
+  let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let assign = { A: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' }, B: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' }, C: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' } };
 
   function el(tag, attrs, ...kids) {
@@ -73,30 +90,94 @@
     try { const pr = await api.devicePresets(); presets = (pr && pr.presets) || []; } catch { presets = []; }
     try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch { profiles = {}; }
     try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
-    renderAll();
+    try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
+    // Land in CONTROL if a cluster is already open (e.g. renderer reload), else SETUP.
+    uiState = clusterIsOpen() ? UI.CONTROL : UI.SETUP;
+    renderApp();
   }
 
-  function renderAll() { renderControl(); for (const s of SLOTS) renderBrowserCell(s); }
+  function clusterIsOpen() {
+    const cs = clusterSnap; if (!cs || cs.stopped) return false;
+    return !!cs.clusterSessionId && (cs.connectedCount || 0) > 0;
+  }
 
-  // ---------- browser cells (managed external Chrome windows — NOT embedded) ----------
-  function renderBrowserCell(slot) {
-    const body = $('body-' + slot); if (!body) return;
-    body.innerHTML = '';
+  // ---------- top-level dispatch ----------
+  function renderApp() {
+    const r = $('phq-root'); if (!r) return;
+    r.innerHTML = '';
+    r.className = 'mode-' + uiState.toLowerCase();
+    banners(r);
+    if (uiState === UI.SETUP) return renderSetup(r);
+    if (uiState === UI.OPENING_CLUSTER) return renderTransient(r, 'ĐANG MỞ 3 TRÌNH DUYỆT…', 'Ba cửa sổ Chromium đang bung ra bên ngoài.');
+    if (uiState === UI.STOPPING) return renderTransient(r, 'ĐANG DỪNG CỤM…', 'Đóng ba trình duyệt, giữ nguyên cấu hình đã lưu.');
+    if (uiState === UI.ERROR) return renderError(r);
+    return renderControl(r);
+  }
+
+  function banners(r) {
+    if (licenseMode === 'DEVELOPMENT_BYPASS') r.appendChild(el('div', { class: 'dev-banner' }, 'DEV MODE — LICENSE BYPASS'));
+    const sb = caps.chromiumSandbox;
+    if (sb && sb.disabled) r.appendChild(el('div', { class: 'danger-banner' }, sb.banner || 'DEV ONLY — CHROMIUM SANDBOX DISABLED'));
+  }
+
+  function header(state) {
+    return el('div', null,
+      el('b', { style: 'font-size:16px' }, 'PHỎM QA'),
+      el('span', { class: 'faint', style: 'margin-left:8px' }, state),
+      caps.authorized ? pill('Env', 'QA ✓', 'good') : pill('Env', 'passive', 'warn'),
+      el('span', { class: 'pill ' + (licenseMode === 'DEVELOPMENT_BYPASS' ? 'warn' : 'good') }, licenseMode === 'DEVELOPMENT_BYPASS' ? 'DEV BYPASS' : 'LICENSED'),
+    );
+  }
+
+  function renderTransient(r, title, sub) {
+    r.appendChild(header(uiState));
+    r.appendChild(el('div', { class: 'section-t', style: 'margin-top:16px' }, title));
+    r.appendChild(el('div', { class: 'note' }, sub));
+  }
+
+  function renderError(r) {
+    r.appendChild(header('ERROR'));
+    r.appendChild(el('div', { class: 'warnrow', style: 'margin:10px 0' }, errorMsg || 'Đã xảy ra lỗi.'));
+    r.appendChild(el('button', { class: 'btn primary', onclick: () => { uiState = UI.SETUP; renderApp(); } }, 'Về SETUP'));
+  }
+
+  // ================= SETUP MODE =================
+  function renderSetup(r) {
+    r.appendChild(header('SETUP'));
+    r.appendChild(el('div', { class: 'note faint' }, 'Cấu hình proxy + thiết bị cho 3 hồ sơ, rồi mở cả ba trình duyệt bằng một nút. Trình duyệt là 3 cửa sổ Chromium riêng.'));
+    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
+
+    r.appendChild(el('div', { class: 'section-t' }, 'HỒ SƠ 3 TRÌNH DUYỆT (PROXY + THIẾT BỊ)'));
+    for (const slot of SLOTS) r.appendChild(setupRow(slot));
+
+    if (caps.devBypass) r.appendChild(el('label', { class: 'phq-row', style: 'font-size:12px' },
+      el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; } }),
+      el('span', null, 'Local runtime test (mở browser không cần proxy, chỉ trang local)')));
+
+    // The SINGLE primary CTA that opens all three browsers.
+    r.appendChild(el('button', { class: 'btn primary cta-open', onclick: openCluster }, 'MỞ 3 TRÌNH DUYỆT'));
+    if (!setupReady()) r.appendChild(el('div', { class: 'warnrow' }, setupReason()));
+
+    r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
+    r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
+
+    const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
+    det.appendChild(el('pre', { style: 'font-size:11px;color:#9fb0cc;max-height:160px;overflow:auto;white-space:pre-wrap' }, JSON.stringify({ caps, profiles: Object.keys(profiles) }, null, 2)));
+    r.appendChild(det);
+  }
+
+  // A compact setup row for one slot: device + proxy only. No browser open, no seat/ready.
+  function setupRow(slot) {
     const a = assign[slot];
     const saved = profiles[slot] || {};
-    // keep the in-memory assign proxyRef in sync with the saved profile
     if (a.proxyRef == null && saved.proxyRef) a.proxyRef = saved.proxyRef;
-    const prof = session ? (session.profiles || []).find((p) => a.runId && p.id === a.runId) : null;
     const dev = saved.device;
-    body.appendChild(el('div', { class: 'prow' },
-      // device row
+    return el('div', { class: 'prow', id: 'setup-' + slot },
+      el('div', null, el('b', null, 'Hồ sơ ' + slot + ' '), el('span', { class: 'faint' }, saved.name || ('Profile ' + slot))),
       el('div', null, el('b', null, 'Thiết bị '),
         el('span', null, dev ? `${dev.name} · ${dev.resolution} · Ngang · Touch` : '(chưa tạo)'),
-      ),
-      el('div', null,
         el('button', { class: 'btn', onclick: () => openDeviceModal(slot) }, dev ? 'Sửa thiết bị' : 'Tạo thiết bị'),
       ),
-      // proxy row
       el('div', null, el('b', null, 'Proxy '), proxySelector(slot)),
       el('div', null,
         el('button', { class: 'btn', onclick: () => testProxy(slot) }, 'Test'),
@@ -106,17 +187,7 @@
         el('span', { class: 'badge ' + testBadge(a.testState) }, a.testState),
         a.ip ? el('span', { class: 'faint' }, ' IP ' + a.ip) : null,
       ),
-      // browser row
-      el('div', null,
-        el('span', { class: 'dot ' + (prof && prof.socketReady ? 'on' : 'off') }), ' Browser ',
-        el('button', { class: 'btn', onclick: () => openOne(slot) }, prof ? 'Mở lại' : 'Mở game'),
-        a.runId ? el('button', { class: 'btn', onclick: () => api.focusBrowser(a.runId) }, 'Focus') : null,
-        el('span', { class: 'faint' }, ' Ngang'),
-      ),
-      el('div', { class: 'faint' }, 'Ghế ', el('b', null, prof && prof.seat != null ? String(prof.seat) : '—'),
-        ' · ', (prof && prof.ready ? 'Sẵn sàng' : 'Chưa'), prof && prof.lastError ? el('span', { class: 'warnrow' }, ' ' + prof.lastError.code) : null),
-    ));
-    body.appendChild(el('div', { class: 'faint', style: 'margin-top:6px;font-size:11px' }, 'Game mở ở cửa sổ Chrome riêng (mobile landscape, thao tác thủ công tại đó).'));
+    );
   }
 
   function proxySelector(slot) {
@@ -126,6 +197,15 @@
     return sel;
   }
   function testBadge(s) { return ({ PASS: 'good', FAILED: 'bad', AUTH_FAILED: 'bad', TIMEOUT: 'warn', TESTING: 'warn' })[s] || 'faint'; }
+
+  function setupReady() {
+    if (localTest) return true; // local runtime test opens about:blank without proxy
+    return SLOTS.every((s) => assign[s].proxyRef);
+  }
+  function setupReason() {
+    if (localTest) return '';
+    return 'Gán proxy cho cả 3 hồ sơ (hoặc bật Local runtime test) trước khi mở.';
+  }
 
   // Proxy form modal (add or edit). Password goes straight to the secure store; the
   // form never shows an existing password back.
@@ -159,7 +239,7 @@
           assign[slot].proxyRef = res.id; await api.profileUpsert(slot, { proxyRef: res.id });
           const pl = await api.proxyList(); proxies = (pl && pl.proxies) || [];
           const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x]));
-          close(); renderAll();
+          close(); renderApp();
         } }, 'Lưu'),
         el('button', { class: 'btn', onclick: close }, 'Hủy'),
       ),
@@ -174,7 +254,7 @@
     for (const s of SLOTS) if (assign[s].proxyRef === id) assign[s].proxyRef = '';
     const pl = await api.proxyList(); proxies = (pl && pl.proxies) || [];
     const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x]));
-    renderAll();
+    renderApp();
   }
 
   // Device modal: pick a mobile preset (orientation fixed Ngang) + name; preview.
@@ -198,7 +278,7 @@
           const res = await api.profileUpsert(slot, { name: $('dev-name').value.trim(), device: { presetId: sel.value, regenerate: !(saved.device && saved.device.presetId === sel.value) } });
           if (!res || !res.ok) { note(errText(res), true); return; }
           const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x]));
-          close(); renderAll();
+          close(); renderApp();
         } }, 'Lưu'),
         el('button', { class: 'btn', onclick: close }, 'Hủy'),
       ),
@@ -210,43 +290,42 @@
   async function testProxy(slot) {
     const ref = assign[slot].proxyRef;
     if (!ref) return note('Chọn proxy cho ' + slot + ' trước.', true);
-    assign[slot].testState = 'TESTING'; renderBrowserCell(slot);
+    assign[slot].testState = 'TESTING'; renderApp();
     const res = await api.proxyTest(ref);
     const r = res && res.result;
     assign[slot].testState = (r && r.state) || 'FAILED';
     assign[slot].ip = r && r.observedIp || null;
-    renderBrowserCell(slot); renderControl();
+    renderApp();
   }
 
-  async function openOne(slot) {
-    const ref = assign[slot].proxyRef;
-    const res = await api.openProfile({ slot, url: 'about:blank', proxyRef: ref || null, proxyRequired: true, label: 'Profile ' + slot });
-    if (!res || !res.ok) return note(errText(res), true);
-    assign[slot].runId = res.runId;
-    note('Đã mở browser ' + slot + '. Đăng nhập rồi mở game Phỏm.');
-  }
-
-  // ---------- control cell ----------
-  function renderControl() {
-    const r = $('phq-root'); if (!r) return;
-    r.innerHTML = '';
+  // ================= CONTROL MODE =================
+  function renderControl(r) {
     const s = session || {};
-    if (licenseMode === 'DEVELOPMENT_BYPASS') r.appendChild(el('div', { class: 'dev-banner' }, 'DEV MODE — LICENSE BYPASS'));
-    r.appendChild(el('div', null,
-      el('b', { style: 'font-size:16px' }, 'PHỎM QA'),
-      el('span', { class: 'faint', style: 'margin-left:8px' }, s.state || 'IDLE'),
-    ));
-    r.appendChild(el('div', { style: 'margin:6px 0' },
-      pill('Browser', browserCount() + '/3', browserCount() === 3 ? 'good' : ''),
-      pill('Connected', (s.onlineCount || 0) + '/3', (s.onlineCount || 0) === 3 ? 'good' : ''),
-      pill('Cùng bàn', s.sameTable ? 'YES' : 'NO', s.sameTable ? 'good' : 'bad'),
-      pill('Ready', (s.readyCount || 0) + '/3', (s.readyCount || 0) === 3 ? 'good' : ''),
-      caps.authorized ? pill('Env', 'QA ✓', 'good') : pill('Env', 'passive', 'warn'),
-      s.hasOutsider ? pill('Người ngoài', '!', 'warn') : null,
-    ));
+    const cs = clusterSnap || {};
+    r.appendChild(header('CONTROL'));
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
 
-    // HOST + stake controls
+    // Compact cluster status.
+    r.appendChild(el('div', { style: 'margin:4px 0' },
+      pill('Browser', (cs.profiles ? Object.values(cs.profiles).filter((p) => p.profileId).length : 0) + '/3', ''),
+      pill('CDP', (cs.connectedCount || 0) + '/3', (cs.connectedCount || 0) === 3 ? 'good' : ''),
+      pill('Device', (cs.deviceAppliedCount || 0) + '/3', (cs.deviceAppliedCount || 0) === 3 ? 'good' : ''),
+      pill('Cùng bàn', s.sameTable ? 'YES' : 'NO', s.sameTable ? 'good' : 'bad'),
+      pill('Ready', (s.readyCount || 0) + '/3', (s.readyCount || 0) === 3 ? 'good' : ''),
+    ));
+
+    // Compact per-slot rows.
+    for (const slot of SLOTS) r.appendChild(controlRow(slot, cs));
+
+    r.appendChild(el('div', { style: 'margin-top:6px' },
+      el('button', { class: 'btn', onclick: () => clusterFocus('A') }, 'Focus A'),
+      el('button', { class: 'btn', onclick: () => clusterFocus('B') }, 'Focus B'),
+      el('button', { class: 'btn', onclick: () => clusterFocus('C') }, 'Focus C'),
+      el('button', { class: 'btn', onclick: step(() => api.restoreLayout(), 'Đã xếp lại bố cục.') }, 'Restore Layout'),
+      el('button', { class: 'btn danger', onclick: stopCluster }, 'Dừng cụm'),
+    ));
+
+    // HOST + stake + live table controls — ONLY in CONTROL.
     r.appendChild(el('div', { class: 'section-t' }, 'HOST & MỨC CƯỢC'));
     const hostSel = el('select', { class: 'sel', id: 'phq-host', onchange: (e) => { hostId = e.target.value; api.setHost(hostId); } });
     for (const slot of SLOTS) hostSel.appendChild(el('option', { value: assign[slot].runId || slot, selected: hostId === (assign[slot].runId || slot) }, 'HOST = Profile ' + slot));
@@ -265,7 +344,6 @@
       el('button', { class: 'btn', onclick: rejoinKicked }, 'ReJoin bị kick'),
       el('button', { class: 'btn', onclick: step(() => api.recoverHost(), 'Khôi phục HOST.') }, 'Khôi phục HOST'),
       el('button', { class: 'btn', onclick: step(() => api.leaveAll(), 'Đã rời bàn.') }, 'Rời tất cả'),
-      el('button', { class: 'btn danger', onclick: step(() => api.stop(), 'Đã dừng.') }, 'Dừng'),
     ));
     r.appendChild(el('div', { class: 'note ' + (s.sameTable ? 'ok' : '') }, `Kết luận: ${s.tableVerdict || '—'} · ${s.state || 'IDLE'}`));
     if (!ctaEnabled(s)) r.appendChild(el('div', { class: 'warnrow' }, ctaReason(s)));
@@ -282,6 +360,24 @@
     const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
     det.appendChild(el('pre', { style: 'font-size:11px;color:#9fb0cc;max-height:180px;overflow:auto;white-space:pre-wrap' }, session ? JSON.stringify(session, null, 2) : '(chưa có phiên)'));
     r.appendChild(det);
+  }
+
+  function controlRow(slot, cs) {
+    const p = (cs.profiles && cs.profiles[slot]) || {};
+    const saved = profiles[slot] || {};
+    const a = assign[slot];
+    const dev = saved.device;
+    return el('div', { class: 'prow compact' },
+      el('div', null,
+        el('span', { class: 'dot ' + (p.cdpConnected ? 'on' : 'off') }), ' ',
+        el('b', null, slot), ' ', el('span', { class: 'faint' }, saved.name || ('Profile ' + slot)),
+        p.profileId ? el('button', { class: 'btn', onclick: () => clusterFocus(slot) }, 'Focus') : null,
+      ),
+      el('div', { class: 'faint' },
+        (dev ? `${dev.name} · ${dev.resolution} · Ngang` : '(thiết bị mặc định)'),
+        ' · Proxy ', el('span', { class: 'badge ' + testBadge(a.testState) }, a.testState), a.ip ? ' IP ' + a.ip : '',
+      ),
+    );
   }
 
   // Offline rule analyzer (§16/§23) — a separate mode, refused while any live run exists.
@@ -325,7 +421,7 @@
 
   // ---------- actions ----------
   const step = (fn, ok) => async () => { const res = await fn(); if (res && res.ok === false) note(errText(res), true); else if (ok) note(ok); refresh(); };
-  async function refresh() { try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {} renderAll(); }
+  async function refresh() { try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {} renderApp(); }
 
   // Primary CTA: start the session over the 3 opened runs, pick HOST + stake, then run
   // the happy path (acquire -> join -> ready) advanced from authoritative snapshots.
@@ -351,6 +447,57 @@
     if (s.state === 'HOST_ACQUIRED') { api.joinFollowers().then(refresh); }
     else if (s.sameTable && s.controlledReadyCount < (s.playerCount >= 4 ? 3 : 2)) { api.applyReady().then(refresh); autoFlow = false; }
   }
+
+  // Cluster CTA: SETUP → OPENING_CLUSTER → CONTROL. create → open → connect → apply
+  // devices → tile (restoreLayout) via PhomClusterCdpManager.
+  async function openCluster() {
+    uiState = UI.OPENING_CLUSTER; renderApp();
+    try {
+      const created = await api.clusterCreate({ hostSlot: hostId || 'A', selectedStake, localTest });
+      if (created && created.ok === false) throw created;
+      if (created && created.localTest != null) localTest = created.localTest;
+      const open = await api.clusterOpen();
+      if (open && open.ok === false && !open.opened) throw open;
+      // Sandbox-enabled Chromium needs a moment before its CDP endpoint answers, so the
+      // connect is retried (bounded) rather than one-shot — otherwise CONTROL could land
+      // showing CDP 0/3 even though the browsers are healthy.
+      for (let i = 0; i < 8; i++) {
+        const cn = await api.clusterConnect();
+        if (cn && (cn.connected || 0) >= 3) break;
+        await new Promise((r) => setTimeout(r, 800));
+      }
+      await api.clusterApplyDevices();
+      try { await api.restoreLayout(); } catch {}
+      try { caps = await api.capabilities(); } catch {}
+      // sync per-slot runIds from the cluster snapshot for HOST/session actions
+      clusterSnap = await api.clusterSnapshot();
+      for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
+      uiState = UI.CONTROL; renderApp();
+      note(`Đã mở ${open.opened || 0}/3 trình duyệt.`);
+    } catch (e) {
+      errorMsg = errText(e) + '  (cụm chưa mở đủ — có thể Dừng và thử lại)';
+      uiState = UI.ERROR; renderApp();
+    }
+  }
+
+  async function stopCluster() {
+    uiState = UI.STOPPING; renderApp();
+    try { await api.clusterStop(); } catch {}
+    // Preserve saved profile/device/proxy configuration; just refresh view state.
+    for (const s of SLOTS) assign[s].runId = null;
+    try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch {}
+    try { const pl = await api.proxyList(); proxies = (pl && pl.proxies) || []; } catch {}
+    try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
+    uiState = UI.SETUP; renderApp();
+    note('Đã dừng cụm. Cấu hình proxy/thiết bị được giữ nguyên.');
+  }
+
+  async function refreshCluster() { try { clusterSnap = await api.clusterSnapshot(); } catch {} renderApp(); }
+  async function clusterFocus(slot) {
+    const p = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot];
+    if (!p || !p.profileId) return note('Browser ' + slot + ' chưa mở.', true);
+    await api.focusBrowser(p.profileId); note('Focus ' + slot + '.');
+  }
   async function rejoinKicked() {
     const kicked = (session && session.profiles || []).filter((p) => p.state === 'KICKED');
     if (!kicked.length) return note('Không có profile bị kick.');
@@ -363,14 +510,12 @@
     const res = await api.proxyTestAll(ids);
     const results = res && res.results || {};
     for (const s of SLOTS) { const r = results[assign[s].proxyRef]; if (r) { assign[s].testState = r.state; assign[s].ip = r.observedIp || null; } }
-    renderAll();
+    renderApp();
   }
 
   // ---------- helpers ----------
   function browserCount() { return SLOTS.filter((s) => assign[s].runId).length; }
-  function collectChannels(s) { const m = new Map(); for (const p of (s.profiles || [])) for (const c of (p.channels || [])) if (c.rid != null && !m.has(c.rid)) m.set(c.rid, c); return [...m.values()]; }
   function proxiesReady() { return SLOTS.every((s) => assign[s].proxyRef && assign[s].testState === 'PASS'); }
-  function ipsDistinct() { const ips = SLOTS.map((s) => assign[s].ip).filter(Boolean); return ips.length === 3 && new Set(ips).size === 3; }
   function ctaEnabled() { return !!caps.authorized && browserCount() === 3 && proxiesReady(); }
   function ctaReason(s) {
     if (!caps.authorized) return 'Môi trường chưa được cấp quyền QA (đặt PHOM_QA_AUTHORIZED=1 hoặc allowlist).';
@@ -383,9 +528,10 @@
   function note(msg, warn) { const n = $('phq-note'); if (n) { n.textContent = msg; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
 
   // ---------- boot ----------
-  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; advanceAutoFlow(snap); if (!$('workspace').hidden) renderAll(); });
-  if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden) renderControl(); });
+  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; advanceAutoFlow(snap); if (!$('workspace').hidden) renderApp(); });
+  if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) renderApp(); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
+  if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) renderApp(); });
   document.addEventListener('DOMContentLoaded', boot);
   if (document.readyState !== 'loading') boot();
 })();
