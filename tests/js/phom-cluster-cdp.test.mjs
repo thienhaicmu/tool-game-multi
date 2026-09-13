@@ -142,6 +142,41 @@ test('stopCluster closes only owned runs and is idempotent', async () => {
   assert.equal(closed.length, 3); // no double close
 });
 
+// §5/§6 — re-creating a cluster while one is still open must NOT orphan the prior cluster's
+// browsers. A re-entrant CTA / debugging-harness poke previously stranded the first cluster's
+// Chromium process trees (stopCluster only closes the CURRENT cluster's slot runs), so
+// createCluster now tears the previous open cluster's owned runs down first.
+test('createCluster tears down a previous open cluster (no orphaned runs)', async () => {
+  const { mgr, dev, closed, opened } = makeManager();
+  baseCluster(mgr, dev);
+  await mgr.openCluster();                 // first cluster opens BR-A/B/C
+  assert.deepEqual(opened.slice().sort(), ['A', 'B', 'C']);
+  assert.equal(closed.length, 0);
+  // A SECOND create (re-entrant) must close the first cluster's runs before replacing.
+  baseCluster(mgr, dev);
+  assert.deepEqual(closed.slice().sort(), ['BR-A', 'BR-B', 'BR-C'], 'prior cluster runs closed, not orphaned');
+  // the new cluster is a fresh, un-opened session
+  const snap = mgr.getClusterSnapshot();
+  for (const s of SLOTS) assert.equal(snap.profiles[s].profileId, null);
+  // stopping the new (unopened) cluster closes nothing further — no double close, no orphan
+  const r = await mgr.stopCluster();
+  assert.equal(r.ok, true);
+  assert.equal(closed.length, 3);
+});
+
+// §7 — a debugging/harness CDP port (e.g. Electron inspection 9333) is NOT a cluster run:
+// the cluster only ever references the A/B/C run IDs its own openProfile returned.
+test('cluster references only its A/B/C run ids (harness port never becomes a run)', async () => {
+  const { mgr, dev, runIdBySlot } = makeManager();
+  baseCluster(mgr, dev);
+  await mgr.openCluster();
+  const snap = mgr.getClusterSnapshot();
+  const ids = SLOTS.map((s) => snap.profiles[s].profileId).sort();
+  assert.deepEqual(ids, [runIdBySlot.A, runIdBySlot.B, runIdBySlot.C].sort());
+  // ports come from getRunInfo(run) — the run's own endpoint, never an external inspection port
+  for (const s of SLOTS) assert.ok(snap.profiles[s].cdpPort > 0);
+});
+
 // §10 — snapshot carries pid/port/userDataDir and NO secrets.
 test('snapshot exposes pid/port/userDataDir and never a secret', async () => {
   const { mgr, dev } = makeManager();

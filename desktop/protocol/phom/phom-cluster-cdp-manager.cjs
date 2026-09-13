@@ -46,15 +46,35 @@ class PhomClusterCdpManager extends EventEmitter {
     const profiles = Array.isArray(config.profiles) ? config.profiles : [];
     const bySlot = new Map(profiles.map((p) => [p.slot, p]));
     if (SLOTS.some((s) => !bySlot.has(s))) return { ok: false, error: { code: 'PHOM_CLUSTER_INCOMPLETE', message: 'exactly slots A/B/C are required' } };
+    // §5/§6 — a second create (re-entrant CTA / harness) MUST NOT orphan the browsers a
+    // previous, still-open cluster launched: stopCluster only ever closes the CURRENT
+    // cluster's slot runs, so replacing `this._cluster` without teardown would strand the
+    // prior runs' Chromium process trees. Tear the previous cluster's owned runs down FIRST
+    // (authoritative owner path — the same closeRun stop uses), then replace.
+    if (this._cluster && !this._cluster.stopped) {
+      this._cluster.stopped = true;
+      for (const s of SLOTS) {
+        const prev = this._cluster.slots.get(s);
+        if (prev && prev.profileId) { try { this._closeRun(prev.profileId); } catch { /* best effort */ } }
+      }
+    }
     const hostSlot = SLOTS.includes(config.hostSlot) ? config.hostSlot : 'A';
+    const clusterGameUrl = config.gameUrl != null ? config.gameUrl : null;
     const slots = new Map();
     for (const s of SLOTS) {
       const p = bySlot.get(s);
-      slots.set(s, { slot: s, profileId: null, proxyRef: p.proxyRef || null, device: p.device || null,
+      slots.set(s, { slot: s, profileId: null,
+        // Authoritative launch identity from the saved profile projection (§3): the
+        // browser profile key (user-data-dir/device/proxy owner) and the shared game
+        // URL travel WITH the slot so openProfile never re-derives from the slot letter.
+        browserProfileId: p.browserProfileId || null,
+        gameUrl: p.gameUrl != null ? p.gameUrl : clusterGameUrl,
+        label: p.label || `Profile ${s}`,
+        proxyRef: p.proxyRef || null, device: p.device || null,
         role: s === hostSlot ? 'HOST' : 'FOLLOWER', cdpConnected: false, deviceApplied: null, proxyState: 'NOT_TESTED',
         observedIp: null, error: null, lastSeq: -1, seen: new Set() });
     }
-    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, slots, stopped: false };
+    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, stopped: false };
     this._emit();
     return { ok: true, clusterSessionId: this._cluster.clusterSessionId, hostSlot };
   }
@@ -69,7 +89,7 @@ class PhomClusterCdpManager extends EventEmitter {
     for (const s of SLOTS) {
       const slot = this._slot(s);
       let res;
-      try { res = await this._openProfile(s, { proxyRef: slot.proxyRef }); } catch (e) { res = { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: safe(e) } }; }
+      try { res = await this._openProfile(s, { proxyRef: slot.proxyRef, browserProfileId: slot.browserProfileId, gameUrl: slot.gameUrl, device: slot.device, label: slot.label }); } catch (e) { res = { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: safe(e) } }; }
       if (res && res.ok) { slot.profileId = res.runId; slot.error = null; }
       else { slot.error = (res && res.error) || { code: 'PHOM_CHROMIUM_LAUNCH_FAILED' }; }
       results.push({ slot: s, ...res });
@@ -214,7 +234,7 @@ class PhomClusterCdpManager extends EventEmitter {
       };
     }
     return {
-      clusterSessionId: c.clusterSessionId, stopped: c.stopped, hostProfileId: c.slots.get(c.hostSlot).profileId, hostSlot: c.hostSlot,
+      clusterSessionId: c.clusterSessionId, clusterProfileId: c.clusterProfileId || null, stopped: c.stopped, hostProfileId: c.slots.get(c.hostSlot).profileId, hostSlot: c.hostSlot,
       selectedStake: c.selectedStake, tableIdentity: hostSnap ? hostSnap.hostTableIdentity : null,
       profiles,
       connectedCount: SLOTS.filter((s) => c.slots.get(s).cdpConnected).length,

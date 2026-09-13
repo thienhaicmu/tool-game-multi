@@ -9,7 +9,10 @@ const require = createRequire(import.meta.url);
 const { AutoStartIntent } = require('../../desktop/browser-run/auto-start-intent.cjs');
 const { AviatorEntryGate } = require('../../desktop/protocol/aviator-entry.cjs');
 
-const rd = (rel) => fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+// Normalize CRLF→LF so the offset-based source assertions below (indexOf + fixed-width
+// slice / fnSegment) are stable on a Windows core.autocrlf checkout as well as an LF
+// checkout — extra \r bytes must not shift a token out of the slice window.
+const rd = (rel) => fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8').replace(/\r\n/g, '\n');
 function fnSegment(src, name) {
   const start = src.indexOf('function ' + name);
   assert.notEqual(start, -1, `expected function ${name} in source`);
@@ -250,6 +253,23 @@ test('wiring: autoSnapshot exposes non-secret autoStartPendingEntry + aviatorCon
   const seg = fnSegment(rd('desktop/main.cjs'), 'autoSnapshot');
   assert.match(seg, /autoStartPendingEntry = !!\(run && run\.autoStartIntent && run\.autoStartIntent\.pending\(\)\)/);
   assert.match(seg, /aviatorContextState/);
+});
+
+// Regression for the Windows core.autocrlf failure mode that broke the two offset-based
+// source assertions above: on a CRLF checkout the extra \r bytes shift an asserted token
+// out of a fixed-width slice window. rd() now normalizes CRLF→LF; this proves the same
+// extraction logic passes for BOTH an LF source and a CRLF source.
+test('CRLF-robustness: fixed-width source slice reaches the token on LF and CRLF checkouts', () => {
+  const normalize = (s) => s.replace(/\r\n/g, '\n');
+  const lines = [];
+  for (let n = 0; n < 20; n++) lines.push('  // filler line ' + n);
+  lines.push('  run.autoStartIntent.markInFlight(false);');
+  const lf = lines.join('\n');
+  const crlf = lines.join('\r\n');
+  const WINDOW = lf.length; // window sized exactly to the LF source
+  assert.match(lf.slice(0, WINDOW), /markInFlight\(false\)/);            // LF: token fits
+  assert.doesNotMatch(crlf.slice(0, WINDOW), /markInFlight\(false\)/);   // raw CRLF: \r bytes push it out (the bug)
+  assert.match(normalize(crlf).slice(0, WINDOW), /markInFlight\(false\)/); // normalized (what rd does): back in window
 });
 
 test('7. LOGIN_REQUIRED: a login wall short-circuits BEFORE entry (no in-engine click spam)', () => {

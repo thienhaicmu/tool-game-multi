@@ -58,6 +58,15 @@ contextBridge.exposeInMainWorld('phomQA', {
   clusterStop: () => ipcRenderer.invoke('phom:cluster-stop'),
   clusterSnapshot: () => ipcRenderer.invoke('phom:cluster-snapshot'),
   onCluster: (cb) => ipcRenderer.on('phom:cluster', (_e, snap) => cb(snap)),
+  // cluster PROFILES (saved configs: shared game URL + 3 browser/device/proxy slots)
+  clusterProfileList: () => ipcRenderer.invoke('phom:cluster-profile-list'),
+  clusterProfileGet: (id) => ipcRenderer.invoke('phom:cluster-profile-get', id),
+  clusterProfileCreate: (input) => ipcRenderer.invoke('phom:cluster-profile-create', input),
+  clusterProfileUpdate: (id, patch) => ipcRenderer.invoke('phom:cluster-profile-update', id, patch),
+  clusterProfileDelete: (id) => ipcRenderer.invoke('phom:cluster-profile-delete', id),
+  clusterProfileDuplicate: (id, newName) => ipcRenderer.invoke('phom:cluster-profile-duplicate', id, newName),
+  clusterProfileSelect: (id) => ipcRenderer.invoke('phom:cluster-profile-select', id),
+  clusterProfileValidate: (id) => ipcRenderer.invoke('phom:cluster-profile-validate', id),
   // offline rule analyzer (QA / no live)
   analyzerStatus: () => ipcRenderer.invoke('phom:analyzer-status'),
   analyzerAnalyze: (input) => ipcRenderer.invoke('phom:analyzer-analyze', input),

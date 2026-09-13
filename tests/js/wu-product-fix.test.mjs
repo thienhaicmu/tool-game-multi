@@ -14,7 +14,10 @@ import { fileURLToPath } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
-const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8');
+// Normalize CRLF→LF so the offset-based source assertions below (indexOf + fixed-width
+// slice) are stable on a Windows core.autocrlf checkout as well as an LF checkout —
+// extra \r bytes must not shift a token out of the slice window.
+const read = (rel) => fs.readFileSync(path.join(ROOT, rel), 'utf8').replace(/\r\n/g, '\n');
 const { BrowserRegistry } = require('../../desktop/browser-run/browser-registry.cjs');
 
 // ---------------------------------------------------------------------------
@@ -245,4 +248,20 @@ test('delete code path deletes owned data (history/auto-exec/diagnostics/config)
   // Session storage is cleared via the SAME partition the runtime uses (no path guessing).
   assert.match(mainSrc, /clearStorageData/, 'delete clears profile session storage');
   assert.match(mainSrc, /partitionFor\(browserId\)/, 'session resolved through the runtime partition');
+});
+
+// Regression for the Windows core.autocrlf failure mode: on a CRLF checkout the extra \r
+// bytes shift an asserted token out of the fixed-width slice window above. read() now
+// normalizes CRLF→LF; this proves the extraction logic passes for BOTH LF and CRLF source.
+test('CRLF-robustness: fixed-width source slice reaches the token on LF and CRLF checkouts', () => {
+  const normalize = (s) => s.replace(/\r\n/g, '\n');
+  const lines = [];
+  for (let n = 0; n < 20; n++) lines.push('  // filler line ' + n);
+  lines.push('  const res = browserRegistry.remove(bid);');
+  const lf = lines.join('\n');
+  const crlf = lines.join('\r\n');
+  const WINDOW = lf.length;
+  assert.match(lf.slice(0, WINDOW), /browserRegistry\.remove\(bid\)/);
+  assert.doesNotMatch(crlf.slice(0, WINDOW), /browserRegistry\.remove\(bid\)/);
+  assert.match(normalize(crlf).slice(0, WINDOW), /browserRegistry\.remove\(bid\)/);
 });

@@ -34,6 +34,8 @@
   let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
   let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
+  let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
+  let selectedClusterProfileId = null;
   let assign = { A: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' }, B: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' }, C: { proxyRef: '', runId: null, ip: null, testState: 'NOT_TESTED' } };
 
   function el(tag, attrs, ...kids) {
@@ -91,6 +93,7 @@
     try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch { profiles = {}; }
     try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
+    await refreshClusterProfiles();
     // Land in CONTROL if a cluster is already open (e.g. renderer reload), else SETUP.
     uiState = clusterIsOpen() ? UI.CONTROL : UI.SETUP;
     renderApp();
@@ -158,12 +161,80 @@
     r.appendChild(el('button', { class: 'btn primary cta-open', onclick: openCluster }, 'MỞ 3 TRÌNH DUYỆT'));
     if (!setupReady()) r.appendChild(el('div', { class: 'warnrow' }, setupReason()));
 
+    renderClusterProfiles(r);
+
     r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
     r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
 
     const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
     det.appendChild(el('pre', { style: 'font-size:11px;color:#9fb0cc;max-height:160px;overflow:auto;white-space:pre-wrap' }, JSON.stringify({ caps, profiles: Object.keys(profiles) }, null, 2)));
     r.appendChild(det);
+  }
+
+  // ---- cluster profiles (saved configs) — minimal CRUD seam (§11) ----
+  async function refreshClusterProfiles() {
+    try { const r = await api.clusterProfileList(); clusterProfiles = (r && r.profiles) || []; selectedClusterProfileId = (r && r.selectedId) || null; }
+    catch { clusterProfiles = []; selectedClusterProfileId = null; }
+  }
+  function clNote(msg, ok) { const n = $('cl-note'); if (n) { n.textContent = msg || ''; n.className = 'note' + (ok ? ' ok' : (msg ? ' warn' : '')); } }
+  function currentClusterSlots() {
+    const slots = {};
+    for (const slot of SLOTS) { const prof = profiles[slot] || {}; slots[slot] = { browserProfileId: slot, deviceProfileId: prof.device ? prof.device.id : null, proxyRef: prof.proxyRef || null }; }
+    return slots;
+  }
+
+  function renderClusterProfiles(r) {
+    r.appendChild(el('div', { class: 'section-t' }, 'CẤU HÌNH CỤM (CLUSTER PROFILE)'));
+    const sel = el('select', { id: 'cl-sel', class: 'phq-in', onchange: async (e) => { await api.clusterProfileSelect(e.target.value || ''); await refreshClusterProfiles(); renderApp(); } });
+    sel.appendChild(el('option', { value: '' }, '— chưa chọn —'));
+    for (const p of clusterProfiles) {
+      const o = el('option', { value: p.id }, `${p.name} · ${p.state}`);
+      if (p.id === selectedClusterProfileId) o.setAttribute('selected', 'selected');
+      sel.appendChild(o);
+    }
+    r.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'Hồ sơ cụm'), sel));
+    r.appendChild(el('div', { class: 'phq-row' },
+      el('button', { class: 'btn', onclick: clusterProfileCreate }, 'Tạo'),
+      el('button', { class: 'btn', onclick: clusterProfileEdit }, 'Sửa'),
+      el('button', { class: 'btn', onclick: clusterProfileDuplicate }, 'Nhân bản'),
+      el('button', { class: 'btn danger', onclick: clusterProfileDelete }, 'Xóa'),
+    ));
+    r.appendChild(el('div', { class: 'note', id: 'cl-note' }, ''));
+  }
+
+  async function clusterProfileCreate() {
+    const name = (window.prompt('Tên cấu hình cụm:', 'Cụm mới') || '').trim();
+    if (!name) return;
+    const gameUrl = (window.prompt('Game URL (http/https, để trống = DRAFT):', '') || '').trim();
+    const res = await api.clusterProfileCreate({ name, gameUrl: gameUrl || null, defaultHostSlot: 'A', slots: currentClusterSlots() });
+    await refreshClusterProfiles(); renderApp();
+    clNote(res && res.ok ? `Đã tạo "${name}".` : ('Lỗi: ' + ((res && res.error && (res.error.message || res.error.code)) || 'không rõ')), res && res.ok);
+  }
+  async function clusterProfileEdit() {
+    const id = selectedClusterProfileId; if (!id) return clNote('Hãy chọn một hồ sơ cụm trước.');
+    const cur = clusterProfiles.find((p) => p.id === id) || {};
+    const name = (window.prompt('Tên:', cur.name || '') || '').trim();
+    if (!name) return;
+    const gameUrl = (window.prompt('Game URL (trống = DRAFT):', cur.gameUrl || '') || '').trim();
+    const hostSlot = (window.prompt('HOST slot (A/B/C):', cur.defaultHostSlot || 'A') || 'A').trim().toUpperCase();
+    const res = await api.clusterProfileUpdate(id, { name, gameUrl: gameUrl || null, defaultHostSlot: hostSlot });
+    await refreshClusterProfiles(); renderApp();
+    clNote(res && res.ok ? 'Đã lưu.' : ('Lỗi: ' + ((res && res.error && (res.error.message || res.error.code)) || 'không rõ')), res && res.ok);
+  }
+  async function clusterProfileDuplicate() {
+    const id = selectedClusterProfileId; if (!id) return clNote('Hãy chọn một hồ sơ cụm trước.');
+    const newName = (window.prompt('Tên bản sao:', '') || '').trim();
+    if (!newName) return;
+    const res = await api.clusterProfileDuplicate(id, newName);
+    await refreshClusterProfiles(); renderApp();
+    clNote(res && res.ok ? `Đã nhân bản sang "${newName}".` : ('Lỗi: ' + ((res && res.error && (res.error.message || res.error.code)) || 'không rõ')), res && res.ok);
+  }
+  async function clusterProfileDelete() {
+    const id = selectedClusterProfileId; if (!id) return clNote('Hãy chọn một hồ sơ cụm trước.');
+    if (!window.confirm('Xóa hồ sơ cụm này?')) return;
+    const res = await api.clusterProfileDelete(id);
+    await refreshClusterProfiles(); renderApp();
+    clNote(res && res.ok ? 'Đã xóa.' : ('Lỗi: ' + ((res && res.error && (res.error.message || res.error.code)) || 'không rõ')), res && res.ok);
   }
 
   // A compact setup row for one slot: device + proxy only. No browser open, no seat/ready.
@@ -451,11 +522,16 @@
   // Cluster CTA: SETUP → OPENING_CLUSTER → CONTROL. create → open → connect → apply
   // devices → tile (restoreLayout) via PhomClusterCdpManager.
   async function openCluster() {
+    // §3 — the SAVED cluster profile drives the runtime. The renderer sends ONLY the
+    // selected profile id (+ the non-persisted localTest flag); host/stake/proxy/device
+    // all come authoritatively from the saved profile in the main process.
+    if (!selectedClusterProfileId) { note('Hãy chọn hoặc tạo một Cluster Profile trước khi mở cụm.', true); return; }
     uiState = UI.OPENING_CLUSTER; renderApp();
     try {
-      const created = await api.clusterCreate({ hostSlot: hostId || 'A', selectedStake, localTest });
+      const created = await api.clusterCreate({ clusterProfileId: selectedClusterProfileId, localTest });
       if (created && created.ok === false) throw created;
       if (created && created.localTest != null) localTest = created.localTest;
+      if (created && created.clusterProfileId) selectedClusterProfileId = created.clusterProfileId;
       const open = await api.clusterOpen();
       if (open && open.ok === false && !open.opened) throw open;
       // Sandbox-enabled Chromium needs a moment before its CDP endpoint answers, so the

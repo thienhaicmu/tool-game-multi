@@ -30,11 +30,13 @@ const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
 const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs');
 const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-manager.cjs');
+const { projectRuntimeToManagerConfig } = require('./protocol/phom/cluster-runtime-projection.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
 const { PhomProfileStore } = require('./browser-run/phom-profile-store.cjs');
+const { PhomClusterProfileStore } = require('./browser-run/phom-cluster-profile-store.cjs');
 const deviceProfile = require('./browser-run/device-profile.cjs');
 const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
@@ -79,7 +81,13 @@ else {
   var proxySecretStore = null;
   var proxyTester = null;
   var profileStore = null;
+  var clusterProfileStore = null;
   var phomSessions = null;
+  // Records which saved cluster profile id (if any) backs the live ClusterSession, so
+  // the store can block deleting a profile that is in use. Set on a profile-driven
+  // create, cleared on stop/leave. This is provenance only — it never alters the Host
+  // coordinator runtime (that integration is a later phase).
+  var activeClusterProfileId = null;
   const SLOTS_ABC = ['A', 'B', 'C'];
 
   const phomRoot = () => path.join(PHOM_USERDATA, 'phom');
@@ -113,11 +121,40 @@ else {
     proxySecretStore = new ProxySecretStore({ filePath: path.join(phomRoot(), 'proxy-secrets.dat'), safeStorage });
     proxyConfigStore = new ProxyConfigStore({ filePath: path.join(phomRoot(), 'proxies.json'), secretStore: proxySecretStore });
     profileStore = new PhomProfileStore({ filePath: path.join(phomRoot(), 'phom-profiles.json') });
+    // Cluster profile store: MANY saved cluster configs (one shared game URL + three
+    // browser/device/proxy slots). References are resolved against the existing per-slot
+    // Phom profile store + proxy store (no second store stack); the active-session guard
+    // is the live cluster provenance recorded in activeClusterProfileId.
+    clusterProfileStore = new PhomClusterProfileStore({
+      filePath: path.join(phomRoot(), 'phom-cluster-profiles.json'),
+      resolveBrowserProfile: (bpid) => profileStore.getPublic(bpid),
+      resolveDevice: (bpid, deviceId) => { const dev = profileStore.deviceFor(bpid); return dev && String(dev.id) === String(deviceId) ? deviceProfile.publicSnapshot(dev) : null; },
+      resolveProxy: (ref) => proxyConfigStore.getPublic(ref),
+      isActive: (id) => !!(phomCluster && phomCluster.active() && activeClusterProfileId && String(activeClusterProfileId) === String(id)),
+      migrationSource: () => clusterMigrationSource(),
+    });
+    clusterProfileStore.load();
+    try { clusterProfileStore.migrate(); } catch { /* migration is best-effort + additive */ }
     proxyTester = new ProxyTester({
       allowlist: IP_CHECK_ALLOWLIST,
       ipCheckUrl: IP_CHECK_URL,
       transport: netProxyTransport,     // RUNTIME-UNVERIFIED without a real proxy
     });
+  }
+
+  // Build the additive migration source from the EXISTING per-slot Phom selections:
+  // only when all three slots A/B/C already have a saved device do we offer a default
+  // cluster profile (references preserved). Never fabricates a game URL/proxy.
+  function clusterMigrationSource() {
+    if (!profileStore) return null;
+    const slots = {};
+    for (const s of SLOTS_ABC) {
+      const dev = profileStore.deviceFor(s);
+      if (!dev || !dev.id) return null; // incomplete — skip migration (no fake data)
+      const saved = profileStore.get(s) || {};
+      slots[s] = { browserProfileId: s, deviceProfileId: String(dev.id), proxyRef: saved.proxyRef || null };
+    }
+    return { name: 'Cụm mặc định', gameUrl: null, defaultHostSlot: 'A', slots };
   }
 
   // Proxy observed-IP transport (§6): a dedicated, throwaway Electron session with the
@@ -237,13 +274,45 @@ else {
     const { toRunProxy } = require('./browser-run/proxy-config.cjs');
     return proxyTester.test(toRunProxy(cfg), { resolveAuth: () => ({ username: cfg.username, password: proxyConfigStore.resolvePassword(cfg.id) }) });
   }
+  // §3 — the SAVED cluster profile is the ONLY authoritative source for opening the
+  // cluster. The renderer sends at most a clusterProfileId (+ non-persisted runtime
+  // options like localTest); it can NOT inject executablePath/userDataDir/cdpPort/pid/
+  // token/proxy password/raw BrowserRun/device to bypass the saved profile. We resolve
+  // the id (explicit, else the persisted selection), project the store's READY runtime
+  // config, and map it to the manager's createCluster shape. A non-ready profile fails
+  // TYPED here — before a single browser is opened.
+  function resolveClusterRuntime(config = {}) {
+    ensureStores();
+    const c = config && typeof config === 'object' ? config : {};
+    const rawId = c.clusterProfileId != null ? String(c.clusterProfileId).trim() : '';
+    const id = rawId || clusterProfileStore.selectedId();
+    if (!id) return { ok: false, error: { code: 'PHOM_CLUSTER_PROFILE_REQUIRED', message: 'Chưa chọn hồ sơ cụm. Hãy chọn hoặc tạo một Cluster Profile trước.' } };
+    const rt = clusterProfileStore.toRuntimeConfig(id); // typed NOT_FOUND / NOT_READY
+    if (!rt.ok) return rt;
+    const proj = projectRuntimeToManagerConfig(rt.config, {
+      resolveRawDevice: (bpid, did) => { const dev = profileStore.deviceFor(bpid); return dev && (did == null || String(dev.id) === String(did)) ? dev : null; },
+    });
+    if (!proj.ok) return proj;
+    return { ok: true, id, ...proj.config };
+  }
+
   function ensureCluster() {
     if (phomCluster) return phomCluster;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
     phomCluster = new PhomClusterCdpManager({
-      // In LOCAL RUNTIME TEST the browser opens with proxyRequired=false (about:blank,
-      // no live endpoint); otherwise the production proxy gate stays in force.
-      openProfile: (slot, cfg) => openProfile({ slot, url: 'about:blank', proxyRef: (cfg && cfg.proxyRef) || undefined, proxyRequired: !localTestActive(), label: `Profile ${slot}` }),
+      // In LOCAL RUNTIME TEST the browser opens with proxyRequired=false at a neutral
+      // local page (about:blank, §7) for browser/CDP/device verification; otherwise the
+      // production proxy gate stays in force and the browser navigates to the profile's
+      // AUTHORITATIVE shared game URL (used only after the CTA, never at boot). The
+      // browser profile identity comes from the saved profile projection, not the slot.
+      openProfile: (slot, cfg) => openProfile({
+        slot,
+        profileKey: (cfg && cfg.browserProfileId) || slot,
+        url: localTestActive() ? 'about:blank' : ((cfg && cfg.gameUrl) || 'about:blank'),
+        proxyRef: (cfg && cfg.proxyRef) || undefined,
+        proxyRequired: !localTestActive(),
+        label: (cfg && cfg.label) || `Profile ${slot}`,
+      }),
       getRunClient: runClientFor,
       applyDeviceToClient: (client, device) => applyDeviceEmulation(client, device, null),
       testProxy: (ref) => testProxyById(ref),
@@ -402,17 +471,22 @@ else {
   // AND its saved mobile device profile (viewport emulation is separate from the
   // native 2×2 window size). The device belongs to the slot (browser profile), so the
   // same device is reapplied every time this slot's browser is (re)opened.
-  async function openProfile({ slot, url, proxyRef, proxyRequired, label, username }) {
+  async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username }) {
     // §6 — the pinned custom Chromium runtime must validate; never fall back to system Chrome.
     const rt = chromiumRuntime();
     if (!rt.ok) return rt;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
+    // §3/§4 — the AUTHORITATIVE browser profile key (user-data-dir/device/proxy owner).
+    // The cluster passes the saved profile's browserProfileId here; the legacy per-slot
+    // open path defaults it to the window slot. The window slot (A/B/C) still drives the
+    // 2×2 grid placement, but profile identity is resolved from profileKey.
+    const pk = (profileKey != null && String(profileKey).trim()) ? String(profileKey).trim() : slot;
     // Prefer the saved profile's proxy/device; explicit args override.
-    const saved = profileStore.get(slot) || {};
+    const saved = profileStore.get(pk) || {};
     const effProxyRef = proxyRef !== undefined ? proxyRef : (saved.proxyRef || null);
     const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired !== false }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
     if (!gate.ok) return gate; // PROXY_CONFIG_REQUIRED / NOT_FOUND — launch blocked
-    const device = profileStore.deviceFor(slot);
+    const device = profileStore.deviceFor(pk);
     // Chromium sandbox policy for THIS launch (sandbox ON unless the fully-gated dev
     // diagnostic bypass applies). When the sandbox stays ON we self-heal the runtime's
     // AppContainer ACL so it launches WITHOUT --no-sandbox (the real 0x5 fix).
@@ -424,8 +498,9 @@ else {
         return { ok: false, error: { code: 'PHOM_CHROMIUM_SANDBOX_REQUIRED', message: 'Chromium sandbox cannot be enabled: runtime filesystem permissions (AppContainer read+execute) could not be granted. Launch blocked (no silent --no-sandbox retry).' } };
       }
     }
-    // Per-slot persistent user-data-dir so reopening slot A reuses A's dir (§12).
-    const profileDir = path.join(phomRoot(), 'browser-profiles', slot || 'X');
+    // Per-profile persistent user-data-dir so reopening a slot reuses ITS profile's dir
+    // (keyed by the authoritative browser profile, not the window slot) (§12).
+    const profileDir = path.join(phomRoot(), 'browser-profiles', pk || slot || 'X');
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
     const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect: gridRectForSlot(slot), mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
@@ -547,7 +622,26 @@ else {
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
     ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.
-    ipcMain.handle('phom:cluster-create', guarded((_e, config) => { ensureStores(); const c = config || {}; clusterLocalTest = !!(c.localTest && devBypass.allowed); const profiles = SLOTS_ABC.map((s) => { const p = profileStore.get(s) || {}; return { slot: s, proxyRef: (c.proxyRefs && c.proxyRefs[s]) || p.proxyRef || null, device: profileStore.deviceFor(s) }; }); const res = ensureCluster().createCluster({ hostSlot: c.hostSlot || 'A', selectedStake: c.selectedStake, profiles }); return res && res.ok ? { ...res, localTest: localTestActive() } : res; }));
+    ipcMain.handle('phom:cluster-create', guarded((_e, config) => {
+      ensureStores();
+      const c = config && typeof config === 'object' ? config : {};
+      clusterLocalTest = !!(c.localTest && devBypass.allowed);
+      // §3 — authoritative projection from the SAVED profile. Loose renderer fields
+      // (hostSlot/selectedStake/proxyRefs/device) are IGNORED; only clusterProfileId +
+      // localTest are honored. A non-ready/missing profile returns a typed error and no
+      // browser is opened.
+      const resolved = resolveClusterRuntime(c);
+      if (!resolved.ok) return resolved;
+      const res = ensureCluster().createCluster({
+        clusterProfileId: resolved.id,
+        hostSlot: resolved.hostSlot,
+        selectedStake: resolved.selectedStake,
+        gameUrl: resolved.gameUrl,
+        profiles: resolved.profiles,
+      });
+      if (res && res.ok) activeClusterProfileId = resolved.id;
+      return res && res.ok ? { ...res, localTest: localTestActive(), clusterProfileId: resolved.id, gameUrl: resolved.gameUrl } : res;
+    }));
     ipcMain.handle('phom:cluster-open', guarded(() => ensureCluster().openCluster()));
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
     ipcMain.handle('phom:cluster-apply-devices', guarded(() => ensureCluster().applyClusterDevices()));
@@ -555,9 +649,22 @@ else {
     ipcMain.handle('phom:cluster-acquire-host', guarded(() => ensureCluster().acquireHostTable()));
     ipcMain.handle('phom:cluster-join-followers', guarded(() => ensureCluster().joinFollowers()));
     ipcMain.handle('phom:cluster-apply-ready', guarded(() => ensureCluster().applyReadyPolicy()));
-    ipcMain.handle('phom:cluster-leave', guarded(() => ensureCluster().leaveCluster()));
-    ipcMain.handle('phom:cluster-stop', guarded(() => ensureCluster().stopCluster()));
+    ipcMain.handle('phom:cluster-leave', guarded(async () => { const r = await ensureCluster().leaveCluster(); activeClusterProfileId = null; return r; }));
+    ipcMain.handle('phom:cluster-stop', guarded(async () => { const r = await ensureCluster().stopCluster(); activeClusterProfileId = null; return r; }));
     ipcMain.handle('phom:cluster-snapshot', () => (phomCluster ? phomCluster.getClusterSnapshot() : null));
+
+    // Cluster PROFILE persistence (saved configs: shared game URL + 3 browser/device/
+    // proxy slots). Metadata/references only — no secret, no live runtime state ever
+    // crosses this seam, and the renderer can never set a runtime field (the model
+    // whitelists its fields). Payloads are coerced; no filesystem path is accepted.
+    ipcMain.handle('phom:cluster-profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: clusterProfileStore.list(), selectedId: clusterProfileStore.selectedId() }; }));
+    ipcMain.handle('phom:cluster-profile-get', guarded((_e, id) => { ensureStores(); const p = clusterProfileStore.getPublic(String(id == null ? '' : id)); return p ? { ok: true, profile: p } : { ok: false, error: { code: 'PHOM_CLUSTER_PROFILE_NOT_FOUND', message: `No cluster profile: ${id}` } }; }));
+    ipcMain.handle('phom:cluster-profile-create', guarded((_e, input) => { ensureStores(); return clusterProfileStore.create(input && typeof input === 'object' ? input : {}); }));
+    ipcMain.handle('phom:cluster-profile-update', guarded((_e, id, patch) => { ensureStores(); return clusterProfileStore.update(String(id == null ? '' : id), patch && typeof patch === 'object' ? patch : {}); }));
+    ipcMain.handle('phom:cluster-profile-delete', guarded((_e, id) => { ensureStores(); return clusterProfileStore.delete(String(id == null ? '' : id)); }));
+    ipcMain.handle('phom:cluster-profile-duplicate', guarded((_e, id, newName) => { ensureStores(); return clusterProfileStore.duplicate(String(id == null ? '' : id), String(newName == null ? '' : newName)); }));
+    ipcMain.handle('phom:cluster-profile-select', guarded((_e, id) => { ensureStores(); if (id == null || String(id) === '') return clusterProfileStore.clearSelection(); return clusterProfileStore.select(String(id)); }));
+    ipcMain.handle('phom:cluster-profile-validate', guarded((_e, id) => { ensureStores(); return clusterProfileStore.validateReady(String(id == null ? '' : id)); }));
     // 2×2 workspace layout controls (§9/§21).
     ipcMain.handle('phom:restore-layout', guarded(() => restoreLayout()));
     ipcMain.handle('phom:focus-browser', guarded((_e, runId) => focusBrowser(runId)));
