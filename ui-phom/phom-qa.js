@@ -153,6 +153,8 @@
     r.appendChild(el('div', { class: 'section-t' }, 'HỒ SƠ 3 TRÌNH DUYỆT (PROXY + THIẾT BỊ)'));
     for (const slot of SLOTS) r.appendChild(setupRow(slot));
 
+    renderQuickProxy(r);
+
     if (caps.devBypass) r.appendChild(el('label', { class: 'phq-row', style: 'font-size:12px' },
       el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; } }),
       el('span', null, 'Local runtime test (mở browser không cần proxy, chỉ trang local)')));
@@ -167,7 +169,7 @@
     r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
 
     const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
-    det.appendChild(el('pre', { style: 'font-size:11px;color:#9fb0cc;max-height:160px;overflow:auto;white-space:pre-wrap' }, JSON.stringify({ caps, profiles: Object.keys(profiles) }, null, 2)));
+    det.appendChild(el('pre', { style: 'font-size:11px;color:var(--text-2);max-height:160px;overflow:auto;white-space:pre-wrap' }, JSON.stringify({ caps, profiles: Object.keys(profiles) }, null, 2)));
     r.appendChild(det);
   }
 
@@ -235,6 +237,45 @@
     const res = await api.clusterProfileDelete(id);
     await refreshClusterProfiles(); renderApp();
     clNote(res && res.ok ? 'Đã xóa.' : ('Lỗi: ' + ((res && res.error && (res.error.message || res.error.code)) || 'không rõ')), res && res.ok);
+  }
+
+  // ---- Quick 3-proxy setup (§4) — protocol selector + 3-line textarea + atomic apply.
+  // The parser/apply are AUTHORITATIVE in the main process; this only collects input and
+  // renders typed results. The textarea is cleared after apply (it may hold credentials).
+  function qpNote(msg, ok) { const n = $('qp-note'); if (n) { n.textContent = msg || ''; n.className = 'note' + (ok ? ' ok' : (msg ? ' warn' : '')); } }
+  function renderQuickProxy(r) {
+    r.appendChild(el('div', { class: 'section-t' }, 'THIẾT LẬP NHANH 3 PROXY'));
+    const panel = el('div', { class: 'qp-panel' });
+    const proto = el('select', { class: 'sel', id: 'qp-proto', style: 'flex:0 0 auto;max-width:130px', 'aria-label': 'Loại proxy' });
+    for (const p of ['http', 'https', 'socks5', 'socks4']) proto.appendChild(el('option', { value: p }, p.toUpperCase()));
+    panel.appendChild(el('div', { class: 'qp-head' }, el('span', { class: 'faint' }, 'Loại proxy'), proto));
+    const ta = el('textarea', { class: 'f qp-ta', id: 'qp-text', 'aria-label': 'Ba dòng proxy A/B/C',
+      placeholder: 'A: host|port|username|password\nB: host|port|username|password\nC: host|port|username|password' });
+    panel.appendChild(ta);
+    panel.appendChild(el('div', { class: 'qp-hint' }, 'Mỗi dòng một proxy theo thứ tự A/B/C (hoặc thêm tiền tố A=/B=/C=). Hỗ trợ host|port · host|port|user|pass · host:port · protocol://user:pass@host:port'));
+    panel.appendChild(el('div', { class: 'qp-actions' },
+      el('button', { class: 'btn primary', onclick: applyQuickProxies }, 'ÁP DỤNG 3 PROXY'),
+      el('button', { class: 'btn', onclick: testAllProxies }, 'TEST TẤT CẢ'),
+    ));
+    panel.appendChild(el('div', { class: 'note', id: 'qp-note' }, ''));
+    r.appendChild(panel);
+  }
+  async function applyQuickProxies() {
+    const protocol = $('qp-proto') ? $('qp-proto').value : 'http';
+    const text = $('qp-text') ? $('qp-text').value : '';
+    qpNote('Đang áp dụng…', true);
+    let res;
+    try { res = await api.proxyQuickApply({ protocol, text, clusterProfileId: selectedClusterProfileId || null }); }
+    catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (!res || res.ok === false) { qpNote(errText(res), false); return; }
+    // Refresh owner state; bind the three fresh refs into the per-slot selectors.
+    try { const pl = await api.proxyList(); proxies = (pl && pl.proxies) || []; } catch {}
+    try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch {}
+    await refreshClusterProfiles();
+    for (const s of SLOTS) { if (res.refs && res.refs[s]) { assign[s].proxyRef = res.refs[s]; assign[s].testState = 'NOT_TESTED'; assign[s].ip = null; } }
+    if ($('qp-text')) $('qp-text').value = ''; // never keep raw credentials in the DOM
+    renderApp();
+    qpNote('Đã áp dụng 3 proxy cho A/B/C.' + (res.clusterState ? ' Cụm: ' + res.clusterState : ''), true);
   }
 
   // A compact setup row for one slot: device + proxy only. No browser open, no seat/ready.
@@ -429,7 +470,7 @@
     r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
 
     const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
-    det.appendChild(el('pre', { style: 'font-size:11px;color:#9fb0cc;max-height:180px;overflow:auto;white-space:pre-wrap' }, session ? JSON.stringify(session, null, 2) : '(chưa có phiên)'));
+    det.appendChild(el('pre', { style: 'font-size:11px;color:var(--text-2);max-height:180px;overflow:auto;white-space:pre-wrap' }, session ? JSON.stringify(session, null, 2) : '(chưa có phiên)'));
     r.appendChild(det);
   }
 

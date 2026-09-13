@@ -31,6 +31,8 @@ const { WsReplay } = require('./cdp/ws-replay.cjs');
 const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs');
 const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-manager.cjs');
 const { projectRuntimeToManagerConfig } = require('./protocol/phom/cluster-runtime-projection.cjs');
+const { parseQuickProxies } = require('./browser-run/phom-quick-proxy.cjs');
+const { applyQuickProxies } = require('./protocol/phom/quick-proxy-apply.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
@@ -42,13 +44,17 @@ const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
 const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
-const { rectForSlot } = require('./protocol/phom/grid-layout.cjs');
+const { rectForSlot, toolWindowBounds } = require('./protocol/phom/grid-layout.cjs');
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { normalizeWindowBounds } = require('./window-bounds.cjs');
 
 const PRODUCT_NAME = 'Phom QA';
 const GAME_PRODUCT = 'PHOM';
-const WIN_DEFAULTS = Object.freeze({ width: 1400, height: 900, minWidth: 1024, minHeight: 640 });
+// §11 — the tool defaults to the bottom-right quadrant (≈ 1/4 work area). The minimums
+// are kept small enough to fit a quadrant on common resolutions (a 1920-wide work area
+// has ~956px quadrants); the compact Setup/Control layouts scroll if a quadrant is
+// smaller than the minimum on low-resolution displays.
+const WIN_DEFAULTS = Object.freeze({ minWidth: 380, minHeight: 480 });
 // IP-check allowlist for proxy Observed-IP tests (§7). Explicit hosts only — never a
 // wildcard, never a game endpoint, never promoted from a user-entered URL.
 const IP_CHECK_ALLOWLIST = (process.env.PHOM_IP_CHECK_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -296,6 +302,31 @@ else {
     return { ok: true, id, ...proj.config };
   }
 
+  // §4–§7 — quick-3-proxy apply. Parse the textarea + selector into three descriptors
+  // (authoritative in the domain, never the renderer), then atomically create the three
+  // proxy configs (metadata + secret owner), bind each slot's browser profile proxyRef,
+  // and update+revalidate the selected Cluster Profile. Rolls back on any failure. No
+  // secret is ever returned; a running cluster's mapping is refused (IN_USE).
+  function quickProxyApply(payload) {
+    ensureStores();
+    const p = payload && typeof payload === 'object' ? payload : {};
+    const parsed = parseQuickProxies(p.text, { protocol: p.protocol });
+    if (!parsed.ok) return parsed; // typed parse error (never contains a credential)
+    const clusterProfileId = p.clusterProfileId != null && String(p.clusterProfileId).trim() ? String(p.clusterProfileId).trim() : null;
+    return applyQuickProxies({ slots: parsed.slots, clusterProfileId }, {
+      isClusterActive: (id) => !!(phomCluster && phomCluster.active() && activeClusterProfileId && String(activeClusterProfileId) === String(id)),
+      createProxy: ({ protocol, host, port, username, password }) => {
+        const res = proxyConfigStore.upsert({ protocol, host, port, username: username || null, password: password != null ? password : null, label: `${protocol}://${host}:${port}` });
+        return res && res.ok ? { ok: true, id: res.id } : res;
+      },
+      removeProxy: (id) => proxyConfigStore.remove(id),
+      setProfileProxyRef: (bpid, proxyRef) => profileStore.upsert(String(bpid), { proxyRef }),
+      getClusterProfile: (id) => clusterProfileStore.get(id),
+      updateClusterProfile: (id, patch) => clusterProfileStore.update(id, patch),
+      validateCluster: (id) => clusterProfileStore.validateReady(id),
+    });
+  }
+
   function ensureCluster() {
     if (phomCluster) return phomCluster;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
@@ -336,7 +367,9 @@ else {
   function restoreLayout() {
     try {
       const wa = currentWorkArea();
-      const control = rectForSlot(wa, 'control', { gap: 8 }) || require('./protocol/phom/grid-layout.cjs').computeGridLayout(wa, { gap: 8 }).control;
+      // §11/§12 — re-place the tool in the bottom-right quadrant (min-size aware), so
+      // Restore Layout recomputes against the CURRENT work area/display.
+      const control = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
       if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: control.x, y: control.y, width: control.width, height: control.height });
       // Owned browser windows are external Chrome; re-applying geometry to a running
       // chrome.exe requires reopening. We report the target rects so the UI can guide
@@ -548,12 +581,18 @@ else {
   function fitToCurrentDisplay(saved) {
     const hasPos = saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.y));
     const display = hasPos ? screen.getDisplayMatching({ x: Math.round(saved.x), y: Math.round(saved.y), width: Math.round(saved.width), height: Math.round(saved.height) }) : screen.getPrimaryDisplay();
-    return normalizeWindowBounds({ saved, workArea: display.workArea, defaults: WIN_DEFAULTS });
+    const wa = display.workArea;
+    // §11 — first run (no saved bounds) opens in the bottom-right quadrant (≈ 1/4). A
+    // previously-saved position/size is respected but re-clamped to the current work area
+    // (multi-monitor / resolution changes never strand the window off-screen).
+    if (!hasPos) return { ...toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight }), minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight };
+    const quarter = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
+    return normalizeWindowBounds({ saved, workArea: wa, defaults: { width: quarter.width, height: quarter.height, minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight } });
   }
   function createWindow() {
     const bounds = fitToCurrentDisplay(loadWindowState());
     shell = new BrowserWindow({
-      ...bounds, backgroundColor: '#0f1419', title: PRODUCT_NAME,
+      ...bounds, backgroundColor: '#f4f6fb', title: PRODUCT_NAME,
       webPreferences: { preload: path.join(__dirname, 'phom-preload.cjs'), contextIsolation: true, sandbox: true },
     });
     shell.on('close', saveWindowState);
@@ -596,6 +635,8 @@ else {
       const res = await proxyTester.test(toRunProxy(cfg), { resolveAuth: () => ({ username: cfg.username, password: proxyConfigStore.resolvePassword(cfg.id) }) });
       return { ok: res.state === 'PASS', result: res };
     }));
+    // §4–§7 — atomic quick-3-proxy apply (parse + create + bind + cluster update).
+    ipcMain.handle('phom:proxy-quick-apply', guarded((_e, payload) => quickProxyApply(payload || {})));
     ipcMain.handle('phom:proxy-test-all', guarded(async (_e, ids) => {
       ensureStores();
       const { toRunProxy } = require('./browser-run/proxy-config.cjs');

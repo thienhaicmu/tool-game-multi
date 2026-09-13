@@ -18,6 +18,7 @@ contextBridge.exposeInMainWorld('phomQA', {
   proxyRemove: (id) => ipcRenderer.invoke('phom:proxy-remove', id),
   proxyTest: (id) => ipcRenderer.invoke('phom:proxy-test', id),
   proxyTestAll: (ids) => ipcRenderer.invoke('phom:proxy-test-all', ids),
+  proxyQuickApply: (payload) => ipcRenderer.invoke('phom:proxy-quick-apply', payload),
   onProxyAuth: (cb) => ipcRenderer.on('phom:proxy-auth', (_e, p) => cb(p)),
   // mobile device profiles (per slot)
   devicePresets: () => ipcRenderer.invoke('phom:device-presets'),

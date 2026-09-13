@@ -42,10 +42,33 @@ function rectForSlot(workArea, slot, opts) {
   return layout[slot] || null;
 }
 
+// The Electron TOOL window bounds (§11): the bottom-right quadrant of the current
+// work area (≈ 1/4), anchored to the bottom-right corner. A minimum usable size is
+// enforced by GROWING the rect leftward/upward (never past the work-area origin) so
+// controls are never clipped; on a work area smaller than the minimum the rect is
+// clamped to the whole work area (UI then scrolls). Pure math — deterministically
+// testable with mocked work areas. Never exceeds the work area (taskbar-safe) and
+// never assumes a fixed resolution.
+function toolWindowBounds(workArea = {}, opts = {}) {
+  const x0 = Math.round(Number(workArea.x) || 0);
+  const y0 = Math.round(Number(workArea.y) || 0);
+  const W = Math.max(1, Math.round(Number(workArea.width) || 1280));
+  const H = Math.max(1, Math.round(Number(workArea.height) || 800));
+  const minW = Math.max(0, Math.round(Number(opts.minWidth) || 0));
+  const minH = Math.max(0, Math.round(Number(opts.minHeight) || 0));
+  // Start from the quadrant; grow to the minimum; never larger than the work area.
+  let width = Math.min(W, Math.max(Math.floor(W / 2), Math.min(minW, W)));
+  let height = Math.min(H, Math.max(Math.floor(H / 2), Math.min(minH, H)));
+  // Anchor bottom-right, then guarantee the near edge stays inside the work area.
+  let x = Math.max(x0, x0 + W - width);
+  let y = Math.max(y0, y0 + H - height);
+  return { x, y, width, height };
+}
+
 // Chrome CLI window flags for a rect (credential-free; geometry only).
 function chromeWindowArgs(rect) {
   if (!rect) return [];
   return [`--window-position=${Math.round(rect.x)},${Math.round(rect.y)}`, `--window-size=${Math.round(rect.width)},${Math.round(rect.height)}`];
 }
 
-module.exports = { SLOTS, computeGridLayout, rectForSlot, chromeWindowArgs };
+module.exports = { SLOTS, computeGridLayout, rectForSlot, chromeWindowArgs, toolWindowBounds };
