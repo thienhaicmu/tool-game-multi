@@ -146,4 +146,50 @@ function parseQuickProxies(text, { protocol } = {}) {
   return { ok: true, slots };
 }
 
-module.exports = { SLOTS, parseQuickProxies, parseLineBody, assignSlots };
+/**
+ * parseQuickProxyRows(rows) -> { ok, slots: { A, B, C } } | typed error.
+ * The NEW UI sends three slot-labeled rows [{ slot, protocol, value }] — the slot is
+ * authoritative from the row label, so NO A=/B=/C= prefix is needed. Each row carries
+ * its OWN protocol selector. Reuses parseLineBody + the same protocol/host/port rules
+ * as the textarea path (single source of truth). Never leaks a credential.
+ */
+function parseQuickProxyRows(rows) {
+  if (!Array.isArray(rows) || rows.length === 0) return err('PHOM_PROXY_QUICK_INPUT_REQUIRED', 'Chưa nhập proxy nào');
+  const bySlot = {};
+  for (const raw of rows) {
+    const slot = String(raw && raw.slot || '').toUpperCase();
+    if (!SLOTS.includes(slot)) return err('PHOM_PROXY_FORMAT_INVALID', `Slot không hợp lệ: ${slot || '(trống)'}`);
+    if (bySlot[slot]) return err('PHOM_PROXY_SLOT_DUPLICATED', `Slot ${slot} bị lặp`, { slot });
+    bySlot[slot] = raw;
+  }
+  for (const s of SLOTS) if (!bySlot[s]) return err('PHOM_PROXY_SLOT_MISSING', `Thiếu slot ${s}`, { slot: s });
+
+  const slots = {};
+  for (const s of SLOTS) {
+    const row = bySlot[s];
+    const selector = String(row.protocol || '').toLowerCase();
+    if (!PROTOCOLS.has(selector)) return err('PHOM_PROXY_PROTOCOL_INVALID', `Slot ${s}: loại proxy không hợp lệ`, { slot: s, supported: [...PROTOCOLS] });
+    const parsed = parseLineBody(row.value, s, s);
+    if (!parsed.ok) return parsed;
+    let proto = selector;
+    if (parsed.protocolExplicit) {
+      const lineProto = String(parsed.protocol || '').toLowerCase();
+      if (!PROTOCOLS.has(lineProto)) return err('PHOM_PROXY_PROTOCOL_INVALID', `Slot ${s}: protocol không hỗ trợ`, { slot: s, supported: [...PROTOCOLS] });
+      if (lineProto !== selector) return err('PHOM_PROXY_PROTOCOL_CONFLICT', `Slot ${s}: protocol trong chuỗi (${lineProto}) khác loại đã chọn (${selector})`, { slot: s, lineProtocol: lineProto, selector });
+      proto = lineProto;
+    }
+    const host = String(parsed.host || '').trim();
+    if (!host) return err('PHOM_PROXY_HOST_REQUIRED', `Slot ${s}: thiếu host`, { slot: s });
+    const port = Number(parsed.port);
+    if (!isPort(port)) return err('PHOM_PROXY_PORT_INVALID', `Slot ${s}: port phải là số nguyên 1..65535`, { slot: s });
+    const username = optField(parsed.username);
+    const password = optField(parsed.password);
+    const slotOut = { slot: s, protocol: proto, host, port };
+    if (username != null) slotOut.username = username;
+    if (password != null) slotOut.password = password;
+    slots[s] = slotOut;
+  }
+  return { ok: true, slots };
+}
+
+module.exports = { SLOTS, parseQuickProxies, parseQuickProxyRows, parseLineBody, assignSlots };

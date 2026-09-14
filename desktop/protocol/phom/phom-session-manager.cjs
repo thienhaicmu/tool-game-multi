@@ -115,6 +115,7 @@ class PhomSessionManager extends EventEmitter {
   async leaveAll() { return this._guarded((c) => c.leaveAll()); }
   stop() { const c = this._c(); if (c) c.stop(); }
   verifyTable() { const c = this._c(); return c ? c.verifyTable() : { result: 'IDLE' }; }
+  availableStakes() { const c = this._c(); return c && typeof c.availableStakes === 'function' ? c.availableStakes() : []; }
   snapshot() { const c = this._c(); return c ? c.snapshot() : null; }
 
   async _guarded(fn) {

@@ -30,19 +30,29 @@ test('no 2×2 browser placeholder cells in CSS or JS', () => {
   assert.equal(/grid2x2/.test(js), false);
 });
 
-test('exactly one primary open-cluster CTA in Setup', () => {
+test('exactly one primary RUN GAME CTA in Setup (Screen 1)', () => {
   const ctaClass = (js.match(/cta-open/g) || []).length;
-  assert.ok(ctaClass >= 1, 'cta-open class used');
-  assert.equal((js.match(/'MỞ 3 TRÌNH DUYỆT'/g) || []).length, 1, 'single open-cluster CTA label');
+  assert.equal(ctaClass, 1, 'single cta-open button');
+  assert.match(js, /RUN GAME — MỞ 3 TRÌNH DUYỆT/, 'RUN GAME CTA label');
 });
 
-test('Setup renders the Quick 3-proxy panel and its actions', () => {
+test('Screen 1 has a single shared LINK GAME input (not three URLs)', () => {
+  assert.match(js, /LINK GAME \(DÙNG CHUNG A\/B\/C\)/);
+  assert.match(js, /phq-gameurl/);
+  assert.equal((js.match(/phq-gameurl/g) || []).length >= 1, true);
+  assert.match(js, /renderGameLink\(r\)/);
+});
+
+test('Setup renders the Quick 3-proxy panel as 3 labeled rows (no A=/B=/C= prefix)', () => {
   assert.match(js, /THIẾT LẬP NHANH 3 PROXY/);
-  assert.match(js, /ÁP DỤNG 3 PROXY/);
-  assert.match(js, /TEST TẤT CẢ/);
-  assert.match(js, /qp-proto/);
-  assert.match(js, /qp-text/);
+  assert.match(js, /Áp dụng 3 proxy/);
+  assert.match(js, /Test tất cả/);
+  assert.match(js, /qp-proto-/);   // per-slot protocol selector
+  assert.match(js, /qp-in-/);      // per-slot input
   assert.match(js, /renderQuickProxy\(r\)/);
+  // placeholder is a plain host|port form — NO A=/B=/C= prefix requested from the user.
+  assert.match(js, /không nhập A= B= C=/);
+  assert.match(js, /host\|port\|user\|password/);
 });
 
 test('preload exposes proxyQuickApply and the renderer calls it', () => {
@@ -51,22 +61,40 @@ test('preload exposes proxyQuickApply and the renderer calls it', () => {
   assert.match(js, /api\.proxyQuickApply\(/);
 });
 
-test('HOST/action controls appear in Control mode, NOT in Setup', () => {
+test('Screen 2 is a minimal command toolbar + LIVE QA MONITOR (no manual flow buttons)', () => {
   const setupStart = js.indexOf('function renderSetup(r) {');
   const setupEnd = js.indexOf('// ---- cluster profiles');
   assert.ok(setupStart > 0 && setupEnd > setupStart, 'located renderSetup body');
   const setupBody = js.slice(setupStart, setupEnd);
-  // no live/host controls leak into Setup
   assert.equal(/HOST tìm bàn|ReJoin bị kick|Rời tất cả|BA TAY BÀI/.test(setupBody), false);
-  // but they exist in the Control renderer
+  // Screen 2 command toolbar has only TÌM BÀN / Focus / ⋯ / DỪNG.
+  assert.match(js, /function commandToolbar\(s\)/);
+  assert.match(js, /'TÌM BÀN'/);
+  assert.match(js, />⋯</.test(js) ? /⋯/ : /'⋯'/);
+  assert.match(js, /'DỪNG'/);
+  // the QA RULE MONITOR (D simulated) is the main region.
+  assert.match(js, /QA RULE MONITOR · D MÔ PHỎNG/);
+  assert.match(js, /function liveMonitor\(/);
+  // the old per-step manual buttons are GONE from the Control renderer (auto flow now).
   const controlStart = js.indexOf('function renderControl(r) {');
-  const controlBody = js.slice(controlStart, controlStart + 4000);
-  assert.match(controlBody, /HOST tìm bàn/);
-  assert.match(controlBody, /Dừng cụm/);
+  const controlBody = js.slice(controlStart, controlStart + 600);
+  assert.equal(/HOST tìm bàn|Follower vào bàn|'Sẵn sàng'|ReJoin bị kick/.test(controlBody), false);
 });
 
-test('the quick-proxy textarea is cleared after apply (no lingering credentials in the DOM)', () => {
-  assert.match(js, /\$\('qp-text'\)\.value = ''/);
+test('the quick-proxy inputs are cleared after apply (no lingering credentials in the DOM)', () => {
+  assert.match(js, /\$\('qp-in-' \+ s\)/);
+  assert.match(js, /el2\.value = ''/);
+});
+
+test('Screen 1 has NO stake input (stake is chosen only at Find Table)', () => {
+  const setupStart = js.indexOf('function renderSetup(r) {');
+  const setupEnd = js.indexOf('// ---- Quick 3-proxy');
+  const setupArea = js.slice(setupStart, setupEnd > setupStart ? setupEnd : setupStart + 4000);
+  assert.equal(/phq-setstake|phq-stake|Mức cược/.test(js.slice(js.indexOf('function renderGameLink'), js.indexOf('function renderGameLink') + 1200)), false, 'no stake input in the game-link section');
+  // stake only appears in the Find-Table modal (openFindTable).
+  assert.match(js, /function openFindTable\(/);
+  assert.match(js, /TÌM BÀN TRỐNG/);
+  assert.match(js, /ft-stake/);
 });
 
 test('the proxy edit modal never populates an existing password field', () => {

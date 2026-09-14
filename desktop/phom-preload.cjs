@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
   setHost: (id) => ipcRenderer.invoke('phom:set-host', id),
   selectStake: (stake) => ipcRenderer.invoke('phom:select-stake', stake),
+  requestChannels: () => ipcRenderer.invoke('phom:request-channels'),
+  stakeChannels: () => ipcRenderer.invoke('phom:stake-channels'),
   acquireHost: () => ipcRenderer.invoke('phom:acquire-host'),
   joinFollowers: () => ipcRenderer.invoke('phom:join-followers'),
   applyReady: () => ipcRenderer.invoke('phom:apply-ready'),
@@ -75,4 +77,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   simDatasets: () => ipcRenderer.invoke('phom:sim-datasets'),
   simLoad: (input) => ipcRenderer.invoke('phom:sim-load', input),
   simControl: (action, arg) => ipcRenderer.invoke('phom:sim-control', action, arg),
+  // QA rule monitor (D simulated, fixture/replay) — §19-§21
+  qaMonitorDatasets: () => ipcRenderer.invoke('phom:qa-monitor-datasets'),
+  qaMonitorLoad: (input) => ipcRenderer.invoke('phom:qa-monitor-load', input),
+  qaMonitorControl: (action, arg) => ipcRenderer.invoke('phom:qa-monitor-control', action, arg),
 });

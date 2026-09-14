@@ -7,6 +7,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 // pick credential files — the seller Generator is self-contained (bundled resources).
 contextBridge.exposeInMainWorld('licenseGenerator', {
   signingStatus: () => ipcRenderer.invoke('signing-status'),
+  productInfo: gameProduct => ipcRenderer.invoke('product-info', gameProduct),
   generateLicense: input => ipcRenderer.invoke('generate-license', input),
   inspectLicense: license => ipcRenderer.invoke('inspect-license', license),
   planPresets: () => ipcRenderer.invoke('plan-presets'),

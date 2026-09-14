@@ -33,6 +33,7 @@ const NAME_MAX = 120;
 // is never widened from env — active navigation later still passes the authorized
 // environment gate separately.
 const ALLOWED_URL_SCHEMES = Object.freeze(['http:', 'https:']);
+const GAME_URL_MAX_LENGTH = 2048; // §5 bounded length for the shared game URL
 
 function typedError(code, message, extra = {}) { return { ok: false, error: { code, message, ...extra } }; }
 function isNonEmptyString(v) { return typeof v === 'string' && v.trim().length > 0; }
@@ -43,6 +44,7 @@ function isNonEmptyString(v) { return typeof v === 'string' && v.trim().length >
 function normalizeGameUrl(raw) {
   if (raw == null || String(raw).trim() === '') return { ok: true, url: null };
   const text = String(raw).trim();
+  if (text.length > GAME_URL_MAX_LENGTH) return typedError('PHOM_CLUSTER_GAME_URL_INVALID', `Game URL exceeds ${GAME_URL_MAX_LENGTH} characters`, { maxLength: GAME_URL_MAX_LENGTH });
   let u;
   try { u = new URL(text); } catch { return typedError('PHOM_CLUSTER_GAME_URL_INVALID', 'Game URL is not a valid absolute URL'); }
   if (!ALLOWED_URL_SCHEMES.includes(u.protocol)) {

@@ -29,12 +29,26 @@ Private key sources:
 Duration presets: 1, 3, 7, 30, 60, 90, 180, 365 days`);
 }
 
-function readPrivateKey() {
-  const direct = process.env.WVPT_PRIVATE_KEY;
-  if (direct) return direct.replace(/\\n/g, '\n');
-  const file = arg('--private-key', process.env.WVPT_PRIVATE_KEY_PATH || 'tools/license-generator/private/wvpt-ed25519-private.pem');
-  if (!file || !existsSync(file)) throw new Error(`Private key not found: ${file}\nDO NOT COMMIT. DO NOT SHIP.`);
-  return readFileSync(file, 'utf8');
+// Per-product private key resolution (§5/§7). AVIATOR keeps the original key (env
+// AVIATOR_LICENSE_PRIVATE_KEY_PATH, else the legacy WVPT_* names). PHOM uses its OWN new
+// key (PHOM_LICENSE_PRIVATE_KEY_PATH). The wrong product NEVER falls back to the other's
+// key. Private keys are never committed/shipped.
+const DEFAULT_KEY_PATHS = {
+  AVIATOR: 'tools/license-generator/private/wvpt-ed25519-private.pem',
+  PHOM: 'tools/license-generator/private/phom-ed25519-private.pem',
+};
+function readPrivateKeyForProduct(gameProduct) {
+  const gp = String(gameProduct || 'AVIATOR').toUpperCase();
+  if (gp === 'AVIATOR') {
+    const direct = process.env.AVIATOR_LICENSE_PRIVATE_KEY || process.env.WVPT_PRIVATE_KEY;
+    if (direct) return direct.replace(/\\n/g, '\n');
+  }
+  const envPath = gp === 'PHOM'
+    ? process.env.PHOM_LICENSE_PRIVATE_KEY_PATH
+    : (process.env.AVIATOR_LICENSE_PRIVATE_KEY_PATH || process.env.WVPT_PRIVATE_KEY_PATH);
+  const file = arg('--private-key', envPath || DEFAULT_KEY_PATHS[gp]);
+  if (!file || !existsSync(file)) { const e = new Error(`LICENSE_SIGNING_KEY_NOT_CONFIGURED: private key for ${gp} not found: ${file}\nDO NOT COMMIT. DO NOT SHIP.`); e.code = 'LICENSE_SIGNING_KEY_NOT_CONFIGURED'; throw e; }
+  try { return readFileSync(file, 'utf8'); } catch (err) { const e = new Error(`LICENSE_PRIVATE_KEY_LOAD_FAILED: ${file}`); e.code = 'LICENSE_PRIVATE_KEY_LOAD_FAILED'; throw e; }
 }
 
 function utcDateSeconds(dateText) {
@@ -93,7 +107,7 @@ async function buildPayload({ machineId, durationDays, expires }) {
   // Signed game entitlement. Defaults to AVIATOR for backward-compatible seller UX;
   // a Phỏm key MUST be issued with --game-product PHOM. New v2 keys always carry it.
   const gameProduct = String(arg('--game-product', 'AVIATOR')).toUpperCase();
-  if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('game-product must be AVIATOR, PHOM or ALL');
+  if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('LICENSE_GAME_PRODUCT_INVALID: game-product must be AVIATOR or PHOM');
   return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct });
 }
 
@@ -110,10 +124,12 @@ try {
   const durationDays = Number(arg('--duration', '30'));
   if (!expires && ![1, 3, 7, 30, 60, 90, 180, 365].includes(durationDays)) throw new Error('Duration must be one of 1, 3, 7, 30, 60, 90, 180, 365 days, or use --expires YYYY-MM-DD');
   const payload = await buildPayload({ machineId, durationDays, expires });
-  const license = createSignedLicense(payload, readPrivateKey());
+  // Sign with the PRODUCT's OWN private key (never the other product's key).
+  const license = createSignedLicense(payload, readPrivateKeyForProduct(payload.gameProduct || 'AVIATOR'));
   console.log('WVPT LICENSE GENERATOR');
   console.log('----------------------');
   console.log('Machine ID:', payload.machineId);
+  console.log('Game product:', payload.gameProduct || 'AVIATOR', '· signing key:', payload.signingKeyId || 'AVIATOR_V1');
   console.log('Issued UTC+7:', utcPlus7Date(payload.issuedAt));
   console.log('Expires UTC+7:', utcPlus7Date(payload.expiresAt));
   console.log('License ID:', payload.licenseId);

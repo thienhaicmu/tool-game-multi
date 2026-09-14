@@ -229,11 +229,26 @@
   $('tab-create').onclick = () => showTab('create');
   $('tab-inspect').onclick = () => showTab('inspect');
 
+  // Show the destination worksheet + signing key id for the selected product (§8/§19).
+  // Never shows a private key or path.
+  async function refreshProductInfo() {
+    const gp = $('game-product') ? $('game-product').value : '';
+    const box = $('target-sheet'); if (!box) return;
+    if (!gp) { box.textContent = 'Hãy chọn sản phẩm.'; return; }
+    let info; try { info = await api.productInfo(gp); } catch { info = null; }
+    if (info && info.ok) {
+      box.textContent = `Sheet: ${info.targetSheet} · Khóa ký: ${info.signingKeyId}` + (info.signingReady ? '' : ' · (thiếu private key)');
+      if ($('generate')) $('generate').disabled = !info.signingReady;
+    } else { box.textContent = ''; }
+  }
+  if ($('game-product')) $('game-product').addEventListener('change', refreshProductInfo);
+
   (async () => {
     try { presets = await api.planPresets(); } catch { presets = null; }
     try { planDefaults = await api.planDefaults(); } catch { planDefaults = null; }
     applyPlan(selectedPlan());
     refreshSigning();
     refreshSheetStatus();
+    refreshProductInfo();
   })();
 })();

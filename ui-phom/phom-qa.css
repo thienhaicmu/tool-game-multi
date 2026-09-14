@@ -90,10 +90,23 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .dot.on { background: #22c55e; } .dot.off { background: #b6bccb; }
 .faint { color: var(--text-faint); } .warnrow { color: var(--warning); font-size: 12px; margin: 4px 0; }
 
-/* cards / hands */
-.cards { display: flex; gap: 5px; flex-wrap: wrap; }
-.card-face { display: flex; align-items: center; gap: 2px; background: var(--panel-2); border-radius: 5px; padding: 4px 6px; min-width: 26px; justify-content: center; font-weight: 700; border: 2px solid var(--border); }
-.card-face.red { color: #c62828; } .card-face.black { color: #111; } .card-face.meld { border-color: var(--success); }
+/* cards / hands — compact standard 24×34 (§18) */
+.cards { display: flex; gap: 3px; flex-wrap: wrap; }
+.card-face {
+  display: inline-flex; align-items: center; justify-content: center; gap: 1px;
+  width: 24px; height: 34px; box-sizing: border-box;
+  background: #fff; border: 1px solid var(--border); border-radius: 4px;
+  font-size: 11px; font-weight: 700; line-height: 1; overflow: hidden;
+}
+.card-face b { font-size: 11px; }
+.card-face span { font-size: 10px; }
+.card-face.red { color: #c62828; } .card-face.black { color: #111; }
+.card-face.meld { border-color: var(--success); border-width: 1px; box-shadow: 0 0 0 1px var(--success) inset; } /* server meld: green border */
+.card-face.stale { opacity: .45; }                                   /* STALE: dim */
+.card-face.desynced { border-color: #c62828; box-shadow: 0 0 0 1px #c62828 inset; } /* DESYNCED: red border */
+.card-face.unknown { background: var(--panel-2); color: var(--text-faint); }        /* unknown: grey + ? */
+.card-face.fresh { animation: cardFresh .5s ease-out; }              /* newly updated: gentle highlight */
+@keyframes cardFresh { from { background: #fff7e0; } to { background: #fff; } }
 
 /* badges — light backgrounds keyed by state (text label always present) */
 .badge { font-size: 10px; padding: 1px 7px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); }
@@ -165,3 +178,62 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .eat-cand.not-eatable-by-simulated-others { color: var(--text-2); }
 .eat-cand.unknown { color: var(--text-faint); font-style: italic; }
 .sim-warn .warnrow { margin-top: 4px; }
+
+/* ================= SCREEN 2 — LIVE QA WORKSPACE ================= */
+.mode-control { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.qa-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0; }
+.qa-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.qa-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-left: auto; }
+/* status chips — color keyed by state, text label ALWAYS present (§9) */
+.chip { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text-2); white-space: nowrap; }
+.chip.sm { font-size: 10px; padding: 1px 5px; }
+.chip.orange { background: #fff2df; color: #b45309; border-color: #f0dcb0; }
+.chip.green  { background: #e7f6ec; color: #15803d; border-color: #bfe6cd; }
+.chip.yellow { background: #fdf6e3; color: #a16207; border-color: #ecdcae; }
+.chip.blue   { background: #e8f0fe; color: #1d4ed8; border-color: #c7d8fb; }
+.chip.red    { background: #fdecec; color: #b91c1c; border-color: #f2c9c9; }
+.chip.gray   { background: var(--panel-2); color: var(--text-faint); }
+.gbadge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); }
+.gbadge.good { background: #e7f6ec; color: #15803d; border-color: #bfe6cd; }
+.gbadge.live { background: #fdecec; color: #b91c1c; border-color: #f2c9c9; }
+.qa-cmd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--border); }
+.qa-more { position: relative; display: inline-block; }
+.qa-more-menu { position: absolute; z-index: 30; top: 100%; left: 0; margin-top: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(24,39,75,.16); min-width: 190px; padding: 4px; }
+.qa-more-menu[hidden] { display: none; }
+.menu-item { display: block; width: 100%; text-align: left; background: none; border: none; padding: 7px 10px; font-size: 12px; color: var(--text); cursor: pointer; border-radius: 6px; }
+.menu-item:hover { background: var(--panel-2); }
+/* the monitor fills the remaining height (~80%) */
+.qa-monitor { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 6px; overflow: auto; }
+.qa-mon-banner { background: #eef3ff; color: #1d4ed8; border: 1px solid #c7d8fb; border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 700; letter-spacing: .3px; text-align: center; margin-bottom: 6px; }
+.mon-row1 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.mon-col { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; min-width: 0; }
+.mon-col-h { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 4px; }
+.mon-line { display: flex; align-items: center; gap: 5px; font-size: 11px; margin: 3px 0; flex-wrap: wrap; }
+.mon-sms { margin-top: 3px; }
+.mon-row2 { margin-top: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
+.warnrow.sm { font-size: 11px; padding: 3px 6px; }
+.adv-debug { margin-top: 8px; }
+.adv-debug pre { font-size: 11px; color: var(--text-2); max-height: 200px; overflow: auto; white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
+
+/* ---- Quick Proxy — 3 labeled rows (§4F) ---- */
+.qp-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
+.qp-slot { width: 22px; height: 22px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: #e8f0fe; color: #1d4ed8; font-weight: 800; font-size: 12px; }
+.qp-proto { flex: 0 0 auto; max-width: 92px; }
+.qp-in { flex: 1; min-width: 0; }
+.qp-hint { font-size: 11px; color: var(--text-2); margin-bottom: 4px; }
+.qp-actions { display: flex; gap: 6px; margin-top: 6px; }
+
+/* ---- Find-Table stake modal (§13) ---- */
+.ft-card { width: min(380px, 94vw); }
+
+/* ---- QA RULE MONITOR · D MÔ PHỎNG (§19-§21) ---- */
+.qa-mon-banner.qa-rule { display: flex; align-items: center; gap: 6px; justify-content: flex-start; background: #eef3ff; color: #1d4ed8; }
+.qa-mon-banner .mon-dot { width: 8px; height: 8px; border-radius: 50%; background: #15803d; display: inline-block; }
+.qa-mon-banner .mon-src { margin-left: auto; font-weight: 500; font-size: 10px; color: var(--text-2); }
+.mon-drow { margin-top: 8px; }
+.mon-drow-h { display: flex; align-items: center; justify-content: space-between; }
+.mon-drow-h .section-t { margin: 6px 0 4px; }
+.mon-meld { display: flex; align-items: center; gap: 6px; margin: 3px 0; }
+.qa-mon-controls { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
+.qa-mon-controls .btn { padding: 3px 8px; }
+.faint.sm, .warnrow.sm { font-size: 11px; }

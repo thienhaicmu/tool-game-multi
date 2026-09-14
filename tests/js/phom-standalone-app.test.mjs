@@ -152,7 +152,10 @@ test('host/live controls are rendered by CONTROL, not SETUP', () => {
     'SETUP must not render HOST/stake/Join/Ready controls');
   const control = rendererSrc.slice(rendererSrc.indexOf('function renderControl'));
   assert.match(control, /acquireHost/);
-  assert.match(control, /HOST & MỨC CƯỢC/);
+  // Screen 2 is the LIVE QA workspace: status toolbar + minimal command bar + monitor.
+  assert.match(control, /QA RULE MONITOR · D MÔ PHỎNG/);
+  assert.match(control, /function commandToolbar/);
+  assert.match(control, /function statusToolbar/);
 });
 
 // The dev-only red sandbox banner is wired to caps.chromiumSandbox.disabled.

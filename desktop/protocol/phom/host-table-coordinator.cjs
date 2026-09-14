@@ -107,6 +107,23 @@ class HostTableCoordinator extends EventEmitter {
   host() { return this._hostId ? this._profiles.get(this._hostId) : null; }
   followers() { return [...this._profiles.values()].filter((r) => r.role === ROLE.FOLLOWER).sort((a, b) => a.followerIndex - b.followerIndex); }
   selectStake(stake) { this._selectedStake = Number.isFinite(stake) ? stake : (stake != null ? Number(stake) : null); return this._selectedStake; }
+
+  // §13 — the AUTHORITATIVE distinct stakes observed in the server's channel list
+  // (CMD 300 rs[] `b`), for this zone/game only. Returns [] until the list has been
+  // captured (the UI must show loading; there is NO hard-coded stake fallback).
+  availableStakes() {
+    const seen = new Set();
+    for (const rec of this._profiles.values()) {
+      let chans = [];
+      try { chans = rec.ctx.channels() || []; } catch { chans = []; }
+      for (const c of chans) {
+        if ((c.zn != null && c.zn !== ZONE) || (c.gid != null && c.gid !== GID)) continue;
+        const b = Number(c.b);
+        if (Number.isFinite(b) && b > 0) seen.add(b);
+      }
+    }
+    return [...seen].sort((a, b) => a - b);
+  }
   state() { return this._state; }
   sessionId() { return this._sessionId; }
   hostTableIdentity() { return this._hostTableIdentity; }

@@ -229,35 +229,63 @@ class GoogleSheetClient {
     return res.json;
   }
 
-  // Resolve gid -> sheet title (required for A1 value ranges). Also serves as a
-  // read/permission probe.
+  // Fetch + cache the spreadsheet's sheet metadata (title -> gid), and the workbook title.
+  async _loadSheetMeta() {
+    if (this._sheetMeta) return this._sheetMeta;
+    const meta = await this._api('', { query: '?fields=properties.title,sheets.properties(sheetId,title)' });
+    const byTitle = new Map();
+    for (const s of (meta && meta.sheets) || []) { if (s.properties) byTitle.set(String(s.properties.title), Number(s.properties.sheetId)); }
+    this._spreadsheetTitle = (meta.properties && meta.properties.title) || null;
+    this._sheetMeta = { byTitle };
+    return this._sheetMeta;
+  }
+
+  // Resolve gid -> sheet title (default sheet), for callers that don't pass a title.
   async _resolveSheetTitle() {
     if (this._sheetTitle) return this._sheetTitle;
-    const meta = await this._api('', { query: '?fields=properties.title,sheets.properties(sheetId,title)' });
-    const sheets = (meta && meta.sheets) || [];
-    const match = sheets.find((s) => s.properties && Number(s.properties.sheetId) === Number(this._sheetId));
-    if (!match) { const e = new Error(`Không tìm thấy sheet gid=${this._sheetId}.`); e.code = 'GOOGLE_SHEET_NOT_FOUND'; throw e; }
-    this._sheetTitle = match.properties.title;
-    this._spreadsheetTitle = (meta.properties && meta.properties.title) || null;
-    return this._sheetTitle;
+    const { byTitle } = await this._loadSheetMeta();
+    for (const [title, gid] of byTitle) { if (Number(gid) === Number(this._sheetId)) { this._sheetTitle = title; return title; } }
+    const e = new Error(`Không tìm thấy sheet gid=${this._sheetId}.`); e.code = 'GOOGLE_SHEET_NOT_FOUND'; throw e;
   }
 
-  async ping() {
-    await this._resolveSheetTitle();
-    return { ok: true, spreadsheetTitle: this._spreadsheetTitle || null, sheetTitle: this._sheetTitle, email: this.clientEmail };
+  // Resolve the worksheet TITLE for a row operation (§15). An explicit title is verified
+  // to EXIST (routing by title, never by gid); a missing tab is a typed error and NEVER
+  // silently redirected to another sheet. No explicit title -> the default gid sheet.
+  async _titleFor(explicitTitle) {
+    if (explicitTitle == null || explicitTitle === '') return this._resolveSheetTitle();
+    const { byTitle } = await this._loadSheetMeta();
+    if (!byTitle.has(String(explicitTitle))) { const e = new Error(`Worksheet không tồn tại: ${explicitTitle}`); e.code = 'GOOGLE_SHEET_NOT_FOUND'; throw e; }
+    return String(explicitTitle);
   }
 
-  async _readRange(a1) {
-    const title = await this._resolveSheetTitle();
+  // gid for a resolved title (needed by formatting/delete batchUpdate).
+  async _gidForTitle(title) { const { byTitle } = await this._loadSheetMeta(); return byTitle.get(String(title)); }
+
+  async ping(sheetTitle) {
+    const title = await this._titleFor(sheetTitle);
+    return { ok: true, spreadsheetTitle: this._spreadsheetTitle || null, sheetTitle: title, email: this.clientEmail };
+  }
+
+  // §18 health check — verify BOTH product worksheets resolve (typed error if either tab
+  // is missing). Used by the ledger healthCheck to fail fast, never write to a wrong tab.
+  async verifyAccess({ sheetTitles = [] } = {}) {
+    await this._loadSheetMeta();
+    const resolved = [];
+    for (const t of sheetTitles) resolved.push({ title: await this._titleFor(t) });
+    return { spreadsheetTitle: this._spreadsheetTitle || null, email: this.clientEmail, sheets: resolved };
+  }
+
+  async _readRange(a1, sheetTitle) {
+    const title = await this._titleFor(sheetTitle);
     const range = `${title}!${a1}`;
     const json = await this._api(`/values/${encodeURIComponent(range)}`);
     return (json && json.values) || [];
   }
 
-  // Ensure the header row exists exactly once. Never destroys existing rows.
-  async ensureHeaders() {
-    const title = await this._resolveSheetTitle();
-    const firstRow = await this._readRange('1:1');
+  // Ensure the header row exists exactly once on the target sheet. Never destroys rows.
+  async ensureHeaders(sheetTitle) {
+    const title = await this._titleFor(sheetTitle);
+    const firstRow = await this._readRange('1:1', title);
     const existing = firstRow[0] || [];
     if (existing.length && existing.some((c) => String(c || '').trim())) {
       return { created: false, headers: existing };
@@ -267,15 +295,15 @@ class GoogleSheetClient {
       query: '?valueInputOption=RAW',
       body: { values: [SHEET_HEADERS.slice()] },
     });
-    try { await this.applyFormatting(); } catch { /* formatting is best-effort, never blocks a save */ }
+    try { await this.applyFormatting(title); } catch { /* formatting is best-effort, never blocks a save */ }
     return { created: true, headers: SHEET_HEADERS.slice() };
   }
 
   // Make the ledger readable: frozen bold header, date columns as dd/mm/yyyy hh:mm,
   // clipped overflow, and the technical rawPayloadJson column hidden. Idempotent.
-  async applyFormatting() {
-    await this._resolveSheetTitle();
-    const gid = Number(this._sheetId);
+  async applyFormatting(sheetTitle) {
+    const title = await this._titleFor(sheetTitle);
+    const gid = Number(await this._gidForTitle(title));
     const col = (h) => SHEET_HEADERS.indexOf(h);
     const dateFormat = { numberFormat: { type: 'DATE_TIME', pattern: 'dd/mm/yyyy hh:mm' } };
     const requests = [
@@ -290,25 +318,39 @@ class GoogleSheetClient {
     await this._api(':batchUpdate', { method: 'POST', body: { requests } });
   }
 
-  // Find the 1-based sheet row index for a licenseId (column A), or null.
-  async _findRowIndexByLicenseId(licenseId) {
-    const col = await this._readRange('A2:A'); // A1 is header
+  // Find the 1-based sheet row index for a licenseId (column A) on a given title, or null.
+  async _findRowIndexByLicenseId(licenseId, sheetTitle) {
+    const title = await this._titleFor(sheetTitle);
+    const col = await this._readRange('A2:A', title); // A1 is header
     for (let i = 0; i < col.length; i += 1) {
       if (String((col[i] && col[i][0]) || '') === String(licenseId)) return i + 2; // +2: header + 0-based
     }
     return null;
   }
 
-  // Idempotent upsert keyed by licenseId — retry/double-click safe.
-  // Returns { action: 'appended'|'updated', rowIndex }.
-  async upsertLicenseRow({ payload, license, metadata }) {
-    await this.ensureHeaders();
+  // Read one license record back from a specific sheet by licenseId (§15/§24), or null.
+  async findByLicenseId(licenseId, sheetTitle) {
+    const title = await this._titleFor(sheetTitle);
+    const index = await this._findRowIndexByLicenseId(licenseId, title);
+    if (!index) return null;
+    const lastCol = columnLetter(SHEET_HEADERS.length);
+    const rows = await this._readRange(`A${index}:${lastCol}${index}`, title);
+    const cells = rows[0] || [];
+    const out = { sheetTitle: title, rowIndex: index };
+    SHEET_HEADERS.forEach((h, i) => { out[h] = cells[i] != null ? cells[i] : ''; });
+    return out;
+  }
+
+  // Idempotent upsert keyed by licenseId on the ROUTED worksheet (§15/§16) —
+  // retry/double-click safe. Returns { action: 'appended'|'updated', rowIndex, sheetTitle }.
+  async upsertLicenseRow({ payload, license, metadata, sheetTitle }) {
+    const title = await this._titleFor(sheetTitle);
+    await this.ensureHeaders(title);
     const row = licenseToSheetRow({ payload, license, metadata });
     const values = [rowToValues(row)];
-    const title = this._sheetTitle;
     const licenseId = row.licenseId;
     if (!licenseId) { const e = new Error('licenseId trống — không thể lưu ledger.'); e.code = 'GOOGLE_ROW_NO_LICENSE_ID'; throw e; }
-    const existingIndex = await this._findRowIndexByLicenseId(licenseId);
+    const existingIndex = await this._findRowIndexByLicenseId(licenseId, title);
     if (existingIndex) {
       const lastCol = columnLetter(SHEET_HEADERS.length);
       await this._api(`/values/${encodeURIComponent(`${title}!A${existingIndex}:${lastCol}${existingIndex}`)}`, {
@@ -316,39 +358,42 @@ class GoogleSheetClient {
         query: '?valueInputOption=RAW',
         body: { values },
       });
-      return { action: 'updated', rowIndex: existingIndex };
+      return { action: 'updated', rowIndex: existingIndex, sheetTitle: title };
     }
     await this._api(`/values/${encodeURIComponent(`${title}!A1`)}:append`, {
       method: 'POST',
       query: '?valueInputOption=RAW&insertDataOption=INSERT_ROWS',
       body: { values },
     });
-    return { action: 'appended', rowIndex: null };
+    return { action: 'appended', rowIndex: null, sheetTitle: title };
   }
 
-  // Delete a single row by licenseId (used ONLY by the marked live smoke test).
-  async deleteRowByLicenseId(licenseId) {
-    const index = await this._findRowIndexByLicenseId(licenseId);
+  // Delete a single row by licenseId on a given sheet (used ONLY by the marked live smoke test).
+  async deleteRowByLicenseId(licenseId, sheetTitle) {
+    const title = await this._titleFor(sheetTitle);
+    const gid = Number(await this._gidForTitle(title));
+    const index = await this._findRowIndexByLicenseId(licenseId, title);
     if (!index) return { deleted: false };
     await this._api(':batchUpdate', {
       method: 'POST',
-      body: { requests: [{ deleteDimension: { range: { sheetId: this._sheetId, dimension: 'ROWS', startIndex: index - 1, endIndex: index } } }] },
+      body: { requests: [{ deleteDimension: { range: { sheetId: gid, dimension: 'ROWS', startIndex: index - 1, endIndex: index } } }] },
     });
-    return { deleted: true, rowIndex: index };
+    return { deleted: true, rowIndex: index, sheetTitle: title };
   }
 }
 
 // Attempt to persist a generated license to the ledger WITHOUT ever throwing.
 // A Google failure returns { synced:false, error } and leaves the record (token,
 // licenseId, signature) completely untouched — the caller keeps the created key.
-async function trySaveRecord(client, record) {
+async function trySaveRecord(client, record, sheetTitle) {
   if (!record || !record.payload || !record.license) {
     return { synced: false, error: { code: 'BAD_RECORD', message: 'Thiếu dữ liệu khóa để đồng bộ.' } };
   }
   if (!client) return { synced: false, error: { code: 'GOOGLE_NOT_CONFIGURED', message: 'Chưa cấu hình Google Service Account.' } };
   try {
-    const res = await client.upsertLicenseRow({ payload: record.payload, license: record.license, metadata: record.metadata || {} });
-    return { synced: true, action: res.action };
+    // Route to the product's OWN worksheet (§16) — never a default/active tab.
+    const res = await client.upsertLicenseRow({ payload: record.payload, license: record.license, metadata: record.metadata || {}, sheetTitle: sheetTitle || undefined });
+    return { synced: true, action: res.action, sheetTitle: res.sheetTitle };
   } catch (e) {
     return { synced: false, error: { code: e.code || 'GOOGLE_ERROR', message: e.message } };
   }

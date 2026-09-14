@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { createLicenseLedger, resolveLedgerConfig, buildLedgerRecord, NoopLicenseLedger, GoogleSheetLicenseLedger, SYNC } = require('../../desktop/licensing/license-ledger.cjs');
+const { createLicenseLedger, resolveLedgerConfig, buildLedgerRecord, NoopLicenseLedger, GoogleSheetLicenseLedger, MultiSheetGoogleLicenseLedger, SYNC } = require('../../desktop/licensing/license-ledger.cjs');
 
 const PAYLOAD = { v: 2, licenseId: 'LIC-ABC123', product: 'WVPT', gameProduct: 'PHOM', plan: 'STANDARD', machineId: 'WVPT-PC-AB12-CD34-EF56-7890', issuedAt: 1700000000, expiresAt: 1705000000, maxBrowsers: 5, maxConcurrentBrowsers: 2, features: { autoRun: true } };
 const META = { customerName: 'QA Tester', phone: '090', note: 'dev', createdAt: '2026-01-01T00:00:00.000Z' };
@@ -58,7 +58,9 @@ test('configured ledger upserts idempotently by licenseId (no duplicate rows)', 
   const sink = { calls: [], rows: new Map() };
   const env = { GOOGLE_LICENSE_LEDGER_ENABLED: '1', GOOGLE_LICENSE_SPREADSHEET_ID: 'SHEET1', GOOGLE_APPLICATION_CREDENTIALS: '/tmp/sa.json' };
   const ledger = createLicenseLedger({ env, clientFactory: fakeClientFactory(sink) });
-  assert.ok(ledger instanceof GoogleSheetLicenseLedger);
+  // With committed default product sheet titles, the production ledger routes by product
+  // (MultiSheet). Single-sheet legacy GoogleSheetLicenseLedger remains available directly.
+  assert.ok(ledger instanceof MultiSheetGoogleLicenseLedger);
   const rec = buildLedgerRecord({ payload: PAYLOAD, metadata: META });
   const r1 = await ledger.upsertLicense(rec);
   const r2 = await ledger.upsertLicense(rec); // retry / re-generate same key

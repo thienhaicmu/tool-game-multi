@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const { canonicalJson, fromBase64url } = require('./canonical-json.cjs');
-const { PUBLIC_KEY_PEM } = require('./public-key.cjs');
+const { PUBLIC_KEY_PEM, SIGNING_KEYS, LEGACY_DEFAULT_KEY_ID, PRODUCT_KEY_IDS } = require('./public-key.cjs');
 
 const PREFIX = 'WVPT1';
 const PRODUCT = 'WVPT';
@@ -24,14 +24,20 @@ function parseLicense(license) {
 const SUPPORTED_SCHEMAS = new Set([1, 2]);
 const PLANS = new Set(['TRIAL', 'STANDARD', 'PRO']);
 const FEATURE_KEYS = ['autoRun', 'jackpotLive', 'jackpotGate', 'roundHistory'];
-// Signed game-product entitlement (schema v2+). A license with no `gameProduct`
-// field predates this split and is treated as AVIATOR-only (legacy policy §4).
-const GAME_PRODUCTS = new Set(['AVIATOR', 'PHOM', 'ALL']);
+// Signed game-product entitlement (schema v2+). Only two products exist; `ALL` was
+// removed (§3) — a payload with gameProduct='ALL' now fails LICENSE_GAME_PRODUCT_INVALID.
+// A license with NO `gameProduct` predates the split and is AVIATOR-only (legacy §4/§10).
+const GAME_PRODUCTS = new Set(['AVIATOR', 'PHOM']);
 const LEGACY_GAME_PRODUCT = 'AVIATOR';
 
 // The effective, signed game entitlement of a verified payload. Absent => AVIATOR.
 function effectiveGameProduct(payload) {
   return payload && payload.gameProduct != null ? payload.gameProduct : LEGACY_GAME_PRODUCT;
+}
+
+// The signed signing-key id (which key signed this license). Absent => legacy Aviator key.
+function effectiveSigningKeyId(payload) {
+  return payload && payload.signingKeyId != null ? String(payload.signingKeyId) : LEGACY_DEFAULT_KEY_ID;
 }
 
 function validatePayloadShape(payload, nowSeconds) {
@@ -41,6 +47,8 @@ function validatePayloadShape(payload, nowSeconds) {
   // gameProduct is optional (legacy keys omit it) but, when present, must be a known
   // enum — an unknown value is a hard format failure, never silently coerced.
   if (payload.gameProduct !== undefined && !GAME_PRODUCTS.has(payload.gameProduct)) return 'LICENSE_GAME_PRODUCT_INVALID';
+  // signingKeyId (optional; legacy keys omit it) must be a short id token when present.
+  if (payload.signingKeyId !== undefined && !/^[A-Z0-9_]{1,32}$/.test(String(payload.signingKeyId))) return 'LICENSE_SIGNING_KEY_ID_INVALID';
   if (!/^WVPT-PC-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(String(payload.machineId || ''))) return 'LICENSE_INVALID_FORMAT';
   if (!/^LIC-[0-9A-F]{8,32}$/.test(String(payload.licenseId || ''))) return 'LICENSE_INVALID_FORMAT';
   if (!Number.isInteger(payload.issuedAt) || !Number.isInteger(payload.expiresAt)) return 'LICENSE_INVALID_FORMAT';
@@ -71,23 +79,38 @@ function verifyLicense(license, options = {}) {
   const shapeError = validatePayloadShape(parsed.payload, nowSeconds);
   if (shapeError) return typed(shapeError, shapeError === 'LICENSE_WRONG_PRODUCT' ? 'License is for a different product' : 'License payload is invalid', { payload: parsed.payload });
 
+  // Resolve which public key must verify this license from its SIGNED signingKeyId
+  // (absent => the legacy Aviator key). A single-key override (options.publicKeyPem) is
+  // honored for back-compat / tests; otherwise the registry (options.signingKeys) is used.
+  const keyId = effectiveSigningKeyId(parsed.payload);
+  const registry = options.signingKeys || SIGNING_KEYS;
+  const verifyKey = options.publicKeyPem || registry[keyId];
+  if (!verifyKey) return typed('LICENSE_SIGNING_KEY_ID_INVALID', 'License signing key id is not recognised', { payload: parsed.payload, signingKeyId: keyId });
+
   let canonical;
   try { canonical = canonicalJson(parsed.payload); } catch { return typed('LICENSE_INVALID_FORMAT', 'License payload is not canonical JSON'); }
   const canonicalPayload = Buffer.from(canonical, 'utf8');
-  if (!crypto.verify(null, canonicalPayload, options.publicKeyPem || PUBLIC_KEY_PEM, parsed.signature)) {
+  if (!crypto.verify(null, canonicalPayload, verifyKey, parsed.signature)) {
     return typed('LICENSE_BAD_SIGNATURE', 'License signature is invalid', { payload: parsed.payload });
   }
   if (parsed.payloadRaw.toString('utf8') !== canonical) return typed('LICENSE_BAD_SIGNATURE', 'License payload has been modified', { payload: parsed.payload });
   if (parsed.payload.machineId !== options.machineId) {
     return typed('LICENSE_MACHINE_MISMATCH', 'License does not match this device', { payload: parsed.payload, licenseMachineId: parsed.payload.machineId, currentMachineId: options.machineId });
   }
-  // Signed game-product entitlement (§3/§4). Only enforced when the calling app
-  // states which game it is (Aviator app -> AVIATOR, Phom-QA app -> PHOM). Absent
-  // when the caller does not care (e.g. generic status reads).
+  // Key/product isolation (§5): the resolved signing key id must be ALLOWED for the
+  // license's effective gameProduct. This blocks a crafted keyId that would otherwise let
+  // a PHOM payload ride on the Aviator key (and vice-versa), even after the signature
+  // itself verifies. Legacy keys (no signingKeyId, no gameProduct) => AVIATOR + AVIATOR_V1.
+  const effective = effectiveGameProduct(parsed.payload);
+  const allowedKeyIds = (options.productKeyIds || PRODUCT_KEY_IDS)[effective] || [];
+  if (!allowedKeyIds.includes(keyId)) {
+    return typed('LICENSE_SIGNING_KEY_PRODUCT_MISMATCH', 'License signing key is not valid for its game product', { payload: parsed.payload, signingKeyId: keyId, gameProduct: effective });
+  }
+  // Signed game-product entitlement (§3/§4). Only enforced when the calling app states
+  // which game it is (Aviator app -> AVIATOR, Phom-QA app -> PHOM).
   if (options.expectedGameProduct) {
     const expected = String(options.expectedGameProduct).toUpperCase();
-    const effective = effectiveGameProduct(parsed.payload);
-    if (effective !== 'ALL' && effective !== expected) {
+    if (effective !== expected) {
       // A legacy key (no signed gameProduct) may run AVIATOR but NEVER PHOM.
       if (parsed.payload.gameProduct == null && expected === 'PHOM') {
         return typed('LICENSE_PHOM_ENTITLEMENT_REQUIRED', 'This license predates Phỏm QA and does not grant Phỏm access', { payload: parsed.payload });
@@ -102,4 +125,4 @@ function verifyLicense(license, options = {}) {
   return { ok: true, active: true, payload: parsed.payload, license };
 }
 
-module.exports = { PREFIX, PRODUCT, GAME_PRODUCTS, LEGACY_GAME_PRODUCT, effectiveGameProduct, verifyLicense, parseLicense, validatePayloadShape };
+module.exports = { PREFIX, PRODUCT, GAME_PRODUCTS, LEGACY_GAME_PRODUCT, effectiveGameProduct, effectiveSigningKeyId, verifyLicense, parseLicense, validatePayloadShape };

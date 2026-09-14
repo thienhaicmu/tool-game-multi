@@ -16,11 +16,14 @@
 // keys without silently upgrading them field-by-field.
 // ---------------------------------------------------------------------------
 
+const { PRODUCT_DEFAULT_KEY_ID } = require('./public-key.cjs');
+
 const PLANS = Object.freeze(['TRIAL', 'STANDARD', 'PRO']);
 const FEATURE_KEYS = Object.freeze(['autoRun', 'jackpotLive', 'jackpotGate', 'roundHistory']);
-// Signed game-product entitlement. A payload with no gameProduct predates the split
-// and is AVIATOR-only (legacy policy §4); PHOM requires an explicit signed value.
-const GAME_PRODUCTS = Object.freeze(['AVIATOR', 'PHOM', 'ALL']);
+// Signed game-product entitlement. Exactly TWO products — `ALL` was removed (§3). A
+// payload with no gameProduct predates the split and is AVIATOR-only (legacy §4); PHOM
+// requires an explicit signed value signed by the PHOM key.
+const GAME_PRODUCTS = Object.freeze(['AVIATOR', 'PHOM']);
 const LEGACY_GAME_PRODUCT = 'AVIATOR';
 
 function isInt(n) { return Number.isInteger(n); }
@@ -98,7 +101,10 @@ function validateEntitlementInput(input = {}) {
 }
 
 // The exact signed v2 payload (canonicalJson later sorts keys; signature covers all).
-function buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct }) {
+// When a gameProduct is specified the payload ALSO carries a signingKeyId (which key
+// signs it) so the verifier can bind product<->key. signingKeyId may be overridden but
+// defaults to the product's key id (AVIATOR->AVIATOR_V1, PHOM->PHOM_V1).
+function buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct, signingKeyId }) {
   const f = features || {};
   const payload = {
     v: 2,
@@ -117,11 +123,13 @@ function buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowse
     },
     licenseId,
   };
-  // Only include the signed game entitlement when the seller specified it, so
-  // callers that omit it produce byte-identical legacy-shaped payloads.
+  // Only include the signed game entitlement when the seller specified it, so callers
+  // that omit it produce byte-identical legacy-shaped payloads. `ALL` is rejected (§3).
   if (gameProduct != null) {
     if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error(`Invalid gameProduct: ${gameProduct}`);
     payload.gameProduct = gameProduct;
+    const keyId = signingKeyId != null ? String(signingKeyId) : PRODUCT_DEFAULT_KEY_ID[gameProduct];
+    if (keyId) payload.signingKeyId = keyId;
   }
   return payload;
 }

@@ -61,11 +61,19 @@ test('legacy key (no gameProduct) => AVIATOR ok, PHOM entitlement required', () 
   assert.equal(r.error.code, 'LICENSE_PHOM_ENTITLEMENT_REQUIRED');
 });
 
-// §2 — ALL grants both (only if policy issues it).
-test('ALL key satisfies both AVIATOR and PHOM', () => {
-  const all = key({ gameProduct: 'ALL' });
-  assert.equal(verify(all, 'AVIATOR').active, true);
-  assert.equal(verify(all, 'PHOM').active, true);
+// §3 — ALL was removed: it can neither be built nor verified.
+test('ALL is rejected — cannot be built, and a crafted ALL payload fails verification', () => {
+  assert.throws(() => key({ gameProduct: 'ALL' }), /Invalid gameProduct: ALL/);
+  // Craft + sign a payload with gameProduct='ALL' directly (bypassing the builder).
+  const payload = {
+    v: 2, product: 'WVPT', machineId: MACHINE, plan: 'STANDARD', issuedAt: ISSUED, expiresAt: EXPIRES,
+    maxBrowsers: 5, maxConcurrentBrowsers: 2,
+    features: { autoRun: true, jackpotLive: true, jackpotGate: true, roundHistory: true },
+    licenseId: 'LIC-DEADBEEF', gameProduct: 'ALL', signingKeyId: 'PHOM_V1',
+  };
+  const r = verify(signPayload(payload), 'PHOM');
+  assert.equal(r.active, false);
+  assert.equal(r.error.code, 'LICENSE_GAME_PRODUCT_INVALID');
 });
 
 // §2 — flipping the signed gameProduct fails the signature (cannot self-upgrade).

@@ -7,14 +7,14 @@ const crypto = require('node:crypto');
 const { randomBytes, sign } = crypto;
 const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
 const { TrustedTimeProvider } = require('../../desktop/licensing/trusted-time.cjs');
-const { parseLicense } = require('../../desktop/licensing/license-verifier.cjs');
+const { parseLicense, effectiveSigningKeyId } = require('../../desktop/licensing/license-verifier.cjs');
 const { PLAN_PRESETS, PLANS, GAME_PRODUCTS, buildLicensePayloadV2, validateEntitlementInput, normalizeEntitlement } = require('../../desktop/licensing/entitlements.cjs');
 const { resolveExpiresAt, formatUtcPlus7 } = require('./duration.cjs');
 const { PLAN_UI_DEFAULTS } = require('./plan-ui-defaults.cjs');
-const { resolveSellerResources } = require('./seller-resources.cjs');
+const { resolveSellerResources, privateKeyPathForProduct, sheetTitleForProduct } = require('./seller-resources.cjs');
+const sellerRes = { privateKeyPathForProduct, sheetTitleForProduct };
 const { loadServiceAccount, GoogleSheetClient, trySaveRecord } = require('./google-sheet.cjs');
-let PUBLIC_KEY_PEM = null;
-try { PUBLIC_KEY_PEM = require('../../desktop/licensing/public-key.cjs').PUBLIC_KEY_PEM; } catch { /* optional */ }
+const { PUBLIC_KEY_PEM, publicKeyForId, PRODUCT_DEFAULT_KEY_ID } = require('../../desktop/licensing/public-key.cjs');
 
 let win;
 const trustedTime = new TrustedTimeProvider();
@@ -31,17 +31,21 @@ function sellerResources() {
   });
 }
 
-function readPrivateKey() {
-  const direct = process.env.WVPT_PRIVATE_KEY; // dev/CI inline override only
-  if (direct) return direct.replace(/\\n/g, '\n');
-  const p = sellerResources().privateKeyPath;
-  if (!p || !fs.existsSync(p)) throw new Error(`Private key not found: ${p}`);
-  return fs.readFileSync(p, 'utf8');
+// Per-product private key (§5/§8). PHOM signs with the PHOM key, AVIATOR with the
+// Aviator key — the wrong product NEVER falls back to the other's key. Typed errors.
+function readPrivateKeyForProduct(gameProduct) {
+  const gp = String(gameProduct || 'AVIATOR').toUpperCase();
+  if (gp === 'AVIATOR') { const direct = process.env.AVIATOR_LICENSE_PRIVATE_KEY || process.env.WVPT_PRIVATE_KEY; if (direct) return direct.replace(/\\n/g, '\n'); }
+  const res = sellerResources();
+  const p = sellerRes.privateKeyPathForProduct(res, gp);
+  if (!p || !fs.existsSync(p)) { const e = new Error(`LICENSE_SIGNING_KEY_NOT_CONFIGURED: ${gp} private key not found`); e.code = 'LICENSE_SIGNING_KEY_NOT_CONFIGURED'; throw e; }
+  try { return fs.readFileSync(p, 'utf8'); } catch { const e = new Error('LICENSE_PRIVATE_KEY_LOAD_FAILED'); e.code = 'LICENSE_PRIVATE_KEY_LOAD_FAILED'; throw e; }
 }
 
-function signingReady() {
-  if (process.env.WVPT_PRIVATE_KEY) return true;
-  const p = sellerResources().privateKeyPath;
+function signingReadyForProduct(gameProduct) {
+  const gp = String(gameProduct || 'AVIATOR').toUpperCase();
+  if (gp === 'AVIATOR' && (process.env.AVIATOR_LICENSE_PRIVATE_KEY || process.env.WVPT_PRIVATE_KEY)) return true;
+  const p = sellerRes.privateKeyPathForProduct(sellerResources(), gp);
   return !!(p && fs.existsSync(p));
 }
 
@@ -50,8 +54,11 @@ let sheetClient = null;
 let sheetClientCredPath = null;
 
 function resolveCred() {
-  const p = sellerResources().googleCredentialPath;
-  return p && fs.existsSync(p) ? p : null;
+  const res = sellerResources();
+  // §13 credential resolver: bundled/env path, else the gitignored local fallback if present.
+  if (res.googleCredentialPath && fs.existsSync(res.googleCredentialPath)) return res.googleCredentialPath;
+  if (res.localCredentialPath && fs.existsSync(res.localCredentialPath)) return res.localCredentialPath;
+  return null;
 }
 // Returns a ready client or null (not configured). Throws only on a bad credential file.
 function getSheetClient() {
@@ -119,14 +126,16 @@ async function buildPayload(input) {
   if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
   // Signed game entitlement (§5). The seller must pick a game; default AVIATOR keeps
   // existing UX but every NEW v2 key now carries a signed gameProduct.
-  const gameProduct = String(input.gameProduct || 'AVIATOR').toUpperCase();
-  if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('Quyền game không hợp lệ (AVIATOR/PHOM/ALL).');
+  const gameProduct = String(input.gameProduct || '').toUpperCase();
+  if (!gameProduct) throw new Error('LICENSE_GAME_PRODUCT_REQUIRED: hãy chọn sản phẩm (Aviator hoặc Phỏm).');
+  if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('LICENSE_GAME_PRODUCT_INVALID: chỉ chấp nhận AVIATOR hoặc PHOM.');
   return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct });
 }
 
 function createLicense(payload) {
   const canonical = canonicalJson(payload);
-  const signature = sign(null, Buffer.from(canonical, 'utf8'), readPrivateKey());
+  // Sign with the PRODUCT's OWN private key (§5) — resolved from the signed gameProduct.
+  const signature = sign(null, Buffer.from(canonical, 'utf8'), readPrivateKeyForProduct(payload.gameProduct || 'AVIATOR'));
   return `WVPT1.${base64url(canonical)}.${base64url(signature)}`;
 }
 
@@ -136,8 +145,8 @@ function createLicense(payload) {
 function inspectLicense(license) {
   let parsed;
   try { parsed = parseLicense(license); } catch { return { ok: false, error: 'Định dạng khóa không hợp lệ.' }; }
-  let publicKey = PUBLIC_KEY_PEM;
-  try { publicKey = crypto.createPublicKey(readPrivateKey()).export({ type: 'spki', format: 'pem' }); } catch { /* use bundled public key */ }
+  // Resolve the public key from the license's SIGNED signingKeyId (legacy => Aviator key).
+  const publicKey = publicKeyForId(effectiveSigningKeyId(parsed.payload)) || PUBLIC_KEY_PEM;
   const canonical = canonicalJson(parsed.payload);
   const canonicalOk = parsed.payloadRaw.toString('utf8') === canonical;
   let signatureValid = false;
@@ -151,7 +160,10 @@ async function saveRecordToSheet(record) {
   let client;
   try { client = getSheetClient(); }
   catch (e) { return { synced: false, error: { code: e.code || 'GOOGLE_CREDENTIAL_ERROR', message: e.message } }; }
-  return trySaveRecord(client, record);
+  // Route by the license's signed gameProduct (§16): AVIATOR -> Aviator sheet, PHOM -> PHOM sheet.
+  const gp = (record && record.payload && record.payload.gameProduct) || 'AVIATOR';
+  const sheetTitle = sellerRes.sheetTitleForProduct(sellerResources(), gp);
+  return trySaveRecord(client, record, sheetTitle);
 }
 
 function createWindow() {
@@ -171,7 +183,16 @@ function createWindow() {
 }
 
 // ---- IPC: only SAFE state/operations. No secret paths or key material cross here. ----
-ipcMain.handle('signing-status', () => ({ ready: signingReady() }));
+ipcMain.handle('signing-status', () => ({ ready: signingReadyForProduct('AVIATOR') || signingReadyForProduct('PHOM'), aviator: signingReadyForProduct('AVIATOR'), phom: signingReadyForProduct('PHOM') }));
+
+// Per-product public info for the UI (§8/§19): destination worksheet + signing key id +
+// whether that product's private key is available. NEVER returns a private key or a path.
+ipcMain.handle('product-info', (_event, gameProduct) => {
+  const gp = String(gameProduct || '').toUpperCase();
+  if (gp !== 'AVIATOR' && gp !== 'PHOM') return { ok: false, error: { code: 'LICENSE_GAME_PRODUCT_INVALID' } };
+  const res = sellerResources();
+  return { ok: true, gameProduct: gp, targetSheet: sellerRes.sheetTitleForProduct(res, gp), signingKeyId: PRODUCT_DEFAULT_KEY_ID[gp], signingReady: signingReadyForProduct(gp) };
+});
 
 ipcMain.handle('generate-license', async (_event, input) => {
   try {

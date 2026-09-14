@@ -31,7 +31,7 @@ const { WsReplay } = require('./cdp/ws-replay.cjs');
 const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs');
 const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-manager.cjs');
 const { projectRuntimeToManagerConfig } = require('./protocol/phom/cluster-runtime-projection.cjs');
-const { parseQuickProxies } = require('./browser-run/phom-quick-proxy.cjs');
+const { parseQuickProxies, parseQuickProxyRows } = require('./browser-run/phom-quick-proxy.cjs');
 const { applyQuickProxies } = require('./protocol/phom/quick-proxy-apply.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
@@ -312,7 +312,8 @@ else {
   function quickProxyApply(payload) {
     ensureStores();
     const p = payload && typeof payload === 'object' ? payload : {};
-    const parsed = parseQuickProxies(p.text, { protocol: p.protocol });
+    // New UI sends slot-labeled rows [{slot,protocol,value}]; legacy path sends {text,protocol}.
+    const parsed = Array.isArray(p.rows) ? parseQuickProxyRows(p.rows) : parseQuickProxies(p.text, { protocol: p.protocol });
     if (!parsed.ok) return parsed; // typed parse error (never contains a credential)
     const clusterProfileId = p.clusterProfileId != null && String(p.clusterProfileId).trim() ? String(p.clusterProfileId).trim() : null;
     return applyQuickProxies({ slots: parsed.slots, clusterProfileId }, {
@@ -426,6 +427,37 @@ else {
       case 'reset': return offlineSim.reset();
       case 'end': return offlineSim.end();
       case 'snapshot': return offlineSim.snapshot();
+      default: return { ok: false, error: { code: 'PHOM_SIM_BAD_ACTION', message: `Unknown control: ${action}` } };
+    }
+  }
+
+  // ---- QA RULE MONITOR · D MÔ PHỎNG (§19-§21) ----
+  // The Screen-2 main monitor analyses a SIMULATED player D on FIXTURE/REPLAY data only
+  // (never live hidden hands — §20). It reuses the SAME offline simulator engine + pure
+  // findMelds (no second stack). Unlike the standalone simulator IPC, this fixture-display
+  // instance is constructed with a CLEAN offline context: it is offline by construction
+  // (it only ever consumes an allowed fixture/replay/simulator dataset and never touches a
+  // live socket/CDP/hand), so it can coexist with the live cluster shown in the toolbar.
+  var qaMonitorSim = null;
+  function qaMonitorLoad(input = {}) {
+    const ds = input.datasetId ? sampleDatasets.getDataset(input.datasetId) : null;
+    const events = ds ? ds.events : (Array.isArray(input.events) ? input.events : []);
+    const sourceKind = ds ? ds.sourceKind : (input.sourceKind || 'TEST_FIXTURE');
+    const owner = ds ? ds.simulatedOwnerUid : (input.simulatedOwnerUid != null ? input.simulatedOwnerUid : null);
+    // Clean offline context — fixture-only display path (§20/§21). No live flags.
+    qaMonitorSim = new PhomOfflineSimulator({ events, simulatedOwnerUid: owner, sourceKind, context: { sourceKind, networkEnabled: false, liveRunCount: 0 } });
+    if (!qaMonitorSim.ok()) { const b = qaMonitorSim.blockedResult(); qaMonitorSim = null; return b; }
+    return qaMonitorSim.snapshot();
+  }
+  function qaMonitorControl(action, arg) {
+    if (!qaMonitorSim) return qaMonitorLoad({ datasetId: 'basic-round' });
+    switch (String(action)) {
+      case 'next': return qaMonitorSim.next();
+      case 'previous': return qaMonitorSim.previous();
+      case 'step': return qaMonitorSim.stepTo(Number(arg));
+      case 'reset': return qaMonitorSim.reset();
+      case 'end': return qaMonitorSim.end();
+      case 'snapshot': return qaMonitorSim.snapshot();
       default: return { ok: false, error: { code: 'PHOM_SIM_BAD_ACTION', message: `Unknown control: ${action}` } };
     }
   }
@@ -699,6 +731,10 @@ else {
     ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
     ipcMain.handle('phom:set-host', guarded((_e, hostId) => ensurePhomSessions().setHost(hostId)));
     ipcMain.handle('phom:select-stake', guarded((_e, stake) => ensurePhomSessions().selectStake(stake)));
+    // §13 — Find-Table stake source: request the server channel list + read the
+    // AUTHORITATIVE distinct stakes it reports (never a hard-coded fallback).
+    ipcMain.handle('phom:request-channels', guarded(async () => { ensurePhomSessions(); return phomSessions.requestChannels(); }));
+    ipcMain.handle('phom:stake-channels', guarded(() => { ensurePhomSessions(); return { ok: true, stakes: phomSessions.availableStakes(), sessionActive: !!(phomSessions && phomSessions.active()) }; }));
     ipcMain.handle('phom:acquire-host', guarded(() => ensurePhomSessions().acquireHost()));
     ipcMain.handle('phom:join-followers', guarded(() => ensurePhomSessions().joinFollowers()));
     ipcMain.handle('phom:apply-ready', guarded(() => ensurePhomSessions().applyReady()));
@@ -766,6 +802,10 @@ else {
     ipcMain.handle('phom:sim-datasets', () => ({ ok: true, datasets: sampleDatasets.listDatasets(), available: liveRunCount() === 0 && !(phomSessions && phomSessions.active()) && !(phomCluster && phomCluster.active()) }));
     ipcMain.handle('phom:sim-load', (_e, input = {}) => loadOfflineSimulator(input || {}));
     ipcMain.handle('phom:sim-control', (_e, action, arg) => controlOfflineSimulator(action, arg));
+    // QA RULE MONITOR (D simulated, fixture/replay only) — §19-§21.
+    ipcMain.handle('phom:qa-monitor-datasets', () => ({ ok: true, datasets: sampleDatasets.listDatasets() }));
+    ipcMain.handle('phom:qa-monitor-load', (_e, input = {}) => qaMonitorLoad(input || {}));
+    ipcMain.handle('phom:qa-monitor-control', (_e, action, arg) => qaMonitorControl(action, arg));
   }
 
   app.whenReady().then(() => {

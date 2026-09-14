@@ -32,6 +32,8 @@
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
   let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
+  let qaSnap = null;         // QA RULE MONITOR (D simulated) snapshot
+  let qaLoading = false, qaPlaying = false, qaTimer = null, qaSpeed = 900;
   let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
@@ -144,26 +146,33 @@
     r.appendChild(el('button', { class: 'btn primary', onclick: () => { uiState = UI.SETUP; renderApp(); } }, 'Về SETUP'));
   }
 
-  // ================= SETUP MODE =================
+  function selectedProfile() { return clusterProfiles.find((p) => p.id === selectedClusterProfileId) || null; }
+
+  // ================= SCREEN 1 — SETUP =================
   function renderSetup(r) {
     r.appendChild(header('SETUP'));
-    r.appendChild(el('div', { class: 'note faint' }, 'Cấu hình proxy + thiết bị cho 3 hồ sơ, rồi mở cả ba trình duyệt bằng một nút. Trình duyệt là 3 cửa sổ Chromium riêng.'));
+    r.appendChild(el('div', { class: 'note faint' }, 'Cấu hình một Link Game dùng chung + proxy/thiết bị cho 3 hồ sơ, rồi mở cả ba trình duyệt bằng một nút.'));
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
 
+    // A — Cluster Profile
+    renderClusterProfiles(r);
+    // B — shared Link Game + C — HOST/stake (bound to the selected cluster profile)
+    renderGameLink(r);
+
+    // D — three profile rows (device + proxy)
     r.appendChild(el('div', { class: 'section-t' }, 'HỒ SƠ 3 TRÌNH DUYỆT (PROXY + THIẾT BỊ)'));
     for (const slot of SLOTS) r.appendChild(setupRow(slot));
 
+    // E — Quick Proxy
     renderQuickProxy(r);
 
     if (caps.devBypass) r.appendChild(el('label', { class: 'phq-row', style: 'font-size:12px' },
       el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; } }),
-      el('span', null, 'Local runtime test (mở browser không cần proxy, chỉ trang local)')));
+      el('span', null, 'Local runtime test (mở browser trang local, không dùng Link Game/proxy)')));
 
-    // The SINGLE primary CTA that opens all three browsers.
-    r.appendChild(el('button', { class: 'btn primary cta-open', onclick: openCluster }, 'MỞ 3 TRÌNH DUYỆT'));
+    // F — the SINGLE primary CTA that opens all three browsers from the saved profile.
+    r.appendChild(el('button', { class: 'btn primary cta-open', onclick: openCluster }, localTest ? 'RUN GAME — MỞ 3 TRÌNH DUYỆT (LOCAL TEST)' : 'RUN GAME — MỞ 3 TRÌNH DUYỆT'));
     if (!setupReady()) r.appendChild(el('div', { class: 'warnrow' }, setupReason()));
-
-    renderClusterProfiles(r);
 
     r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
     r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
@@ -185,6 +194,33 @@
     for (const slot of SLOTS) { const prof = profiles[slot] || {}; slots[slot] = { browserProfileId: slot, deviceProfileId: prof.device ? prof.device.id : null, proxyRef: prof.proxyRef || null }; }
     return slots;
   }
+
+  // §4B/§4C — one shared Link Game + HOST on the Cluster Profile. The exact URL is
+  // reused by all three slots at RUN GAME; there are no per-slot URLs. NO stake here —
+  // the stake is chosen only at Screen 2's TÌM BÀN step (§4D/§13).
+  function renderGameLink(r) {
+    const p = selectedProfile();
+    r.appendChild(el('div', { class: 'section-t' }, 'LINK GAME (DÙNG CHUNG A/B/C)'));
+    if (!p) { r.appendChild(el('div', { class: 'note faint' }, 'Chọn/tạo một Cluster Profile để nhập Link Game.')); return; }
+    const urlInput = el('input', {
+      class: 'f', id: 'phq-gameurl', type: 'url', spellcheck: 'false', value: p.gameUrl || '',
+      placeholder: 'https://game.example.com/room',
+      onchange: async (e) => {
+        const res = await api.clusterProfileUpdate(p.id, { gameUrl: (e.target.value || '').trim() || null });
+        await refreshClusterProfiles();
+        if (res && res.ok === false) glNote(errText(res), true);
+        else { glNote('Đã lưu Link Game.'); renderApp(); }
+      },
+    });
+    r.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'Link'), urlInput, localTest ? el('span', { class: 'pill warn' }, 'LOCAL TEST') : null));
+    r.appendChild(el('div', { class: 'note', id: 'phq-glnote' }, ''));
+
+    // HOST only (defaultHostSlot on the profile). Stake is NOT set on Screen 1.
+    const hostSel = el('select', { class: 'sel', id: 'phq-hostslot', onchange: async (e) => { await api.clusterProfileUpdate(p.id, { defaultHostSlot: e.target.value }); await refreshClusterProfiles(); } });
+    for (const slot of SLOTS) { const o = el('option', { value: slot }, 'HOST = ' + slot); if ((p.defaultHostSlot || 'A') === slot) o.setAttribute('selected', 'selected'); hostSel.appendChild(o); }
+    r.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'HOST'), hostSel));
+  }
+  function glNote(msg, warn) { const n = $('phq-glnote'); if (n) { n.textContent = msg || ''; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
 
   function renderClusterProfiles(r) {
     r.appendChild(el('div', { class: 'section-t' }, 'CẤU HÌNH CỤM (CLUSTER PROFILE)'));
@@ -244,37 +280,40 @@
   // The parser/apply are AUTHORITATIVE in the main process; this only collects input and
   // renders typed results. The textarea is cleared after apply (it may hold credentials).
   function qpNote(msg, ok) { const n = $('qp-note'); if (n) { n.textContent = msg || ''; n.className = 'note' + (ok ? ' ok' : (msg ? ' warn' : '')); } }
+  // §4F/§6 — three LABELED rows (A/B/C). Each row already KNOWS its slot (the A/B/C
+  // label is the authoritative mapping), so the user never types an A=/B=/C= prefix.
+  // Each row has its own protocol selector + a plain host|port[|user|pass] input.
   function renderQuickProxy(r) {
     r.appendChild(el('div', { class: 'section-t' }, 'THIẾT LẬP NHANH 3 PROXY'));
     const panel = el('div', { class: 'qp-panel' });
-    const proto = el('select', { class: 'sel', id: 'qp-proto', style: 'flex:0 0 auto;max-width:130px', 'aria-label': 'Loại proxy' });
-    for (const p of ['http', 'https', 'socks5', 'socks4']) proto.appendChild(el('option', { value: p }, p.toUpperCase()));
-    panel.appendChild(el('div', { class: 'qp-head' }, el('span', { class: 'faint' }, 'Loại proxy'), proto));
-    const ta = el('textarea', { class: 'f qp-ta', id: 'qp-text', 'aria-label': 'Ba dòng proxy A/B/C',
-      placeholder: 'A: host|port|username|password\nB: host|port|username|password\nC: host|port|username|password' });
-    panel.appendChild(ta);
-    panel.appendChild(el('div', { class: 'qp-hint' }, 'Mỗi dòng một proxy theo thứ tự A/B/C (hoặc thêm tiền tố A=/B=/C=). Hỗ trợ host|port · host|port|user|pass · host:port · protocol://user:pass@host:port'));
+    panel.appendChild(el('div', { class: 'qp-hint' }, 'Đã xác định sẵn A/B/C — chỉ nhập proxy, không nhập A= B= C='));
+    for (const slot of SLOTS) {
+      const proto = el('select', { class: 'sel qp-proto', id: 'qp-proto-' + slot, 'aria-label': 'Loại proxy ' + slot });
+      for (const p of ['http', 'https', 'socks5', 'socks4']) proto.appendChild(el('option', { value: p }, p.toUpperCase()));
+      const inp = el('input', { class: 'f qp-in', id: 'qp-in-' + slot, 'aria-label': 'Proxy ' + slot, placeholder: 'host|port|user|password' });
+      panel.appendChild(el('div', { class: 'qp-row' }, el('span', { class: 'qp-slot' }, slot), proto, inp));
+    }
     panel.appendChild(el('div', { class: 'qp-actions' },
-      el('button', { class: 'btn primary', onclick: applyQuickProxies }, 'ÁP DỤNG 3 PROXY'),
-      el('button', { class: 'btn', onclick: testAllProxies }, 'TEST TẤT CẢ'),
+      el('button', { class: 'btn primary', onclick: applyQuickProxies }, 'Áp dụng 3 proxy'),
+      el('button', { class: 'btn', onclick: testAllProxies }, 'Test tất cả'),
     ));
     panel.appendChild(el('div', { class: 'note', id: 'qp-note' }, ''));
     r.appendChild(panel);
   }
   async function applyQuickProxies() {
-    const protocol = $('qp-proto') ? $('qp-proto').value : 'http';
-    const text = $('qp-text') ? $('qp-text').value : '';
+    // Collect the three slot-labeled rows; the slot is authoritative from the UI label.
+    const rows = SLOTS.map((slot) => ({ slot, protocol: ($('qp-proto-' + slot) || {}).value || 'http', value: (($('qp-in-' + slot) || {}).value || '').trim() }));
+    if (rows.some((r) => !r.value)) { qpNote('Nhập proxy cho cả ba dòng A/B/C.', false); return; }
     qpNote('Đang áp dụng…', true);
     let res;
-    try { res = await api.proxyQuickApply({ protocol, text, clusterProfileId: selectedClusterProfileId || null }); }
+    try { res = await api.proxyQuickApply({ rows, clusterProfileId: selectedClusterProfileId || null }); }
     catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
     if (!res || res.ok === false) { qpNote(errText(res), false); return; }
-    // Refresh owner state; bind the three fresh refs into the per-slot selectors.
     try { const pl = await api.proxyList(); proxies = (pl && pl.proxies) || []; } catch {}
     try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch {}
     await refreshClusterProfiles();
     for (const s of SLOTS) { if (res.refs && res.refs[s]) { assign[s].proxyRef = res.refs[s]; assign[s].testState = 'NOT_TESTED'; assign[s].ip = null; } }
-    if ($('qp-text')) $('qp-text').value = ''; // never keep raw credentials in the DOM
+    for (const s of SLOTS) { const el2 = $('qp-in-' + s); if (el2) el2.value = ''; } // never keep raw credentials in the DOM
     renderApp();
     qpNote('Đã áp dụng 3 proxy cho A/B/C.' + (res.clusterState ? ' Cụm: ' + res.clusterState : ''), true);
   }
@@ -417,88 +456,201 @@
     renderApp();
   }
 
-  // ================= CONTROL MODE =================
+  // ================= SCREEN 2 — LIVE QA WORKSPACE =================
+  // Compact status toolbar + minimal command toolbar + a LIVE QA MONITOR that fills
+  // the rest. Followers/Ready/ReJoin run automatically (no manual buttons).
   function renderControl(r) {
     const s = session || {};
     const cs = clusterSnap || {};
-    r.appendChild(header('CONTROL'));
-    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
+    r.appendChild(statusToolbar(s, cs));
+    r.appendChild(commandToolbar(s));
+    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, autoFlowLabel(s)));
+    r.appendChild(liveMonitor(s));
+  }
 
-    // Compact cluster status.
-    r.appendChild(el('div', { style: 'margin:4px 0' },
-      pill('Browser', (cs.profiles ? Object.values(cs.profiles).filter((p) => p.profileId).length : 0) + '/3', ''),
-      pill('CDP', (cs.connectedCount || 0) + '/3', (cs.connectedCount || 0) === 3 ? 'good' : ''),
-      pill('Device', (cs.deviceAppliedCount || 0) + '/3', (cs.deviceAppliedCount || 0) === 3 ? 'good' : ''),
-      pill('Cùng bàn', s.sameTable ? 'YES' : 'NO', s.sameTable ? 'good' : 'bad'),
-      pill('Ready', (s.readyCount || 0) + '/3', (s.readyCount || 0) === 3 ? 'good' : ''),
-    ));
+  // Map one slot to a compact chip {cls,text,detail}. HOST is ALWAYS orange (its label
+  // still carries READY when ready); Ready=green, waiting=yellow, joined-pre-ready=blue,
+  // kick/error/disconnect=red, not-opened=gray (§9).
+  function slotStatus(slot, s, cs) {
+    const cp = (cs.profiles && cs.profiles[slot]) || {};
+    const sp = (s.profiles || []).find((p) => p.id === cp.profileId) || {};
+    const opened = !!cp.profileId;
+    const isHost = sp.role === 'HOST' || (s.hostId && s.hostId === cp.profileId);
+    const st = sp.state;
+    let cls = 'gray', label = 'CHƯA MỞ';
+    if (opened) {
+      if (st === 'KICKED') { cls = 'red'; label = 'BỊ KICK'; }
+      else if (st === 'REJOINING') { cls = 'red'; label = 'ĐANG VÀO LẠI'; }
+      else if (st === 'ERROR' || st === 'DISCONNECTED' || st === 'LEFT') { cls = 'red'; label = st === 'DISCONNECTED' ? 'MẤT KẾT NỐI' : (st === 'LEFT' ? 'ĐÃ RỜI' : 'LỖI'); }
+      else if (sp.ready) { cls = 'green'; label = 'READY'; }
+      else if (st === 'MISMATCH') { cls = 'yellow'; label = 'SAI BÀN'; }
+      else if (st === 'AT_TABLE') { cls = 'blue'; label = 'ĐÃ VÀO'; }
+      else if (st === 'JOINING') { cls = 'blue'; label = 'ĐANG VÀO'; }
+      else { cls = 'yellow'; label = 'CHỜ'; }
+    }
+    const text = isHost ? `${slot} · HOST${sp.ready ? ' · READY' : ''}` : `${slot} · ${label}`;
+    const detail = { slot, profileId: cp.profileId || null, pid: cp.pid || null, cdp: cp.cdpPort || null,
+      cdpConnected: !!cp.cdpConnected, proxy: (profiles[slot] && profiles[slot].proxyRef) || null, ip: cp.observedIp || null,
+      seat: sp.seat != null ? sp.seat : null, uid: sp.uid || null, state: st || (opened ? 'OPEN' : 'CLOSED') };
+    return { cls: isHost ? 'orange' : cls, text, detail, isHost };
+  }
 
-    // Compact per-slot rows.
-    for (const slot of SLOTS) r.appendChild(controlRow(slot, cs));
+  function statusToolbar(s, cs) {
+    const bar = el('div', { class: 'qa-status' });
+    const chips = el('div', { class: 'qa-chips' });
+    for (const slot of SLOTS) {
+      const st = slotStatus(slot, s, cs);
+      const chip = el('span', { class: 'chip ' + st.cls, title: JSON.stringify(st.detail) }, st.text);
+      chips.appendChild(chip);
+    }
+    bar.appendChild(chips);
+    const rid = s.hostTableIdentity && s.hostTableIdentity.channelRid;
+    const badges = el('div', { class: 'qa-badges' },
+      el('span', { class: 'gbadge' }, rid != null ? ('BÀN ' + rid) : 'CHƯA CÓ BÀN'),
+      el('span', { class: 'gbadge' }, (s.playerCount || 0) + (s.waitingFourth ? '/4' : (s.playerCount ? '/' + s.playerCount : '/4'))),
+      el('span', { class: 'gbadge ' + (s.sameTable ? 'good' : '') }, s.sameTable ? 'CÙNG BÀN' : (s.tableVerdict || '—')),
+      s.selectedStake ? el('span', { class: 'gbadge' }, 'CƯỢC ' + s.selectedStake) : null,
+      el('span', { class: 'gbadge ' + (s.roundRunning ? 'live' : '') }, s.roundRunning ? 'VÁN ĐANG CHẠY' : 'VÁN CHỜ'),
+    );
+    bar.appendChild(badges);
+    return bar;
+  }
 
-    r.appendChild(el('div', { style: 'margin-top:6px' },
+  // Progress label for the automatic table flow (§11).
+  function autoFlowLabel(s) {
+    const map = {
+      IDLE: '', HOST_ACQUIRING: 'HOST ĐANG TÌM…', HOST_ACQUIRED: 'ĐÃ CÓ BÀN — ĐANG ĐƯA 2 ACC VÀO…',
+      FOLLOWERS_JOINING: 'ĐANG ĐƯA 2 ACC VÀO…', SAME_TABLE: 'XÁC NHẬN CÙNG BÀN…', READY: 'ĐÃ SẴN SÀNG',
+      HOST_LOST: 'HOST MẤT BÀN', HOST_TABLE_LOST: 'HOST MẤT BÀN', REJOIN_EXHAUSTED: 'REJOIN THẤT BẠI',
+    };
+    if (s && s.roundRunning) return 'VÁN ĐANG CHẠY';
+    if (s && s.sameTable && (s.readyCount || 0) > 0) return 'CHỜ ĐỦ NGƯỜI / SẴN SÀNG';
+    return (s && map[s.state]) || '';
+  }
+
+  function commandToolbar(s) {
+    const hostLost = s && (s.state === 'HOST_LOST' || s.state === 'HOST_TABLE_LOST');
+    const running = autoFlow;
+    return el('div', { class: 'qa-cmd' },
+      el('button', { class: 'btn primary', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN'),
       el('button', { class: 'btn', onclick: () => clusterFocus('A') }, 'Focus A'),
       el('button', { class: 'btn', onclick: () => clusterFocus('B') }, 'Focus B'),
       el('button', { class: 'btn', onclick: () => clusterFocus('C') }, 'Focus C'),
-      el('button', { class: 'btn', onclick: step(() => api.restoreLayout(), 'Đã xếp lại bố cục.') }, 'Restore Layout'),
-      el('button', { class: 'btn danger', onclick: stopCluster }, 'Dừng cụm'),
-    ));
-
-    // HOST + stake + live table controls — ONLY in CONTROL.
-    r.appendChild(el('div', { class: 'section-t' }, 'HOST & MỨC CƯỢC'));
-    const hostSel = el('select', { class: 'sel', id: 'phq-host', onchange: (e) => { hostId = e.target.value; api.setHost(hostId); } });
-    for (const slot of SLOTS) hostSel.appendChild(el('option', { value: assign[slot].runId || slot, selected: hostId === (assign[slot].runId || slot) }, 'HOST = Profile ' + slot));
-    const stakeInput = el('input', { class: 'f', id: 'phq-stake', type: 'number', value: selectedStake || '', placeholder: 'Mức cược' });
-    r.appendChild(el('div', null, hostSel, stakeInput,
-      el('button', { class: 'btn', onclick: () => testAllProxies() }, 'Test tất cả proxy')));
-    if (s.hostTableIdentity) r.appendChild(el('div', { class: 'faint' }, `Bàn HOST: rid ${s.hostTableIdentity.channelRid} · stake ${s.hostTableIdentity.selectedStake} · người ${s.playerCount || 0}`));
-
-    r.appendChild(el('button', { class: 'btn primary', disabled: !ctaEnabled(s), onclick: bringThreeIn }, 'TÌM BÀN VÀ ĐƯA 3 TÀI KHOẢN VÀO'));
-    r.appendChild(el('div', null,
-      el('button', { class: 'btn', onclick: step(() => api.acquireHost(), 'HOST đang tìm bàn.') }, 'HOST tìm bàn'),
-      el('button', { class: 'btn', onclick: step(() => api.joinFollowers(), 'Follower vào bàn HOST.') }, 'Follower vào bàn'),
-      el('button', { class: 'btn', onclick: step(() => api.applyReady(), 'Áp dụng Sẵn sàng.') }, 'Sẵn sàng'),
-    ));
-    r.appendChild(el('div', null,
-      el('button', { class: 'btn', onclick: rejoinKicked }, 'ReJoin bị kick'),
-      el('button', { class: 'btn', onclick: step(() => api.recoverHost(), 'Khôi phục HOST.') }, 'Khôi phục HOST'),
-      el('button', { class: 'btn', onclick: step(() => api.leaveAll(), 'Đã rời bàn.') }, 'Rời tất cả'),
-    ));
-    r.appendChild(el('div', { class: 'note ' + (s.sameTable ? 'ok' : '') }, `Kết luận: ${s.tableVerdict || '—'} · ${s.state || 'IDLE'}`));
-    if (!ctaEnabled(s)) r.appendChild(el('div', { class: 'warnrow' }, ctaReason(s)));
-
-    // hands
-    r.appendChild(el('div', { class: 'section-t' }, 'BA TAY BÀI'));
-    const list = hands.length ? hands : (s.hands || []);
-    if (!list.length) r.appendChild(el('div', { class: 'faint' }, 'Chưa nhận bài.'));
-    for (const h of list) r.appendChild(handRow(h));
-
-    r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
-    r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
-    r.appendChild(el('button', { class: 'btn', onclick: openSimulator }, 'MÔ PHỎNG REALTIME — QA OFFLINE'));
-
-    const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
-    det.appendChild(el('pre', { style: 'font-size:11px;color:var(--text-2);max-height:180px;overflow:auto;white-space:pre-wrap' }, session ? JSON.stringify(session, null, 2) : '(chưa có phiên)'));
-    r.appendChild(det);
-  }
-
-  function controlRow(slot, cs) {
-    const p = (cs.profiles && cs.profiles[slot]) || {};
-    const saved = profiles[slot] || {};
-    const a = assign[slot];
-    const dev = saved.device;
-    return el('div', { class: 'prow compact' },
-      el('div', null,
-        el('span', { class: 'dot ' + (p.cdpConnected ? 'on' : 'off') }), ' ',
-        el('b', null, slot), ' ', el('span', { class: 'faint' }, saved.name || ('Profile ' + slot)),
-        p.profileId ? el('button', { class: 'btn', onclick: () => clusterFocus(slot) }, 'Focus') : null,
-      ),
-      el('div', { class: 'faint' },
-        (dev ? `${dev.name} · ${dev.resolution} · Ngang` : '(thiết bị mặc định)'),
-        ' · Proxy ', el('span', { class: 'badge ' + testBadge(a.testState) }, a.testState), a.ip ? ' IP ' + a.ip : '',
-      ),
+      moreMenuButton(),
+      el('button', { class: 'btn danger', onclick: stopCluster }, 'DỪNG'),
+      hostLost ? el('span', { class: 'chip red', style: 'margin-left:6px' }, 'HOST MẤT BÀN — bấm TÌM BÀN') : null,
     );
   }
+
+  // The overflow "⋯" menu keeps rarely-used / advanced actions off the main toolbar.
+  function moreMenuButton() {
+    const menu = el('div', { class: 'qa-more-menu', hidden: 'hidden' },
+      el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); step(() => api.restoreLayout(), 'Đã xếp lại bố cục.')(); } }, 'Xếp lại bố cục'),
+      el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); step(() => api.leaveAll(), 'Đã rời bàn.')(); } }, 'Rời bàn'),
+      el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); openSimulator(); } }, 'Mô phỏng Offline (QA)'),
+      el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); openAnalyzer(); } }, 'Phân tích luật Offline'),
+      el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); toggleAdvancedDebug(); } }, 'Advanced Debug'),
+    );
+    const wrap = el('div', { class: 'qa-more' },
+      el('button', { class: 'btn', onclick: () => { menu.hidden = !menu.hidden; } }, '⋯'),
+      menu,
+    );
+    function closeMore() { menu.hidden = true; }
+    return wrap;
+  }
+  function toggleAdvancedDebug() {
+    let box = $('phq-advdebug');
+    if (box) { box.remove(); return; }
+    box = el('div', { id: 'phq-advdebug', class: 'adv-debug' },
+      el('div', { class: 'section-t' }, 'ADVANCED DEBUG (session snapshot)'),
+      el('pre', null, session ? JSON.stringify(session, null, 2) : '(chưa có phiên)'));
+    const root = $('phq-root'); if (root) root.appendChild(box);
+  }
+
+  // ---- QA RULE MONITOR · D MÔ PHỎNG (§19-§21) — the main Screen-2 area.
+  // Exactly TWO rows analysing a SIMULATED player D on FIXTURE/REPLAY data only (never
+  // live hidden hands — §20): ROW 1 cards that do NOT form a phỏm, ROW 2 the phỏm melds
+  // D can form. Updates event-by-event from the fixture-driven qa monitor (network 0,
+  // CDP 0, action 0). Live A/B/C data feeds ONLY the toolbar, never these rows.
+  function liveMonitor() {
+    const mon = el('div', { class: 'qa-monitor', id: 'phq-monitor' });
+    qaMonitorEnsure(); // fire-and-forget load/play; renders into #phq-monitor
+    renderMonitorInto(mon);
+    return mon;
+  }
+
+  function renderMonitorInto(mon) {
+    if (!mon) return;
+    const snap = qaSnap;
+    mon.replaceChildren();
+    const banner = el('div', { class: 'qa-mon-banner qa-rule' },
+      el('span', { class: 'mon-dot' }), ' QA RULE MONITOR · D MÔ PHỎNG',
+      el('span', { class: 'mon-src' }, 'Nguồn fixture/replay local · không dùng bài kín live'));
+    mon.appendChild(banner);
+    if (!snap || snap.ok === false) { mon.appendChild(el('div', { class: 'note faint' }, snap && snap.error ? (snap.error.code + ': ' + snap.error.message) : 'Đang nạp dữ liệu D mô phỏng…')); return; }
+    const labels = snap.labels || {};
+    const authoritative = snap.authoritative === true;
+    const meldCards = new Set(snap.derivedMelds.flatMap((m) => m.cards));
+    const notInMeld = snap.hand.cards.filter((c) => !meldCards.has(c));
+    // ROW 1 — cards not forming a phỏm
+    const row1 = el('div', { class: 'mon-row2 mon-drow' });
+    row1.appendChild(el('div', { class: 'mon-drow-h' }, el('div', { class: 'section-t' }, 'ROW 1 · CÁC LÁ KHÔNG TẠO PHỎM CHO D MÔ PHỎNG'), el('span', { class: 'gbadge' }, (authoritative ? notInMeld.length : '?') + ' LÁ')));
+    row1.appendChild(cardRow(authoritative ? notInMeld : [], labels, {}));
+    row1.appendChild(el('div', { class: 'faint sm' }, authoritative ? 'Kết quả kiểm thử luật trên hand mô phỏng authoritative.' : 'UNKNOWN — hand D mô phỏng chưa authoritative (thiếu dữ liệu).'));
+    mon.appendChild(row1);
+    // ROW 2 — phỏm melds D can form
+    const row2 = el('div', { class: 'mon-row2 mon-drow' });
+    row2.appendChild(el('div', { class: 'mon-drow-h' }, el('div', { class: 'section-t' }, 'ROW 2 · CÁC KẾT PHỎM D MÔ PHỎNG CÓ THỂ TẠO'), el('span', { class: 'gbadge' }, (authoritative ? snap.derivedMelds.length : 0) + ' PHỎM')));
+    if (!authoritative || !snap.derivedMelds.length) row2.appendChild(el('div', { class: 'faint' }, authoritative ? '(chưa có phỏm)' : 'UNKNOWN'));
+    for (const m of snap.derivedMelds) {
+      const label = m.type === 'RUN' ? 'Phỏm dây cùng chất' : (m.type === 'SET' ? 'Phỏm bộ cùng rank' : 'Phỏm');
+      row2.appendChild(el('div', { class: 'mon-meld' }, cardRow(m.cards, labels, { meld: true }), el('span', { class: 'faint' }, ' ' + label)));
+    }
+    mon.appendChild(row2);
+    // compact playback strip + event counter (controls off the main toolbar — §21)
+    mon.appendChild(el('div', { class: 'qa-mon-controls' },
+      el('span', { class: 'faint' }, `Sự kiện ${snap.counters.currentEvent}/${snap.counters.totalEvents} · ${snap.roundIdentity || '—'}`),
+      el('button', { class: 'btn', onclick: () => qaMonitorPlay(true) }, '▶'),
+      el('button', { class: 'btn', onclick: () => qaMonitorPlay(false) }, '⏸'),
+      el('button', { class: 'btn', onclick: () => qaMonitorStep('previous') }, '⏮'),
+      el('button', { class: 'btn', onclick: () => qaMonitorStep('next') }, '⏭'),
+      el('button', { class: 'btn', onclick: () => qaMonitorStep('reset') }, '⟲'),
+    ));
+  }
+
+  function cardRow(codes, labels, opts) {
+    const wrap = el('div', { class: 'cards' });
+    if (!codes.length) { wrap.appendChild(el('span', { class: 'faint' }, '—')); return wrap; }
+    for (const code of codes) {
+      const d = labels[code] || {};
+      const cls = ['card-face', (SUIT_RED.has(d.suit) ? 'red' : 'black')];
+      if (opts && opts.meld) cls.push('meld');
+      wrap.appendChild(el('span', { class: cls.join(' ') }, el('b', null, d.rank || '?'), el('span', null, d.suit || '?')));
+    }
+    return wrap;
+  }
+
+  // fixture-driven qa monitor lifecycle (independent of the live subscription).
+  async function qaMonitorEnsure() {
+    if (qaSnap || qaLoading) return;
+    qaLoading = true;
+    try { qaSnap = await api.qaMonitorLoad({ datasetId: 'basic-round' }); } catch (e) { qaSnap = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    qaLoading = false;
+    refreshMonitor();
+    if (qaPlaying) qaScheduleTick();
+    else qaMonitorPlay(true); // auto-play so the two rows update event-by-event
+  }
+  function qaScheduleTick() { if (qaTimer) clearTimeout(qaTimer); qaTimer = setTimeout(qaTick, qaSpeed); }
+  async function qaTick() {
+    if (!qaPlaying || uiState !== UI.CONTROL) { qaPlaying = false; return; }
+    if (qaSnap && qaSnap.counters && qaSnap.counters.currentEvent >= qaSnap.counters.totalEvents) { qaSnap = await api.qaMonitorControl('reset'); }
+    else { qaSnap = await api.qaMonitorControl('next'); }
+    refreshMonitor();
+    if (qaPlaying) qaScheduleTick();
+  }
+  function qaMonitorPlay(on) { qaPlaying = !!on; if (qaTimer) { clearTimeout(qaTimer); qaTimer = null; } if (on) qaScheduleTick(); }
+  async function qaMonitorStep(action) { qaMonitorPlay(false); qaSnap = await api.qaMonitorControl(action); refreshMonitor(); }
+  function refreshMonitor() { const mon = $('phq-monitor'); if (mon) renderMonitorInto(mon); }
 
   // Offline rule analyzer (§16/§23) — a separate mode, refused while any live run exists.
   async function openAnalyzer() {
@@ -648,17 +800,56 @@
   async function refresh() { try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {} renderApp(); }
 
   // Primary CTA: start the session over the 3 opened runs, pick HOST + stake, then run
-  // the happy path (acquire -> join -> ready) advanced from authoritative snapshots.
-  async function bringThreeIn() {
+  // §13 — Find-Table: the ONLY place a stake is chosen. Opens a compact modal, starts
+  // the session so the HOST can request the server channel list, then shows the
+  // AUTHORITATIVE distinct stakes. Confirm runs the full flow; Cancel sends nothing more.
+  async function openFindTable() {
     const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
     if (runIds.length !== 3) return note('Cần mở đủ 3 browser trước.', true);
-    const stake = Number(($('phq-stake') && $('phq-stake').value) || selectedStake);
-    if (!stake) return note('Nhập mức cược.', true);
-    selectedStake = stake;
     const host = hostId && runIds.includes(hostId) ? hostId : runIds[0];
     hostId = host;
-    const start = await api.startSession({ runIds, hostId: host, selectedStake: stake });
-    if (start && start.ok === false) return note(errText(start), true);
+    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
+    const overlay = el('div', { class: 'phq-analyzer' });
+    const close = () => overlay.remove();
+    const card = el('div', { class: 'anz-card ft-card' });
+    card.appendChild(el('div', { class: 'section-t' }, 'TÌM BÀN TRỐNG'));
+    const status = el('div', { class: 'note' }, 'Đang lấy danh sách mức cược từ máy chủ…');
+    const sel = el('select', { class: 'sel', id: 'ft-stake' }, el('option', { value: '' }, '— chọn mức cược —'));
+    const confirmBtn = el('button', { class: 'btn primary', disabled: 'disabled', onclick: async () => {
+      const stake = Number(($('ft-stake') || {}).value);
+      if (!stake) { status.textContent = 'Phải chọn mức cược.'; status.className = 'note warn'; return; }
+      close();
+      await runFindTable(stake);
+    } }, 'XÁC NHẬN TÌM BÀN');
+    card.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'Mức cược'), sel));
+    card.appendChild(status);
+    card.appendChild(el('div', { class: 'phq-row' }, confirmBtn, el('button', { class: 'btn', onclick: close }, 'HỦY')));
+    overlay.appendChild(card); document.body.appendChild(overlay);
+
+    // Start the session (so the HOST socket can query channels) then request the list.
+    const start = await api.startSession({ runIds, hostId: host });
+    if (start && start.ok === false) { status.textContent = errText(start); status.className = 'note warn'; return; }
+    try { await api.requestChannels(); } catch {}
+    // Poll the authoritative stake list (no hard-coded fallback); typed timeout.
+    for (let i = 0; i < 8; i++) {
+      let res; try { res = await api.stakeChannels(); } catch { res = null; }
+      const stakes = (res && res.stakes) || [];
+      if (stakes.length) {
+        for (const s of stakes) sel.appendChild(el('option', { value: String(s) }, String(s)));
+        status.textContent = 'Chọn mức cược rồi bấm XÁC NHẬN.'; status.className = 'note';
+        confirmBtn.disabled = null; return;
+      }
+      await new Promise((r) => setTimeout(r, 700));
+    }
+    status.textContent = 'PHOM_STAKE_LIST_UNAVAILABLE — máy chủ chưa trả danh sách mức cược (cần môi trường live được cấp quyền).';
+    status.className = 'note warn';
+  }
+
+  // Run the full HOST/follower/Ready/ReJoin flow for a validated stake (§14).
+  async function runFindTable(stake) {
+    selectedStake = stake;
+    const sel = await api.selectStake(stake);
+    if (sel && sel.ok === false) return note(errText(sel), true);
     autoFlow = true;
     const acq = await api.acquireHost();
     if (acq && acq.ok === false) { autoFlow = false; return note(errText(acq), true); }
@@ -666,10 +857,23 @@
     refresh();
   }
   // Advance the happy path when authoritative state confirms each stage.
+  // Re-entrant-safe automatic flow: HOST acquired -> followers join -> Ready policy is
+  // (re)applied whenever the authoritative controlledReadyCount is below the desired
+  // count. Because the desired count rises from 2 to 3 when a real 4th player sits, the
+  // waiting controlled account auto-Readies on the next snapshot. applyReady is
+  // idempotent in the domain, so re-issuing it never double-sends. Host loss / rejoin
+  // exhaustion stops orchestration (no follower promotion — §12/§15).
+  let flowBusy = false;
   function advanceAutoFlow(s) {
-    if (!autoFlow || !s) return;
-    if (s.state === 'HOST_ACQUIRED') { api.joinFollowers().then(refresh); }
-    else if (s.sameTable && s.controlledReadyCount < (s.playerCount >= 4 ? 3 : 2)) { api.applyReady().then(refresh); autoFlow = false; }
+    if (!autoFlow || !s || flowBusy) return;
+    if (s.state === 'HOST_LOST' || s.state === 'HOST_TABLE_LOST' || s.state === 'REJOIN_EXHAUSTED') { autoFlow = false; return; }
+    const desired = (s.playerCount >= 4) ? 3 : 2;
+    if (s.state === 'HOST_ACQUIRED' && !s.sameTable) {
+      flowBusy = true; api.joinFollowers().finally(() => { flowBusy = false; refresh(); }); return;
+    }
+    if (s.sameTable && (s.controlledReadyCount || 0) < desired) {
+      flowBusy = true; api.applyReady().finally(() => { flowBusy = false; refresh(); }); return;
+    }
   }
 
   // Cluster CTA: SETUP → OPENING_CLUSTER → CONTROL. create → open → connect → apply
@@ -701,6 +905,13 @@
       // sync per-slot runIds from the cluster snapshot for HOST/session actions
       clusterSnap = await api.clusterSnapshot();
       for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
+      // HOST + stake now come from the saved Cluster Profile (Screen 1), not Screen 2.
+      const prof = selectedProfile();
+      if (prof) {
+        if (prof.defaultStake != null) selectedStake = prof.defaultStake;
+        const hostSlot = prof.defaultHostSlot || 'A';
+        if (assign[hostSlot] && assign[hostSlot].runId) hostId = assign[hostSlot].runId;
+      }
       uiState = UI.CONTROL; renderApp();
       note(`Đã mở ${open.opened || 0}/3 trình duyệt.`);
     } catch (e) {
@@ -710,6 +921,7 @@
   }
 
   async function stopCluster() {
+    qaMonitorPlay(false); qaSnap = null; // stop the D-monitor playback on cluster stop
     uiState = UI.STOPPING; renderApp();
     try { await api.clusterStop(); } catch {}
     // Preserve saved profile/device/proxy configuration; just refresh view state.
@@ -761,6 +973,9 @@
   if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) renderApp(); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) renderApp(); });
+  // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the
+  // coordinator enforces debounce/cooldown/bounded retry + round-active defer — §15).
+  if (api.onKick) api.onKick(() => { if (uiState === UI.CONTROL) rejoinKicked(); });
   document.addEventListener('DOMContentLoaded', boot);
   if (document.readyState !== 'loading') boot();
 })();
