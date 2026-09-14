@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { HostSessionManager } = require('../../desktop/protocol/phom/host-session-manager.cjs');
-const { buildJoinFrame } = require('../../desktop/protocol/phom/phom-coordinator.cjs');
+const { buildJoinFrame, buildChannelListFrame } = require('../../desktop/protocol/phom/phom-coordinator.cjs');
 
 function makeManager({ authorized = true } = {}) {
   const sends = [];
@@ -18,7 +18,66 @@ function makeManager({ authorized = true } = {}) {
 }
 const wsFrame = (runId, raw, seq) => ({ isWebSocket: true, wsDirection: 'recv', seq, targetId: `T-${runId}`, url: 'wss://x.hytsocesk.com/websocket', body: { raw } });
 const channelRaw = (rid, b) => JSON.stringify([5, { rs: [{ rid, gid: 8, b, Mu: 4, uC: 0, zn: 'Simms' }] }]);
+const channelsRaw = (rooms) => JSON.stringify([5, { rs: rooms.map(([rid, b, extra]) => ({ rid, gid: 8, b, Mu: 4, uC: 0, zn: 'Simms', ...(extra || {}) })) }]);
 const tableRaw = (uids) => JSON.stringify([5, { b: 1000, ps: uids.map((uid, i) => ({ sit: i + 1, uid, r: false })) }]);
+
+// §13/§25 — the stake dropdown is fed ONLY by an authoritative CHANNEL_LIST (rs[].b);
+// there is no hard-coded fallback and no stale list. Until a real frame arrives the
+// list is empty (UI shows loading + disabled confirm).
+test('availableStakes is empty until a CHANNEL_LIST arrives, then distinct rs[].b', () => {
+  const { mgr } = makeManager();
+  assert.deepEqual(mgr.availableStakes(), [], 'no session -> empty');
+  mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
+  assert.deepEqual(mgr.availableStakes(), [], 'no channel frame yet -> empty (loading)');
+  // authoritative list with duplicate stake 1000 across two rooms + a 5000 room.
+  mgr.routeFrame({ id: 'A' }, wsFrame('A', channelsRaw([[139, 1000], [140, 1000], [141, 5000]]), 1));
+  assert.deepEqual(mgr.availableStakes(), [1000, 5000], 'distinct + sorted, no double-count, no hard-coded set');
+});
+
+test('availableStakes filters out other zone/game rooms', () => {
+  const { mgr } = makeManager();
+  mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
+  const raw = JSON.stringify([5, { rs: [
+    { rid: 1, gid: 8, b: 2000, zn: 'Simms' },      // ours
+    { rid: 2, gid: 99, b: 3000, zn: 'Simms' },     // other game
+    { rid: 3, gid: 8, b: 4000, zn: 'OtherZone' },  // other zone
+  ] }]);
+  mgr.routeFrame({ id: 'A' }, wsFrame('A', raw, 1));
+  assert.deepEqual(mgr.availableStakes(), [2000], 'only our zone+game stakes surface');
+});
+
+test('requestChannels sends CMD 300 on each profile OWN socket once aid+socket known', async () => {
+  const { mgr, sends } = makeManager();
+  mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
+  ['A', 'B', 'C'].forEach((id) => mgr.setIdentity(id, { aid: 'aid-' + id }));
+  // bind each socket by observing one frame per profile
+  ['A', 'B', 'C'].forEach((id) => mgr.routeFrame({ id }, wsFrame(id, tableRaw(['1_seed']), 1)));
+  const res = await mgr.requestChannels();
+  assert.equal(res.ok, true);
+  for (const id of ['A', 'B', 'C']) {
+    assert.ok(sends.some((x) => x.payload === buildChannelListFrame('aid-' + id) && x.ctx.targetId === `T-${id}`),
+      `profile ${id} requested channels via its own socket`);
+  }
+});
+
+test('requestChannels reports typed not-ready when aid/socket missing (no throw, no fake success)', async () => {
+  const { mgr } = makeManager();
+  mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
+  const res = await mgr.requestChannels();
+  assert.equal(res.ok, false);
+  assert.equal(res.results.length, 3);
+  assert.ok(res.results.every((r) => r.ok === false && /PHOM_PROTOCOL_CONTEXT_MISSING|PHOM_SOCKET_NOT_FOUND/.test(r.error.code)));
+});
+
+test('unauthorized environment blocks requestChannels', async () => {
+  const { mgr } = makeManager({ authorized: false });
+  mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
+  ['A', 'B', 'C'].forEach((id) => mgr.setIdentity(id, { aid: 'aid-' + id }));
+  ['A', 'B', 'C'].forEach((id) => mgr.routeFrame({ id }, wsFrame(id, tableRaw(['1_seed']), 1)));
+  const res = await mgr.requestChannels();
+  assert.equal(res.ok, false);
+  assert.equal(res.error.code, 'PHOM_UNAUTHORIZED_ENVIRONMENT');
+});
 
 test('startSession requires 3 distinct runs and a valid host', () => {
   const { mgr } = makeManager();

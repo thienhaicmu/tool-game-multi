@@ -128,6 +128,37 @@ test('a stale proxy reference fails typed (PROXY_MISSING) — not silently dropp
   assert.deepEqual(rt.error.proxyMissing, ['C']);
 });
 
+test('proxy OPTIONAL: all-Direct profile projects with executionMode DIRECT (no PROXY_MISSING)', () => {
+  const store = newStore({ resolverOpts: { proxies: [] } });
+  const created = store.create(validInput({ slots: {
+    A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: null },
+    B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
+    C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: null },
+  } }));
+  const rt = store.toRuntimeConfig(created.profile.id);
+  assert.equal(rt.ok, true, 'all-Direct is READY (proxy optional)');
+  const proj = projectRuntimeToManagerConfig(rt.config, { resolveRawDevice: rawDeviceResolver });
+  assert.equal(proj.ok, true);
+  for (const p of proj.config.profiles) { assert.equal(p.proxyRef, null); assert.equal(p.executionMode, 'DIRECT'); }
+});
+
+test('proxy OPTIONAL: mixed PROXY/DIRECT/PROXY projects with per-slot executionMode + proxyRef 1:1', () => {
+  const store = newStore({ resolverOpts: { proxies: ['PX-a', 'PX-c'] } });
+  const created = store.create(validInput({ slots: {
+    A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a' },
+    B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
+    C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: 'PX-c' },
+  } }));
+  const rt = store.toRuntimeConfig(created.profile.id);
+  assert.equal(rt.ok, true);
+  const proj = projectRuntimeToManagerConfig(rt.config, { resolveRawDevice: rawDeviceResolver });
+  assert.equal(proj.ok, true);
+  const bySlot = Object.fromEntries(proj.config.profiles.map((p) => [p.slot, p]));
+  assert.equal(bySlot.A.executionMode, 'PROXY'); assert.equal(bySlot.A.proxyRef, 'PX-a');
+  assert.equal(bySlot.B.executionMode, 'DIRECT'); assert.equal(bySlot.B.proxyRef, null);
+  assert.equal(bySlot.C.executionMode, 'PROXY'); assert.equal(bySlot.C.proxyRef, 'PX-c');
+});
+
 test('projection fails typed when the raw device cannot be resolved', () => {
   const store = newStore();
   const created = store.create(validInput());

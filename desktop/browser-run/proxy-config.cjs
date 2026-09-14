@@ -160,24 +160,24 @@ function maskUser(u) {
   return s[0] + '*'.repeat(Math.max(1, s.length - 2)) + s[s.length - 1];
 }
 
-// §6 NO-DIRECT-FALLBACK launch gate. Given a profile's { proxyRef, proxyRequired }
-// and a getConfig(ref) resolver, decide whether a launch may proceed and with which
-// credential-free run proxy. When a proxy is required, a missing/unknown/disabled
-// proxy BLOCKS the launch — it is NEVER silently replaced by a direct connection.
+// PROXY-OPTIONAL launch gate. Proxy is OPTIONAL: a slot with NO proxyRef runs in
+// DIRECT mode (a valid state, not an error). The presence of a proxyRef is the intent
+// to use THAT proxy — so when a ref IS assigned it must resolve and be enabled, and a
+// missing/unknown/disabled proxy is a TYPED failure that BLOCKS the launch: it is NEVER
+// silently replaced by a direct connection (§7). `proxyRequired:true` is kept as an
+// explicit opt-IN gate for callers that demand a proxy even when none is bound.
 function resolveLaunchProxy(profileConfig = {}, getConfig) {
-  const proxyRequired = profileConfig.proxyRequired !== false; // default: required
   const ref = profileConfig.proxyRef || null;
+  const proxyRequired = profileConfig.proxyRequired === true; // opt-in; default = optional
   if (!ref) {
     if (proxyRequired) return typedError('PROXY_CONFIG_REQUIRED', 'This profile requires a proxy but none is assigned');
-    return { ok: true, runProxy: null }; // explicit opt-out only
+    return { ok: true, runProxy: null, mode: 'DIRECT' }; // no proxy => DIRECT is valid
   }
+  // A proxyRef is present => use THAT proxy. Never silently fall back to Direct (§7).
   const config = typeof getConfig === 'function' ? getConfig(ref) : null;
   if (!config) return typedError('PROXY_CONFIG_NOT_FOUND', `Proxy configuration not found: ${ref}`, { proxyRef: ref });
-  if (config.enabled === false) {
-    if (proxyRequired) return typedError('PROXY_CONFIG_REQUIRED', 'Assigned proxy is disabled; launch blocked (no direct fallback)', { proxyRef: ref });
-    return { ok: true, runProxy: null };
-  }
-  return { ok: true, runProxy: toRunProxy(config), config };
+  if (config.enabled === false) return typedError('PROXY_CONFIG_DISABLED', 'Assigned proxy is disabled; launch blocked (no direct fallback)', { proxyRef: ref });
+  return { ok: true, runProxy: toRunProxy(config), config, mode: 'PROXY' };
 }
 
 module.exports = {

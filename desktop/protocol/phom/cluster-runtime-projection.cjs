@@ -52,12 +52,16 @@ function projectRuntimeToManagerConfig(runtimeConfig, { resolveRawDevice = null 
     // snapshot only when no resolver is supplied (tests). A missing device is typed.
     const rawDevice = resolveRawDevice ? resolveRawDevice(browserProfileId, deviceProfileId) : rc.deviceProfile;
     if (!rawDevice) return err('PHOM_CLUSTER_DEVICE_PROFILE_MISSING', `slot ${s} device missing`, { slot: s });
-    if (!rc.proxyRef) return err('PHOM_CLUSTER_PROXY_MISSING', `slot ${s} proxy missing`, { slot: s });
+    // Proxy is OPTIONAL: a null proxyRef is a valid DIRECT-mode slot (no error). A slot
+    // with a proxyRef runs in PROXY mode; the launch gate enforces the ref with no
+    // silent fallback.
+    const proxyRef = rc.proxyRef || null;
     profiles.push({
       slot: s,
       browserProfileId,
       deviceProfileId,
-      proxyRef: rc.proxyRef,        // reference id only — never a password
+      proxyRef,                     // reference id only — never a password; null = DIRECT
+      executionMode: proxyRef ? 'PROXY' : 'DIRECT',
       device: rawDevice,
       gameUrl: runtimeConfig.gameUrl,
       label: (rc.browserProfile.name || `Profile ${s}`),

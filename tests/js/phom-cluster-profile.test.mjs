@@ -234,6 +234,68 @@ test('validateReady passes when all references resolve + URL present', () => {
   assert.equal(v.state, 'READY_TO_RUN');
 });
 
+// ---- PROXY OPTIONAL (proxy is not required for READY) -----------------------
+const directSlots = () => ({
+  A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: null },
+  B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
+  C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: null },
+});
+
+test('A/B/C ALL Direct (no proxyRef) => READY_TO_RUN (proxy optional, §12)', () => {
+  const { store } = newStore({ ...resolvers({ proxies: [] }) }); // no proxies exist at all
+  const id = store.create(validInput({ slots: directSlots() })).profile.id;
+  const v = store.validateReady(id);
+  assert.equal(v.ready, true);
+  assert.equal(v.state, 'READY_TO_RUN');
+  assert.deepEqual(v.missing.proxy, [], 'a null proxyRef is DIRECT, never "missing"');
+});
+
+test('mixed A=PROXY, B=DIRECT, C=PROXY => READY + per-slot executionMode mapping (§6/§13)', () => {
+  const { store } = newStore({ ...resolvers({ proxies: ['PX-a', 'PX-c'] }) });
+  const id = store.create(validInput({ slots: {
+    A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a' },
+    B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
+    C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: 'PX-c' },
+  } })).profile.id;
+  const v = store.validateReady(id);
+  assert.equal(v.ready, true, 'a Direct middle slot does not block readiness');
+  const rc = store.toRuntimeConfig(id);
+  assert.equal(rc.ok, true);
+  assert.equal(rc.config.slots.A.proxyRef, 'PX-a');
+  assert.equal(rc.config.slots.B.proxyRef, null);
+  assert.equal(rc.config.slots.C.proxyRef, 'PX-c');
+  assert.equal(rc.config.slots.A.executionMode, 'PROXY');
+  assert.equal(rc.config.slots.B.executionMode, 'DIRECT');
+  assert.equal(rc.config.slots.C.executionMode, 'PROXY');
+});
+
+test('explicitly UNBINDING a proxyRef switches that slot back to DIRECT and stays READY (§8/§13)', () => {
+  const { store } = newStore();
+  const id = store.create(validInput()).profile.id;
+  assert.equal(store.validateReady(id).state, 'READY_TO_RUN');
+  // user clears slot B's proxy binding
+  const upd = store.update(id, { slots: {
+    A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a' },
+    B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
+    C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: 'PX-c' },
+  } });
+  assert.equal(upd.ok, true);
+  const v = store.validateReady(id);
+  assert.equal(v.ready, true, 'still READY after unbinding B (B is now DIRECT)');
+  const rc = store.toRuntimeConfig(id);
+  assert.equal(rc.config.slots.B.proxyRef, null);
+  assert.equal(rc.config.slots.B.executionMode, 'DIRECT');
+});
+
+test('a DANGLING proxyRef (set but unresolvable) still blocks readiness — not a silent Direct (§7)', () => {
+  const { store } = newStore({ ...resolvers({ proxies: ['PX-a', 'PX-c'] }) }); // PX-b does not exist
+  const id = store.create(validInput()).profile.id; // slot B binds PX-b (missing)
+  const v = store.validateReady(id);
+  assert.equal(v.ready, false);
+  assert.deepEqual(v.missing.proxy, ['B']);
+  assert.ok(v.errors.some((e) => e.code === 'PHOM_CLUSTER_PROXY_MISSING'));
+});
+
 test('deleting a cluster profile never deletes referenced proxy/browser/device', () => {
   const res = resolvers();
   let proxyResolveCalls = 0;

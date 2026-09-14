@@ -107,14 +107,16 @@ test('phom-main retries the per-run CDP connect (no single-shot connect)', () =>
   assert.match(mainSrc, /connectRunEndpointWithRetry/, 'a bounded retry wrapper exists');
 });
 
-// LOCAL RUNTIME TEST is dev-only: it may relax proxyRequired ONLY when the dev
-// license bypass is active — it must never open a live browser without a proxy in a
-// packaged build.
-test('LOCAL RUNTIME TEST relaxes proxyRequired only under the dev bypass', () => {
+// LOCAL RUNTIME TEST is dev-only: its gate stays bound to the dev bypass (it opens
+// about:blank for verification). Proxy is OPTIONAL for every launch, so the cluster
+// open path no longer forces proxyRequired — a slot with no proxy runs DIRECT.
+test('LOCAL RUNTIME TEST gate stays dev-bypass-bound; cluster open path treats proxy as optional', () => {
   assert.match(mainSrc, /clusterLocalTest\s*&&\s*devBypass\.allowed\s*===\s*true/,
     'localTestActive() is gated on devBypass.allowed');
-  assert.match(mainSrc, /proxyRequired:\s*!localTestActive\(\)/,
-    'proxy is required unless the dev-only local test is active');
+  assert.match(mainSrc, /proxyRequired:\s*false/,
+    'the cluster open path passes proxyRequired:false (proxy optional; proxyRef governs PROXY vs DIRECT)');
+  // the launch gate is opt-IN required, so an unbound slot is DIRECT (never forced).
+  assert.match(mainSrc, /resolveLaunchProxy\(\{\s*proxyRef:[^}]*proxyRequired:\s*proxyRequired\s*===\s*true/);
 });
 
 // --- Setup-First UX (state machine) ------------------------------------------
@@ -147,13 +149,13 @@ test('SETUP has a single Open-Cluster CTA and no per-slot open-game buttons', ()
 
 // HOST / Join / Ready / kick controls belong to CONTROL, not SETUP.
 test('host/live controls are rendered by CONTROL, not SETUP', () => {
-  const setup = rendererSrc.slice(rendererSrc.indexOf('function renderSetup'), rendererSrc.indexOf('function setupRow'));
+  const setup = rendererSrc.slice(rendererSrc.indexOf('function renderSetup'), rendererSrc.indexOf('function footerRunGame'));
   assert.equal(/acquireHost|joinFollowers|applyReady|HOST & MỨC CƯỢC/.test(setup), false,
     'SETUP must not render HOST/stake/Join/Ready controls');
   const control = rendererSrc.slice(rendererSrc.indexOf('function renderControl'));
   assert.match(control, /acquireHost/);
   // Screen 2 is the LIVE QA workspace: status toolbar + minimal command bar + monitor.
-  assert.match(control, /QA RULE MONITOR · D MÔ PHỎNG/);
+  assert.match(control, /LIVE QA MONITOR/);
   assert.match(control, /function commandToolbar/);
   assert.match(control, /function statusToolbar/);
 });

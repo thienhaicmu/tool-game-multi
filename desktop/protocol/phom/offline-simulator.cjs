@@ -74,6 +74,7 @@ function freezeSnapshot(s) {
     hand: Object.freeze({ ...s.hand, cards: Object.freeze([...s.hand.cards]), sorted: Object.freeze([...s.hand.sorted]) }),
     serverMelds: Object.freeze(s.serverMelds.map((m) => Object.freeze({ ...m, cards: Object.freeze([...m.cards]) }))),
     derivedMelds: Object.freeze(s.derivedMelds.map((m) => Object.freeze({ ...m, cards: Object.freeze([...m.cards]) }))),
+    cardsNotInMeld: Object.freeze([...(s.cardsNotInMeld || [])]),
     publicDiscards: Object.freeze(s.publicDiscards.map((d) => Object.freeze({ ...d }))),
     publicMelds: Object.freeze(s.publicMelds.map((m) => Object.freeze({ ...m, cards: Object.freeze([...m.cards]) }))),
     eatCandidates: Object.freeze(s.eatCandidates.map((c) => Object.freeze({ ...c }))),
@@ -195,6 +196,11 @@ class PhomOfflineSimulator {
 
     // §8.7 derived melds recomputed from the authoritative hand.
     const derivedMelds = authoritative ? findMelds(handCards) : [];
+    // §19 ROW 1 — the cards that do NOT form any phỏm: the complement of the UNION of all
+    // derived meld cards. Computed HERE (engine, tested) so the renderer never recomputes
+    // or hard-codes it. Empty when the hand is not authoritative (UNKNOWN in the UI).
+    const derivedMeldCardSet = new Set(derivedMelds.flatMap((m) => m.cards));
+    const cardsNotInMeld = authoritative ? sortCardCodes(handCards.filter((c) => !derivedMeldCardSet.has(c))) : [];
 
     // §8.8/§8.9 eat candidates over the public discard pile (non-owner discards).
     const eatCandidates = this._eatCandidates(handCards, authoritative, publicDiscards);
@@ -269,6 +275,7 @@ class PhomOfflineSimulator {
       hand: { cards: handCards, sorted: sortCardCodes(handCards), decoded, count: handCards.length },
       serverMelds,
       derivedMelds,
+      cardsNotInMeld,
       publicDiscards,
       publicMelds,
       eatCandidates,

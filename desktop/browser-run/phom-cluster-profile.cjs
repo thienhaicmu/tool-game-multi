@@ -159,15 +159,18 @@ function firstDuplicate(arr) {
   return null;
 }
 
-// The minimal structural readiness (no live refs): a gameUrl is present and every
-// slot carries a proxyRef. This is the subset of READY that can be decided from the
-// profile alone; the store layers reference existence on top (validateReady).
+// The minimal structural readiness (no live refs): a gameUrl is present. Proxy is
+// OPTIONAL — a slot with a null proxyRef runs in DIRECT mode, which is a valid ready
+// state; readiness never requires three proxyRefs. A DANGLING proxyRef (set but not
+// resolvable) is layered on top by the store (validateReady) via `proxyMissing`.
 function missingReadyFields(profile) {
   const missing = [];
   if (!profile.gameUrl) missing.push('gameUrl');
-  for (const s of SLOTS) { if (!profile.slots[s] || !profile.slots[s].proxyRef) missing.push(`slots.${s}.proxyRef`); }
   return missing;
 }
+
+// Execution mode per slot: PROXY when a proxyRef is bound, else DIRECT (§13).
+function slotExecutionMode(slot) { return slot && slot.proxyRef ? 'PROXY' : 'DIRECT'; }
 
 // Derive DRAFT vs READY_TO_RUN given a set of already-resolved reference checks. The
 // store calls this after confirming references; the model only decides from inputs.
@@ -226,8 +229,9 @@ function toClusterRuntimeConfig(profile, resolved = {}) {
   for (const s of SLOTS) {
     const slot = profile.slots[s];
     const r = resSlots[s] || {};
-    if (!slot.proxyRef) proxyMissing.push(s);
-    else if (!r.proxyRef) proxyMissing.push(s);
+    // Proxy optional: null proxyRef => DIRECT (valid). Only a DANGLING ref (set on the
+    // profile but not resolved by the caller) is a real error.
+    if (slot.proxyRef && !r.proxyRef) proxyMissing.push(s);
     if (!r.browserProfile) browserMissing.push(s);
     if (!r.device) deviceMissing.push(s);
   }
@@ -241,7 +245,8 @@ function toClusterRuntimeConfig(profile, resolved = {}) {
     slots[s] = {
       browserProfile: r.browserProfile,   // caller-resolved metadata (no secret)
       deviceProfile: r.device,            // caller-resolved device (no secret)
-      proxyRef: profile.slots[s].proxyRef, // reference id only — never a password
+      proxyRef: profile.slots[s].proxyRef, // reference id only — never a password; null = DIRECT
+      executionMode: slotExecutionMode(profile.slots[s]),
     };
   }
   const config = {
@@ -258,5 +263,5 @@ function toClusterRuntimeConfig(profile, resolved = {}) {
 module.exports = {
   SCHEMA_VERSION, SLOTS, NAME_MAX, ALLOWED_URL_SCHEMES,
   normalizeGameUrl, normalizeStake, normalizeClusterProfile,
-  missingReadyFields, deriveState, publicSnapshot, toClusterRuntimeConfig,
+  missingReadyFields, slotExecutionMode, deriveState, publicSnapshot, toClusterRuntimeConfig,
 };

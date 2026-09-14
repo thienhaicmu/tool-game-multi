@@ -157,6 +157,25 @@ class HostTableCoordinator extends EventEmitter {
 
   setIdentity(profileId, identity) { const rec = this._profiles.get(String(profileId)); if (rec) rec.ctx.setIdentity(identity); this._evaluate(); }
 
+  // §13 — actively request the authoritative stake channel list (CMD 300) so the
+  // server replies with rs[], which is ingested passively into each ctx.channels().
+  // The stake dropdown then reads availableStakes(). No hard-coded stakes; no stale
+  // list — the list only becomes non-empty once a real CHANNEL_LIST frame arrives.
+  // Requesting is an active send, so it is environment-guarded like Join/Ready.
+  async requestChannels() {
+    if (!this._guard()) return this._unauthorized();
+    const out = [];
+    for (const rec of this._profiles.values()) {
+      const aid = rec.ctx.aid();
+      const ctx = rec.ctx.sendContext();
+      if (aid == null) { out.push({ id: rec.id, ok: false, error: { code: 'PHOM_PROTOCOL_CONTEXT_MISSING', message: 'aid not learned yet' } }); continue; }
+      if (!ctx) { out.push({ id: rec.id, ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no game socket yet' } }); continue; }
+      let res; try { res = await rec.send(buildChannelListFrame(aid), ctx); } catch (e) { res = { ok: false, error: { code: 'PHOM_CHANNEL_REQUEST_FAILED', message: String(e && e.message || e) } }; }
+      out.push({ id: rec.id, ...res });
+    }
+    return { ok: out.some((r) => r.ok), results: out };
+  }
+
   // ---- §12 HOST acquires an EMPTY table at the selected stake ----
   async acquireHost() {
     if (!this._guard()) return this._unauthorized();

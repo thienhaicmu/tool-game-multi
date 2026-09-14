@@ -69,13 +69,26 @@ test('decideAuth routes only the run\'s own proxy credentials', () => {
 });
 
 // ---------------- §17.C no direct fallback ----------------
-test('proxyRequired + missing/unknown/disabled proxy BLOCKS launch (no direct)', () => {
-  assert.equal(resolveLaunchProxy({ proxyRequired: true, proxyRef: null }).error.code, 'PROXY_CONFIG_REQUIRED');
-  assert.equal(resolveLaunchProxy({ proxyRequired: true, proxyRef: 'X' }, () => null).error.code, 'PROXY_CONFIG_NOT_FOUND');
+test('proxy is OPTIONAL: no proxyRef => DIRECT (valid), never an error', () => {
+  assert.deepEqual(resolveLaunchProxy({ proxyRef: null }), { ok: true, runProxy: null, mode: 'DIRECT' });
+  assert.deepEqual(resolveLaunchProxy({ proxyRequired: false, proxyRef: null }), { ok: true, runProxy: null, mode: 'DIRECT' });
+  assert.deepEqual(resolveLaunchProxy({}), { ok: true, runProxy: null, mode: 'DIRECT' }, 'default is optional');
+});
+
+test('a BOUND proxy that fails BLOCKS launch — NEVER a silent direct fallback (§7)', () => {
+  assert.equal(resolveLaunchProxy({ proxyRef: 'X' }, () => null).error.code, 'PROXY_CONFIG_NOT_FOUND');
   const disabled = normalizeProxyConfig({ id: 'PX', protocol: 'http', host: 'h', port: 8080, enabled: false }).config;
-  assert.equal(resolveLaunchProxy({ proxyRequired: true, proxyRef: 'PX' }, () => disabled).error.code, 'PROXY_CONFIG_REQUIRED');
-  // opt-out only when explicitly not required
-  assert.deepEqual(resolveLaunchProxy({ proxyRequired: false, proxyRef: null }), { ok: true, runProxy: null });
+  assert.equal(resolveLaunchProxy({ proxyRef: 'PX' }, () => disabled).error.code, 'PROXY_CONFIG_DISABLED');
+  // even with proxyRequired:false a bound-but-disabled proxy does NOT fall back to Direct.
+  assert.equal(resolveLaunchProxy({ proxyRequired: false, proxyRef: 'PX' }, () => disabled).error.code, 'PROXY_CONFIG_DISABLED');
+  // a healthy bound proxy => PROXY mode with the right endpoint.
+  const good = normalizeProxyConfig({ id: 'PX', protocol: 'http', host: 'h', port: 8080, enabled: true }).config;
+  const r = resolveLaunchProxy({ proxyRef: 'PX' }, () => good);
+  assert.equal(r.ok, true); assert.equal(r.mode, 'PROXY'); assert.equal(r.runProxy.host, 'h');
+});
+
+test('explicit opt-IN proxyRequired:true still blocks when NO proxy is bound', () => {
+  assert.equal(resolveLaunchProxy({ proxyRequired: true, proxyRef: null }).error.code, 'PROXY_CONFIG_REQUIRED');
 });
 
 // ---------------- §17.D secret handling ----------------

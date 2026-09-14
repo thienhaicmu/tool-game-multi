@@ -49,7 +49,12 @@ function applyQuickProxies({ slots, clusterProfileId = null } = {}, ops = {}) {
   const updateClusterProfile = ops.updateClusterProfile || (() => ({ ok: true }));
   const validateCluster = ops.validateCluster || (() => ({ ok: false }));
 
-  if (!slots || SLOTS.some((s) => !slots[s])) return err('PHOM_PROXY_SLOT_MISSING', 'Thiếu cấu hình proxy cho một slot');
+  // Proxy is OPTIONAL: apply ONLY the slots that carry input. Absent slots are left
+  // UNCHANGED (they keep their existing binding — DIRECT or a previously-bound proxy).
+  // "ÁP DỤNG 3 PROXY" therefore never creates an empty proxy for a blank row (§10).
+  if (!slots || typeof slots !== 'object') return err('PHOM_PROXY_SLOT_MISSING', 'Thiếu cấu hình proxy');
+  const presentSlots = SLOTS.filter((s) => slots[s]);
+  if (!presentSlots.length) return err('PHOM_PROXY_QUICK_INPUT_REQUIRED', 'Nhập proxy cho ít nhất một slot');
 
   // §7 — a running cluster's mapping is frozen; stop it first.
   if (clusterProfileId && isClusterActive(clusterProfileId)) {
@@ -59,10 +64,10 @@ function applyQuickProxies({ slots, clusterProfileId = null } = {}, ops = {}) {
   const clusterProfile = clusterProfileId ? getClusterProfile(clusterProfileId) : null;
   if (clusterProfileId && !clusterProfile) return err('PHOM_CLUSTER_PROFILE_NOT_FOUND', `Không tìm thấy cấu hình cụm: ${clusterProfileId}`, { id: clusterProfileId });
 
-  // ---- phase 1: create three proxy configs (metadata + secret) ----
+  // ---- phase 1: create a proxy config (metadata + secret) for each PRESENT slot ----
   const created = []; // { slot, id }
   const rollback = () => { for (const c of created) { try { removeProxy(c.id); } catch { /* best effort */ } } };
-  for (const s of SLOTS) {
+  for (const s of presentSlots) {
     const d = slots[s];
     let res;
     try { res = createProxy({ slot: s, protocol: d.protocol, host: d.host, port: d.port, username: d.username, password: d.password }); }
@@ -86,6 +91,8 @@ function applyQuickProxies({ slots, clusterProfileId = null } = {}, ops = {}) {
     }
   }
 
+  // refs carries an id ONLY for the slots we changed; untouched slots stay null so the
+  // caller can distinguish "newly bound" from "left as-is".
   const refs = { A: null, B: null, C: null };
   for (const c of created) refs[c.slot] = c.id;
 
@@ -95,7 +102,10 @@ function applyQuickProxies({ slots, clusterProfileId = null } = {}, ops = {}) {
     const slotsPatch = {};
     for (const s of SLOTS) {
       const prev = (clusterProfile.slots && clusterProfile.slots[s]) || {};
-      slotsPatch[s] = { browserProfileId: prev.browserProfileId || s, deviceProfileId: prev.deviceProfileId || null, proxyRef: refs[s] };
+      // Only the slots we just applied change their proxyRef; blank rows keep their
+      // existing binding (proxy or DIRECT) — never overwritten to null (§10).
+      const proxyRef = refs[s] != null ? refs[s] : (prev.proxyRef || null);
+      slotsPatch[s] = { browserProfileId: prev.browserProfileId || s, deviceProfileId: prev.deviceProfileId || null, proxyRef };
     }
     let upd;
     try { upd = updateClusterProfile(clusterProfileId, { slots: slotsPatch }); } catch (e) { upd = err('PHOM_PROXY_QUICK_APPLY_PARTIAL', safe(e)); }

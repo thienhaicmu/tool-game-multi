@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { applyQuickProxies } = require('../../desktop/protocol/phom/quick-proxy-apply.cjs');
-const { parseQuickProxies } = require('../../desktop/browser-run/phom-quick-proxy.cjs');
+const { parseQuickProxies, parseQuickProxyRows } = require('../../desktop/browser-run/phom-quick-proxy.cjs');
 const { ProxyConfigStore } = require('../../desktop/browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('../../desktop/browser-run/proxy-secret-store.cjs');
 const { PhomProfileStore } = require('../../desktop/browser-run/phom-profile-store.cjs');
@@ -36,6 +36,50 @@ function mockOps(over = {}) {
     },
   };
 }
+
+// PROXY OPTIONAL (§10) — "ÁP DỤNG 3 PROXY" applies ONLY the rows that carry input.
+test('partial apply binds ONLY the provided slots; blank rows create no proxy', () => {
+  const m = mockOps();
+  // user filled A and C only (B blank) — parser in partial mode yields a sparse map.
+  const parsed = parseQuickProxyRows([
+    { slot: 'A', protocol: 'http', value: 'h1|8080' },
+    { slot: 'B', protocol: 'http', value: '' },
+    { slot: 'C', protocol: 'http', value: 'h3|8082' },
+  ], { partial: true });
+  assert.equal(parsed.ok, true);
+  assert.deepEqual(Object.keys(parsed.slots).sort(), ['A', 'C'], 'blank B is skipped');
+  const res = applyQuickProxies({ slots: parsed.slots }, m.ops);
+  assert.equal(res.ok, true);
+  assert.equal(m.created.size, 2, 'only two proxies created (no empty proxy for B)');
+  assert.equal(res.refs.A != null, true);
+  assert.equal(res.refs.B, null, 'B left as-is (Direct or existing binding)');
+  assert.equal(res.refs.C != null, true);
+  assert.equal(m.boundRefs.B, undefined, 'B binding untouched');
+});
+
+test('partial apply on a cluster keeps blank slots on their existing binding (never nulled)', () => {
+  const clusterProfile = { id: 'CL1', slots: {
+    A: { browserProfileId: 'A', deviceProfileId: 'dA', proxyRef: 'OLD-A' },
+    B: { browserProfileId: 'B', deviceProfileId: 'dB', proxyRef: 'KEEP-B' },
+    C: { browserProfileId: 'C', deviceProfileId: 'dC', proxyRef: null },
+  } };
+  let patched = null;
+  const m = mockOps({ getClusterProfile: () => clusterProfile, updateClusterProfile: (_id, patch) => { patched = patch; return { ok: true }; } });
+  const parsed = parseQuickProxyRows([{ slot: 'A', protocol: 'http', value: 'h1|8080' }], { partial: true });
+  const res = applyQuickProxies({ slots: parsed.slots, clusterProfileId: 'CL1' }, m.ops);
+  assert.equal(res.ok, true);
+  assert.equal(patched.slots.A.proxyRef, res.refs.A, 'A rebound to the new proxy');
+  assert.equal(patched.slots.B.proxyRef, 'KEEP-B', 'B keeps its existing proxy binding');
+  assert.equal(patched.slots.C.proxyRef, null, 'C stays Direct');
+});
+
+test('applying with NO input at all is a typed no-op error (never creates empty proxies)', () => {
+  const m = mockOps();
+  const res = applyQuickProxies({ slots: {} }, m.ops);
+  assert.equal(res.ok, false);
+  assert.equal(res.error.code, 'PHOM_PROXY_QUICK_INPUT_REQUIRED');
+  assert.equal(m.created.size, 0);
+});
 
 test('3/3 success binds A/B/C to their own new proxyRefs (no cross-use)', () => {
   const m = mockOps();

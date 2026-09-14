@@ -313,7 +313,9 @@ else {
     ensureStores();
     const p = payload && typeof payload === 'object' ? payload : {};
     // New UI sends slot-labeled rows [{slot,protocol,value}]; legacy path sends {text,protocol}.
-    const parsed = Array.isArray(p.rows) ? parseQuickProxyRows(p.rows) : parseQuickProxies(p.text, { protocol: p.protocol });
+    // Proxy is OPTIONAL (§10): the UI applies only non-empty rows (partial), leaving blank
+    // slots on their existing binding (DIRECT or a previously-bound proxy).
+    const parsed = Array.isArray(p.rows) ? parseQuickProxyRows(p.rows, { partial: p.partial !== false }) : parseQuickProxies(p.text, { protocol: p.protocol });
     if (!parsed.ok) return parsed; // typed parse error (never contains a credential)
     const clusterProfileId = p.clusterProfileId != null && String(p.clusterProfileId).trim() ? String(p.clusterProfileId).trim() : null;
     return applyQuickProxies({ slots: parsed.slots, clusterProfileId }, {
@@ -334,17 +336,18 @@ else {
     if (phomCluster) return phomCluster;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
     phomCluster = new PhomClusterCdpManager({
-      // In LOCAL RUNTIME TEST the browser opens with proxyRequired=false at a neutral
-      // local page (about:blank, §7) for browser/CDP/device verification; otherwise the
-      // production proxy gate stays in force and the browser navigates to the profile's
-      // AUTHORITATIVE shared game URL (used only after the CTA, never at boot). The
-      // browser profile identity comes from the saved profile projection, not the slot.
+      // In LOCAL RUNTIME TEST the browser opens at a neutral local page (about:blank, §7)
+      // for browser/CDP/device verification; otherwise it navigates to the profile's
+      // AUTHORITATIVE shared game URL (used only after the CTA, never at boot). Proxy is
+      // OPTIONAL: a slot with a proxyRef runs PROXY (enforced, no silent fallback); a slot
+      // without one runs DIRECT. The browser profile identity comes from the saved profile
+      // projection, not the slot.
       openProfile: (slot, cfg) => openProfile({
         slot,
         profileKey: (cfg && cfg.browserProfileId) || slot,
         url: localTestActive() ? 'about:blank' : ((cfg && cfg.gameUrl) || 'about:blank'),
         proxyRef: (cfg && cfg.proxyRef) || undefined,
-        proxyRequired: !localTestActive(),
+        proxyRequired: false, // proxy optional: presence of proxyRef governs PROXY vs DIRECT
         label: (cfg && cfg.label) || `Profile ${slot}`,
       }),
       getRunClient: runClientFor,
@@ -595,8 +598,10 @@ else {
     // Prefer the saved profile's proxy/device; explicit args override.
     const saved = profileStore.get(pk) || {};
     const effProxyRef = proxyRef !== undefined ? proxyRef : (saved.proxyRef || null);
-    const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired !== false }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
-    if (!gate.ok) return gate; // PROXY_CONFIG_REQUIRED / NOT_FOUND — launch blocked
+    // Proxy is OPTIONAL: no proxyRef => DIRECT. A bound proxyRef must resolve (no silent
+    // fallback). `proxyRequired` stays an explicit opt-IN (default optional).
+    const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired === true }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
+    if (!gate.ok) return gate; // PROXY_CONFIG_NOT_FOUND / DISABLED (bound proxy) — launch blocked; DIRECT is allowed
     const device = profileStore.deviceFor(pk);
     // Chromium sandbox policy for THIS launch (sandbox ON unless the fully-gated dev
     // diagnostic bypass applies). When the sandbox stays ON we self-heal the runtime's

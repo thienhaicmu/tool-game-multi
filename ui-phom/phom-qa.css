@@ -58,7 +58,9 @@ button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-
 .act-error { color: var(--error); background: var(--error-bg); border: 1px solid #f3c9c9; border-radius: 8px; padding: 8px 10px; font-size: 13px; margin-top: 12px; }
 .act-exp { color: var(--success); font-size: 12px; margin-top: 10px; }
 
-/* single tool surface */
+/* single tool surface — the height chain must resolve so the flex Screen-1 (sticky CTA)
+   and the Screen-2 monitor can size to the viewport. */
+#workspace { height: 100%; min-height: 0; }
 #phq-root { padding: 10px; overflow: auto; height: 100%; }
 
 /* status pills */
@@ -237,3 +239,46 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .qa-mon-controls { display: flex; align-items: center; gap: 6px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
 .qa-mon-controls .btn { padding: 3px 8px; }
 .faint.sm, .warnrow.sm { font-size: 11px; }
+
+/* ================= SCREEN 1 — TWO-COLUMN SETUP (locked design) ================= */
+#phq-root.mode-setup { display: flex; flex-direction: column; padding: 8px 10px; overflow: hidden; }
+.mode-setup .dev-banner { padding: 2px 8px; font-size: 11px; margin-bottom: 4px; border-radius: 6px; }
+.s1-header { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
+.s1-note { flex: 0 0 auto; margin: 2px 0; } .s1-note:empty { display: none; }
+/* the two-column grid fills the remaining height; each column stacks its panels */
+.setup { display: grid; grid-template-columns: 1fr 0.95fr; gap: 8px; flex: 1 1 auto; min-height: 0; margin-top: 4px; }
+.s1-col { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
+.s1-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; box-shadow: var(--shadow); }
+.s1-panel-t { font-size: 11px; font-weight: 700; color: var(--text-2); letter-spacing: .6px; text-transform: uppercase; margin-bottom: 5px; }
+.s1-panel-t .qp-hint { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-faint); }
+.s1-row { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
+.s1-row > .lbl { flex: 0 0 auto; min-width: 30px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.s1-row .f, .s1-row .phq-in { flex: 1 1 auto; min-width: 0; }
+.s1-host { flex: 0 0 auto; max-width: 92px; }
+/* left panel 2 — A/B/C DISPLAY rows (device + assigned redacted proxy + status). No
+   proxy selector / Test here (that lives in the right Quick Proxy panel). */
+.prow.s1 { flex-direction: row; align-items: center; gap: 6px; padding: 5px 7px; margin: 5px 0 0; min-height: 40px; box-shadow: none; }
+.prow.s1 .slot-tag { flex: 0 0 auto; width: 20px; height: 20px; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: #e8f0fe; color: #1d4ed8; font-weight: 800; font-size: 12px; }
+.prow.s1 .ar-dev { flex: 1 1 46%; min-width: 0; font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: inline-flex; align-items: center; gap: 3px; }
+.prow.s1 .ar-px { flex: 1 1 40%; min-width: 0; font-size: 11px; color: var(--text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.prow.s1 .badge { flex: 0 0 auto; }
+.icon-btn { border: none; background: none; cursor: pointer; color: var(--text-2); font-size: 12px; padding: 0 2px; border-radius: 4px; }
+.icon-btn:hover { background: var(--panel-2); color: var(--primary); }
+.btn.sm { padding: 3px 8px; font-size: 11px; margin: 0; }
+/* right panel — quick proxy (compact rows) */
+.s1-right .qp-panel.compact { flex: 0 0 auto; }
+.qp-panel.compact .qp-row { margin: 4px 0; gap: 6px; }
+.qp-panel.compact .qp-slot { width: 20px; height: 20px; font-size: 11px; }
+.qp-panel.compact .qp-proto { max-width: 84px; flex: 0 0 auto; }
+.qp-panel.compact .qp-in { flex: 1 1 auto; min-width: 0; }
+.qp-panel.compact .qp-actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
+.qp-panel.compact .qp-actions .note { margin: 0; font-size: 11px; }
+/* right footer — pinned to the bottom of the right column, single CTA always visible */
+.s1-footer { margin-top: auto; padding-top: 6px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.s1-localtest { font-size: 11px; color: var(--text-2); display: inline-flex; align-items: center; gap: 3px; flex: 1 1 100%; }
+.s1-footer .cta-open { flex: 1 1 auto; width: auto; margin: 0; padding: 10px; font-size: 14px; }
+.s1-warn { flex: 1 1 100%; margin: 2px 0 0; font-size: 11px; }
+
+/* Screen 2 monitor source badge + friendly stake code */
+.mon-srcbadge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 9px; background: #fff2df; color: #b45309; border: 1px solid #f0dcb0; margin-left: 6px; }
+.ft-code { font-size: 10px; color: var(--text-faint); }

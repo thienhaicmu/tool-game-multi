@@ -72,6 +72,8 @@ class HostSessionManager extends EventEmitter {
 
   setHost(hostId) { const c = this._c(); return c ? c.setHost(hostId) : { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no session' } }; }
   selectStake(stake) { const c = this._c(); return c ? { ok: true, selected: c.selectStake(stake) } : { ok: false }; }
+  requestChannels() { return this._guarded((c) => c.requestChannels()); }
+  availableStakes() { const c = this._c(); return c && typeof c.availableStakes === 'function' ? c.availableStakes() : []; }
   acquireHost() { return this._guarded((c) => c.acquireHost()); }
   joinFollowers() { return this._guarded((c) => c.joinFollowers()); }
   applyReady() { return this._guarded((c) => c.applyReady()); }

@@ -110,6 +110,41 @@ test('testClusterProxies fans out; 3/3 PASS => ok', async () => {
   assert.equal(res.pass, 3);
 });
 
+// PROXY OPTIONAL — a cluster with Direct slots opens and tests without treating the
+// missing proxy as a failure (§10/§11).
+test('cluster opens with all THREE slots Direct (no proxyRef) — proxy optional', async () => {
+  const { mgr, dev, opened } = makeManager();
+  mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
+    { slot: 'A', proxyRef: null, device: dev.A }, { slot: 'B', proxyRef: null, device: dev.B }, { slot: 'C', proxyRef: null, device: dev.C },
+  ] });
+  const res = await mgr.openCluster();
+  assert.equal(res.ok, true);
+  assert.deepEqual(opened.sort(), ['A', 'B', 'C']);
+});
+
+test('cluster opens in MIXED mode: A=PROXY, B=DIRECT, C=PROXY', async () => {
+  const { mgr, dev, opened } = makeManager();
+  mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
+    { slot: 'A', proxyRef: 'px-A', device: dev.A }, { slot: 'B', proxyRef: null, device: dev.B }, { slot: 'C', proxyRef: 'px-C', device: dev.C },
+  ] });
+  const res = await mgr.openCluster();
+  assert.equal(res.ok, true);
+  assert.deepEqual(opened.sort(), ['A', 'B', 'C']);
+});
+
+test('TEST TẤT CẢ: Direct slots return DIRECT (skipped), never a failure; configured proxies still pass', async () => {
+  const { mgr, dev } = makeManager();
+  mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
+    { slot: 'A', proxyRef: 'px-A', device: dev.A }, { slot: 'B', proxyRef: null, device: dev.B }, { slot: 'C', proxyRef: 'px-C', device: dev.C },
+  ] });
+  const res = await mgr.testClusterProxies();
+  assert.equal(res.ok, true, 'mixed cluster with a Direct slot is OK (Direct is not a failure)');
+  assert.equal(res.pass, 2, 'two configured proxies passed');
+  assert.equal(res.direct, 1, 'one Direct slot skipped');
+  const bySlot = Object.fromEntries(res.results.map((r) => [r.slot, r.state]));
+  assert.equal(bySlot.B, 'DIRECT');
+});
+
 // §9/§17.C — event envelope validation + isolation.
 test('event envelope rejects wrong-cluster / wrong-profile / duplicate / out-of-order', async () => {
   const routed = [];

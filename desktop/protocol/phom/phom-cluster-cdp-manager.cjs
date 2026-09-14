@@ -142,14 +142,19 @@ class PhomClusterCdpManager extends EventEmitter {
     const results = [];
     for (const s of SLOTS) {
       const slot = this._slot(s);
-      if (!slot.proxyRef) { slot.proxyState = 'NOT_CONFIGURED'; results.push({ slot: s, state: 'NOT_CONFIGURED' }); continue; }
+      // Proxy optional: a slot with no proxyRef runs DIRECT — it is SKIPPED, never a
+      // test failure (§11).
+      if (!slot.proxyRef) { slot.proxyState = 'DIRECT'; results.push({ slot: s, state: 'DIRECT' }); continue; }
       let r; try { r = await this._testProxy(slot.proxyRef); } catch (e) { r = { state: 'FAILED', error: { message: safe(e) } }; }
       slot.proxyState = (r && r.state) || 'FAILED'; slot.observedIp = (r && r.observedIp) || null;
       results.push({ slot: s, state: slot.proxyState, observedIp: slot.observedIp });
     }
     this._emit();
     const pass = results.filter((r) => r.state === 'PASS').length;
-    return { ok: pass === 3, pass, results };
+    const direct = results.filter((r) => r.state === 'DIRECT').length;
+    const failed = results.filter((r) => r.state !== 'PASS' && r.state !== 'DIRECT').length;
+    // ok when every CONFIGURED proxy passed; DIRECT slots are skipped, not failures.
+    return { ok: failed === 0, pass, direct, results };
   }
 
   // §14 game orchestration is delegated to the existing HostSessionManager, mapping the

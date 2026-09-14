@@ -153,19 +153,25 @@ function parseQuickProxies(text, { protocol } = {}) {
  * its OWN protocol selector. Reuses parseLineBody + the same protocol/host/port rules
  * as the textarea path (single source of truth). Never leaks a credential.
  */
-function parseQuickProxyRows(rows) {
+function parseQuickProxyRows(rows, { partial = false } = {}) {
   if (!Array.isArray(rows) || rows.length === 0) return err('PHOM_PROXY_QUICK_INPUT_REQUIRED', 'Chưa nhập proxy nào');
   const bySlot = {};
   for (const raw of rows) {
     const slot = String(raw && raw.slot || '').toUpperCase();
     if (!SLOTS.includes(slot)) return err('PHOM_PROXY_FORMAT_INVALID', `Slot không hợp lệ: ${slot || '(trống)'}`);
     if (bySlot[slot]) return err('PHOM_PROXY_SLOT_DUPLICATED', `Slot ${slot} bị lặp`, { slot });
+    // In PARTIAL mode (proxy optional, §10) a blank value means "leave this slot as-is":
+    // skip it rather than fail. In strict mode an empty value still errors in parseLineBody.
+    if (partial && (raw.value == null || String(raw.value).trim() === '')) continue;
     bySlot[slot] = raw;
   }
-  for (const s of SLOTS) if (!bySlot[s]) return err('PHOM_PROXY_SLOT_MISSING', `Thiếu slot ${s}`, { slot: s });
+  // Strict mode requires all three slots; partial mode requires at least one input row.
+  if (!partial) { for (const s of SLOTS) if (!bySlot[s]) return err('PHOM_PROXY_SLOT_MISSING', `Thiếu slot ${s}`, { slot: s }); }
+  else if (!Object.keys(bySlot).length) return err('PHOM_PROXY_QUICK_INPUT_REQUIRED', 'Nhập proxy cho ít nhất một slot');
 
+  const targetSlots = SLOTS.filter((s) => bySlot[s]);
   const slots = {};
-  for (const s of SLOTS) {
+  for (const s of targetSlots) {
     const row = bySlot[s];
     const selector = String(row.protocol || '').toLowerCase();
     if (!PROTOCOLS.has(selector)) return err('PHOM_PROXY_PROTOCOL_INVALID', `Slot ${s}: loại proxy không hợp lệ`, { slot: s, supported: [...PROTOCOLS] });

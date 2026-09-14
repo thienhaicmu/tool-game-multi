@@ -134,11 +134,14 @@ class PhomClusterProfileStore {
       const slot = profile.slots[s];
       const browserProfile = slot.browserProfileId ? this._resolveBrowserProfile(slot.browserProfileId) : null;
       const device = (browserProfile && slot.deviceProfileId) ? this._resolveDevice(slot.browserProfileId, slot.deviceProfileId) : null;
-      const proxyExists = slot.proxyRef ? !!this._resolveProxy(slot.proxyRef) : false;
+      const hasRef = !!slot.proxyRef;
+      const proxyExists = hasRef ? !!this._resolveProxy(slot.proxyRef) : false;
       if (!browserProfile) browserMissing.push(s);
       if (!device) deviceMissing.push(s);
-      if (!slot.proxyRef || !proxyExists) proxyMissing.push(s);
-      slots[s] = { browserProfile, device, proxyRef: slot.proxyRef || null, proxyExists };
+      // Proxy is OPTIONAL: a null proxyRef => DIRECT (valid). Only a DANGLING ref (set
+      // but unresolvable) counts as missing/not-ready.
+      if (hasRef && !proxyExists) proxyMissing.push(s);
+      slots[s] = { browserProfile, device, proxyRef: slot.proxyRef || null, proxyExists, executionMode: hasRef ? 'PROXY' : 'DIRECT' };
     }
     const state = model.deriveState(profile, { proxyMissing, browserMissing, deviceMissing });
     return { slots, proxyMissing, browserMissing, deviceMissing, state };

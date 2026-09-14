@@ -252,6 +252,40 @@ test('offline engine imports NO live/browser/network modules', () => {
   }
 });
 
+// §19/§26 — ROW 1 "cards not forming a phỏm" is the engine-computed complement of the
+// union of derived melds (never recomputed/hard-coded in the renderer).
+test('cardsNotInMeld is the exact complement of the union of derived meld cards', () => {
+  // hand: AAA set (0,1,2) + 4-5-6♠ run (12,16,20) + two loose cards 2♣(5), K♥(51).
+  const events = [{ seq: 1, frame: [5, { cmd: 850, cs: [0, 1, 2, 12, 16, 20, 5, 51, 40], tP: { uid: OWNER } }] }];
+  const s = new PhomOfflineSimulator({ events, simulatedOwnerUid: OWNER, sourceKind: 'TEST_FIXTURE' });
+  const snap = s.end();
+  const meldUnion = new Set(snap.derivedMelds.flatMap((m) => m.cards));
+  // complement = hand cards not in any derived meld
+  const expected = snap.hand.cards.filter((c) => !meldUnion.has(c)).sort((a, b) => a - b);
+  assert.deepEqual([...snap.cardsNotInMeld], expected);
+  // 40 (J♠) is loose here (no J run/set), 5 and 51 loose; 0,1,2,12,16,20 are in melds.
+  assert.equal(snap.cardsNotInMeld.includes(5), true);
+  assert.equal(snap.cardsNotInMeld.includes(51), true);
+  assert.equal(snap.cardsNotInMeld.includes(0), false);
+});
+
+test('cardsNotInMeld changes when the fixture hand changes (engine-driven, not hard-coded)', () => {
+  const handA = new PhomOfflineSimulator({ events: [{ seq: 1, frame: [5, { cmd: 850, cs: [0, 1, 2, 12, 16, 20, 5, 51, 40], tP: { uid: OWNER } }] }], simulatedOwnerUid: OWNER, sourceKind: 'TEST_FIXTURE' }).end();
+  // a hand with NO melds at all => every card is "not forming a phỏm".
+  const handB = new PhomOfflineSimulator({ events: [{ seq: 1, frame: [5, { cmd: 850, cs: [0, 5, 10, 15, 20, 25, 30, 35, 40], tP: { uid: OWNER } }] }], simulatedOwnerUid: OWNER, sourceKind: 'TEST_FIXTURE' }).end();
+  assert.notDeepEqual([...handA.cardsNotInMeld], [...handB.cardsNotInMeld]);
+  assert.equal(handB.cardsNotInMeld.length, handB.hand.count, 'no melds => all cards loose');
+  assert.equal(handB.derivedMelds.length, 0);
+});
+
+test('cardsNotInMeld is empty (UNKNOWN) when the hand is not authoritative', () => {
+  // a public opponent discard with no DEAL/DRAW for the owner => not authoritative.
+  const s = new PhomOfflineSimulator({ events: [{ seq: 1, frame: [5, { cmd: 851, fP: { uid: OPP, dCs: 24 }, tP: { uid: OWNER } }] }], simulatedOwnerUid: OWNER, sourceKind: 'REDACTED_REPLAY' });
+  const snap = s.end();
+  assert.equal(snap.authoritative, false);
+  assert.deepEqual([...snap.cardsNotInMeld], []);
+});
+
 test('bundled sample datasets are all offline-allowed and replayable', () => {
   const list = listDatasets();
   assert.ok(list.length >= 1);

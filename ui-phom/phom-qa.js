@@ -148,39 +148,91 @@
 
   function selectedProfile() { return clusterProfiles.find((p) => p.id === selectedClusterProfileId) || null; }
 
-  // ================= SCREEN 1 — SETUP =================
+  // ================= SCREEN 1 — SETUP (two-column grid, no-scroll at ~960×516) ==========
+  // Layout follows the locked design: a thin header + a 2-column grid (1fr / 0.95fr).
+  //   LEFT : "CẤU HÌNH CHUNG" (Cluster+HOST row, shared Link Game) + "THIẾT BỊ VÀ PROXY
+  //          ĐÃ GÁN" (A/B/C display rows — device + assigned redacted proxy + status).
+  //   RIGHT: "THIẾT LẬP NHANH 3 PROXY" (per-slot protocol+input + Apply/Test) + footer
+  //          (Local Runtime Test + the single RUN GAME CTA).
+  // The right column is where proxies are CONFIGURED; the left rows only DISPLAY the
+  // assigned proxy — never a second set of proxy controls.
   function renderSetup(r) {
-    r.appendChild(header('SETUP'));
-    r.appendChild(el('div', { class: 'note faint' }, 'Cấu hình một Link Game dùng chung + proxy/thiết bị cho 3 hồ sơ, rồi mở cả ba trình duyệt bằng một nút.'));
-    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
+    const h = header('SETUP'); h.classList.add('s1-header'); r.appendChild(h);
+    r.appendChild(el('div', { class: 'note s1-note', id: 'phq-note' }, ''));
 
-    // A — Cluster Profile
-    renderClusterProfiles(r);
-    // B — shared Link Game + C — HOST/stake (bound to the selected cluster profile)
-    renderGameLink(r);
+    const grid = el('div', { class: 'setup', id: 'phq-setup-grid' });
+    const left = el('div', { class: 's1-col s1-left' });
+    left.appendChild(panelGeneral());
+    left.appendChild(panelAssigned());
+    const right = el('div', { class: 's1-col s1-right' });
+    right.appendChild(panelQuickProxy());
+    right.appendChild(footerRunGame());
+    grid.appendChild(left); grid.appendChild(right);
+    r.appendChild(grid);
+  }
 
-    // D — three profile rows (device + proxy)
-    r.appendChild(el('div', { class: 'section-t' }, 'HỒ SƠ 3 TRÌNH DUYỆT (PROXY + THIẾT BỊ)'));
-    for (const slot of SLOTS) r.appendChild(setupRow(slot));
+  // LEFT panel 1 — CẤU HÌNH CHUNG: Cluster Profile + HOST on one row, shared Link below.
+  function panelGeneral() {
+    const p = selectedProfile();
+    const panel = el('div', { class: 's1-panel' }, el('div', { class: 's1-panel-t' }, 'CẤU HÌNH CHUNG'));
+    // Cluster select + HOST select + ONE cluster-management ⋯ menu.
+    const sel = el('select', { id: 'cl-sel', class: 'phq-in', onchange: async (e) => { await api.clusterProfileSelect(e.target.value || ''); await refreshClusterProfiles(); renderApp(); } });
+    sel.appendChild(el('option', { value: '' }, '— chọn cụm —'));
+    for (const cp of clusterProfiles) { const o = el('option', { value: cp.id }, `${cp.name} · ${cp.state}`); if (cp.id === selectedClusterProfileId) o.setAttribute('selected', 'selected'); sel.appendChild(o); }
+    const menu = el('div', { class: 'qa-more-menu', hidden: 'hidden' },
+      el('button', { class: 'menu-item', onclick: () => { menu.hidden = true; clusterProfileCreate(); } }, 'Tạo cụm'),
+      el('button', { class: 'menu-item', onclick: () => { menu.hidden = true; clusterProfileEdit(); } }, 'Sửa cụm'),
+      el('button', { class: 'menu-item', onclick: () => { menu.hidden = true; clusterProfileDuplicate(); } }, 'Nhân bản'),
+      el('button', { class: 'menu-item danger', onclick: () => { menu.hidden = true; clusterProfileDelete(); } }, 'Xóa cụm'));
+    const more = el('div', { class: 'qa-more' }, el('button', { class: 'btn sm', title: 'Quản lý cụm', onclick: () => { menu.hidden = !menu.hidden; } }, '⋯'), menu);
+    const hostSel = el('select', { class: 'sel s1-host', id: 'phq-hostslot', title: 'Chọn HOST', disabled: p ? null : true, onchange: async (e) => { if (p) { await api.clusterProfileUpdate(p.id, { defaultHostSlot: e.target.value }); await refreshClusterProfiles(); } } });
+    for (const slot of SLOTS) { const o = el('option', { value: slot }, 'HOST ' + slot); if (p && (p.defaultHostSlot || 'A') === slot) o.setAttribute('selected', 'selected'); hostSel.appendChild(o); }
+    panel.appendChild(el('div', { class: 's1-row' }, el('span', { class: 'lbl' }, 'Cụm'), sel, hostSel, more));
+    panel.appendChild(el('div', { class: 'note', id: 'cl-note' }, ''));
+    // shared Link Game (one input for A/B/C).
+    if (!p) { panel.appendChild(el('div', { class: 's1-row' }, el('span', { class: 'lbl' }, 'Link'), el('span', { class: 'note faint' }, 'Chọn/tạo một Cụm để nhập Link Game.'))); return panel; }
+    const urlInput = el('input', { class: 'f', id: 'phq-gameurl', type: 'url', spellcheck: 'false', value: p.gameUrl || '', placeholder: 'https://game.example.com/room',
+      onchange: async (e) => { const res = await api.clusterProfileUpdate(p.id, { gameUrl: (e.target.value || '').trim() || null }); await refreshClusterProfiles(); if (res && res.ok === false) glNote(errText(res), true); else { glNote('Đã lưu Link Game.'); renderApp(); } } });
+    panel.appendChild(el('div', { class: 's1-row' }, el('span', { class: 'lbl' }, 'Link'), urlInput, localTest ? el('span', { class: 'pill warn' }, 'LOCAL') : null));
+    panel.appendChild(el('div', { class: 'note', id: 'phq-glnote' }, ''));
+    return panel;
+  }
 
-    // E — Quick Proxy
-    renderQuickProxy(r);
+  // LEFT panel 2 — THIẾT BỊ VÀ PROXY ĐÃ GÁN: A/B/C display rows (NO proxy selector/Test).
+  function panelAssigned() {
+    const panel = el('div', { class: 's1-panel' }, el('div', { class: 's1-panel-t' }, 'THIẾT BỊ VÀ PROXY ĐÃ GÁN'));
+    for (const slot of SLOTS) panel.appendChild(assignedRow(slot));
+    return panel;
+  }
+  function assignedRow(slot) {
+    const a = assign[slot];
+    const saved = profiles[slot] || {};
+    if (a.proxyRef == null && saved.proxyRef) a.proxyRef = saved.proxyRef;
+    const dev = saved.device;
+    const px = proxies.find((x) => x.id === a.proxyRef);
+    const pxText = px ? `${px.protocol}://${px.host}:${px.port}` : 'Trực tiếp (không proxy)'; // redacted (no password)
+    // Proxy is OPTIONAL: a slot with no proxyRef runs in DIRECT mode — a neutral, valid
+    // state (never an error). Only a slot WITH a proxy shows its test state.
+    const status = !a.proxyRef ? 'DIRECT' : a.testState;
+    return el('div', { class: 'prow s1', id: 'setup-' + slot },
+      el('span', { class: 'slot-tag' }, slot),
+      el('span', { class: 'ar-dev', title: dev ? `${dev.name} · ${dev.resolution}` : '(chưa tạo thiết bị)' },
+        dev ? `${dev.name} · ${dev.resolution}` : '(chưa tạo)',
+        el('button', { class: 'icon-btn', title: dev ? 'Sửa thiết bị' : 'Tạo thiết bị', onclick: () => openDeviceModal(slot) }, '✎')),
+      el('span', { class: 'ar-px', title: pxText }, pxText),
+      el('span', { class: 'badge ' + testBadge(status), title: a.ip ? ('IP ' + a.ip) : '' }, status),
+    );
+  }
 
-    if (caps.devBypass) r.appendChild(el('label', { class: 'phq-row', style: 'font-size:12px' },
-      el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; } }),
-      el('span', null, 'Local runtime test (mở browser trang local, không dùng Link Game/proxy)')));
-
-    // F — the SINGLE primary CTA that opens all three browsers from the saved profile.
-    r.appendChild(el('button', { class: 'btn primary cta-open', onclick: openCluster }, localTest ? 'RUN GAME — MỞ 3 TRÌNH DUYỆT (LOCAL TEST)' : 'RUN GAME — MỞ 3 TRÌNH DUYỆT'));
-    if (!setupReady()) r.appendChild(el('div', { class: 'warnrow' }, setupReason()));
-
-    r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
-    r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
-    r.appendChild(el('button', { class: 'btn', onclick: openSimulator }, 'MÔ PHỎNG REALTIME — QA OFFLINE'));
-
-    const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
-    det.appendChild(el('pre', { style: 'font-size:11px;color:var(--text-2);max-height:160px;overflow:auto;white-space:pre-wrap' }, JSON.stringify({ caps, profiles: Object.keys(profiles) }, null, 2)));
-    r.appendChild(det);
+  // RIGHT footer — Local Runtime Test + the SINGLE RUN GAME CTA (visible in the column).
+  function footerRunGame() {
+    const footer = el('div', { class: 's1-footer' });
+    if (caps.devBypass) footer.appendChild(el('label', { class: 's1-localtest' },
+      el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; renderApp(); } }),
+      ' Local Runtime Test (about:blank)'));
+    footer.appendChild(el('button', { class: 'btn primary cta-open', disabled: setupReady() ? null : true, onclick: openCluster }, 'RUN GAME — MỞ 3 TRÌNH DUYỆT'));
+    if (!setupReady()) footer.appendChild(el('div', { class: 'warnrow s1-warn' }, setupReason()));
+    return footer;
   }
 
   // ---- cluster profiles (saved configs) — minimal CRUD seam (§11) ----
@@ -198,48 +250,9 @@
   // §4B/§4C — one shared Link Game + HOST on the Cluster Profile. The exact URL is
   // reused by all three slots at RUN GAME; there are no per-slot URLs. NO stake here —
   // the stake is chosen only at Screen 2's TÌM BÀN step (§4D/§13).
-  function renderGameLink(r) {
-    const p = selectedProfile();
-    r.appendChild(el('div', { class: 'section-t' }, 'LINK GAME (DÙNG CHUNG A/B/C)'));
-    if (!p) { r.appendChild(el('div', { class: 'note faint' }, 'Chọn/tạo một Cluster Profile để nhập Link Game.')); return; }
-    const urlInput = el('input', {
-      class: 'f', id: 'phq-gameurl', type: 'url', spellcheck: 'false', value: p.gameUrl || '',
-      placeholder: 'https://game.example.com/room',
-      onchange: async (e) => {
-        const res = await api.clusterProfileUpdate(p.id, { gameUrl: (e.target.value || '').trim() || null });
-        await refreshClusterProfiles();
-        if (res && res.ok === false) glNote(errText(res), true);
-        else { glNote('Đã lưu Link Game.'); renderApp(); }
-      },
-    });
-    r.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'Link'), urlInput, localTest ? el('span', { class: 'pill warn' }, 'LOCAL TEST') : null));
-    r.appendChild(el('div', { class: 'note', id: 'phq-glnote' }, ''));
-
-    // HOST only (defaultHostSlot on the profile). Stake is NOT set on Screen 1.
-    const hostSel = el('select', { class: 'sel', id: 'phq-hostslot', onchange: async (e) => { await api.clusterProfileUpdate(p.id, { defaultHostSlot: e.target.value }); await refreshClusterProfiles(); } });
-    for (const slot of SLOTS) { const o = el('option', { value: slot }, 'HOST = ' + slot); if ((p.defaultHostSlot || 'A') === slot) o.setAttribute('selected', 'selected'); hostSel.appendChild(o); }
-    r.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'HOST'), hostSel));
-  }
+  // Compact: one row — [Link] [url ................] [HOST select]. One shared URL for
+  // A/B/C. NO stake here (stake is chosen only at Screen 2's TÌM BÀN).
   function glNote(msg, warn) { const n = $('phq-glnote'); if (n) { n.textContent = msg || ''; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
-
-  function renderClusterProfiles(r) {
-    r.appendChild(el('div', { class: 'section-t' }, 'CẤU HÌNH CỤM (CLUSTER PROFILE)'));
-    const sel = el('select', { id: 'cl-sel', class: 'phq-in', onchange: async (e) => { await api.clusterProfileSelect(e.target.value || ''); await refreshClusterProfiles(); renderApp(); } });
-    sel.appendChild(el('option', { value: '' }, '— chưa chọn —'));
-    for (const p of clusterProfiles) {
-      const o = el('option', { value: p.id }, `${p.name} · ${p.state}`);
-      if (p.id === selectedClusterProfileId) o.setAttribute('selected', 'selected');
-      sel.appendChild(o);
-    }
-    r.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'Hồ sơ cụm'), sel));
-    r.appendChild(el('div', { class: 'phq-row' },
-      el('button', { class: 'btn', onclick: clusterProfileCreate }, 'Tạo'),
-      el('button', { class: 'btn', onclick: clusterProfileEdit }, 'Sửa'),
-      el('button', { class: 'btn', onclick: clusterProfileDuplicate }, 'Nhân bản'),
-      el('button', { class: 'btn danger', onclick: clusterProfileDelete }, 'Xóa'),
-    ));
-    r.appendChild(el('div', { class: 'note', id: 'cl-note' }, ''));
-  }
 
   async function clusterProfileCreate() {
     const name = (window.prompt('Tên cấu hình cụm:', 'Cụm mới') || '').trim();
@@ -283,10 +296,12 @@
   // §4F/§6 — three LABELED rows (A/B/C). Each row already KNOWS its slot (the A/B/C
   // label is the authoritative mapping), so the user never types an A=/B=/C= prefix.
   // Each row has its own protocol selector + a plain host|port[|user|pass] input.
-  function renderQuickProxy(r) {
-    r.appendChild(el('div', { class: 'section-t' }, 'THIẾT LẬP NHANH 3 PROXY'));
-    const panel = el('div', { class: 'qp-panel' });
-    panel.appendChild(el('div', { class: 'qp-hint' }, 'Đã xác định sẵn A/B/C — chỉ nhập proxy, không nhập A= B= C='));
+  // RIGHT panel — THIẾT LẬP NHANH 3 PROXY: three slot-labeled rows (protocol + input) +
+  // ÁP DỤNG / TEST. Returns the panel element (placed in the right grid column).
+  function panelQuickProxy() {
+    const panel = el('div', { class: 's1-panel qp-panel compact' });
+    panel.appendChild(el('div', { class: 's1-panel-t' }, 'THIẾT LẬP NHANH 3 PROXY',
+      el('span', { class: 'qp-hint' }, ' · chỉ nhập proxy, không cần A= B= C=')));
     for (const slot of SLOTS) {
       const proto = el('select', { class: 'sel qp-proto', id: 'qp-proto-' + slot, 'aria-label': 'Loại proxy ' + slot });
       for (const p of ['http', 'https', 'socks5', 'socks4']) proto.appendChild(el('option', { value: p }, p.toUpperCase()));
@@ -294,19 +309,21 @@
       panel.appendChild(el('div', { class: 'qp-row' }, el('span', { class: 'qp-slot' }, slot), proto, inp));
     }
     panel.appendChild(el('div', { class: 'qp-actions' },
-      el('button', { class: 'btn primary', onclick: applyQuickProxies }, 'Áp dụng 3 proxy'),
-      el('button', { class: 'btn', onclick: testAllProxies }, 'Test tất cả'),
+      el('button', { class: 'btn primary sm', onclick: applyQuickProxies }, 'ÁP DỤNG 3 PROXY'),
+      el('button', { class: 'btn sm', onclick: testAllProxies }, 'TEST TẤT CẢ'),
+      el('span', { class: 'note', id: 'qp-note' }, ''),
     ));
-    panel.appendChild(el('div', { class: 'note', id: 'qp-note' }, ''));
-    r.appendChild(panel);
+    return panel;
   }
   async function applyQuickProxies() {
-    // Collect the three slot-labeled rows; the slot is authoritative from the UI label.
-    const rows = SLOTS.map((slot) => ({ slot, protocol: ($('qp-proto-' + slot) || {}).value || 'http', value: (($('qp-in-' + slot) || {}).value || '').trim() }));
-    if (rows.some((r) => !r.value)) { qpNote('Nhập proxy cho cả ba dòng A/B/C.', false); return; }
+    // Proxy is OPTIONAL (§10): apply ONLY the rows that have input. Blank rows are left
+    // as-is (they keep DIRECT or an existing binding). Never create an empty proxy.
+    const rows = SLOTS.map((slot) => ({ slot, protocol: ($('qp-proto-' + slot) || {}).value || 'http', value: (($('qp-in-' + slot) || {}).value || '').trim() }))
+      .filter((r) => r.value);
+    if (!rows.length) { qpNote('Nhập proxy cho ít nhất một dòng (proxy là tuỳ chọn — bỏ trống = Trực tiếp).', false); return; }
     qpNote('Đang áp dụng…', true);
     let res;
-    try { res = await api.proxyQuickApply({ rows, clusterProfileId: selectedClusterProfileId || null }); }
+    try { res = await api.proxyQuickApply({ rows, partial: true, clusterProfileId: selectedClusterProfileId || null }); }
     catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
     if (!res || res.ok === false) { qpNote(errText(res), false); return; }
     try { const pl = await api.proxyList(); proxies = (pl && pl.proxies) || []; } catch {}
@@ -319,44 +336,28 @@
   }
 
   // A compact setup row for one slot: device + proxy only. No browser open, no seat/ready.
-  function setupRow(slot) {
-    const a = assign[slot];
-    const saved = profiles[slot] || {};
-    if (a.proxyRef == null && saved.proxyRef) a.proxyRef = saved.proxyRef;
-    const dev = saved.device;
-    return el('div', { class: 'prow', id: 'setup-' + slot },
-      el('div', null, el('b', null, 'Hồ sơ ' + slot + ' '), el('span', { class: 'faint' }, saved.name || ('Profile ' + slot))),
-      el('div', null, el('b', null, 'Thiết bị '),
-        el('span', null, dev ? `${dev.name} · ${dev.resolution} · Ngang · Touch` : '(chưa tạo)'),
-        el('button', { class: 'btn', onclick: () => openDeviceModal(slot) }, dev ? 'Sửa thiết bị' : 'Tạo thiết bị'),
-      ),
-      el('div', null, el('b', null, 'Proxy '), proxySelector(slot)),
-      el('div', null,
-        el('button', { class: 'btn', onclick: () => testProxy(slot) }, 'Test'),
-        el('button', { class: 'btn', onclick: () => openProxyModal(slot, null) }, '+ Proxy'),
-        a.proxyRef ? el('button', { class: 'btn', onclick: () => openProxyModal(slot, a.proxyRef) }, 'Sửa') : null,
-        a.proxyRef ? el('button', { class: 'btn danger', onclick: () => deleteProxy(a.proxyRef) }, 'Xóa') : null,
-        el('span', { class: 'badge ' + testBadge(a.testState) }, a.testState),
-        a.ip ? el('span', { class: 'faint' }, ' IP ' + a.ip) : null,
-      ),
-    );
-  }
+  // ONE compact row per slot: [A] [device · edit] [proxy select] [Test] [status] [⋯].
+  // Add/Edit/Delete proxy live in the small ⋯ menu (or Quick Proxy). No tall panels, no
+  // repeated "opens in a Chrome window" text, no seat, no per-profile open button.
+  function testBadge(s) { return ({ PASS: 'good', DIRECT: 'faint', FAILED: 'bad', AUTH_FAILED: 'bad', TIMEOUT: 'warn', TESTING: 'warn' })[s] || 'faint'; }
 
-  function proxySelector(slot) {
-    const sel = el('select', { class: 'sel', onchange: (e) => { assign[slot].proxyRef = e.target.value; api.profileUpsert(slot, { proxyRef: e.target.value || null }); } });
-    sel.appendChild(el('option', { value: '' }, '— chọn proxy —'));
-    for (const p of proxies) sel.appendChild(el('option', { value: p.id, selected: assign[slot].proxyRef === p.id }, `${p.label} (${p.protocol})`));
-    return sel;
-  }
-  function testBadge(s) { return ({ PASS: 'good', FAILED: 'bad', AUTH_FAILED: 'bad', TIMEOUT: 'warn', TESTING: 'warn' })[s] || 'faint'; }
-
+  // RUN GAME readiness (§4/§5): proxy is OPTIONAL, so it is NEVER part of this gate.
+  // Requires a selected Cluster Profile + a shared game URL + a device per slot. A slot
+  // with no proxy simply runs DIRECT.
   function setupReady() {
-    if (localTest) return true; // local runtime test opens about:blank without proxy
-    return SLOTS.every((s) => assign[s].proxyRef);
+    if (localTest) return true; // local runtime test opens about:blank
+    if (!selectedClusterProfileId) return false;
+    const prof = selectedProfile();
+    if (!prof || !prof.gameUrl) return false;
+    return SLOTS.every((s) => profiles[s] && profiles[s].device);
   }
   function setupReason() {
     if (localTest) return '';
-    return 'Gán proxy cho cả 3 hồ sơ (hoặc bật Local runtime test) trước khi mở.';
+    if (!selectedClusterProfileId) return 'Chọn một Cluster Profile trước khi mở.';
+    const prof = selectedProfile();
+    if (!prof || !prof.gameUrl) return 'Cần Link Game dùng chung hợp lệ.';
+    if (!SLOTS.every((s) => profiles[s] && profiles[s].device)) return 'Mỗi hồ sơ A/B/C cần một thiết bị (proxy là tuỳ chọn).';
+    return '';
   }
 
   // Proxy form modal (add or edit). Password goes straight to the secure store; the
@@ -509,7 +510,7 @@
       el('span', { class: 'gbadge' }, rid != null ? ('BÀN ' + rid) : 'CHƯA CÓ BÀN'),
       el('span', { class: 'gbadge' }, (s.playerCount || 0) + (s.waitingFourth ? '/4' : (s.playerCount ? '/' + s.playerCount : '/4'))),
       el('span', { class: 'gbadge ' + (s.sameTable ? 'good' : '') }, s.sameTable ? 'CÙNG BÀN' : (s.tableVerdict || '—')),
-      s.selectedStake ? el('span', { class: 'gbadge' }, 'CƯỢC ' + s.selectedStake) : null,
+      s.selectedStake ? el('span', { class: 'gbadge' }, 'CƯỢC ' + s.selectedStake) : el('span', { class: 'gbadge' }, 'CHƯA CHỌN CƯỢC'),
       el('span', { class: 'gbadge ' + (s.roundRunning ? 'live' : '') }, s.roundRunning ? 'VÁN ĐANG CHẠY' : 'VÁN CHỜ'),
     );
     bar.appendChild(badges);
@@ -532,7 +533,7 @@
     const hostLost = s && (s.state === 'HOST_LOST' || s.state === 'HOST_TABLE_LOST');
     const running = autoFlow;
     return el('div', { class: 'qa-cmd' },
-      el('button', { class: 'btn primary', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN'),
+      el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC'),
       el('button', { class: 'btn', onclick: () => clusterFocus('A') }, 'Focus A'),
       el('button', { class: 'btn', onclick: () => clusterFocus('B') }, 'Focus B'),
       el('button', { class: 'btn', onclick: () => clusterFocus('C') }, 'Focus C'),
@@ -584,24 +585,26 @@
     const snap = qaSnap;
     mon.replaceChildren();
     const banner = el('div', { class: 'qa-mon-banner qa-rule' },
-      el('span', { class: 'mon-dot' }), ' QA RULE MONITOR · D MÔ PHỎNG',
-      el('span', { class: 'mon-src' }, 'Nguồn fixture/replay local · không dùng bài kín live'));
+      el('span', { class: 'mon-dot' }), ' LIVE QA MONITOR',
+      el('span', { class: 'mon-srcbadge' }, 'D — MÔ PHỎNG · FIXTURE/REPLAY'),
+      el('span', { class: 'mon-src' }, 'không dùng bài kín live'));
     mon.appendChild(banner);
     if (!snap || snap.ok === false) { mon.appendChild(el('div', { class: 'note faint' }, snap && snap.error ? (snap.error.code + ': ' + snap.error.message) : 'Đang nạp dữ liệu D mô phỏng…')); return; }
     const labels = snap.labels || {};
     const authoritative = snap.authoritative === true;
-    const meldCards = new Set(snap.derivedMelds.flatMap((m) => m.cards));
-    const notInMeld = snap.hand.cards.filter((c) => !meldCards.has(c));
+    // ROW 1 cards come straight from the engine (complement of the union of derived melds);
+    // the renderer never recomputes or hard-codes the card set.
+    const notInMeld = snap.cardsNotInMeld || [];
     // ROW 1 — cards not forming a phỏm
     const row1 = el('div', { class: 'mon-row2 mon-drow' });
-    row1.appendChild(el('div', { class: 'mon-drow-h' }, el('div', { class: 'section-t' }, 'ROW 1 · CÁC LÁ KHÔNG TẠO PHỎM CHO D MÔ PHỎNG'), el('span', { class: 'gbadge' }, (authoritative ? notInMeld.length : '?') + ' LÁ')));
+    row1.appendChild(el('div', { class: 'mon-drow-h' }, el('div', { class: 'section-t' }, 'ROW 1 · CÁC LÁ D KHÔNG TẠO PHỎM'), el('span', { class: 'gbadge' }, (authoritative ? notInMeld.length + ' LÁ' : 'CHƯA ĐỦ DỮ LIỆU'))));
     row1.appendChild(cardRow(authoritative ? notInMeld : [], labels, {}));
-    row1.appendChild(el('div', { class: 'faint sm' }, authoritative ? 'Kết quả kiểm thử luật trên hand mô phỏng authoritative.' : 'UNKNOWN — hand D mô phỏng chưa authoritative (thiếu dữ liệu).'));
+    row1.appendChild(el('div', { class: 'faint sm' }, authoritative ? 'Kết quả kiểm thử luật trên hand D mô phỏng authoritative.' : 'CHƯA ĐỦ DỮ LIỆU — hand D mô phỏng chưa authoritative (UNKNOWN, không tạo lá giả).'));
     mon.appendChild(row1);
     // ROW 2 — phỏm melds D can form
     const row2 = el('div', { class: 'mon-row2 mon-drow' });
-    row2.appendChild(el('div', { class: 'mon-drow-h' }, el('div', { class: 'section-t' }, 'ROW 2 · CÁC KẾT PHỎM D MÔ PHỎNG CÓ THỂ TẠO'), el('span', { class: 'gbadge' }, (authoritative ? snap.derivedMelds.length : 0) + ' PHỎM')));
-    if (!authoritative || !snap.derivedMelds.length) row2.appendChild(el('div', { class: 'faint' }, authoritative ? '(chưa có phỏm)' : 'UNKNOWN'));
+    row2.appendChild(el('div', { class: 'mon-drow-h' }, el('div', { class: 'section-t' }, 'ROW 2 · CÁC KẾT PHỎM D CÓ THỂ TẠO'), el('span', { class: 'gbadge' }, (authoritative ? snap.derivedMelds.length + ' PHỎM' : 'CHƯA ĐỦ DỮ LIỆU'))));
+    if (!authoritative || !snap.derivedMelds.length) row2.appendChild(el('div', { class: 'faint' }, authoritative ? '(chưa có phỏm)' : 'CHƯA ĐỦ DỮ LIỆU'));
     for (const m of snap.derivedMelds) {
       const label = m.type === 'RUN' ? 'Phỏm dây cùng chất' : (m.type === 'SET' ? 'Phỏm bộ cùng rank' : 'Phỏm');
       row2.appendChild(el('div', { class: 'mon-meld' }, cardRow(m.cards, labels, { meld: true }), el('span', { class: 'faint' }, ' ' + label)));
@@ -813,7 +816,7 @@
     const close = () => overlay.remove();
     const card = el('div', { class: 'anz-card ft-card' });
     card.appendChild(el('div', { class: 'section-t' }, 'TÌM BÀN TRỐNG'));
-    const status = el('div', { class: 'note' }, 'Đang lấy danh sách mức cược từ máy chủ…');
+    const status = el('div', { class: 'note' }, 'Đang chờ danh sách mức cược từ game…');
     const sel = el('select', { class: 'sel', id: 'ft-stake' }, el('option', { value: '' }, '— chọn mức cược —'));
     const confirmBtn = el('button', { class: 'btn primary', disabled: 'disabled', onclick: async () => {
       const stake = Number(($('ft-stake') || {}).value);
@@ -841,7 +844,9 @@
       }
       await new Promise((r) => setTimeout(r, 700));
     }
-    status.textContent = 'PHOM_STAKE_LIST_UNAVAILABLE — máy chủ chưa trả danh sách mức cược (cần môi trường live được cấp quyền).';
+    // Friendly message in the focused UI; the typed code stays in a tiny advanced line.
+    status.replaceChildren(document.createTextNode('Đang chờ danh sách mức cược từ game…'),
+      el('span', { class: 'ft-code' }, ' (PHOM_STAKE_LIST_UNAVAILABLE)'));
     status.className = 'note warn';
   }
 
@@ -946,8 +951,10 @@
     refresh();
   }
   async function testAllProxies() {
+    // §11 — test only slots that HAVE a proxy; DIRECT slots are skipped (not a failure).
     const ids = SLOTS.map((s) => assign[s].proxyRef).filter(Boolean);
-    if (!ids.length) return note('Chưa gán proxy.', true);
+    for (const s of SLOTS) { if (!assign[s].proxyRef) assign[s].testState = 'DIRECT'; }
+    if (!ids.length) { renderApp(); return qpNote('Tất cả A/B/C đang chạy Trực tiếp (không proxy) — không có gì để test.', true); }
     const res = await api.proxyTestAll(ids);
     const results = res && res.results || {};
     for (const s of SLOTS) { const r = results[assign[s].proxyRef]; if (r) { assign[s].testState = r.state; assign[s].ip = r.observedIp || null; } }
@@ -956,12 +963,12 @@
 
   // ---------- helpers ----------
   function browserCount() { return SLOTS.filter((s) => assign[s].runId).length; }
-  function proxiesReady() { return SLOTS.every((s) => assign[s].proxyRef && assign[s].testState === 'PASS'); }
-  function ctaEnabled() { return !!caps.authorized && browserCount() === 3 && proxiesReady(); }
+  // Proxy is OPTIONAL: TÌM BÀN only needs the 3 browsers open in an authorized env — a
+  // slot running DIRECT is valid and never blocks the find-table flow.
+  function ctaEnabled() { return !!caps.authorized && browserCount() === 3; }
   function ctaReason(s) {
     if (!caps.authorized) return 'Môi trường chưa được cấp quyền QA (đặt PHOM_QA_AUTHORIZED=1 hoặc allowlist).';
     if (browserCount() < 3) return 'Cần mở đủ 3 browser.';
-    if (!proxiesReady()) return 'Cả 3 proxy phải Test PASS.';
     return '';
   }
   function syncCls(x) { return ({ LIVE: 'good', ENDED: 'faint', STALE: 'warn', DESYNCED: 'bad', EMPTY: 'faint' })[x] || 'faint'; }

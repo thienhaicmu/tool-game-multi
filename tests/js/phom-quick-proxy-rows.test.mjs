@@ -40,6 +40,24 @@ test('a URL scheme conflicting with the row selector is a typed conflict', () =>
   assert.equal(r.error.code, 'PHOM_PROXY_PROTOCOL_CONFLICT');
 });
 
+// PROXY OPTIONAL (§10): partial mode accepts a subset and drops blank rows.
+test('partial mode: a subset of slots is accepted; blank rows are skipped', () => {
+  const one = parseQuickProxyRows([{ slot: 'A', protocol: 'http', value: '1.1.1.1|1' }], { partial: true });
+  assert.equal(one.ok, true);
+  assert.deepEqual(Object.keys(one.slots), ['A']);
+  const ac = parseQuickProxyRows([
+    { slot: 'A', protocol: 'http', value: '1.1.1.1|1' },
+    { slot: 'B', protocol: 'http', value: '   ' },   // blank -> skipped
+    { slot: 'C', protocol: 'http', value: '3.3.3.3|3' },
+  ], { partial: true });
+  assert.equal(ac.ok, true);
+  assert.deepEqual(Object.keys(ac.slots).sort(), ['A', 'C']);
+  // all-blank in partial mode is a typed "need at least one" error, never empty proxies.
+  const none = parseQuickProxyRows([{ slot: 'A', protocol: 'http', value: '' }], { partial: true });
+  assert.equal(none.ok, false);
+  assert.equal(none.error.code, 'PHOM_PROXY_QUICK_INPUT_REQUIRED');
+});
+
 test('missing / duplicate slots are typed errors', () => {
   assert.equal(parseQuickProxyRows([{ slot: 'A', protocol: 'http', value: '1.1.1.1|1' }]).error.code, 'PHOM_PROXY_SLOT_MISSING');
   assert.equal(parseQuickProxyRows([
