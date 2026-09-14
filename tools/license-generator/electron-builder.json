@@ -19,6 +19,7 @@
     "desktop/licensing/license-verifier.cjs",
     "desktop/licensing/entitlements.cjs",
     "desktop/licensing/public-key.cjs",
+    "desktop/licensing/license-ledger.cjs",
     "package.json"
   ],
   "extraResources": [
@@ -26,12 +27,9 @@
       "from": "tools/license-generator/private",
       "to": "private",
       "filter": [
-        "*.pem"
+        "*.pem",
+        "google-service-account.json"
       ]
-    },
-    {
-      "from": "tools/license-generator/private/google-service-account.json",
-      "to": "private/google-service-account.json"
     }
   ],
   "extraMetadata": {
