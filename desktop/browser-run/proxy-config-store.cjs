@@ -39,13 +39,34 @@ class ProxyConfigStore {
 
   // Create/update from raw input. Routes any plaintext password to the secret store
   // and persists ONLY the metadata + secretRef.
+  //
+  // AUTH EDIT SEMANTICS (§5) — the empty password field is NEVER overloaded to mean
+  // "remove auth". On an EDIT (existing config) with no new password and no explicit
+  // removeAuth flag, the existing username + passwordSecretRef are PRESERVED (matches
+  // the UI promise "giữ nguyên nếu để trống"). Clearing credentials is a SEPARATE,
+  // explicit action: input.removeAuth === true deletes the stored secret and drops the
+  // username + ref. A newly typed password always replaces the old one.
   upsert(input = {}) {
     const norm = normalizeProxyConfig(input);
     if (!norm.ok) return norm;
     const { config, secret } = norm;
-    if (secret != null && this._secretStore) {
+    const existing = this._map.get(config.id) || null;
+    const removeAuth = input.removeAuth === true;
+
+    if (removeAuth) {
+      // Explicit credential removal — the only way to clear a stored secret via edit.
+      const ref = (existing && existing.passwordSecretRef) || config.passwordSecretRef;
+      if (ref && this._secretStore) this._secretStore.deletePassword(ref);
+      config.passwordSecretRef = null;
+      config.username = null;
+    } else if (secret != null && this._secretStore) {
+      // A new password was typed — replace.
       const res = this._secretStore.setPassword(config.passwordSecretRef, secret);
       if (res && res.ok === false) return res;
+    } else if (existing) {
+      // Edit with a blank password and no explicit removeAuth: keep the old auth.
+      if (existing.passwordSecretRef && !config.passwordSecretRef) config.passwordSecretRef = existing.passwordSecretRef;
+      if (existing.username && config.username == null) config.username = existing.username;
     }
     this._map.set(config.id, config);
     this._persist();

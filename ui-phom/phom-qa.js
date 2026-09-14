@@ -167,6 +167,7 @@
 
     r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
     r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
+    r.appendChild(el('button', { class: 'btn', onclick: openSimulator }, 'MÔ PHỎNG REALTIME — QA OFFLINE'));
 
     const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
     det.appendChild(el('pre', { style: 'font-size:11px;color:var(--text-2);max-height:160px;overflow:auto;white-space:pre-wrap' }, JSON.stringify({ caps, profiles: Object.keys(profiles) }, null, 2)));
@@ -339,13 +340,19 @@
       el('div', { class: 'phq-row' }, el('span', null, 'Port'), f('px-port', 'port', existing && existing.port)),
       el('div', { class: 'phq-row' }, el('span', null, 'Username'), f('px-user', 'username (nếu có)', existing && existing.username && '')),
       el('div', { class: 'phq-row' }, el('span', null, 'Password'), el('input', { class: 'f', id: 'px-pass', type: 'password', placeholder: existing && existing.hasAuth ? '(giữ nguyên nếu để trống)' : 'password (nếu có)' })),
+      // Explicit, separate credential-removal action (§5). Empty password NEVER means
+      // "remove" — only this checkbox clears the stored username + password.
+      existing && existing.hasAuth
+        ? el('div', { class: 'phq-row' }, el('span', null, 'Xác thực'), el('label', { class: 'faint' }, el('input', { type: 'checkbox', id: 'px-removeauth' }), ' Xóa xác thực (username + password)'))
+        : null,
       el('details', { class: 'adv' }, el('summary', null, 'Advanced'), el('div', { class: 'phq-row' }, el('span', null, 'Bypass'), f('px-bypass', 'a.com,b.com', existing && (existing.bypassList || []).join(',')))),
       el('div', { class: 'phq-row' },
         el('button', { class: 'btn primary', onclick: async () => {
           const quick = $('px-quick').value.trim();
+          const removeAuth = !!($('px-removeauth') && $('px-removeauth').checked);
           const input = quick
-            ? { id: editId || undefined, label: $('px-label').value.trim() || undefined, protocol: $('px-proto').value, input: quick, bypassList: $('px-bypass').value }
-            : { id: editId || undefined, label: $('px-label').value.trim() || undefined, protocol: $('px-proto').value, host: $('px-host').value.trim(), port: Number($('px-port').value), username: $('px-user').value.trim() || null, password: $('px-pass').value || (existing ? undefined : null), bypassList: $('px-bypass').value };
+            ? { id: editId || undefined, label: $('px-label').value.trim() || undefined, protocol: $('px-proto').value, input: quick, bypassList: $('px-bypass').value, removeAuth }
+            : { id: editId || undefined, label: $('px-label').value.trim() || undefined, protocol: $('px-proto').value, host: $('px-host').value.trim(), port: Number($('px-port').value), username: $('px-user').value.trim() || null, password: $('px-pass').value || (existing ? undefined : null), bypassList: $('px-bypass').value, removeAuth };
           const res = await api.proxyUpsert(input);
           if (!res || !res.ok) { note(errText(res), true); return; }
           assign[slot].proxyRef = res.id; await api.profileUpsert(slot, { proxyRef: res.id });
@@ -468,6 +475,7 @@
 
     r.appendChild(el('div', { class: 'section-t' }, 'CÔNG CỤ'));
     r.appendChild(el('button', { class: 'btn', onclick: openAnalyzer }, 'PHÂN TÍCH LUẬT — QA OFFLINE'));
+    r.appendChild(el('button', { class: 'btn', onclick: openSimulator }, 'MÔ PHỎNG REALTIME — QA OFFLINE'));
 
     const det = el('details', { class: 'adv' }, el('summary', null, 'Advanced Debug'));
     det.appendChild(el('pre', { style: 'font-size:11px;color:var(--text-2);max-height:180px;overflow:auto;white-space:pre-wrap' }, session ? JSON.stringify(session, null, 2) : '(chưa có phiên)'));
@@ -517,6 +525,110 @@
     ));
     card.appendChild(result);
     overlay.appendChild(card); document.body.appendChild(overlay);
+  }
+
+  // Offline REALTIME simulator (§7-§11) — event-by-event replay of a redacted/fixture
+  // dataset. Every player is SIMULATED; network is LOCKED; no browser is connected.
+  // Refused (in the domain) whenever any live run / session / cluster exists.
+  async function openSimulator() {
+    let ds = {}; try { ds = await api.simDatasets(); } catch { ds = {}; }
+    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
+    const overlay = el('div', { class: 'phq-analyzer' });
+    let playing = false, timer = null;
+    const close = () => { playing = false; if (timer) clearTimeout(timer); overlay.remove(); };
+    const card = el('div', { class: 'anz-card sim-card' });
+    card.appendChild(el('div', { class: 'dev-banner' }, 'SIMULATOR / QA OFFLINE'));
+    card.appendChild(el('div', { class: 'note' }, 'Mạng: ĐÃ KHÓA · Browser: KHÔNG KẾT NỐI · Mọi người chơi đều là SIMULATED'));
+    if (!ds.available) {
+      card.appendChild(el('div', { class: 'warnrow' }, 'Không chạy được khi còn phiên/live browser/cluster (PHOM_ANALYZER_OFFLINE_ONLY). Hãy Dừng/đóng browser trước.'));
+      card.appendChild(el('button', { class: 'btn', onclick: close }, 'Đóng'));
+      overlay.appendChild(card); document.body.appendChild(overlay); return;
+    }
+
+    let snap = null, speedMs = 800;
+    const datasets = (ds.datasets || []);
+    const sel = el('select', { class: 'sim-select' });
+    for (const d of datasets) sel.appendChild(el('option', { value: d.id }, `${d.name} · ${d.sourceKind} · ${d.eventCount} sự kiện`));
+
+    const countersBar = el('div', { class: 'sim-counters' });
+    const timelineBox = el('div', { class: 'sim-timeline' });
+    const handBox = el('div', { class: 'sim-hand' });
+    const meldBox = el('div', { class: 'sim-melds' });
+    const publicBox = el('div', { class: 'sim-public' });
+    const warnBox = el('div', { class: 'sim-warn' });
+    const fmt = (codes) => (codes || []).map((c) => (snap && snap.labels && snap.labels[c] ? snap.labels[c].label : String(c))).join(' ') || '—';
+
+    const counter = (label, value, cls) => el('div', { class: 'sim-counter ' + (cls || '') }, el('span', { class: 'sim-cval' }, String(value)), el('span', { class: 'sim-clbl' }, label));
+
+    function render() {
+      if (!snap || snap.ok === false) { countersBar.replaceChildren(el('div', { class: 'warnrow' }, snap && snap.error ? (snap.error.code + ': ' + snap.error.message) : '(chưa nạp dataset)')); return; }
+      const c = snap.counters;
+      countersBar.replaceChildren(
+        counter('Sự kiện', `${c.currentEvent}/${c.totalEvents}`, 'accent'),
+        counter('Ván', snap.roundIdentity || '—'),
+        counter('Bài (auth)', c.authoritativeHandCount),
+        counter('Server meld', c.serverMeldCount, 'server'),
+        counter('Derived meld', c.derivedMeldCount, 'derived'),
+        counter('Lá meld (unique)', c.uniqueMeldCardCount),
+        counter('Tổ hợp meld', c.meldCombinationCount),
+        counter('Ăn được', c.eatableCount, 'eat'),
+        counter('Không ăn', c.notEatableCount),
+        counter('Chưa rõ', c.unknownCount, 'unknown'),
+        counter('Lá chưa biết', c.unknownCardCount),
+        counter('Lỗi nhất quán', c.consistencyErrorCount, c.consistencyErrorCount ? 'err' : ''),
+      );
+      const cardsEl = el('div', { class: 'cards' });
+      const meldSet = new Set(snap.serverMelds.flatMap((m) => m.cards));
+      if (!snap.hand.decoded.length) cardsEl.appendChild(el('span', { class: 'faint' }, snap.authoritative ? '(rỗng)' : 'Chưa có bài xác thực'));
+      for (const d of snap.hand.decoded) cardsEl.appendChild(el('span', { class: 'card-face ' + (SUIT_RED.has(d.suit) ? 'red' : 'black') + (meldSet.has(d.code) ? ' meld' : '') }, el('b', null, d.rank), el('span', null, d.suit)));
+      handBox.replaceChildren(el('div', { class: 'section-t' }, `BÀI NGƯỜI CHƠI (SIMULATED · ${snap.simulatedOwnerUid || '—'}) · ${snap.syncState}`), cardsEl);
+      const meldLines = [];
+      snap.serverMelds.forEach((m) => meldLines.push(el('div', null, el('span', { class: 'tag server' }, 'SERVER'), ' ' + fmt(m.cards))));
+      snap.derivedMelds.forEach((m) => meldLines.push(el('div', null, el('span', { class: 'tag derived' }, 'DERIVED'), ` ${m.type} ` + fmt(m.cards))));
+      meldBox.replaceChildren(el('div', { class: 'section-t' }, 'MELDS'), meldLines.length ? el('div', null, ...meldLines) : el('div', { class: 'faint' }, '(chưa có)'));
+      const pub = [];
+      pub.push(el('div', null, el('b', null, 'Bài đánh (public): '), snap.publicDiscards.length ? fmt(snap.publicDiscards.map((d) => d.card)) : '—'));
+      if (snap.publicMelds.length) pub.push(el('div', null, el('b', null, 'Public meld: '), snap.publicMelds.map((m) => fmt(m.cards)).join('  ')));
+      if (snap.eatCandidates.length) {
+        const ec = el('div', null, el('b', null, 'Ứng viên ăn: '));
+        for (const cand of snap.eatCandidates) ec.appendChild(el('span', { class: 'eat-cand ' + cand.status.toLowerCase().replace(/_/g, '-') }, fmt([cand.card]) + ' · ' + cand.status + '  '));
+        pub.push(ec);
+      }
+      publicBox.replaceChildren(el('div', { class: 'section-t' }, 'CÔNG KHAI & ĂN'), ...pub);
+      const tl = el('div', { class: 'tl-row' });
+      for (const t of snap.timeline) tl.appendChild(el('span', { class: 'tl-ev cmd-' + (t.cmd || 'x') + (t.index < snap.cursor ? ' done' : '') + (t.index === snap.cursor - 1 ? ' cur' : '') + (t.duplicateOrLate ? ' dup' : ''), title: `${t.label} seq=${t.seq} ${t.reason}` }, String(t.cmd || '?')));
+      timelineBox.replaceChildren(el('div', { class: 'section-t' }, 'TIMELINE 850–854'), tl);
+      warnBox.replaceChildren(...(snap.consistency.warnings || []).map((w) => el('div', { class: 'warnrow' }, '⚠ ' + w)));
+    }
+
+    async function ctrl(action, arg) { snap = await api.simControl(action, arg); if (snap && snap.ok === false) playing = false; render(); }
+    async function load() { snap = await api.simLoad({ datasetId: sel.value }); render(); }
+    function stopPlay() { playing = false; if (timer) { clearTimeout(timer); timer = null; } }
+    function tick() { if (!playing) return; if (snap && snap.counters && snap.counters.currentEvent >= snap.counters.totalEvents) { stopPlay(); return; } ctrl('next').then(() => { if (playing) timer = setTimeout(tick, speedMs); }); }
+    function startPlay() { if (playing) return; playing = true; timer = setTimeout(tick, speedMs); }
+
+    const controls = el('div', { class: 'sim-controls' },
+      el('button', { class: 'btn primary', onclick: startPlay }, '▶ Bắt đầu'),
+      el('button', { class: 'btn', onclick: stopPlay }, '⏸ Tạm dừng'),
+      el('button', { class: 'btn', onclick: () => { stopPlay(); ctrl('previous'); } }, '⏮ Trước'),
+      el('button', { class: 'btn', onclick: () => { stopPlay(); ctrl('next'); } }, '⏭ Sau'),
+      el('button', { class: 'btn', onclick: () => { stopPlay(); ctrl('reset'); } }, '⟲ Reset'),
+      el('label', { class: 'sim-speed' }, 'Tốc độ ',
+        (() => { const sp = el('select', null, el('option', { value: '400' }, 'Nhanh'), el('option', { value: '800' }, 'Vừa'), el('option', { value: '1500' }, 'Chậm')); sp.value = String(speedMs); sp.addEventListener('change', () => { speedMs = Number(sp.value); }); return sp; })()),
+      el('button', { class: 'btn', onclick: close }, 'Đóng'),
+    );
+
+    card.appendChild(el('div', { class: 'section-t' }, 'NGUỒN DỮ LIỆU (fixture / replay redacted / local)'));
+    card.appendChild(el('div', { class: 'sim-source' }, sel, el('button', { class: 'btn', onclick: load }, 'Nạp')));
+    card.appendChild(countersBar);
+    card.appendChild(controls);
+    card.appendChild(timelineBox);
+    card.appendChild(handBox);
+    card.appendChild(meldBox);
+    card.appendChild(publicBox);
+    card.appendChild(warnBox);
+    overlay.appendChild(card); document.body.appendChild(overlay);
+    await load();
   }
 
   function handRow(h) {

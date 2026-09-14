@@ -46,6 +46,8 @@ const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./li
 const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
 const { rectForSlot, toolWindowBounds } = require('./protocol/phom/grid-layout.cjs');
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
+const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
+const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
 const { normalizeWindowBounds } = require('./window-bounds.cjs');
 
 const PRODUCT_NAME = 'Phom QA';
@@ -384,6 +386,50 @@ else {
   // Count non-terminal BrowserRuns — the analyzer is refused whenever ANY exist.
   function liveRunCount() { try { return runManager ? runManager.list().filter((r) => r.status !== RUN_STATUS.CLOSED).length : 0; } catch { return 0; } }
 
+  // The live-context snapshot fed to EVERY offline entry point (analyzer + simulator).
+  // Rebuilt on each call so a browser/session/cluster that appears AFTER load still
+  // refuses the offline engine (guard lives in the domain, not the UI — §7).
+  function offlineContext(sourceKind) {
+    return {
+      sourceKind: sourceKind || 'TEST_FIXTURE',
+      networkEnabled: false,
+      liveRunCount: liveRunCount(),
+      liveSessionId: (phomSessions && phomSessions.active()) ? 'ACTIVE' : null,
+      clusterActive: !!(phomCluster && phomCluster.active()),
+      endpoint: null,
+    };
+  }
+
+  // The offline REALTIME simulator (event-by-event replay). One instance at a time;
+  // it is PURE domain and cannot open a socket. Loaded via IPC, driven by transport
+  // controls. The guard is re-checked inside the engine on every step.
+  var offlineSim = null;
+  function simResult(snapOrBlocked) { return snapOrBlocked; }
+  function loadOfflineSimulator(input = {}) {
+    const ds = input.datasetId ? sampleDatasets.getDataset(input.datasetId) : null;
+    const events = ds ? ds.events : (Array.isArray(input.events) ? input.events : []);
+    const sourceKind = ds ? ds.sourceKind : (input.sourceKind || 'TEST_FIXTURE');
+    const owner = ds ? ds.simulatedOwnerUid : (input.simulatedOwnerUid != null ? input.simulatedOwnerUid : null);
+    offlineSim = new PhomOfflineSimulator({ events, simulatedOwnerUid: owner, sourceKind, context: offlineContext(sourceKind) });
+    if (!offlineSim.ok()) { const b = offlineSim.blockedResult(); offlineSim = null; return b; }
+    return offlineSim.snapshot();
+  }
+  function controlOfflineSimulator(action, arg) {
+    if (!offlineSim) return { ok: false, error: { code: 'PHOM_SIM_NOT_LOADED', message: 'No offline dataset is loaded.' } };
+    // Re-check the live boundary before every transport action (§7).
+    const blocked = offlineAnalyzer.assertOffline(offlineContext(offlineSim.snapshot().sourceKind));
+    if (blocked) { offlineSim = null; return { ok: false, error: { code: 'PHOM_ANALYZER_OFFLINE_ONLY', message: 'A live browser/session/cluster is active — offline simulator refused.' } }; }
+    switch (String(action)) {
+      case 'next': return offlineSim.next();
+      case 'previous': return offlineSim.previous();
+      case 'step': return offlineSim.stepTo(Number(arg));
+      case 'reset': return offlineSim.reset();
+      case 'end': return offlineSim.end();
+      case 'snapshot': return offlineSim.snapshot();
+      default: return { ok: false, error: { code: 'PHOM_SIM_BAD_ACTION', message: `Unknown control: ${action}` } };
+    }
+  }
+
   // Run the offline analyzer with a hard offline context (§16/§23). It never touches
   // the network and refuses if a live run/session is present.
   function runOfflineAnalyzer(input) {
@@ -714,6 +760,12 @@ else {
     // also refuse at the IPC edge whenever ANY live BrowserRun / session exists.
     ipcMain.handle('phom:analyzer-status', () => ({ available: liveRunCount() === 0 && !(phomSessions && phomSessions.active()), liveRunCount: liveRunCount() }));
     ipcMain.handle('phom:analyzer-analyze', (_e, input = {}) => runOfflineAnalyzer(input || {}));
+
+    // Offline REALTIME simulator (§7-§11). Event-by-event replay of a redacted /
+    // fixture / local dataset. Same hard offline boundary as the analyzer.
+    ipcMain.handle('phom:sim-datasets', () => ({ ok: true, datasets: sampleDatasets.listDatasets(), available: liveRunCount() === 0 && !(phomSessions && phomSessions.active()) && !(phomCluster && phomCluster.active()) }));
+    ipcMain.handle('phom:sim-load', (_e, input = {}) => loadOfflineSimulator(input || {}));
+    ipcMain.handle('phom:sim-control', (_e, action, arg) => controlOfflineSimulator(action, arg));
   }
 
   app.whenReady().then(() => {

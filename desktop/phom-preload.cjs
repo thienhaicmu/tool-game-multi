@@ -71,4 +71,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   // offline rule analyzer (QA / no live)
   analyzerStatus: () => ipcRenderer.invoke('phom:analyzer-status'),
   analyzerAnalyze: (input) => ipcRenderer.invoke('phom:analyzer-analyze', input),
+  // offline REALTIME simulator (event-by-event replay, QA / no live)
+  simDatasets: () => ipcRenderer.invoke('phom:sim-datasets'),
+  simLoad: (input) => ipcRenderer.invoke('phom:sim-load', input),
+  simControl: (action, arg) => ipcRenderer.invoke('phom:sim-control', action, arg),
 });

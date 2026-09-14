@@ -135,3 +135,33 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .qp-ta { width: 100%; min-height: 84px; margin-top: 8px; font-family: ui-monospace, Consolas, monospace; resize: vertical; }
 .qp-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
 .qp-hint { color: var(--text-faint); font-size: 11px; margin-top: 4px; }
+
+/* ---- Offline REALTIME simulator (§7-§11) ---- */
+.sim-card { width: min(960px, 97vw); }
+.sim-source { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.sim-select { flex: 1; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: var(--text); }
+.sim-counters { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; padding: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; }
+.sim-counter { display: flex; flex-direction: column; align-items: center; min-width: 74px; padding: 4px 8px; background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+.sim-counter .sim-cval { font-size: 16px; font-weight: 800; color: var(--text); }
+.sim-counter .sim-clbl { font-size: 10px; color: var(--text-2); text-transform: uppercase; letter-spacing: .3px; }
+.sim-counter.accent .sim-cval { color: var(--primary); }
+.sim-counter.server .sim-cval { color: #15803d; }
+.sim-counter.derived .sim-cval { color: #7c3aed; }
+.sim-counter.eat .sim-cval { color: #b45309; }
+.sim-counter.unknown .sim-cval { color: var(--text-2); }
+.sim-counter.err .sim-cval { color: #b91c1c; }
+.sim-controls { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 8px 0; }
+.sim-speed { font-size: 12px; color: var(--text-2); display: inline-flex; align-items: center; gap: 4px; }
+.tl-row { display: flex; flex-wrap: wrap; gap: 4px; }
+.tl-ev { min-width: 30px; text-align: center; padding: 3px 6px; border-radius: 5px; font-size: 11px; font-weight: 700; background: var(--panel-2); color: var(--text-2); border: 1px solid var(--border); }
+.tl-ev.done { background: #e7f6ec; color: #15803d; border-color: #bfe6cd; }
+.tl-ev.cur { outline: 2px solid var(--primary); }
+.tl-ev.dup { opacity: .45; text-decoration: line-through; }
+.tag { display: inline-block; font-size: 10px; font-weight: 700; padding: 1px 5px; border-radius: 4px; }
+.tag.server { background: #e7f6ec; color: #15803d; }
+.tag.derived { background: #f1e9ff; color: #7c3aed; }
+.eat-cand { display: inline-block; font-size: 12px; padding: 1px 4px; border-radius: 4px; margin-right: 4px; }
+.eat-cand.eatable-by-simulated-player { background: #fff2df; color: #b45309; font-weight: 700; }
+.eat-cand.not-eatable-by-simulated-others { color: var(--text-2); }
+.eat-cand.unknown { color: var(--text-faint); font-style: italic; }
+.sim-warn .warnrow { margin-top: 4px; }
