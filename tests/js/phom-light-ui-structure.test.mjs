@@ -93,6 +93,25 @@ test('Screen 1 has exactly ONE ⋯ menu (cluster management) and no stray unlabe
   assert.equal((genBody.match(/qa-more-menu/g) || []).length, 1, 'exactly one management menu in the general panel');
 });
 
+// BROWSER LIFETIME INDEPENDENCE — DỪNG stops orchestration only (never closes browsers);
+// only the explicit ĐÓNG 3 TRÌNH DUYỆT closes them; RUN GAME waits for login.
+test('DỪNG is orchestration-only; browser close is a separate explicit action', () => {
+  // DỪNG button calls stopOrchestration (NOT clusterStop/closeBrowsers).
+  assert.match(js, /onclick:\s*stopOrchestration\s*}[^]*?'DỪNG'/);
+  assert.match(js, /function stopOrchestration\(\)/);
+  const stopOrch = js.slice(js.indexOf('async function stopOrchestration()'), js.indexOf('async function closeBrowsers()'));
+  assert.match(stopOrch, /api\.orchestrationStop\(\)/);
+  assert.equal(/api\.closeBrowsers|api\.clusterStop|closeRun/.test(stopOrch), false, 'DỪNG must not close browsers');
+  // the explicit close action exists and is confirmed.
+  assert.match(js, /function closeBrowsers\(\)/);
+  assert.match(js, /ĐÓNG 3 TRÌNH DUYỆT/);
+  assert.match(js, /window\.confirm\(/);
+  // WAITING_FOR_LOGIN gate: awaitingLogin + ĐÃ LOGIN — TIẾP TỤC, and TÌM BÀN gated on it.
+  assert.match(js, /awaitingLogin\s*=\s*true/);
+  assert.match(js, /ĐÃ LOGIN — TIẾP TỤC/);
+  assert.match(js, /function ctaEnabled\(\)[^]*!awaitingLogin/);
+});
+
 // PROXY OPTIONAL (§4/§5): neither RUN GAME (setupReady) nor TÌM BÀN (ctaEnabled) may be
 // gated on a proxy. RUN GAME requires cluster profile + gameUrl + device only.
 test('RUN GAME + TÌM BÀN are NOT proxy-gated (proxy is optional)', () => {

@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld('phomQA', {
   clusterJoinFollowers: () => ipcRenderer.invoke('phom:cluster-join-followers'),
   clusterApplyReady: () => ipcRenderer.invoke('phom:cluster-apply-ready'),
   clusterLeave: () => ipcRenderer.invoke('phom:cluster-leave'),
+  // DỪNG — stop orchestration only (NEVER closes the browsers).
+  orchestrationStop: () => ipcRenderer.invoke('phom:orchestration-stop'),
+  // ĐÓNG 3 TRÌNH DUYỆT — explicit browser close (the only app path that closes runs).
+  closeBrowsers: () => ipcRenderer.invoke('phom:cluster-stop'),
   clusterStop: () => ipcRenderer.invoke('phom:cluster-stop'),
   clusterSnapshot: () => ipcRenderer.invoke('phom:cluster-snapshot'),
   onCluster: (cb) => ipcRenderer.on('phom:cluster', (_e, snap) => cb(snap)),

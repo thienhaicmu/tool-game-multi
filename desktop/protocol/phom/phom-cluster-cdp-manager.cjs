@@ -46,16 +46,16 @@ class PhomClusterCdpManager extends EventEmitter {
     const profiles = Array.isArray(config.profiles) ? config.profiles : [];
     const bySlot = new Map(profiles.map((p) => [p.slot, p]));
     if (SLOTS.some((s) => !bySlot.has(s))) return { ok: false, error: { code: 'PHOM_CLUSTER_INCOMPLETE', message: 'exactly slots A/B/C are required' } };
-    // §5/§6 — a second create (re-entrant CTA / harness) MUST NOT orphan the browsers a
-    // previous, still-open cluster launched: stopCluster only ever closes the CURRENT
-    // cluster's slot runs, so replacing `this._cluster` without teardown would strand the
-    // prior runs' Chromium process trees. Tear the previous cluster's owned runs down FIRST
-    // (authoritative owner path — the same closeRun stop uses), then replace.
+    // IDEMPOTENT RE-ENTRY (browser-lifetime independence): if a cluster is already OPEN
+    // (at least one live run), a second RUN GAME must REUSE it — never teardown+recreate,
+    // never close/reopen the browsers. Only orchestration is re-armable; the browsers keep
+    // running until the user closes a window or invokes the explicit ĐÓNG 3 TRÌNH DUYỆT.
     if (this._cluster && !this._cluster.stopped) {
-      this._cluster.stopped = true;
-      for (const s of SLOTS) {
-        const prev = this._cluster.slots.get(s);
-        if (prev && prev.profileId) { try { this._closeRun(prev.profileId); } catch { /* best effort */ } }
+      const openRuns = SLOTS.filter((s) => this._cluster.slots.get(s).profileId).length;
+      if (openRuns > 0) {
+        this._cluster.orchestrationStopped = false; // re-arm orchestration on reuse
+        this._emit();
+        return { ok: true, reused: true, clusterSessionId: this._cluster.clusterSessionId, hostSlot: this._cluster.hostSlot };
       }
     }
     const hostSlot = SLOTS.includes(config.hostSlot) ? config.hostSlot : 'A';
@@ -74,7 +74,7 @@ class PhomClusterCdpManager extends EventEmitter {
         role: s === hostSlot ? 'HOST' : 'FOLLOWER', cdpConnected: false, deviceApplied: null, proxyState: 'NOT_TESTED',
         observedIp: null, error: null, lastSeq: -1, seen: new Set() });
     }
-    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, stopped: false };
+    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, stopped: false, orchestrationStopped: false };
     this._emit();
     return { ok: true, clusterSessionId: this._cluster.clusterSessionId, hostSlot };
   }
@@ -88,8 +88,14 @@ class PhomClusterCdpManager extends EventEmitter {
     const results = [];
     for (const s of SLOTS) {
       const slot = this._slot(s);
+      // Idempotent: a slot with a LIVE run is REUSED, never reopened (§11). A slot the user
+      // CLOSED is re-openable (§10) — reset it and open a fresh run for THAT slot only.
+      if (slot.profileId && !slot.browserClosed) { results.push({ slot: s, ok: true, reused: true, runId: slot.profileId }); continue; }
+      if (slot.browserClosed) { slot.browserClosed = false; slot.profileId = null; slot.cdpConnected = false; slot.error = null; }
       let res;
       try { res = await this._openProfile(s, { proxyRef: slot.proxyRef, browserProfileId: slot.browserProfileId, gameUrl: slot.gameUrl, device: slot.device, label: slot.label }); } catch (e) { res = { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: safe(e) } }; }
+      // A launch failure NEVER closes the slots that already opened (§14): record the
+      // typed error for THIS slot and keep every opened browser alive (PARTIAL).
       if (res && res.ok) { slot.profileId = res.runId; slot.error = null; }
       else { slot.error = (res && res.error) || { code: 'PHOM_CHROMIUM_LAUNCH_FAILED' }; }
       results.push({ slot: s, ...res });
@@ -205,7 +211,34 @@ class PhomClusterCdpManager extends EventEmitter {
 
   async leaveCluster() { if (this._host && this._host.active()) { try { await this._host.leaveAll(); } catch { /* best effort */ } } this._emit(); return { ok: true }; }
 
-  // §13 stopCluster — cancel pending, tear down ONLY owned runs, idempotent.
+  // ORCHESTRATION-ONLY stop (DỪNG): cancels the HOST automation (search / join / ready /
+  // rejoin timers + subscriptions) and marks orchestration stopped. It NEVER touches the
+  // browsers — no closeRun, no kill, no BrowserRun teardown. Browser lifetime is a fully
+  // independent subsystem (§4/§5/§12). Idempotent.
+  stopOrchestration() {
+    if (!this._cluster) return { ok: true, orchestrationStopped: true, browsersClosed: false };
+    try { if (this._host && this._host.stop) this._host.stop(); } catch { /* ignore */ }
+    this._cluster.orchestrationStopped = true;
+    this._emit();
+    return { ok: true, orchestrationStopped: true, browsersClosed: false };
+  }
+
+  orchestrationStopped() { return !!(this._cluster && this._cluster.orchestrationStopped); }
+
+  // §10 — the user closed ONE Chromium window (routed here from the run's own exit). Mark
+  // ONLY that slot CLOSED_BY_USER; the other browsers are untouched and the tool never
+  // reacts by closing them. The slot is re-openable via openCluster (reopen).
+  markRunClosed(runId) {
+    const slot = this._slotForRun(runId);
+    if (!slot) return { ok: false, reason: 'NOT_IN_CLUSTER' };
+    slot.browserClosed = true;
+    slot.cdpConnected = false;
+    this._emit();
+    return { ok: true, slot: slot.slot };
+  }
+
+  // §13 stopCluster — EXPLICIT browser close (ĐÓNG 3 TRÌNH DUYỆT / app shutdown). This is
+  // the ONLY manager path that closes the owned runs. Tears down ONLY owned runs, idempotent.
   async stopCluster() {
     if (!this._cluster) return { ok: true, alreadyStopped: true };
     if (this._cluster.stopped) return { ok: true, alreadyStopped: true };
@@ -229,8 +262,11 @@ class PhomClusterCdpManager extends EventEmitter {
     for (const s of SLOTS) {
       const slot = c.slots.get(s);
       const info = slot.profileId ? (this._runInfo(slot.profileId) || {}) : {};
+      // Per-slot BROWSER state is independent of orchestration: OPEN once a run exists,
+      // else NOT_OPEN. (User-close/crash flips it via the run's own exit -> onRunExit.)
       profiles[s] = {
         slot: s, role: slot.role, profileId: slot.profileId,
+        browserState: slot.browserClosed ? 'CLOSED_BY_USER' : (slot.profileId ? 'OPEN' : 'NOT_OPEN'),
         pid: info.pid != null ? info.pid : null, cdpPort: info.port != null ? info.port : null, userDataDir: info.userDataDir || null,
         cdpConnected: slot.cdpConnected, deviceApplied: slot.deviceApplied ? !!slot.deviceApplied.ok : false,
         proxyState: slot.proxyState, observedIp: slot.observedIp,
@@ -239,7 +275,14 @@ class PhomClusterCdpManager extends EventEmitter {
       };
     }
     return {
-      clusterSessionId: c.clusterSessionId, clusterProfileId: c.clusterProfileId || null, stopped: c.stopped, hostProfileId: c.slots.get(c.hostSlot).profileId, hostSlot: c.hostSlot,
+      clusterSessionId: c.clusterSessionId, clusterProfileId: c.clusterProfileId || null, stopped: c.stopped,
+      // Two INDEPENDENT subsystems (§12): the browser cluster (OPEN while runs exist) and
+      // the orchestration (stopped by DỪNG without closing browsers).
+      browserClusterState: c.stopped ? 'CLOSED' : 'OPEN',
+      orchestrationStopped: !!c.orchestrationStopped,
+      openBrowserCount: SLOTS.filter((s) => c.slots.get(s).profileId && !c.slots.get(s).browserClosed).length,
+      closedByUserCount: SLOTS.filter((s) => c.slots.get(s).browserClosed).length,
+      hostProfileId: c.slots.get(c.hostSlot).profileId, hostSlot: c.hostSlot,
       selectedStake: c.selectedStake, tableIdentity: hostSnap ? hostSnap.hostTableIdentity : null,
       profiles,
       connectedCount: SLOTS.filter((s) => c.slots.get(s).cdpConnected).length,

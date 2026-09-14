@@ -114,7 +114,10 @@ else {
   }
   const chromeRuntime = new ChromeRuntime({
     chromeExecutable: (() => { const r = chromiumRuntime(); return r && r.ok ? r.executable : null; })(),
-    onRunExit: (runId) => { try { if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); } catch { /* best effort */ } },
+    // A run's Chrome exited on its OWN (user closed the window / crash). Mark ONLY that
+    // slot closed and disconnect ITS routing — never cascade a close to the other browsers
+    // and never treat it as an orchestration teardown (§10).
+    onRunExit: (runId) => { try { if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(runId); } catch { /* best effort */ } },
   });
 
   function resolveTargetClient(targetId) {
@@ -777,7 +780,12 @@ else {
     ipcMain.handle('phom:cluster-acquire-host', guarded(() => ensureCluster().acquireHostTable()));
     ipcMain.handle('phom:cluster-join-followers', guarded(() => ensureCluster().joinFollowers()));
     ipcMain.handle('phom:cluster-apply-ready', guarded(() => ensureCluster().applyReadyPolicy()));
-    ipcMain.handle('phom:cluster-leave', guarded(async () => { const r = await ensureCluster().leaveCluster(); activeClusterProfileId = null; return r; }));
+    ipcMain.handle('phom:cluster-leave', guarded(async () => { const r = await ensureCluster().leaveCluster(); return r; }));
+    // DỪNG = orchestration-only stop: cancels find-table/join/ready/rejoin automation and
+    // subscriptions but NEVER closes the browsers (browser lifetime is independent). The
+    // cluster stays open + activeClusterProfileId is preserved.
+    ipcMain.handle('phom:orchestration-stop', guarded(() => (phomCluster ? phomCluster.stopOrchestration() : { ok: true, orchestrationStopped: true, browsersClosed: false })));
+    // ĐÓNG 3 TRÌNH DUYỆT = EXPLICIT browser close (the ONLY app path that closes the runs).
     ipcMain.handle('phom:cluster-stop', guarded(async () => { const r = await ensureCluster().stopCluster(); activeClusterProfileId = null; return r; }));
     ipcMain.handle('phom:cluster-snapshot', () => (phomCluster ? phomCluster.getClusterSnapshot() : null));
 

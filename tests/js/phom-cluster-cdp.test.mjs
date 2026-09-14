@@ -177,26 +177,79 @@ test('stopCluster closes only owned runs and is idempotent', async () => {
   assert.equal(closed.length, 3); // no double close
 });
 
-// §5/§6 — re-creating a cluster while one is still open must NOT orphan the prior cluster's
-// browsers. A re-entrant CTA / debugging-harness poke previously stranded the first cluster's
-// Chromium process trees (stopCluster only closes the CURRENT cluster's slot runs), so
-// createCluster now tears the previous open cluster's owned runs down first.
-test('createCluster tears down a previous open cluster (no orphaned runs)', async () => {
+// §11 (browser-lifetime independence) — RUN GAME is IDEMPOTENT: re-creating while a
+// cluster is OPEN must REUSE it, never teardown+recreate and never close/reopen browsers.
+test('createCluster REUSES an open cluster (idempotent RUN GAME, no teardown)', async () => {
   const { mgr, dev, closed, opened } = makeManager();
   baseCluster(mgr, dev);
-  await mgr.openCluster();                 // first cluster opens BR-A/B/C
+  const r1 = await mgr.openCluster();       // first cluster opens BR-A/B/C
   assert.deepEqual(opened.slice().sort(), ['A', 'B', 'C']);
-  assert.equal(closed.length, 0);
-  // A SECOND create (re-entrant) must close the first cluster's runs before replacing.
+  const sess1 = mgr.clusterSessionId();
+  // A SECOND create (re-entrant RUN GAME) must NOT close anything and must reuse the session.
+  const re = baseCluster(mgr, dev);
+  assert.equal(re.reused, true, 'second create reuses the open cluster');
+  assert.equal(closed.length, 0, 'NO browser closed on re-entry');
+  assert.equal(mgr.clusterSessionId(), sess1, 'same cluster session (not replaced)');
+  // openCluster again reuses the same runs (no new opens).
+  const r2 = await mgr.openCluster();
+  assert.equal(opened.length, 3, 'no extra browser launched on second open');
+  assert.ok(r2.results.every((x) => x.reused), 'all slots reused');
+});
+
+// ============ §15/§16 BROWSER LIFETIME INDEPENDENCE ============
+// DỪNG (orchestration stop) must NEVER close a browser.
+test('stopOrchestration cancels automation but closes NO browser (DỪNG semantics)', async () => {
+  const { mgr, dev, closed } = makeManager({ hostSession: { active: () => true, stop() { this._stopped = true; }, snapshot: () => null, startSession: () => ({ ok: true }) } });
   baseCluster(mgr, dev);
-  assert.deepEqual(closed.slice().sort(), ['BR-A', 'BR-B', 'BR-C'], 'prior cluster runs closed, not orphaned');
-  // the new cluster is a fresh, un-opened session
-  const snap = mgr.getClusterSnapshot();
-  for (const s of SLOTS) assert.equal(snap.profiles[s].profileId, null);
-  // stopping the new (unopened) cluster closes nothing further — no double close, no orphan
-  const r = await mgr.stopCluster();
+  await mgr.openCluster();
+  const r = await mgr.stopOrchestration();
   assert.equal(r.ok, true);
-  assert.equal(closed.length, 3);
+  assert.equal(r.browsersClosed, false);
+  assert.equal(closed.length, 0, 'DỪNG must not call closeRun for any slot');
+  const snap = mgr.getClusterSnapshot();
+  assert.equal(snap.openBrowserCount, 3, 'all three browsers still open after DỪNG');
+  assert.equal(snap.orchestrationStopped, true);
+  assert.equal(snap.browserClusterState, 'OPEN');
+});
+
+test('an open failure keeps the browsers that DID open (PARTIAL, no cascade close) (§14)', async () => {
+  const { mgr, dev, closed, opened } = makeManager({ failOpen: 'C' });
+  baseCluster(mgr, dev);
+  const r = await mgr.openCluster();
+  assert.equal(r.ok, false);
+  assert.equal(r.opened, 2, 'A and B opened');
+  assert.deepEqual(opened.sort(), ['A', 'B']);
+  assert.equal(closed.length, 0, 'a failed C never closes the opened A/B');
+  const snap = mgr.getClusterSnapshot();
+  assert.equal(snap.openBrowserCount, 2);
+});
+
+test('user closes ONE browser (markRunClosed) → only that slot CLOSED, others untouched (§10)', async () => {
+  const { mgr, dev, closed } = makeManager();
+  baseCluster(mgr, dev);
+  await mgr.openCluster();
+  const m = mgr.markRunClosed('BR-A');
+  assert.equal(m.ok, true); assert.equal(m.slot, 'A');
+  assert.equal(closed.length, 0, 'marking A closed never calls closeRun on B/C');
+  const snap = mgr.getClusterSnapshot();
+  assert.equal(snap.profiles.A.browserState, 'CLOSED_BY_USER');
+  assert.equal(snap.profiles.B.browserState, 'OPEN');
+  assert.equal(snap.profiles.C.browserState, 'OPEN');
+  assert.equal(snap.openBrowserCount, 2);
+  assert.equal(snap.closedByUserCount, 1);
+});
+
+test('reopen after user-close re-launches ONLY the closed slot, reusing the others (§10)', async () => {
+  const { mgr, dev, opened } = makeManager();
+  baseCluster(mgr, dev);
+  await mgr.openCluster();          // A,B,C opened
+  mgr.markRunClosed('BR-A');
+  opened.length = 0;               // reset the open log
+  const r = await mgr.openCluster(); // reopen
+  assert.deepEqual(opened, ['A'], 'only A relaunched; B/C reused (not reopened)');
+  const snap = mgr.getClusterSnapshot();
+  assert.equal(snap.openBrowserCount, 3);
+  assert.equal(snap.profiles.A.browserState, 'OPEN');
 });
 
 // §7 — a debugging/harness CDP port (e.g. Electron inspection 9333) is NOT a cluster run:

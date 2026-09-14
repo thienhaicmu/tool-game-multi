@@ -32,6 +32,7 @@
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
   let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
+  let awaitingLogin = false;  // WAITING_FOR_LOGIN: browsers open, user logs in before TÌM BÀN
   let qaSnap = null;         // QA RULE MONITOR (D simulated) snapshot
   let qaLoading = false, qaPlaying = false, qaTimer = null, qaSpeed = 900;
   let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
@@ -103,7 +104,9 @@
 
   function clusterIsOpen() {
     const cs = clusterSnap; if (!cs || cs.stopped) return false;
-    return !!cs.clusterSessionId && (cs.connectedCount || 0) > 0;
+    // A browser is "open" once its run exists — independent of CDP connection (§7): the
+    // cluster stays open even while CDP is still connecting.
+    return !!cs.clusterSessionId && ((cs.openBrowserCount || 0) > 0 || (cs.connectedCount || 0) > 0);
   }
 
   // ---------- top-level dispatch ----------
@@ -475,11 +478,13 @@
   function slotStatus(slot, s, cs) {
     const cp = (cs.profiles && cs.profiles[slot]) || {};
     const sp = (s.profiles || []).find((p) => p.id === cp.profileId) || {};
-    const opened = !!cp.profileId;
+    const closed = cp.browserState === 'CLOSED_BY_USER';
+    const opened = !!cp.profileId && !closed;
     const isHost = sp.role === 'HOST' || (s.hostId && s.hostId === cp.profileId);
     const st = sp.state;
     let cls = 'gray', label = 'CHƯA MỞ';
-    if (opened) {
+    if (closed) { cls = 'gray'; label = 'ĐÃ ĐÓNG'; }
+    else if (opened) {
       if (st === 'KICKED') { cls = 'red'; label = 'BỊ KICK'; }
       else if (st === 'REJOINING') { cls = 'red'; label = 'ĐANG VÀO LẠI'; }
       else if (st === 'ERROR' || st === 'DISCONNECTED' || st === 'LEFT') { cls = 'red'; label = st === 'DISCONNECTED' ? 'MẤT KẾT NỐI' : (st === 'LEFT' ? 'ĐÃ RỜI' : 'LỖI'); }
@@ -487,23 +492,32 @@
       else if (st === 'MISMATCH') { cls = 'yellow'; label = 'SAI BÀN'; }
       else if (st === 'AT_TABLE') { cls = 'blue'; label = 'ĐÃ VÀO'; }
       else if (st === 'JOINING') { cls = 'blue'; label = 'ĐANG VÀO'; }
+      // §7 — browser open but CDP not yet attached: a benign waiting state, NOT an error,
+      // and it never closes the browser.
+      else if (!cp.cdpConnected) { cls = 'yellow'; label = 'CDP CHƯA KẾT NỐI'; }
       else { cls = 'yellow'; label = 'CHỜ'; }
     }
-    const text = isHost ? `${slot} · HOST${sp.ready ? ' · READY' : ''}` : `${slot} · ${label}`;
+    const text = isHost && !closed ? `${slot} · HOST${sp.ready ? ' · READY' : ''}` : `${slot} · ${label}`;
     const detail = { slot, profileId: cp.profileId || null, pid: cp.pid || null, cdp: cp.cdpPort || null,
+      browserState: cp.browserState || (opened ? 'OPEN' : 'NOT_OPEN'),
       cdpConnected: !!cp.cdpConnected, proxy: (profiles[slot] && profiles[slot].proxyRef) || null, ip: cp.observedIp || null,
-      seat: sp.seat != null ? sp.seat : null, uid: sp.uid || null, state: st || (opened ? 'OPEN' : 'CLOSED') };
-    return { cls: isHost ? 'orange' : cls, text, detail, isHost };
+      seat: sp.seat != null ? sp.seat : null, uid: sp.uid || null, state: st || (opened ? 'OPEN' : (closed ? 'CLOSED_BY_USER' : 'CLOSED')) };
+    return { cls: isHost && !closed ? 'orange' : cls, text, detail, isHost, closed };
   }
 
   function statusToolbar(s, cs) {
     const bar = el('div', { class: 'qa-status' });
     const chips = el('div', { class: 'qa-chips' });
+    let anyClosed = false;
     for (const slot of SLOTS) {
       const st = slotStatus(slot, s, cs);
       const chip = el('span', { class: 'chip ' + st.cls, title: JSON.stringify(st.detail) }, st.text);
       chips.appendChild(chip);
+      if (st.closed) anyClosed = true;
     }
+    // §10 — if the user closed a browser, offer a targeted reopen (reuses that slot's saved
+    // profile/device/proxy/user-data-dir); the other two browsers are never touched.
+    if (anyClosed) chips.appendChild(el('button', { class: 'btn sm', title: 'Mở lại các slot đã đóng (không ảnh hưởng slot đang chạy)', onclick: () => reopenSlot('closed') }, 'MỞ LẠI'));
     bar.appendChild(chips);
     const rid = s.hostTableIdentity && s.hostTableIdentity.channelRid;
     const badges = el('div', { class: 'qa-badges' },
@@ -532,16 +546,25 @@
   function commandToolbar(s) {
     const hostLost = s && (s.state === 'HOST_LOST' || s.state === 'HOST_TABLE_LOST');
     const running = autoFlow;
+    // §9 — while WAITING_FOR_LOGIN the primary action is "ĐÃ LOGIN — TIẾP TỤC"; TÌM BÀN is
+    // disabled until the user confirms login (or 3/3 protocol context is detected).
+    const primary = awaitingLogin
+      ? el('button', { class: 'btn primary', title: 'Xác nhận đã đăng nhập cả 3 browser để bật tìm bàn', onclick: confirmLogin }, 'ĐÃ LOGIN — TIẾP TỤC')
+      : el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC');
     return el('div', { class: 'qa-cmd' },
-      el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC'),
+      primary,
       el('button', { class: 'btn', onclick: () => clusterFocus('A') }, 'Focus A'),
       el('button', { class: 'btn', onclick: () => clusterFocus('B') }, 'Focus B'),
       el('button', { class: 'btn', onclick: () => clusterFocus('C') }, 'Focus C'),
       moreMenuButton(),
-      el('button', { class: 'btn danger', onclick: stopCluster }, 'DỪNG'),
+      el('button', { class: 'btn danger', title: 'Dừng tự động hoá tìm bàn (KHÔNG đóng trình duyệt)', onclick: stopOrchestration }, 'DỪNG'),
+      awaitingLogin ? el('span', { class: 'chip yellow', style: 'margin-left:6px' }, 'CHỜ ĐĂNG NHẬP A/B/C') : null,
       hostLost ? el('span', { class: 'chip red', style: 'margin-left:6px' }, 'HOST MẤT BÀN — bấm TÌM BÀN') : null,
     );
   }
+
+  // §9 — user confirms login on all three browsers; enables the find-table flow.
+  function confirmLogin() { awaitingLogin = false; note('Đã xác nhận đăng nhập. Có thể bấm TÌM BÀN · CHỌN CƯỢC.'); renderApp(); }
 
   // The overflow "⋯" menu keeps rarely-used / advanced actions off the main toolbar.
   function moreMenuButton() {
@@ -551,6 +574,8 @@
       el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); openSimulator(); } }, 'Mô phỏng Offline (QA)'),
       el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); openAnalyzer(); } }, 'Phân tích luật Offline'),
       el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); toggleAdvancedDebug(); } }, 'Advanced Debug'),
+      // The ONLY UI action that closes the browsers (explicit + confirmed) — DỪNG never does.
+      el('button', { class: 'menu-item danger', onclick: (e) => { closeMore(e); closeBrowsers(); } }, 'ĐÓNG 3 TRÌNH DUYỆT'),
     );
     const wrap = el('div', { class: 'qa-more' },
       el('button', { class: 'btn', onclick: () => { menu.hidden = !menu.hidden; } }, '⋯'),
@@ -888,6 +913,14 @@
     // selected profile id (+ the non-persisted localTest flag); host/stake/proxy/device
     // all come authoritatively from the saved profile in the main process.
     if (!selectedClusterProfileId) { note('Hãy chọn hoặc tạo một Cluster Profile trước khi mở cụm.', true); return; }
+    // §11 IDEMPOTENT: if the cluster is already open, REUSE it — never teardown/reopen.
+    try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
+    if (clusterSnap && (clusterSnap.openBrowserCount || 0) >= 3 && clusterSnap.stopped !== true) {
+      for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
+      uiState = UI.CONTROL; renderApp();
+      note('Cụm đã mở sẵn — dùng lại 3 trình duyệt hiện có (không mở lại).');
+      return;
+    }
     uiState = UI.OPENING_CLUSTER; renderApp();
     try {
       const created = await api.clusterCreate({ clusterProfileId: selectedClusterProfileId, localTest });
@@ -897,8 +930,8 @@
       const open = await api.clusterOpen();
       if (open && open.ok === false && !open.opened) throw open;
       // Sandbox-enabled Chromium needs a moment before its CDP endpoint answers, so the
-      // connect is retried (bounded) rather than one-shot — otherwise CONTROL could land
-      // showing CDP 0/3 even though the browsers are healthy.
+      // connect is retried (bounded) rather than one-shot. A CDP miss NEVER closes a
+      // browser (§6/§7): we still land on Screen 2 and show "CDP CHƯA KẾT NỐI" + retry.
       for (let i = 0; i < 8; i++) {
         const cn = await api.clusterConnect();
         if (cn && (cn.connected || 0) >= 3) break;
@@ -917,25 +950,64 @@
         const hostSlot = prof.defaultHostSlot || 'A';
         if (assign[hostSlot] && assign[hostSlot].runId) hostId = assign[hostSlot].runId;
       }
+      // §8 — after RUN GAME the tool WAITS for the user to log in on all three browsers.
+      // It does NOT auto-request channels or auto-find a table; TÌM BÀN stays disabled
+      // until the user confirms login (ĐÃ LOGIN — TIẾP TỤC) or 3/3 protocol context is seen.
+      awaitingLogin = true;
       uiState = UI.CONTROL; renderApp();
-      note(`Đã mở ${open.opened || 0}/3 trình duyệt.`);
+      note(`Đã mở ${open.opened || 0}/3 trình duyệt. Đăng nhập A/B/C rồi bấm “ĐÃ LOGIN — TIẾP TỤC”.`);
     } catch (e) {
-      errorMsg = errText(e) + '  (cụm chưa mở đủ — có thể Dừng và thử lại)';
-      uiState = UI.ERROR; renderApp();
+      // A failed open NEVER closes the browsers that DID open (§6/§14). Land on Screen 2
+      // if anything opened so the user keeps those browsers; only fall back to ERROR when
+      // nothing opened at all.
+      try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
+      if (clusterSnap && (clusterSnap.openBrowserCount || 0) > 0) {
+        for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
+        awaitingLogin = true; uiState = UI.CONTROL; renderApp();
+        note('Mở cụm chưa đủ 3 — các trình duyệt đã mở vẫn được giữ. ' + errText(e), true);
+      } else {
+        errorMsg = errText(e) + '  (chưa mở được trình duyệt nào — thử lại)';
+        uiState = UI.ERROR; renderApp();
+      }
     }
   }
 
-  async function stopCluster() {
-    qaMonitorPlay(false); qaSnap = null; // stop the D-monitor playback on cluster stop
+  // DỪNG — ORCHESTRATION-ONLY stop (§4/§5). Cancels find-table/join/ready/rejoin
+  // automation and monitor playback but NEVER closes the browsers. The tool stays on
+  // Screen 2 with the 3 browsers still open, ready for another TÌM BÀN.
+  async function stopOrchestration() {
+    autoFlow = false; flowBusy = false;
+    qaMonitorPlay(false);
+    try { await api.orchestrationStop(); } catch {}
+    try { clusterSnap = await api.clusterSnapshot(); } catch {}
+    renderApp();
+    note('Đã dừng tự động hoá tìm bàn. Ba trình duyệt vẫn đang mở (không bị đóng).');
+  }
+
+  // ĐÓNG 3 TRÌNH DUYỆT — the ONLY UI action that closes the browsers (explicit + confirmed).
+  async function closeBrowsers() {
+    if (!window.confirm('Đóng cả 3 trình duyệt A/B/C? Cấu hình proxy/thiết bị được giữ nguyên.')) return;
+    autoFlow = false; flowBusy = false; awaitingLogin = false;
+    qaMonitorPlay(false); qaSnap = null;
     uiState = UI.STOPPING; renderApp();
-    try { await api.clusterStop(); } catch {}
-    // Preserve saved profile/device/proxy configuration; just refresh view state.
+    try { await api.closeBrowsers(); } catch {}
     for (const s of SLOTS) assign[s].runId = null;
     try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch {}
     try { const pl = await api.proxyList(); proxies = (pl && pl.proxies) || []; } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
     uiState = UI.SETUP; renderApp();
-    note('Đã dừng cụm. Cấu hình proxy/thiết bị được giữ nguyên.');
+    note('Đã đóng 3 trình duyệt. Cấu hình proxy/thiết bị được giữ nguyên.');
+  }
+
+  // Reopen a single slot the user closed (§10) — reuses that slot's saved profile/device/
+  // proxy/user-data-dir; never touches the other two browsers.
+  async function reopenSlot(slot) {
+    const prof = selectedProfile();
+    if (!prof) return note('Chưa chọn Cluster Profile.', true);
+    try { await api.clusterOpen(); } catch (e) { return note(errText(e), true); }
+    try { clusterSnap = await api.clusterSnapshot(); } catch {}
+    for (const s of SLOTS) { const p = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[s]; if (p && p.profileId) assign[s].runId = p.profileId; }
+    renderApp(); note('Đã mở lại ' + slot + '.');
   }
 
   async function refreshCluster() { try { clusterSnap = await api.clusterSnapshot(); } catch {} renderApp(); }
@@ -965,7 +1037,9 @@
   function browserCount() { return SLOTS.filter((s) => assign[s].runId).length; }
   // Proxy is OPTIONAL: TÌM BÀN only needs the 3 browsers open in an authorized env — a
   // slot running DIRECT is valid and never blocks the find-table flow.
-  function ctaEnabled() { return !!caps.authorized && browserCount() === 3; }
+  // TÌM BÀN is enabled only once the browsers are open in an authorized env AND the user
+  // has finished logging in (§9). Proxy is optional; CDP-not-connected doesn't gate here.
+  function ctaEnabled() { return !!caps.authorized && browserCount() === 3 && !awaitingLogin; }
   function ctaReason(s) {
     if (!caps.authorized) return 'Môi trường chưa được cấp quyền QA (đặt PHOM_QA_AUTHORIZED=1 hoặc allowlist).';
     if (browserCount() < 3) return 'Cần mở đủ 3 browser.';

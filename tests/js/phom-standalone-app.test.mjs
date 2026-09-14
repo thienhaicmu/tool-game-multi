@@ -68,6 +68,29 @@ test('all Phom preload IPC channels use the phom: namespace', () => {
   for (const c of channels) assert.match(c, /^phom:/, `channel ${c} must be phom:-namespaced`);
 });
 
+// BROWSER LIFETIME INDEPENDENCE — DỪNG stops orchestration only; the ONLY app path that
+// closes browsers is the explicit close (ĐÓNG 3 TRÌNH DUYỆT) / app shutdown.
+test('main separates orchestration-stop (DỪNG) from browser close (explicit)', () => {
+  // DỪNG IPC delegates to stopOrchestration (no closeRun).
+  assert.match(mainSrc, /ipcMain\.handle\('phom:orchestration-stop'[^;]*stopOrchestration\(\)/);
+  // The explicit close IPC is the only one that calls the manager stopCluster (closeRun).
+  assert.match(mainSrc, /ipcMain\.handle\('phom:cluster-stop'[^;]*stopCluster\(\)/);
+  // A run exiting on its own marks ONLY that slot closed — never cascades a close.
+  assert.match(mainSrc, /onRunExit:[^\n]*markRunClosed\(runId\)/);
+  // preload exposes both the orchestration stop and the explicit browser close.
+  assert.match(preloadSrc, /orchestrationStop:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:orchestration-stop'\)/);
+  assert.match(preloadSrc, /closeBrowsers:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:cluster-stop'\)/);
+});
+
+// The manager's stopOrchestration must NOT close runs; only stopCluster closes them.
+test('cluster manager: stopOrchestration has no closeRun; only stopCluster does', () => {
+  const mgrSrc = read('desktop/protocol/phom/phom-cluster-cdp-manager.cjs');
+  const stopOrch = mgrSrc.slice(mgrSrc.indexOf('stopOrchestration()'), mgrSrc.indexOf('orchestrationStopped()'));
+  assert.equal(/_closeRun/.test(stopOrch), false, 'stopOrchestration must never call _closeRun');
+  const stopClu = mgrSrc.slice(mgrSrc.indexOf('async stopCluster()'), mgrSrc.indexOf('getClusterSnapshot()'));
+  assert.match(stopClu, /_closeRun/, 'stopCluster is the explicit close path');
+});
+
 // §12 — build file list ships the Phom renderer + reused low-level owners, NOT the
 // Control/Analytics renderers.
 test('Phom build files include ui-phom + shared owners, exclude other renderers', () => {
