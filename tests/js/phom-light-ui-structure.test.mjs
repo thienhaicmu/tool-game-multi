@@ -106,10 +106,13 @@ test('DỪNG is orchestration-only; browser close is a separate explicit action'
   assert.match(js, /function closeBrowsers\(\)/);
   assert.match(js, /ĐÓNG 3 TRÌNH DUYỆT/);
   assert.match(js, /window\.confirm\(/);
-  // WAITING_FOR_LOGIN gate: awaitingLogin + ĐÃ LOGIN — TIẾP TỤC, and TÌM BÀN gated on it.
-  assert.match(js, /awaitingLogin\s*=\s*true/);
+  // Explicit entry gate (LOGIN → CONFIRMED → ENTERING → READY): the user drives each step.
+  assert.match(js, /const ENTRY = \{ LOGIN: 'LOGIN', CONFIRMED: 'CONFIRMED', ENTERING: 'ENTERING', READY: 'READY' \}/);
+  assert.match(js, /entryPhase = ENTRY\.LOGIN/);
   assert.match(js, /ĐÃ LOGIN — TIẾP TỤC/);
-  assert.match(js, /function ctaEnabled\(\)[^]*!awaitingLogin/);
+  assert.match(js, /VÀO GAME PHỎM/);
+  // TÌM BÀN unlocks only at READY (never on login-confirm alone).
+  assert.match(js, /function ctaEnabled\(\)[^]*entryPhase === ENTRY\.READY/);
 });
 
 // PROXY OPTIONAL (§4/§5): neither RUN GAME (setupReady) nor TÌM BÀN (ctaEnabled) may be

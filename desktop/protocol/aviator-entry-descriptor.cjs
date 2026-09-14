@@ -35,11 +35,11 @@
 // scene node's name, so it drives both the known path and the bounded scene fallback.
 // ---------------------------------------------------------------------------
 
-// The live-proven NewLobby scene path to the Aviator node (the learned game_id is appended as the
-// leaf name). If this exact path is absent in a given build, a bounded scene search is the fallback.
-const COCOS_KNOWN_PATH_PREFIX = 'Canvas/MainUIParent/NewLobby/Main/ScrollView/view/Content/NodeSpines/';
-// Bounded max traversal depth for the live-scene fallback (matches the proven operation's cap).
-const COCOS_MAX_DEPTH = 10;
+// The Cocos NewLobby ENTER mechanism is GAME-NEUTRAL and lives in a shared module; Aviator (here)
+// and Phỏm both consume it. Neither game owns it.
+const { COCOS_KNOWN_PATH_PREFIX, COCOS_MAX_DEPTH, GAME_ID_RE, isValidGameId, buildEnterGameHook, runEnterGameViaSite } = require('./cocos-lobby-entry.cjs');
+// Backward-compatible alias: the hook builder is game-neutral now (installs the same page fn).
+const buildEnterAviatorHook = buildEnterGameHook;
 
 // Reference-only: the frames the SITE itself emits during entry. We NEVER send these — they are
 // kept for recognition/provenance/tests only (the sealed re-entry no longer transmits any frame).
@@ -51,7 +51,6 @@ const ENTER_FRAME = JSON.stringify(ENTER_ENVELOPE);
 // Observed game-act endpoint path suffix; host/version vary per deployment so we retain the full
 // learned URL and match by suffix. game_id is a short opaque product token (observed "vgmn_221").
 const GAME_ACT_PATH = '/game-act';
-const GAME_ID_RE = /^[A-Za-z0-9_]{1,40}$/;
 
 // The LIVE-PROVEN Aviator scene-node name for this product/site (== the Aviator gameId). Used as a
 // BAKED fallback so the very FIRST entry-from-Lobby works before any /game-act has been observed
@@ -61,8 +60,6 @@ const GAME_ID_RE = /^[A-Za-z0-9_]{1,40}$/;
 // read-only resolve-before-invoke checks (a node named this that carries a cc.Button, else nothing
 // is fired). A genuinely learned game-act gameId always takes priority over this constant.
 const KNOWN_AVIATOR_GAME_ID = 'vgmn_221';
-
-function isValidGameId(id) { return typeof id === 'string' && GAME_ID_RE.test(id); }
 
 function isGameActUrl(url) {
   try { return new URL(String(url)).pathname.endsWith(GAME_ACT_PATH); } catch { return false; }
@@ -86,114 +83,13 @@ function isValidDescriptor(d) {
     && typeof d.gameId === 'string' && GAME_ID_RE.test(d.gameId));
 }
 
-// Build the SEALED, zero-argument page hook. It installs globalThis.__avEnterAviator() which:
-//   1. runs READ-ONLY resolution of the Aviator Cocos node (known path, else a bounded scene
-//      search for a node named <gameId> that carries a cc.Button), and
-//   2. ONLY if every check passes, fires the node's OWN wired click (the LIVE-PROVEN operation).
-// It returns non-secret facts only: { ok, step?, resolve:{ccAvailable, directorAvailable,
-// nodeResolved, buttonResolved, resolvedBy}, invoked }. It performs no fetch, sends no WS frame,
-// and does no coordinate clicking. The gameId (== node name) + path prefix + depth cap are baked
-// literals — callers cannot substitute a node path, name, component, function or coordinates.
-function buildEnterAviatorHook(descriptor) {
-  // The hook only ever uses the gameId (== node name); the gameActUrl is provenance for LEARNING,
-  // not for the click. So the hook requires only a valid gameId — a learned descriptor supplies it,
-  // and the baked KNOWN_AVIATOR_GAME_ID fallback supplies it for a first entry. An empty/garbage
-  // gameId is still rejected (no arbitrary/unnamed node is ever searched for).
-  if (!descriptor || !isValidGameId(descriptor.gameId)) throw new Error('invalid entry gameId');
-  const GID = JSON.stringify(descriptor.gameId);
-  const PATH = JSON.stringify(COCOS_KNOWN_PATH_PREFIX + descriptor.gameId);
-  const MAXD = String(COCOS_MAX_DEPTH | 0);
-  return `(() => {
-  try {
-    var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof self !== 'undefined') ? self : this;
-    if (!g) return;
-    var GID = ${GID}, PATH = ${PATH}, MAXD = ${MAXD};
-    g.__avEnterAviator = function () {
-      var r = { ccAvailable:false, directorAvailable:false, nodeResolved:false, buttonResolved:false, resolvedBy:null };
-      try {
-        var cc = g.cc;
-        if (!cc || typeof cc.find !== 'function' || !cc.Component || !cc.Component.EventHandler
-            || typeof cc.Component.EventHandler.emitEvents !== 'function' || !cc.Button) return { ok:false, step:'no-cc', resolve:r };
-        r.ccAvailable = true;
-        var dir = cc.director;
-        if (!dir || typeof dir.getScene !== 'function') return { ok:false, step:'no-director', resolve:r };
-        r.directorAvailable = true;
-        var Button = cc.Button;
-        var node = null, by = null;
-        // Primary: the live-proven known NewLobby scene path (must itself carry a cc.Button).
-        try { var p = cc.find(PATH); if (p && typeof p.getComponent === 'function' && p.getComponent(Button)) { node = p; by = 'path'; } } catch (e) {}
-        // Fallback: bounded (<= MAXD) live-scene traversal for a node named GID that has a cc.Button.
-        if (!node) {
-          var sc = null; try { sc = dir.getScene(); } catch (e) { sc = null; }
-          var found = null;
-          (function w(n, d) {
-            if (!n || d > MAXD || found) return;
-            var ch = n.children || [];
-            for (var i = 0; i < ch.length; i++) {
-              var c = ch[i];
-              try { if (c && c.name === GID && typeof c.getComponent === 'function' && c.getComponent(Button)) { found = c; return; } } catch (e) {}
-              w(c, d + 1);
-            }
-          })(sc, 0);
-          if (found) { node = found; by = 'scene'; }
-        }
-        if (!node) { try { console.log('[COCOS-CLICK page] node NOT found for tile', GID, '(scene=', (dir.getScene && dir.getScene() && dir.getScene().name), ')'); } catch(e){} return { ok:false, step:'node-not-found', resolve:r }; }
-        r.nodeResolved = true; r.resolvedBy = by;
-        var btn = node.getComponent(Button);
-        if (!btn) { try { console.log('[COCOS-CLICK page] node found but no cc.Button', GID); } catch(e){} return { ok:false, step:'no-button', resolve:r }; }
-        r.buttonResolved = true;
-        if (!btn.clickEvents) { try { console.log('[COCOS-CLICK page] button has no clickEvents', GID); } catch(e){} return { ok:false, step:'no-clickevents', resolve:r }; }
-        // All read-only checks passed — fire the node's OWN wired click (LIVE-PROVEN, both calls).
-        try { console.log('[COCOS-CLICK page] 👉 CLICKING tile', GID, 'resolvedBy=' + by); } catch(e){}
-        cc.Component.EventHandler.emitEvents(btn.clickEvents, node);
-        node.emit('click', btn);
-        try { console.log('[COCOS-CLICK page] ✅ clicked tile', GID); } catch(e){}
-        return { ok:true, invoked:true, resolve:r };
-      } catch (e) { return { ok:false, step:'invoke-error', resolve:r }; }
-    };
-  } catch (e) {}
-})();`;
-}
-
-// Non-secret resolve facts are surfaced to onDiag ONLY (booleans + resolvedBy). The returned page
-// value is NOT logged wholesale. Executes through a target's OWN CDP client (the BrowserRun game
-// session). Returns { ok:true } | { error:{ code:'ENTRY_SITE_SEAM_UNAVAILABLE'|..., step? } }.
-// INVOKED != ENTERED: a successful click does not confirm entry — the caller (gate) confirms only on
-// fresh authoritative SERVER Aviator evidence after the attempt boundary.
+// Aviator wrapper: prefer a genuinely LEARNED game-act descriptor; otherwise fall back to the baked
+// known Aviator gameId so a FIRST entry-from-Lobby works before any /game-act was observed. Behaviour
+// is preserved verbatim — it just delegates to the shared game-agnostic core.
 async function runEnterAviatorViaSite(client, sessionId, descriptor, onDiag) {
-  const diag = typeof onDiag === 'function' ? onDiag : () => {};
-  if (!client || !client.Runtime || typeof client.Runtime.evaluate !== 'function') {
-    return { error: { code: 'ENTER_NO_CLIENT', message: 'Target connection is gone' } };
-  }
-  // Prefer a genuinely LEARNED game-act descriptor; otherwise fall back to the baked known Aviator
-  // gameId so a FIRST entry-from-Lobby works before any /game-act has been observed. The click is
-  // still fully gated by the read-only resolve checks below — an absent Aviator node fires nothing.
   const learned = isValidDescriptor(descriptor);
   const gameId = learned ? descriptor.gameId : KNOWN_AVIATOR_GAME_ID;
-  const usedFallbackGameId = !learned;
-  let hook;
-  try { hook = buildEnterAviatorHook({ gameId }); } catch (e) { return { error: { code: 'ENTER_NO_DESCRIPTOR', message: String(e && e.message || e) } }; }
-  try { await client.Runtime.evaluate({ expression: hook, includeCommandLineAPI: false }, sessionId); } catch { /* worker/detached — the call below still reports */ }
-  const expr = "globalThis.__avEnterAviator ? globalThis.__avEnterAviator() : ({ ok:false, step:'no-hook' })";
-  let v;
-  try {
-    const res = await client.Runtime.evaluate({ expression: expr, awaitPromise: true, returnByValue: true }, sessionId);
-    v = res && res.result && res.result.value;
-  } catch (e) {
-    return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: String(e && e.message || e), step: 'evaluate-error' } };
-  }
-  // Surface ONLY non-secret booleans + resolvedBy (never the returned object wholesale / page state).
-  const rf = (v && v.resolve) || {};
-  diag({ event: 'COCOS_ENTRY_SEAM_RESOLVE', ccAvailable: !!rf.ccAvailable, directorAvailable: !!rf.directorAvailable, nodeResolved: !!rf.nodeResolved, buttonResolved: !!rf.buttonResolved, resolvedBy: rf.resolvedBy == null ? null : String(rf.resolvedBy), fallbackGameId: usedFallbackGameId });
-  // eslint-disable-next-line no-console
-  console.log(`[COCOS-CLICK] gameId=${gameId} fallback=${usedFallbackGameId} ok=${!!(v && v.ok)} step=${v && v.step || '-'} cc=${!!rf.ccAvailable} dir=${!!rf.directorAvailable} node=${!!rf.nodeResolved} btn=${!!rf.buttonResolved} by=${rf.resolvedBy || '-'}`);
-  if (v && v.ok === true) {
-    diag({ event: 'COCOS_ENTRY_INVOKED' });
-    // eslint-disable-next-line no-console
-    console.log(`[COCOS-CLICK] ✅ ĐÃ CLICK vào game (tile ${gameId})`);
-    return { ok: true };
-  }
-  return { error: { code: 'ENTRY_SITE_SEAM_UNAVAILABLE', message: 'Aviator Cocos node did not resolve', step: v && v.step } };
+  return runEnterGameViaSite(client, sessionId, gameId, onDiag, { fallbackGameId: !learned });
 }
 
 // ---------------------------------------------------------------------------
@@ -317,6 +213,6 @@ module.exports = {
   COCOS_KNOWN_PATH_PREFIX, COCOS_MAX_DEPTH, RECONNECT_BANNER_KEYWORDS,
   LOBBY_ENVELOPE, ENTER_ENVELOPE, LOBBY_FRAME, ENTER_FRAME,
   GAME_ACT_PATH, GAME_ID_RE, KNOWN_AVIATOR_GAME_ID, isGameActUrl,
-  parseGameActDescriptor, isValidDescriptor, isValidGameId, buildEnterAviatorHook, runEnterAviatorViaSite,
+  parseGameActDescriptor, isValidDescriptor, isValidGameId, buildEnterAviatorHook, runEnterAviatorViaSite, runEnterGameViaSite,
   buildProbeSceneHook, runProbeAviatorSceneViaSite,
 };

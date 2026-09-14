@@ -20,6 +20,7 @@
     "desktop/browser-run/phom-profile-store.cjs",
     "desktop/cdp/**/*",
     "desktop/protocol/phom/**/*",
+    "desktop/protocol/cocos-lobby-entry.cjs",
     "desktop/licensing/**/*",
     "ui-phom/**/*",
     "package.json"

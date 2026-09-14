@@ -17,6 +17,7 @@
     "desktop/protocol/jackpot-observer.cjs",
     "desktop/protocol/aviator-context.cjs",
     "desktop/protocol/aviator-entry-descriptor.cjs",
+    "desktop/protocol/cocos-lobby-entry.cjs",
     "ui-analytics/**/*",
     "package.json"
   ],

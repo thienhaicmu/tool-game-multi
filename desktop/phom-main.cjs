@@ -40,6 +40,8 @@ const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
 const { PhomProfileStore } = require('./browser-run/phom-profile-store.cjs');
 const { PhomClusterProfileStore } = require('./browser-run/phom-cluster-profile-store.cjs');
+const { runEnterGameViaSite } = require('./protocol/cocos-lobby-entry.cjs');
+const { GAME_ID: PHOM_GAME_ID } = require('./protocol/phom/phom-frame-classify.cjs');
 const deviceProfile = require('./browser-run/device-profile.cjs');
 const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
@@ -393,6 +395,21 @@ else {
   }
   function focusBrowser(runId) {
     try { const wc = chromeRuntime.webContents(runId); if (wc && !wc.isDestroyed() && typeof wc.focus === 'function') wc.focus(); return { ok: true }; } catch { return { ok: false }; }
+  }
+
+  // ---- VÀO GAME PHỎM — trigger the VERIFIED entry action id `vgcg_8` (§1-§5) ---------------
+  // We do NOT guess a URL/deep-link/selector and do NOT send a raw protocol frame. We REUSE the
+  // exact in-engine ACTION mechanism Aviator uses (runEnterGameViaSite): resolve the NewLobby
+  // Cocos tile node whose NAME == the Phỏm game id (`vgcg_8`) and fire ITS OWN wired cc.Button —
+  // the site's own handlers then perform the authenticated entry. INVOKED != ENTERED: readiness is
+  // confirmed ONLY by the authoritative Simms session signal (socketReady+uid), never the click.
+  async function phomEnterGame(runId) {
+    const client = runClientFor(String(runId));
+    if (!client || !client.Runtime) return { ok: false, error: { code: 'PHOM_ENTRY_NO_CLIENT', message: `no CDP client for run ${runId}` } };
+    const diag = (f) => { try { lifecycleLog('PHOM_ENTER_GAME', { runId: String(runId), gameId: PHOM_GAME_ID, ...f }); } catch { /* ignore */ } };
+    const r = await runEnterGameViaSite(client, undefined, PHOM_GAME_ID, diag);
+    if (r && r.ok) return { ok: true, gameId: PHOM_GAME_ID };
+    return { ok: false, gameId: PHOM_GAME_ID, error: (r && r.error) || { code: 'ENTRY_SITE_SEAM_UNAVAILABLE' } };
   }
 
   // Count non-terminal BrowserRuns — the analyzer is refused whenever ANY exist.
@@ -809,6 +826,8 @@ else {
     // 2×2 workspace layout controls (§9/§21).
     ipcMain.handle('phom:restore-layout', guarded(() => restoreLayout()));
     ipcMain.handle('phom:focus-browser', guarded((_e, runId) => focusBrowser(runId)));
+    // VÀO GAME PHỎM — trigger the verified `vgcg_8` entry action via the site's own Cocos node.
+    ipcMain.handle('phom:enter-game', guarded((_e, runId) => phomEnterGame(String(runId == null ? '' : runId))));
 
     // Offline rule analyzer (§16/§23). The domain enforces the boundary again, but we
     // also refuse at the IPC edge whenever ANY live BrowserRun / session exists.

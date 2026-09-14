@@ -32,7 +32,18 @@
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
   let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
-  let awaitingLogin = false;  // WAITING_FOR_LOGIN: browsers open, user logs in before TÌM BÀN
+  // Screen-2 entry gate (§1-§4): the user MUST drive each step explicitly; nothing
+  // auto-advances. LOGIN (browsers open, user logs in) → CONFIRMED (user pressed ĐÃ LOGIN)
+  // → ENTERING (user pressed VÀO GAME PHỎM; passive session started, waiting for the game
+  // protocol context on A/B/C) → READY (3/3 in Phỏm; only now is TÌM BÀN enabled). TÌM BÀN
+  // never runs until the user reaches READY and clicks it.
+  const ENTRY = { LOGIN: 'LOGIN', CONFIRMED: 'CONFIRMED', ENTERING: 'ENTERING', READY: 'READY' };
+  let entryPhase = ENTRY.LOGIN;   // set to LOGIN on RUN GAME; browsers stay open across all phases
+  let phomSessionStarted = false; // the passive HostSession has been started (at VÀO GAME PHỎM)
+  // ENTERING sub-state: the verified `vgcg_8` entry action has been triggered on A/B/C and we are
+  // waiting for the authoritative in-Phỏm signal (never guessed, never faked).
+  const ESUB = { ENTERING_ACTION: 'ENTERING_ACTION' };
+  let entrySub = null;
   let qaSnap = null;         // FIXTURE/REPLAY monitor (D simulated) snapshot — REPLAY mode only
   let qaLoading = false, qaPlaying = false, qaTimer = null, qaSpeed = 900;
   // Screen-2 monitor source mode. DEFAULT is LIVE_INTERNAL: the monitor shows ONLY live
@@ -472,10 +483,33 @@
   function renderControl(r) {
     const s = session || {};
     const cs = clusterSnap || {};
+    const entry = entryStatusBar();
+    if (entry) r.appendChild(entry);
     r.appendChild(statusToolbar(s, cs));
     r.appendChild(commandToolbar(s));
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, autoFlowLabel(s)));
     r.appendChild(liveMonitor(s));
+  }
+
+  // §16 — the entry gate's per-slot status (CHỜ LOGIN → ĐÃ LOGIN → ĐANG VÀO PHỎM → PHỎM READY),
+  // shown until the whole cluster is PHỎM READY. Reflects state only; drives no automation.
+  function entryStatusBar() {
+    if (entryPhase === ENTRY.READY) return null;
+    const title = entryPhase === ENTRY.LOGIN ? 'CHỜ ĐĂNG NHẬP' : entryPhase === ENTRY.CONFIRMED ? 'ĐÃ LOGIN — CHỜ VÀO GAME PHỎM' : 'ĐANG VÀO GAME PHỎM';
+    const chips = el('div', { class: 'qa-chips' });
+    for (const slot of SLOTS) {
+      const runId = assign[slot].runId;
+      let cls = 'gray', label = 'CHƯA MỞ';
+      const cp = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
+      if (cp.browserState && cp.browserState !== 'OPEN' && cp.browserState !== 'NOT_OPEN') { cls = 'red'; label = 'BROWSER LỖI'; }
+      else if (!runId) { cls = 'gray'; label = 'CHƯA MỞ'; }
+      else if (entryPhase === ENTRY.LOGIN) { cls = 'yellow'; label = 'CHỜ LOGIN'; }
+      else if (entryPhase === ENTRY.CONFIRMED) { cls = 'blue'; label = 'ĐÃ LOGIN'; }
+      else if (assign[slot].entryError) { cls = 'red'; label = 'LỖI VÀO PHỎM'; } // failure isolated to THIS slot; browser stays open
+      else { const ok = slotInPhom(runId); cls = ok ? 'green' : 'yellow'; label = ok ? 'PHỎM READY' : 'ĐANG VÀO PHỎM'; }
+      chips.appendChild(el('span', { class: 'chip ' + cls }, `${slot} · ${label}`));
+    }
+    return el('div', { class: 'qa-status' }, el('div', { class: 'section-t', style: 'margin:0 0 4px' }, title), chips);
   }
 
   // Map one slot to a compact chip {cls,text,detail}. HOST is ALWAYS orange (its label
@@ -560,11 +594,22 @@
   function commandToolbar(s) {
     const hostLost = s && (s.state === 'HOST_LOST' || s.state === 'HOST_TABLE_LOST');
     const running = autoFlow;
-    // §9 — while WAITING_FOR_LOGIN the primary action is "ĐÃ LOGIN — TIẾP TỤC"; TÌM BÀN is
-    // disabled until the user confirms login (or 3/3 protocol context is detected).
-    const primary = awaitingLogin
-      ? el('button', { class: 'btn primary', title: 'Xác nhận đã đăng nhập cả 3 browser để bật tìm bàn', onclick: confirmLogin }, 'ĐÃ LOGIN — TIẾP TỤC')
-      : el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC');
+    // §1-§4 — the primary CTA is DRIVEN BY THE ENTRY PHASE. Each step is an explicit user
+    // action; TÌM BÀN is unavailable until the user has confirmed login AND entered Phỏm.
+    let primary;
+    if (entryPhase === ENTRY.LOGIN) {
+      primary = el('button', { class: 'btn primary', title: 'Xác nhận đã đăng nhập cả 3 browser', onclick: confirmLogin }, 'ĐÃ LOGIN — TIẾP TỤC');
+    } else if (entryPhase === ENTRY.CONFIRMED) {
+      primary = el('button', { class: 'btn primary', title: 'Đưa A/B/C vào game Phỏm (chưa tìm bàn)', onclick: enterPhom }, 'VÀO GAME PHỎM');
+    } else if (entryPhase === ENTRY.ENTERING) {
+      primary = el('button', { class: 'btn primary', disabled: true }, 'ĐANG VÀO GAME PHỎM…');
+    } else {
+      primary = el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC');
+    }
+    const phaseChip = entryPhase === ENTRY.LOGIN ? el('span', { class: 'chip yellow', style: 'margin-left:6px' }, 'CHỜ ĐĂNG NHẬP A/B/C')
+      : entryPhase === ENTRY.CONFIRMED ? el('span', { class: 'chip blue', style: 'margin-left:6px' }, 'ĐÃ LOGIN — CHỜ VÀO PHỎM')
+      : entryPhase === ENTRY.ENTERING ? el('span', { class: 'chip yellow', style: 'margin-left:6px' }, 'ĐANG VÀO GAME PHỎM')
+      : el('span', { class: 'chip green', style: 'margin-left:6px' }, 'PHỎM READY');
     return el('div', { class: 'qa-cmd' },
       primary,
       el('button', { class: 'btn', onclick: () => clusterFocus('A') }, 'Focus A'),
@@ -572,13 +617,87 @@
       el('button', { class: 'btn', onclick: () => clusterFocus('C') }, 'Focus C'),
       moreMenuButton(),
       el('button', { class: 'btn danger', title: 'Dừng tự động hoá tìm bàn (KHÔNG đóng trình duyệt)', onclick: stopOrchestration }, 'DỪNG'),
-      awaitingLogin ? el('span', { class: 'chip yellow', style: 'margin-left:6px' }, 'CHỜ ĐĂNG NHẬP A/B/C') : null,
+      phaseChip,
       hostLost ? el('span', { class: 'chip red', style: 'margin-left:6px' }, 'HOST MẤT BÀN — bấm TÌM BÀN') : null,
     );
   }
 
-  // §9 — user confirms login on all three browsers; enables the find-table flow.
-  function confirmLogin() { awaitingLogin = false; note('Đã xác nhận đăng nhập. Có thể bấm TÌM BÀN · CHỌN CƯỢC.'); renderApp(); }
+  // §2 — user confirms login on all three browsers. This ONLY advances the gate to the
+  // VÀO GAME PHỎM step. It NEVER requests channels / acquires / joins / readies, and never
+  // starts orchestration.
+  function confirmLogin() {
+    // Minimum precondition: all three browsers still open (never close on failure — §13).
+    const bad = SLOTS.filter((sl) => { const p = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[sl]; return p && p.browserState && p.browserState !== 'OPEN'; });
+    if (bad.length) { note('Các browser sau không còn mở: ' + bad.join(', ') + '. Hãy MỞ LẠI trước khi tiếp tục.', true); return; }
+    entryPhase = ENTRY.CONFIRMED;
+    note('Đã xác nhận đăng nhập. Bấm “VÀO GAME PHỎM” để đưa A/B/C vào game.');
+    renderApp();
+  }
+
+  // §1-§5 — VÀO GAME PHỎM. A distinct, explicit step that triggers the VERIFIED Phỏm entry action
+  // id `vgcg_8` through the site's OWN in-engine mechanism (the same one Aviator uses): the tool
+  // fires the NewLobby Cocos tile node named `vgcg_8`'s wired cc.Button on A/B/C. It performs NO
+  // guessed navigation/URL/selector and sends NO protocol frame. Then it WAITS for the authoritative
+  // in-Phỏm signal (socket ready + game uid) on ALL three before unlocking TÌM BÀN — firing the
+  // action is NEVER treated as PHỎM READY.
+  let entryTimer = null;
+  async function enterPhom() {
+    const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
+    if (runIds.length !== 3) { note('Cần mở đủ 3 browser trước.', true); return; }
+    const bad = SLOTS.filter((sl) => { const p = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[sl]; return p && p.browserState && p.browserState !== 'OPEN'; });
+    if (bad.length) { note('Browser chưa sẵn sàng: ' + bad.join(', ') + '.', true); return; }
+    const prof = selectedProfile();
+    const hostSlot = (prof && prof.defaultHostSlot) || 'A';
+    const host = (assign[hostSlot] && assign[hostSlot].runId) || runIds[0];
+    hostId = host;
+    for (const sl of SLOTS) assign[sl].entryError = null;
+    entryPhase = ENTRY.ENTERING; entrySub = ESUB.ENTERING_ACTION; renderApp();
+    // (1) passive session — start at most once; reuse on re-entry (never re-create → keeps ctx).
+    if (!phomSessionStarted) {
+      const start = await api.startSession({ runIds, hostId: host });
+      if (start && start.ok === false) { entryPhase = ENTRY.CONFIRMED; note(errText(start), true); return; }
+      phomSessionStarted = true;
+    }
+    armEntryTimeout();
+    // (2) trigger the verified `vgcg_8` entry action on each browser (fires the game's own tile).
+    // Per-slot failure is isolated (records entryError on THAT slot; other browsers untouched, none
+    // closed). A failed resolve means the Phỏm tile wasn't on the lobby — the user finishes manually.
+    note('Đang vào game Phỏm (action vgcg_8)… chờ tín hiệu game.');
+    for (const sl of SLOTS) {
+      const runId = assign[sl].runId; if (!runId) continue;
+      try { const r = await api.enterGame(runId); if (r && r.ok === false) assign[sl].entryError = errText(r); }
+      catch (e) { assign[sl].entryError = String(e && e.message || e); }
+    }
+    refresh();
+  }
+
+  // §12 — bounded entry wait. On timeout we leave everything intact (no teardown, no reset);
+  // just a friendly message; the browsers stay open so the user can retry / finish manually.
+  function armEntryTimeout() {
+    if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
+    entryTimer = setTimeout(() => { entryTimer = null; if (entryPhase === ENTRY.ENTERING) note('PHOM_ENTRY_TIMEOUT — chưa xác nhận vào Phỏm. Trình duyệt vẫn mở; hãy thử lại hoặc vào Phỏm thủ công.', true); }, 60000);
+  }
+
+  // Authoritative "in Phỏm" signal from the game's OWN frames (never fabricated): a slot has
+  // entered the Phỏm game when its socket is ready AND the game assigned it a uid. All three
+  // must satisfy this before TÌM BÀN unlocks; otherwise the gate stays in ĐANG VÀO GAME PHỎM.
+  function slotInPhom(runId) {
+    const p = (session && session.profiles || []).find((x) => x.id === runId);
+    return !!(p && p.socketReady && p.connected && p.uid);
+  }
+  function allInPhom() {
+    const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
+    return runIds.length === 3 && runIds.every(slotInPhom);
+  }
+  // Called from the session subscription: promote ENTERING → READY only on the authoritative
+  // 3/3 in-Phỏm signal. Never auto-advances past READY (TÌM BÀN stays a user action).
+  function reconcileEntryPhase() {
+    if (entryPhase === ENTRY.ENTERING && allInPhom()) {
+      entryPhase = ENTRY.READY; entrySub = null;
+      if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
+      note('A/B/C đã vào game Phỏm. Có thể bấm “TÌM BÀN · CHỌN CƯỢC”.');
+    }
+  }
 
   // The overflow "⋯" menu keeps rarely-used / advanced actions off the main toolbar.
   function moreMenuButton() {
@@ -957,9 +1076,14 @@
     card.appendChild(el('div', { class: 'phq-row' }, confirmBtn, el('button', { class: 'btn', onclick: close }, 'HỦY')));
     overlay.appendChild(card); document.body.appendChild(overlay);
 
-    // Start the session (so the HOST socket can query channels) then request the list.
-    const start = await api.startSession({ runIds, hostId: host });
-    if (start && start.ok === false) { status.textContent = errText(start); status.className = 'note warn'; return; }
+    // The passive session was already started at VÀO GAME PHỎM; reuse it (never re-create —
+    // that would drop the per-profile game context). Only start here as a safety net if the
+    // gate was somehow bypassed. Channel request happens ONLY now (§5), on TÌM BÀN.
+    if (!phomSessionStarted) {
+      const start = await api.startSession({ runIds, hostId: host });
+      if (start && start.ok === false) { status.textContent = errText(start); status.className = 'note warn'; return; }
+      phomSessionStarted = true;
+    }
     try { await api.requestChannels(); } catch {}
     // Poll the authoritative stake list (no hard-coded fallback); typed timeout.
     for (let i = 0; i < 8; i++) {
@@ -1053,10 +1177,10 @@
         const hostSlot = prof.defaultHostSlot || 'A';
         if (assign[hostSlot] && assign[hostSlot].runId) hostId = assign[hostSlot].runId;
       }
-      // §8 — after RUN GAME the tool WAITS for the user to log in on all three browsers.
-      // It does NOT auto-request channels or auto-find a table; TÌM BÀN stays disabled
-      // until the user confirms login (ĐÃ LOGIN — TIẾP TỤC) or 3/3 protocol context is seen.
-      awaitingLogin = true;
+      // §1 — after RUN GAME the tool WAITS for the user to log in on all three browsers. It
+      // does NOT auto-request channels, auto-enter Phỏm, or auto-find a table; every step is
+      // an explicit user action (LOGIN → VÀO GAME PHỎM → TÌM BÀN).
+      entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
       uiState = UI.CONTROL; renderApp();
       note(`Đã mở ${open.opened || 0}/3 trình duyệt. Đăng nhập A/B/C rồi bấm “ĐÃ LOGIN — TIẾP TỤC”.`);
     } catch (e) {
@@ -1066,7 +1190,7 @@
       try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
       if (clusterSnap && (clusterSnap.openBrowserCount || 0) > 0) {
         for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
-        awaitingLogin = true; uiState = UI.CONTROL; renderApp();
+        entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null; uiState = UI.CONTROL; renderApp();
         note('Mở cụm chưa đủ 3 — các trình duyệt đã mở vẫn được giữ. ' + errText(e), true);
       } else {
         errorMsg = errText(e) + '  (chưa mở được trình duyệt nào — thử lại)';
@@ -1090,7 +1214,7 @@
   // ĐÓNG 3 TRÌNH DUYỆT — the ONLY UI action that closes the browsers (explicit + confirmed).
   async function closeBrowsers() {
     if (!window.confirm('Đóng cả 3 trình duyệt A/B/C? Cấu hình proxy/thiết bị được giữ nguyên.')) return;
-    autoFlow = false; flowBusy = false; awaitingLogin = false;
+    autoFlow = false; flowBusy = false; entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
     qaMonitorPlay(false); qaSnap = null;
     uiState = UI.STOPPING; renderApp();
     try { await api.closeBrowsers(); } catch {}
@@ -1140,9 +1264,10 @@
   function browserCount() { return SLOTS.filter((s) => assign[s].runId).length; }
   // Proxy is OPTIONAL: TÌM BÀN only needs the 3 browsers open in an authorized env — a
   // slot running DIRECT is valid and never blocks the find-table flow.
-  // TÌM BÀN is enabled only once the browsers are open in an authorized env AND the user
-  // has finished logging in (§9). Proxy is optional; CDP-not-connected doesn't gate here.
-  function ctaEnabled() { return !!caps.authorized && browserCount() === 3 && !awaitingLogin; }
+  // TÌM BÀN unlocks ONLY when the full entry gate has completed: 3 browsers open in an
+  // authorized env AND the user has confirmed login AND A/B/C have entered Phỏm (§1-§4).
+  // Proxy is optional; CDP-not-connected doesn't gate here.
+  function ctaEnabled() { return !!caps.authorized && browserCount() === 3 && entryPhase === ENTRY.READY; }
   function ctaReason(s) {
     if (!caps.authorized) return 'Môi trường chưa được cấp quyền QA (đặt PHOM_QA_AUTHORIZED=1 hoặc allowlist).';
     if (browserCount() < 3) return 'Cần mở đủ 3 browser.';
@@ -1153,7 +1278,7 @@
   function note(msg, warn) { const n = $('phq-note'); if (n) { n.textContent = msg; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
 
   // ---------- boot ----------
-  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; advanceAutoFlow(snap); if (!$('workspace').hidden) renderApp(); });
+  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); advanceAutoFlow(snap); if (!$('workspace').hidden) renderApp(); });
   if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) renderApp(); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) renderApp(); });

@@ -21,6 +21,10 @@
 
 const ZONE = 'Simms';
 const GID = 8;
+// The Phỏm product / entry action id (== the NewLobby Cocos tile node name). This is the VERIFIED
+// id used to enter Phỏm via the site's own in-engine action (same mechanism as Aviator's node),
+// NOT a URL/deep-link and NOT a guessed selector.
+const GAME_ID = 'vgcg_8';
 
 // Confirmed command set. Names are stable semantic labels for UI / evidence.
 const CMD = Object.freeze({
@@ -199,6 +203,6 @@ function normalizeSeat(entry) {
 }
 
 module.exports = {
-  ZONE, GID, CMD, OP, CMD_TYPE, HAND_EVENT_TYPES, SERVER_EVIDENCE_TYPES,
+  ZONE, GID, GAME_ID, CMD, OP, CMD_TYPE, HAND_EVENT_TYPES, SERVER_EVIDENCE_TYPES,
   classifyPhomFrame, normalizeChannel, normalizeSeat,
 };

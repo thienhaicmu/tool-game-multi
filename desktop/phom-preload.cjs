@@ -40,6 +40,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   recoverHost: () => ipcRenderer.invoke('phom:recover-host'),
   restoreLayout: () => ipcRenderer.invoke('phom:restore-layout'),
   focusBrowser: (runId) => ipcRenderer.invoke('phom:focus-browser', runId),
+  // VÀO GAME PHỎM — trigger the verified `vgcg_8` entry action via the site's own Cocos node.
+  enterGame: (runId) => ipcRenderer.invoke('phom:enter-game', runId),
   leaveAll: () => ipcRenderer.invoke('phom:leave-all'),
   stop: () => ipcRenderer.invoke('phom:stop'),
   sessionState: () => ipcRenderer.invoke('phom:session-state'),
