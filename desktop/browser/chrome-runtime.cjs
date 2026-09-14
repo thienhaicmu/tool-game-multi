@@ -24,7 +24,7 @@
 // ---------------------------------------------------------------------------
 
 const EventEmitter = require('node:events');
-const { ChromeLauncher, DEFAULT_WINDOW } = require('./chrome-launcher.cjs');
+const { ChromeLauncher, DEFAULT_WINDOW, lifecycleLog } = require('./chrome-launcher.cjs');
 const { TargetManager } = require('../cdp/target-manager.cjs');
 
 // A WebContents-shaped adapter over the owning run's active CDP page client. Only
@@ -241,13 +241,14 @@ class ChromeRuntime {
   destroy(runId) {
     const rec = this._byRun.get(runId);
     if (!rec) return;
+    lifecycleLog('RUNTIME_DESTROY', { runId, stack: (new Error().stack || '').split('\n').slice(1, 7).join(' | ') });
     rec._closing = true;
     this._byRun.delete(runId);
     if (rec._unbindPage) { try { rec._unbindPage(); } catch { /* ignore */ } }
     try { if (rec.tm && rec.tm.stop) rec.tm.stop(); } catch { /* ignore */ }
     try { if (rec.launcher && rec.launcher.close) rec.launcher.close(); } catch { /* ignore */ }
   }
-  destroyAll() { for (const id of [...this._byRun.keys()]) this.destroy(id); }
+  destroyAll() { lifecycleLog('RUNTIME_DESTROY_ALL', { count: this._byRun.size, stack: (new Error().stack || '').split('\n').slice(1, 7).join(' | ') }); for (const id of [...this._byRun.keys()]) this.destroy(id); }
 }
 
 module.exports = { ChromeRuntime, WcAdapter };

@@ -1,6 +1,8 @@
 'use strict';
 
 const EventEmitter = require('node:events');
+let _lifecycleLog = () => {};
+try { _lifecycleLog = require('../browser/chrome-launcher.cjs').lifecycleLog || (() => {}); } catch { /* optional */ }
 
 // ---------------------------------------------------------------------------
 // BrowserRunManager — WU-A. Ownership layer for "Open Browser".
@@ -201,6 +203,7 @@ class BrowserRunManager extends EventEmitter {
   async closeRun(runId, finalStatus = STATUS.CLOSED) {
     const run = this._runs.get(runId);
     if (!run || TERMINAL.has(run.status)) return;
+    _lifecycleLog('MANAGER_CLOSE_RUN', { runId, finalStatus, stack: (new Error().stack || '').split('\n').slice(1, 7).join(' | ') });
     this._quiesceSubsystem(run);
     for (const tid of this.targetsForRun(runId)) this.unregisterTarget(tid);
     if (run.targetManager && run.targetManager.stop) {

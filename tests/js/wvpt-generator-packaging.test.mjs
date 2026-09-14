@@ -22,11 +22,21 @@ test('Control package excludes every seller secret and generator resource', () =
 
 // ---- Generator package: self-contained (bundles BOTH secrets as extraResources) ----
 test('Generator bundles the private signing key and Google credential as extraResources', () => {
-  const extra = JSON.stringify(gen.extraResources || []);
+  const entries = gen.extraResources || [];
+  const extra = JSON.stringify(entries);
   assert.match(extra, /\*\.pem/, 'private key bundled');
   assert.match(extra, /google-service-account\.json/, 'Google credential bundled');
-  const toPaths = (gen.extraResources || []).map((e) => e.to).join('\n');
-  assert.match(toPaths, /private\/google-service-account\.json/, 'credential lands under private/ in resources');
+  // The production config maps the whole seller `private/` dir with a filter (per-file
+  // `to` entries are also accepted). Either way the credential must land under `private/`.
+  const landsUnderPrivate = entries.some((e) => {
+    const to = String(e.to || '');
+    const filter = [].concat(e.filter || []).join('\n');
+    // per-file form: to === private/google-service-account.json
+    if (/^private[\\/]google-service-account\.json$/.test(to)) return true;
+    // directory+filter form: to === private (or private/...) AND filter includes the credential
+    return /^private([\\/].*)?$/.test(to) && /google-service-account\.json/.test(filter);
+  });
+  assert.ok(landsUnderPrivate, 'the Google credential lands under private/ in resources (per-file or dir+filter)');
 });
 
 test('Generator does NOT ship the Google credential in normal files (extraResources only)', () => {

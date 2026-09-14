@@ -23,6 +23,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
+const { lifecycleLog } = require('./browser/chrome-launcher.cjs');
 const phomChromium = require('./browser/phom-chromium-runtime.cjs');
 const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
@@ -117,7 +118,7 @@ else {
     // A run's Chrome exited on its OWN (user closed the window / crash). Mark ONLY that
     // slot closed and disconnect ITS routing — never cascade a close to the other browsers
     // and never treat it as an orchestration teardown (§10).
-    onRunExit: (runId, record) => { try { if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ } },
+    onRunExit: (runId, record) => { try { lifecycleLog('MAIN_ON_RUN_EXIT', { runId, reason: record && record.reason }); if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ } },
   });
 
   function resolveTargetClient(targetId) {
@@ -349,7 +350,11 @@ else {
         slot,
         profileKey: (cfg && cfg.browserProfileId) || slot,
         url: localTestActive() ? 'about:blank' : ((cfg && cfg.gameUrl) || 'about:blank'),
-        proxyRef: (cfg && cfg.proxyRef) || undefined,
+        // The cluster projection is AUTHORITATIVE for proxy: pass the resolved ref EXPLICITLY
+        // (null = DIRECT). Never send `undefined`, which would make openProfile silently fall
+        // back to the per-slot profile's stale proxyRef — the DIRECT-has-no-network bug where a
+        // "DIRECT" slot inherited an old (dead) proxy from phom-profiles.json metadata.
+        proxyRef: (cfg && cfg.proxyRef) ? cfg.proxyRef : null,
         proxyRequired: false, // proxy optional: presence of proxyRef governs PROXY vs DIRECT
         label: (cfg && cfg.label) || `Profile ${slot}`,
       }),
@@ -784,9 +789,9 @@ else {
     // DỪNG = orchestration-only stop: cancels find-table/join/ready/rejoin automation and
     // subscriptions but NEVER closes the browsers (browser lifetime is independent). The
     // cluster stays open + activeClusterProfileId is preserved.
-    ipcMain.handle('phom:orchestration-stop', guarded(() => (phomCluster ? phomCluster.stopOrchestration() : { ok: true, orchestrationStopped: true, browsersClosed: false })));
+    ipcMain.handle('phom:orchestration-stop', guarded(() => { lifecycleLog('IPC_ORCHESTRATION_STOP', {}); return phomCluster ? phomCluster.stopOrchestration() : { ok: true, orchestrationStopped: true, browsersClosed: false }; }));
     // ĐÓNG 3 TRÌNH DUYỆT = EXPLICIT browser close (the ONLY app path that closes the runs).
-    ipcMain.handle('phom:cluster-stop', guarded(async () => { const r = await ensureCluster().stopCluster(); activeClusterProfileId = null; return r; }));
+    ipcMain.handle('phom:cluster-stop', guarded(async () => { lifecycleLog('IPC_CLUSTER_STOP', {}); const r = await ensureCluster().stopCluster(); activeClusterProfileId = null; return r; }));
     ipcMain.handle('phom:cluster-snapshot', () => (phomCluster ? phomCluster.getClusterSnapshot() : null));
 
     // Cluster PROFILE persistence (saved configs: shared game URL + 3 browser/device/
@@ -833,7 +838,9 @@ else {
     createWindow();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
-  app.on('window-all-closed', () => { if (process.platform !== 'darwin') app.quit(); });
+  app.on('window-all-closed', () => { lifecycleLog('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });
+  app.on('before-quit', () => { lifecycleLog('APP_BEFORE_QUIT', { stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') }); });
+  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); });
 }
 
 module.exports = { PRODUCT_NAME, GAME_PRODUCT };

@@ -85,6 +85,18 @@ function classifyGoneExit({ code, signal, elapsedMs, cdpEverUp, stderr }) {
 
 // Redact anything credential-shaped from a stderr tail / arg list before it is stored
 // or surfaced (defence in depth — the CLI is already credential-free by construction).
+// Diagnostic lifecycle log (browser open/close/exit forensics). Opt-in via
+// PHOM_LIFECYCLE_LOG=1 so it is silent in normal use; writes one tagged JSON line per
+// event to stderr (captured by the repro harness). NEVER logs a secret (payload is
+// pre-redacted). This is instrumentation, not control flow.
+function lifecycleLog(event, data) {
+  try {
+    if (!process.env.PHOM_LIFECYCLE_LOG) return;
+    const line = JSON.stringify({ t: new Date().toISOString(), tag: 'PHOMLC', event, ...data });
+    process.stderr.write(line + '\n');
+  } catch { /* never throw from instrumentation */ }
+}
+
 function redact(text) {
   return String(text == null ? '' : text)
     .replace(/\/\/[^/@\s:]+:[^/@\s]+@/g, '//<redacted>@')      // user:pass@ in URLs
@@ -148,10 +160,21 @@ function findChromeExecutable(env = process.env) {
   return null;
 }
 
-// Mark the profile as having exited cleanly so Chrome does not show the "restore
-// pages?" / crash bubble on the next open. We do NOT force restore_on_startup: the
-// game URL is passed explicitly on launch and cookies/login persist via the profile
-// directory regardless, so there is no need to reopen stale tabs.
+// Prepare the profile so Chrome opens with EXACTLY ONE clean tab (the game URL passed on
+// the command line) and NEVER restores a previous session.
+//
+// ROOT CAUSE this fixes (proven by runtime bisection): a previous crash/close left the
+// profile with a saved session; on the next launch Chrome restored those tabs. Over
+// repeated crashes the tab count snowballed (observed 8-9 tabs/browser). The app then
+// applied its per-target CDP work (Network capture + device emulation + WS hook) to EVERY
+// restored target, and driving that many targets access-violated the browser process
+// (0xC0000005) ~5-10s in — i.e. the "browsers auto-close after ~10s" symptom AND the
+// "extra/overlapping tabs" symptom were the SAME bug. A clean single tab survives full CDP.
+//
+// We (a) mark the profile as exited-cleanly + disable session restore in Preferences, and
+// (b) remove ONLY the session/tab-restore state files. Cookies, Login Data, Local/IndexedDB
+// storage, Web Data, etc. are NEVER touched, so the user's login survives close→reopen.
+const SESSION_RESTORE_FILES = Object.freeze(['Current Session', 'Current Tabs', 'Last Session', 'Last Tabs']);
 function ensureChromePersistentSession(profile) {
   try {
     const dir = path.join(profile, 'Default');
@@ -160,7 +183,14 @@ function ensureChromePersistentSession(profile) {
     let prefs = {};
     if (fs.existsSync(file)) { try { prefs = JSON.parse(fs.readFileSync(file, 'utf8')) || {}; } catch { prefs = {}; } }
     prefs.profile = Object.assign({}, prefs.profile, { exit_type: 'Normal', exited_cleanly: true });
+    // restore_on_startup=5 => open the New Tab Page (i.e. do NOT restore the last session).
+    // The command-line game URL still opens as the single tab; this only stops restore.
+    prefs.session = Object.assign({}, prefs.session, { restore_on_startup: 5, startup_urls: [] });
     fs.writeFileSync(file, JSON.stringify(prefs), 'utf8');
+    // Delete stale session/tab-restore state (NOT cookies/login). This is what Chrome reads
+    // to reopen previous tabs; removing it guarantees a single fresh tab.
+    for (const f of SESSION_RESTORE_FILES) { try { fs.rmSync(path.join(dir, f), { force: true }); } catch { /* best effort */ } }
+    try { fs.rmSync(path.join(dir, 'Sessions'), { recursive: true, force: true }); } catch { /* best effort */ }
   } catch { /* best effort */ }
 }
 
@@ -221,6 +251,7 @@ class ChromeLauncher {
     this.lastExit = full;
     this.exitRecords.push(full);
     if (this.exitRecords.length > 20) this.exitRecords.shift();
+    lifecycleLog('LAUNCHER_EXIT', { instanceId: this.instanceId, port: this.port, bootstrapPid: full.bootstrapPid, reason: full.reason, exitCode: full.exitCode, signal: full.signal, elapsedMs: full.elapsedMs, fired: full.fired, cdpAlive: full.cdpAlive, viaWatcher: !!full.viaWatcher, udd: this.profilePath, stderrTail: (full.stderrTail || '').slice(-400) });
     return full;
   }
 
@@ -281,6 +312,7 @@ class ChromeLauncher {
     this._bootstrapPid = this.process.pid;
     this._trackedPid = this.process.pid;
     this._alive = true;
+    lifecycleLog('LAUNCHER_SPAWN', { instanceId: this.instanceId, pid: this.process.pid, port, udd: profile, executable, sandboxDisabled: this.sandboxDisabled });
     if (this.process.stderr && this.process.stderr.on) {
       try { this.process.stderr.unref && this.process.stderr.unref(); } catch { /* ignore */ }
       this.process.stderr.on('data', (chunk) => {
@@ -364,6 +396,7 @@ class ChromeLauncher {
   // Terminate the browser this launcher owns (used when a BrowserRun is closed
   // from the app rather than by the user closing the window). Best effort.
   close() {
+    lifecycleLog('LAUNCHER_CLOSE', { instanceId: this.instanceId, pid: this._trackedPid, stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') });
     this._appClosing = true;   // mark app-initiated so the exit is APP_REQUESTED_CLOSE (no cascade)
     this._alive = false;
     this._stopLivenessWatch();
@@ -378,6 +411,7 @@ class ChromeLauncher {
   // for the process to exit, then FORCE KILL if it is still alive — so the D2-001 guarantee
   // (no phantom Chrome, no stuck profile lock) is preserved even if graceful close hangs.
   async closeGraceful(timeoutMs = 3500) {
+    lifecycleLog('LAUNCHER_CLOSE_GRACEFUL', { instanceId: this.instanceId, pid: this._trackedPid, stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') });
     this._appClosing = true;   // app-initiated ⇒ APP_REQUESTED_CLOSE (never a spurious user-close)
     this._stopLivenessWatch();
     const proc = this.process;
@@ -424,4 +458,4 @@ class ChromeLauncher {
   }
 }
 
-module.exports = { ChromeLauncher, findChromeExecutable, ensureChromePersistentSession, DEFAULT_WINDOW, EXIT_REASONS, classifyGoneExit, defaultProbeCdp };
+module.exports = { ChromeLauncher, findChromeExecutable, ensureChromePersistentSession, DEFAULT_WINDOW, EXIT_REASONS, classifyGoneExit, defaultProbeCdp, lifecycleLog };

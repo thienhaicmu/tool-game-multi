@@ -71,10 +71,13 @@ test('all Phom preload IPC channels use the phom: namespace', () => {
 // BROWSER LIFETIME INDEPENDENCE — DỪNG stops orchestration only; the ONLY app path that
 // closes browsers is the explicit close (ĐÓNG 3 TRÌNH DUYỆT) / app shutdown.
 test('main separates orchestration-stop (DỪNG) from browser close (explicit)', () => {
-  // DỪNG IPC delegates to stopOrchestration (no closeRun).
-  assert.match(mainSrc, /ipcMain\.handle\('phom:orchestration-stop'[^;]*stopOrchestration\(\)/);
+  // DỪNG IPC delegates to stopOrchestration (no closeRun). (Diagnostic lifecycleLog may
+  // precede the call; the handler must still route to stopOrchestration and never a close.)
+  const orchHandler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('phom:orchestration-stop'"), mainSrc.indexOf("ipcMain.handle('phom:cluster-stop'"));
+  assert.match(orchHandler, /stopOrchestration\(\)/);
+  assert.equal(/stopCluster|closeRun/.test(orchHandler), false, 'DỪNG must never close browsers');
   // The explicit close IPC is the only one that calls the manager stopCluster (closeRun).
-  assert.match(mainSrc, /ipcMain\.handle\('phom:cluster-stop'[^;]*stopCluster\(\)/);
+  assert.match(mainSrc, /ipcMain\.handle\('phom:cluster-stop'[^]*?stopCluster\(\)/);
   // A run exiting on its own marks ONLY that slot closed — never cascades a close — and
   // forwards the launcher's CLASSIFIED reason (never a blanket close).
   assert.match(mainSrc, /onRunExit:[^\n]*markRunClosed\(runId,\s*record\s*&&\s*record\.reason\)/);
