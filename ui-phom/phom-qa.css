@@ -281,4 +281,16 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 
 /* Screen 2 monitor source badge + friendly stake code */
 .mon-srcbadge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 9px; background: #fff2df; color: #b45309; border: 1px solid #f0dcb0; margin-left: 6px; }
+/* LIVE INTERNAL vs D-MÔ PHỎNG must be visually DISTINCT source badges (never confusable). */
+.mon-srcbadge.live { background: #e7f7ec; color: #15803d; border-color: #b9e4c6; }
+.mon-srcbadge.replay { background: #fff2df; color: #b45309; border-color: #f0dcb0; }
+.qa-mon-banner.qa-live { display: flex; align-items: center; gap: 6px; justify-content: flex-start; background: #eef9f0; color: #15803d; border-color: #bfe6cb; }
+.qa-mon-banner .mon-dot.live { background: #dc2626; animation: monpulse 1.1s ease-in-out infinite; }
+@keyframes monpulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+.mon-srcpick { display: flex; align-items: center; gap: 6px; margin: 2px 0 6px; }
+.mon-srcpick .btn.sm { padding: 2px 8px; }
+.mon-wait { margin-top: 10px; background: var(--panel-2); border: 1px dashed var(--border); border-radius: 8px; padding: 12px; text-align: left; }
+.mon-wait .section-t { margin: 0 0 4px; }
+.mon-live-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.mon-live-row .slot-tag { flex: 0 0 auto; }
 .ft-code { font-size: 10px; color: var(--text-faint); }

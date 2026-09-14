@@ -33,8 +33,14 @@
   let selectedStake = null;
   let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
   let awaitingLogin = false;  // WAITING_FOR_LOGIN: browsers open, user logs in before TÌM BÀN
-  let qaSnap = null;         // QA RULE MONITOR (D simulated) snapshot
+  let qaSnap = null;         // FIXTURE/REPLAY monitor (D simulated) snapshot — REPLAY mode only
   let qaLoading = false, qaPlaying = false, qaTimer = null, qaSpeed = 900;
+  // Screen-2 monitor source mode. DEFAULT is LIVE_INTERNAL: the monitor shows ONLY live
+  // internal A/B/C data (or a truthful waiting state) and NEVER auto-loads the bundled D
+  // fixture. FIXTURE_REPLAY (the simulated D engine + playback) opens ONLY on explicit
+  // user selection from the ⋯ menu — it is never a fallback when live has no data.
+  const MON = { LIVE: 'LIVE_INTERNAL', REPLAY: 'FIXTURE_REPLAY' };
+  let monitorMode = MON.LIVE;
   let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
@@ -478,12 +484,20 @@
   function slotStatus(slot, s, cs) {
     const cp = (cs.profiles && cs.profiles[slot]) || {};
     const sp = (s.profiles || []).find((p) => p.id === cp.profileId) || {};
-    const closed = cp.browserState === 'CLOSED_BY_USER';
+    // A slot is "closed" for ANY terminal browserState (not just a user close). Each
+    // reason renders a DISTINCT chip — a crash/unexpected exit is NEVER shown as ĐÃ ĐÓNG.
+    const bs = cp.browserState;
+    const closed = !!bs && bs !== 'OPEN' && bs !== 'NOT_OPEN';
     const opened = !!cp.profileId && !closed;
     const isHost = sp.role === 'HOST' || (s.hostId && s.hostId === cp.profileId);
     const st = sp.state;
     let cls = 'gray', label = 'CHƯA MỞ';
-    if (closed) { cls = 'gray'; label = 'ĐÃ ĐÓNG'; }
+    if (closed) {
+      const closeLabels = { CLOSED_BY_USER: 'ĐÃ ĐÓNG', CLOSED_BY_APP: 'ĐÃ ĐÓNG (APP)', CRASHED: 'SẬP', PROFILE_LOCK: 'KHOÁ HỒ SƠ', EXITED_UNEXPECTEDLY: 'THOÁT BẤT THƯỜNG' };
+      const bad = (bs === 'CRASHED' || bs === 'EXITED_UNEXPECTEDLY' || bs === 'PROFILE_LOCK');
+      cls = bad ? 'red' : 'gray';
+      label = closeLabels[bs] || 'ĐÃ ĐÓNG';
+    }
     else if (opened) {
       if (st === 'KICKED') { cls = 'red'; label = 'BỊ KICK'; }
       else if (st === 'REJOINING') { cls = 'red'; label = 'ĐANG VÀO LẠI'; }
@@ -499,9 +513,9 @@
     }
     const text = isHost && !closed ? `${slot} · HOST${sp.ready ? ' · READY' : ''}` : `${slot} · ${label}`;
     const detail = { slot, profileId: cp.profileId || null, pid: cp.pid || null, cdp: cp.cdpPort || null,
-      browserState: cp.browserState || (opened ? 'OPEN' : 'NOT_OPEN'),
+      browserState: cp.browserState || (opened ? 'OPEN' : 'NOT_OPEN'), exitReason: cp.exitReason || null,
       cdpConnected: !!cp.cdpConnected, proxy: (profiles[slot] && profiles[slot].proxyRef) || null, ip: cp.observedIp || null,
-      seat: sp.seat != null ? sp.seat : null, uid: sp.uid || null, state: st || (opened ? 'OPEN' : (closed ? 'CLOSED_BY_USER' : 'CLOSED')) };
+      seat: sp.seat != null ? sp.seat : null, uid: sp.uid || null, state: st || (opened ? 'OPEN' : (bs || 'NOT_OPEN')) };
     return { cls: isHost && !closed ? 'orange' : cls, text, detail, isHost, closed };
   }
 
@@ -593,27 +607,116 @@
     const root = $('phq-root'); if (root) root.appendChild(box);
   }
 
-  // ---- QA RULE MONITOR · D MÔ PHỎNG (§19-§21) — the main Screen-2 area.
-  // Exactly TWO rows analysing a SIMULATED player D on FIXTURE/REPLAY data only (never
-  // live hidden hands — §20): ROW 1 cards that do NOT form a phỏm, ROW 2 the phỏm melds
-  // D can form. Updates event-by-event from the fixture-driven qa monitor (network 0,
-  // CDP 0, action 0). Live A/B/C data feeds ONLY the toolbar, never these rows.
+  // ---- Screen-2 monitor. Two DISTINCT, non-overlapping source modes (never ambiguous):
+  //   LIVE_INTERNAL (default) — the LIVE QA MONITOR. Shows ONLY live internal A/B/C data
+  //     (each frame updates its OWN owning profile; no cross-profile copy, no fabrication).
+  //     Before a live round arrives it shows a truthful WAITING state — no cards, no x/y,
+  //     no playback controls, and NEVER the bundled D fixture.
+  //   FIXTURE_REPLAY — the simulated D engine + playback. Opens ONLY on explicit user
+  //     selection from the ⋯ menu; it is never an automatic fallback for empty live data.
   function liveMonitor() {
     const mon = el('div', { class: 'qa-monitor', id: 'phq-monitor' });
-    qaMonitorEnsure(); // fire-and-forget load/play; renders into #phq-monitor
-    renderMonitorInto(mon);
+    if (monitorMode === MON.REPLAY) { qaMonitorEnsure(); renderReplayMonitorInto(mon); }
+    else renderLiveMonitorInto(mon);
     return mon;
   }
 
-  function renderMonitorInto(mon) {
+  // Which live connection state Screen 2 is in (derived from the cluster/session — never
+  // simulated). CONNECTING / WAITING ROUND / LIVE / STALE / ERROR.
+  function liveConnState() {
+    const cs = clusterSnap || {};
+    const anyBad = SLOTS.some((s) => { const p = cs.profiles && cs.profiles[s]; return p && (p.browserState === 'CRASHED' || p.browserState === 'EXITED_UNEXPECTEDLY' || p.browserState === 'PROFILE_LOCK'); });
+    if (anyBad) return 'ERROR';
+    if (!clusterIsOpen()) return 'CONNECTING';
+    if ((cs.connectedCount || 0) < 1) return 'CONNECTING';
+    const s = session || {};
+    if (s.roundRunning) return 'LIVE';
+    return 'WAITING_ROUND';
+  }
+  const LIVE_BADGE = { CONNECTING: 'LIVE INTERNAL · CHƯA KẾT NỐI', WAITING_ROUND: 'LIVE INTERNAL · CHỜ VÁN', LIVE: 'LIVE INTERNAL · TRỰC TIẾP', STALE: 'LIVE INTERNAL · CŨ', ERROR: 'LIVE INTERNAL · LỖI' };
+
+  // The AUTHORITATIVE live hand actually received by ONE internal slot (A/B/C). Returns
+  // null when there is no authoritative hand for that slot — the caller shows UNKNOWN and
+  // NEVER falls back to the D sample or fabricates cards (§E).
+  function liveHandForSlot(slot) {
+    const cp = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
+    if (!cp.profileId) return null;
+    const h = (hands || []).find((x) => x.profileId === cp.profileId) || null;
+    return h && h.authoritative ? h : null;
+  }
+
+  function renderLiveMonitorInto(mon) {
+    if (!mon) return;
+    mon.replaceChildren();
+    const s = session || {};
+    const conn = liveConnState();
+    const hasRound = conn === 'LIVE' && !!(s.hostTableIdentity && s.hostTableIdentity.channelRid != null);
+    const banner = el('div', { class: 'qa-mon-banner qa-live' },
+      el('span', { class: 'mon-dot ' + (conn === 'LIVE' ? 'live' : '') }), ' LIVE QA MONITOR',
+      el('span', { class: 'mon-srcbadge live' }, LIVE_BADGE[conn] || LIVE_BADGE.CONNECTING),
+      el('span', { class: 'mon-src' }, 'chỉ dữ liệu nội bộ A/B/C — không mô phỏng'));
+    mon.appendChild(banner);
+    // Source picker lives on the LIVE monitor too (explicit switch to REPLAY).
+    mon.appendChild(el('div', { class: 'mon-srcpick' },
+      el('span', { class: 'faint sm' }, 'Nguồn: '),
+      el('span', { class: 'gbadge good' }, 'LIVE INTERNAL'),
+      el('button', { class: 'btn sm', title: 'Mở chế độ MÔ PHỎNG / REPLAY (dữ liệu D mô phỏng, không phải live)', onclick: () => setMonitorMode(MON.REPLAY) }, 'MÔ PHỎNG / REPLAY')));
+    if (!hasRound) {
+      // Truthful WAITING state — no cards, no x/y, no playback (§C).
+      mon.appendChild(el('div', { class: 'mon-wait' },
+        el('div', { class: 'section-t' }, 'ĐANG CHỜ DỮ LIỆU LIVE'),
+        el('div', { class: 'faint' }, 'Chưa nhận được ván'),
+        el('div', { class: 'mon-live-row' }, el('span', { class: 'slot-tag' }, '1'), cardRow([], {}, {})),
+        el('div', { class: 'mon-live-row' }, el('span', { class: 'slot-tag' }, '2'), cardRow([], {}, {}))));
+      return;
+    }
+    // A live round exists: per-owning-profile rows. Each slot shows ONLY the hand IT
+    // received (authoritative), else UNKNOWN — never another profile's hand, never D.
+    mon.appendChild(el('div', { class: 'note faint sm' },
+      `Ván ${s.hostTableIdentity.channelRid} · cập nhật ${liveUpdatedLabel(s)} · trạng thái ${conn}`));
+    for (const slot of SLOTS) {
+      const h = liveHandForSlot(slot);
+      const row = el('div', { class: 'mon-live-row' }, el('span', { class: 'slot-tag' }, slot));
+      if (!h) { row.appendChild(el('span', { class: 'gbadge' }, 'UNKNOWN')); row.appendChild(el('span', { class: 'faint sm' }, ' chưa có bài xác thực cho slot này')); }
+      else {
+        const labels = Object.fromEntries((h.decoded || []).map((d) => [d.code, d]));
+        const order = (h.sortedCards && h.sortedCards.length) ? h.sortedCards : (h.cards || []);
+        row.appendChild(cardRow(order, labels, {}));
+        row.appendChild(el('span', { class: 'faint sm' }, ` ${h.cardCount || order.length} lá · ${h.syncState || 'LIVE'}`));
+      }
+      mon.appendChild(row);
+    }
+  }
+  function liveUpdatedLabel(s) {
+    let latest = 0; for (const h of (hands || [])) if (h.updatedAt && h.updatedAt > latest) latest = h.updatedAt;
+    if (!latest) return '—';
+    try { return new Date(latest).toLocaleTimeString(); } catch { return String(latest); }
+  }
+
+  // Explicit source switch. LIVE → REPLAY loads the fixture; REPLAY → LIVE clears the
+  // simulated snapshot + stops playback so no simulated card ever lingers on the LIVE view.
+  function setMonitorMode(mode) {
+    if (mode === monitorMode) return;
+    monitorMode = mode === MON.REPLAY ? MON.REPLAY : MON.LIVE;
+    if (monitorMode === MON.LIVE) { qaMonitorPlay(false); qaSnap = null; }
+    renderApp();
+  }
+
+  // FIXTURE/REPLAY monitor (explicit MÔ PHỎNG mode only). Simulated player D on
+  // fixture/replay data — playback + Sự kiện x/y allowed here, NEVER a LIVE badge.
+  function renderReplayMonitorInto(mon) {
     if (!mon) return;
     const snap = qaSnap;
     mon.replaceChildren();
     const banner = el('div', { class: 'qa-mon-banner qa-rule' },
-      el('span', { class: 'mon-dot' }), ' LIVE QA MONITOR',
-      el('span', { class: 'mon-srcbadge' }, 'D — MÔ PHỎNG · FIXTURE/REPLAY'),
-      el('span', { class: 'mon-src' }, 'không dùng bài kín live'));
+      el('span', { class: 'mon-dot' }), ' MÔ PHỎNG / REPLAY',
+      el('span', { class: 'mon-srcbadge replay' }, 'D — MÔ PHỎNG'),
+      el('span', { class: 'mon-src' }, 'dữ liệu fixture/replay — KHÔNG phải live'));
     mon.appendChild(banner);
+    mon.appendChild(el('div', { class: 'mon-srcpick' },
+      el('span', { class: 'faint sm' }, 'Nguồn: '),
+      el('span', { class: 'gbadge warn' }, 'D — MÔ PHỎNG'),
+      el('button', { class: 'btn sm', title: 'Quay lại LIVE QA MONITOR (dữ liệu nội bộ A/B/C)', onclick: () => setMonitorMode(MON.LIVE) }, 'VỀ LIVE')));
     if (!snap || snap.ok === false) { mon.appendChild(el('div', { class: 'note faint' }, snap && snap.error ? (snap.error.code + ': ' + snap.error.message) : 'Đang nạp dữ liệu D mô phỏng…')); return; }
     const labels = snap.labels || {};
     const authoritative = snap.authoritative === true;
@@ -670,7 +773,7 @@
   }
   function qaScheduleTick() { if (qaTimer) clearTimeout(qaTimer); qaTimer = setTimeout(qaTick, qaSpeed); }
   async function qaTick() {
-    if (!qaPlaying || uiState !== UI.CONTROL) { qaPlaying = false; return; }
+    if (!qaPlaying || uiState !== UI.CONTROL || monitorMode !== MON.REPLAY) { qaPlaying = false; return; }
     if (qaSnap && qaSnap.counters && qaSnap.counters.currentEvent >= qaSnap.counters.totalEvents) { qaSnap = await api.qaMonitorControl('reset'); }
     else { qaSnap = await api.qaMonitorControl('next'); }
     refreshMonitor();
@@ -678,7 +781,7 @@
   }
   function qaMonitorPlay(on) { qaPlaying = !!on; if (qaTimer) { clearTimeout(qaTimer); qaTimer = null; } if (on) qaScheduleTick(); }
   async function qaMonitorStep(action) { qaMonitorPlay(false); qaSnap = await api.qaMonitorControl(action); refreshMonitor(); }
-  function refreshMonitor() { const mon = $('phq-monitor'); if (mon) renderMonitorInto(mon); }
+  function refreshMonitor() { const mon = $('phq-monitor'); if (!mon) return; if (monitorMode === MON.REPLAY) renderReplayMonitorInto(mon); else renderLiveMonitorInto(mon); }
 
   // Offline rule analyzer (§16/§23) — a separate mode, refused while any live run exists.
   async function openAnalyzer() {

@@ -117,7 +117,7 @@ else {
     // A run's Chrome exited on its OWN (user closed the window / crash). Mark ONLY that
     // slot closed and disconnect ITS routing — never cascade a close to the other browsers
     // and never treat it as an orchestration teardown (§10).
-    onRunExit: (runId) => { try { if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(runId); } catch { /* best effort */ } },
+    onRunExit: (runId, record) => { try { if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ } },
   });
 
   function resolveTargetClient(targetId) {

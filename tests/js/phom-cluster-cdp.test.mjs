@@ -228,15 +228,40 @@ test('user closes ONE browser (markRunClosed) → only that slot CLOSED, others 
   const { mgr, dev, closed } = makeManager();
   baseCluster(mgr, dev);
   await mgr.openCluster();
-  const m = mgr.markRunClosed('BR-A');
-  assert.equal(m.ok, true); assert.equal(m.slot, 'A');
+  // A genuine user window-close is classified USER_CLOSED_WINDOW → CLOSED_BY_USER.
+  const m = mgr.markRunClosed('BR-A', 'USER_CLOSED_WINDOW');
+  assert.equal(m.ok, true); assert.equal(m.slot, 'A'); assert.equal(m.exitReason, 'USER_CLOSED_WINDOW');
   assert.equal(closed.length, 0, 'marking A closed never calls closeRun on B/C');
   const snap = mgr.getClusterSnapshot();
   assert.equal(snap.profiles.A.browserState, 'CLOSED_BY_USER');
+  assert.equal(snap.profiles.A.exitReason, 'USER_CLOSED_WINDOW');
   assert.equal(snap.profiles.B.browserState, 'OPEN');
   assert.equal(snap.profiles.C.browserState, 'OPEN');
   assert.equal(snap.openBrowserCount, 2);
   assert.equal(snap.closedByUserCount, 1);
+});
+
+// Honest exit classification — an UNEXPECTED exit is NEVER shown as CLOSED_BY_USER, and a
+// missing/unknown reason is UNKNOWN_EXIT (EXITED_UNEXPECTEDLY), not a user close.
+test('markRunClosed maps each exit reason to a DISTINCT non-user state (never blanket CLOSED_BY_USER)', async () => {
+  const cases = [
+    ['CHROMIUM_CRASH', 'CRASHED'],
+    ['PROFILE_LOCK', 'PROFILE_LOCK'],
+    ['APP_REQUESTED_CLOSE', 'CLOSED_BY_APP'],
+    [undefined, 'EXITED_UNEXPECTEDLY'],
+    ['GARBAGE', 'EXITED_UNEXPECTEDLY'],
+  ];
+  for (const [reason, expected] of cases) {
+    const { mgr, dev } = makeManager();
+    baseCluster(mgr, dev);
+    await mgr.openCluster();
+    mgr.markRunClosed('BR-A', reason);
+    const snap = mgr.getClusterSnapshot();
+    assert.equal(snap.profiles.A.browserState, expected, `${String(reason)} ⇒ ${expected}`);
+    assert.notEqual(snap.profiles.A.browserState, 'CLOSED_BY_USER', 'unexpected exit is never CLOSED_BY_USER');
+    assert.equal(snap.profiles.B.browserState, 'OPEN');
+    assert.equal(snap.profiles.C.browserState, 'OPEN');
+  }
 });
 
 test('reopen after user-close re-launches ONLY the closed slot, reusing the others (§10)', async () => {

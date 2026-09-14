@@ -225,16 +225,20 @@ class PhomClusterCdpManager extends EventEmitter {
 
   orchestrationStopped() { return !!(this._cluster && this._cluster.orchestrationStopped); }
 
-  // §10 — the user closed ONE Chromium window (routed here from the run's own exit). Mark
-  // ONLY that slot CLOSED_BY_USER; the other browsers are untouched and the tool never
-  // reacts by closing them. The slot is re-openable via openCluster (reopen).
-  markRunClosed(runId) {
+  // §10 — ONE run's Chrome exited for real (routed here from the launcher's classified
+  // exit). Mark ONLY that slot closed and record the HONEST reason — never blanket
+  // CLOSED_BY_USER. The other browsers are untouched; the slot is re-openable via
+  // openCluster (reopen). A TRACKED_PID_REPLACED (bootstrap swap, browser still alive)
+  // NEVER reaches here — the launcher keeps that run OPEN — so a live browser is never
+  // mislabelled closed.
+  markRunClosed(runId, reason) {
     const slot = this._slotForRun(runId);
     if (!slot) return { ok: false, reason: 'NOT_IN_CLUSTER' };
     slot.browserClosed = true;
+    slot.exitReason = normalizeExitReason(reason);
     slot.cdpConnected = false;
     this._emit();
-    return { ok: true, slot: slot.slot };
+    return { ok: true, slot: slot.slot, exitReason: slot.exitReason };
   }
 
   // §13 stopCluster — EXPLICIT browser close (ĐÓNG 3 TRÌNH DUYỆT / app shutdown). This is
@@ -266,7 +270,8 @@ class PhomClusterCdpManager extends EventEmitter {
       // else NOT_OPEN. (User-close/crash flips it via the run's own exit -> onRunExit.)
       profiles[s] = {
         slot: s, role: slot.role, profileId: slot.profileId,
-        browserState: slot.browserClosed ? 'CLOSED_BY_USER' : (slot.profileId ? 'OPEN' : 'NOT_OPEN'),
+        browserState: slot.browserClosed ? exitReasonToBrowserState(slot.exitReason) : (slot.profileId ? 'OPEN' : 'NOT_OPEN'),
+        exitReason: slot.browserClosed ? (slot.exitReason || 'UNKNOWN_EXIT') : null,
         pid: info.pid != null ? info.pid : null, cdpPort: info.port != null ? info.port : null, userDataDir: info.userDataDir || null,
         cdpConnected: slot.cdpConnected, deviceApplied: slot.deviceApplied ? !!slot.deviceApplied.ok : false,
         proxyState: slot.proxyState, observedIp: slot.observedIp,
@@ -303,4 +308,23 @@ class PhomClusterCdpManager extends EventEmitter {
 
 function safe(e) { return String((e && e.message) || e || '').slice(0, 200); }
 
-module.exports = { PhomClusterCdpManager, SLOTS };
+// The launcher's typed exit reasons, normalized (unknown/absent ⇒ UNKNOWN_EXIT — never
+// silently promoted to a user close).
+const EXIT_REASONS = Object.freeze(['APP_REQUESTED_CLOSE', 'USER_CLOSED_WINDOW', 'CHROMIUM_CRASH', 'PROFILE_LOCK', 'TRACKED_PID_REPLACED', 'UNKNOWN_EXIT']);
+function normalizeExitReason(reason) {
+  const r = reason && typeof reason === 'object' ? reason.reason : reason;
+  return EXIT_REASONS.includes(r) ? r : 'UNKNOWN_EXIT';
+}
+// Map an honest exit reason to the per-slot browserState the UI renders. Only a genuine
+// window close is CLOSED_BY_USER; every other death is a DISTINCT, non-user state.
+function exitReasonToBrowserState(reason) {
+  switch (normalizeExitReason(reason)) {
+    case 'USER_CLOSED_WINDOW': return 'CLOSED_BY_USER';
+    case 'APP_REQUESTED_CLOSE': return 'CLOSED_BY_APP';
+    case 'CHROMIUM_CRASH': return 'CRASHED';
+    case 'PROFILE_LOCK': return 'PROFILE_LOCK';
+    default: return 'EXITED_UNEXPECTEDLY';
+  }
+}
+
+module.exports = { PhomClusterCdpManager, SLOTS, normalizeExitReason, exitReasonToBrowserState };

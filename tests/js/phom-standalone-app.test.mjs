@@ -75,8 +75,9 @@ test('main separates orchestration-stop (DỪNG) from browser close (explicit)',
   assert.match(mainSrc, /ipcMain\.handle\('phom:orchestration-stop'[^;]*stopOrchestration\(\)/);
   // The explicit close IPC is the only one that calls the manager stopCluster (closeRun).
   assert.match(mainSrc, /ipcMain\.handle\('phom:cluster-stop'[^;]*stopCluster\(\)/);
-  // A run exiting on its own marks ONLY that slot closed — never cascades a close.
-  assert.match(mainSrc, /onRunExit:[^\n]*markRunClosed\(runId\)/);
+  // A run exiting on its own marks ONLY that slot closed — never cascades a close — and
+  // forwards the launcher's CLASSIFIED reason (never a blanket close).
+  assert.match(mainSrc, /onRunExit:[^\n]*markRunClosed\(runId,\s*record\s*&&\s*record\.reason\)/);
   // preload exposes both the orchestration stop and the explicit browser close.
   assert.match(preloadSrc, /orchestrationStop:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:orchestration-stop'\)/);
   assert.match(preloadSrc, /closeBrowsers:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:cluster-stop'\)/);

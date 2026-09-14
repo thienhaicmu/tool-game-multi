@@ -144,10 +144,19 @@ test('Screen 2 is a minimal command toolbar + LIVE QA MONITOR (no manual flow bu
   assert.match(js, /TÌM BÀN · CHỌN CƯỢC/);
   assert.match(js, />⋯</.test(js) ? /⋯/ : /'⋯'/);
   assert.match(js, /'DỪNG'/);
-  // the LIVE QA MONITOR (D simulated, fixture/replay) is the main region.
+  // Screen 2's monitor DEFAULTS to LIVE_INTERNAL (the LIVE QA MONITOR). The D fixture is
+  // a SEPARATE, explicitly-chosen FIXTURE_REPLAY mode — never auto-loaded as if it were live.
   assert.match(js, /LIVE QA MONITOR/);
-  assert.match(js, /D — MÔ PHỎNG · FIXTURE\/REPLAY/);
+  assert.match(js, /LIVE_INTERNAL/);
+  assert.match(js, /FIXTURE_REPLAY/);
+  assert.match(js, /let monitorMode = MON\.LIVE/);
   assert.match(js, /function liveMonitor\(/);
+  assert.match(js, /function renderLiveMonitorInto\(/);
+  assert.match(js, /function renderReplayMonitorInto\(/);
+  // The LIVE badge belongs only to the LIVE monitor; the replay badge is 'D — MÔ PHỎNG'.
+  assert.match(js, /D — MÔ PHỎNG/);
+  // liveMonitor only loads the fixture when the mode is explicitly REPLAY.
+  assert.match(js, /monitorMode === MON\.REPLAY[^]*qaMonitorEnsure/);
   // the old per-step manual buttons are GONE from the Control renderer (auto flow now).
   const controlStart = js.indexOf('function renderControl(r) {');
   const controlBody = js.slice(controlStart, controlStart + 600);

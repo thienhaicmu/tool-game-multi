@@ -74,7 +74,10 @@ function makeRuntime(extra = {}) {
   const spawn = makeFakeSpawn();
   const exits = [];
   const fallback = tmpProfile();
-  const rt = new ChromeRuntime({ env: { CHROME_PATH: process.execPath }, chromeProfileFallback: fallback, cdp, spawn, onRunExit: (id) => exits.push(id), ...extra });
+  // Deterministic CDP probe: default DEAD so a bootstrap `exit` is treated as a genuine
+  // browser death (the runtime-close-cascade tests). Override via extra.probeCdp to
+  // exercise the TRACKED_PID_REPLACED (alive) path.
+  const rt = new ChromeRuntime({ env: { CHROME_PATH: process.execPath }, chromeProfileFallback: fallback, cdp, spawn, onRunExit: (id) => exits.push(id), probeCdp: async () => ({ alive: false }), ...extra });
   return { rt, cdp, spawn, exits, fallback };
 }
 

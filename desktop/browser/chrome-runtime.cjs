@@ -65,8 +65,12 @@ class ChromeRuntime {
   //   onRunExit(runId)    - called when a run's Chrome exits WITHOUT the app asking
   //                         (user closed the window / crash) so main.cjs can safe-stop
   //   cdp / spawn         - injectable for tests
-  constructor({ env = process.env, windowSize = DEFAULT_WINDOW, chromeProfileFallback = null, chromeExecutable = null, onRunExit = () => {}, cdp = null, spawn = null } = {}) {
+  constructor({ env = process.env, windowSize = DEFAULT_WINDOW, chromeProfileFallback = null, chromeExecutable = null, onRunExit = () => {}, cdp = null, spawn = null, probeCdp = null } = {}) {
     this._env = env;
+    // Injectable CDP liveness probe used by each launcher to distinguish a real browser
+    // death from a bootstrap-PID swap (TRACKED_PID_REPLACED). null ⇒ the launcher's real
+    // HTTP /json/version probe.
+    this._probe = probeCdp;
     this._windowSize = windowSize || DEFAULT_WINDOW;
     this._profileFallback = chromeProfileFallback;
     // Pinned Chromium executable used by every run this runtime launches (PHOM custom
@@ -124,15 +128,16 @@ class ChromeRuntime {
       sandboxDisabled: !!(run && run.sandboxDisabled),
       spawn: this._spawn || undefined,
       cdp: this._cdp || undefined,
+      probeCdp: this._probe || undefined,
       // Per-run credential-free proxy resolved by the owner before launch (run.proxy).
       // null for Control/Aviator runs — unchanged direct behaviour.
       proxy: run && run.proxy ? run.proxy : null,
-      onExit: () => {
-        // Chrome process gone. Mark the page dead so recovery/health see it. If WE did
-        // not initiate the close, tell main.cjs so it can run the safe-stop teardown for
-        // THIS run only (user closed the Chrome window / crash).
+      // The launcher only fires onExit for a GENUINE, non-app-initiated browser death
+      // (it swallows the bootstrap-PID swap / TRACKED_PID_REPLACED case and keeps the run
+      // OPEN). `record` carries the honest classified reason — never a blanket close.
+      onExit: (record) => {
         this._markPageGone(rec, /* crashed */ !rec._closing);
-        if (!rec._closing) { try { this._onRunExit(run.id); } catch { /* best effort */ } }
+        if (!rec._closing) { try { this._onRunExit(run.id, record || null); } catch { /* best effort */ } }
       },
     });
     rec.launcher = real;
@@ -170,6 +175,9 @@ class ChromeRuntime {
     rec.activeClient = client;
     rec.destroyed = false;
     rec.lastUrl = target.url || rec.lastUrl || '';
+    // Positive evidence the browser fully came up: lets the launcher classify a later
+    // clean exit as USER_CLOSED_WINDOW rather than an ambiguous UNKNOWN_EXIT.
+    try { if (rec.launcher && rec.launcher.markCdpUp) rec.launcher.markCdpUp(); } catch { /* best effort */ }
     this._bindPage(rec, client);
   }
 

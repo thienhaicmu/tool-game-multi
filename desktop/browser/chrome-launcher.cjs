@@ -19,12 +19,78 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const http = require('node:http');
 const { spawn, spawnSync } = require('node:child_process');
 const { allocateFreePort } = require('./port-allocator.cjs');
 const { toChromeArgs } = require('../browser-run/proxy-config.cjs');
 const CDP = require('chrome-remote-interface');
 
 const DEFAULT_WINDOW = Object.freeze({ width: 720, height: 405 });
+
+// ---------------------------------------------------------------------------
+// EXIT CLASSIFICATION (browser-auto-close root cause). The process we spawn is a
+// BOOTSTRAP process: Chromium routinely hands the browser session to a REPLACEMENT
+// main process and the bootstrap exits 0 within a second or two (relaunch on a fresh
+// --user-data-dir, ProcessSingleton hand-off, sandbox re-exec, …). Treating that
+// bootstrap `exit` as "the browser closed" is the bug — it flips the slot to
+// CLOSED_BY_USER / ĐÃ ĐÓNG while the real window is still on screen.
+//
+// So on bootstrap exit we do NOT assume death: we PROBE the run's CDP endpoint. If it
+// still answers, the run is alive on a replacement PID (TRACKED_PID_REPLACED) — keep it
+// OPEN. Only when CDP is truly gone do we fire onExit, with an HONEST reason (never a
+// blanket CLOSED_BY_USER).
+const EXIT_REASONS = Object.freeze({
+  APP_REQUESTED_CLOSE: 'APP_REQUESTED_CLOSE',   // we called close()/closeGraceful()/destroy()
+  USER_CLOSED_WINDOW: 'USER_CLOSED_WINDOW',     // browser was fully up, then exited cleanly (window closed)
+  CHROMIUM_CRASH: 'CHROMIUM_CRASH',             // killed by a signal / non-zero exit code
+  TRACKED_PID_REPLACED: 'TRACKED_PID_REPLACED', // bootstrap exited but CDP still answers (alive)
+  PROFILE_LOCK: 'PROFILE_LOCK',                 // ProcessSingleton / user-data-dir lock hand-off
+  UNKNOWN_EXIT: 'UNKNOWN_EXIT',                 // exited before ever becoming a browser — ambiguous
+});
+
+// Default CDP liveness probe: an HTTP GET on the DevTools /json/version endpoint. A
+// live browser answers with JSON regardless of which main process now owns the port.
+function defaultProbeCdp({ host = '127.0.0.1', port = null, timeoutMs = 1500 } = {}) {
+  return new Promise((resolve) => {
+    if (!port) { resolve({ alive: false }); return; }
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    let req;
+    try {
+      req = http.get({ host, port, path: '/json/version', timeout: Math.max(200, timeoutMs) }, (res) => {
+        let body = '';
+        res.on('data', (d) => { body += d; if (body.length > 65536) { try { req.destroy(); } catch { /* ignore */ } } });
+        res.on('end', () => {
+          let ws = null; try { ws = (JSON.parse(body) || {}).webSocketDebuggerUrl || null; } catch { /* non-JSON but answered */ }
+          finish({ alive: res.statusCode >= 200 && res.statusCode < 500, webSocketDebuggerUrl: ws });
+        });
+      });
+    } catch { finish({ alive: false }); return; }
+    req.on('error', () => finish({ alive: false }));
+    req.on('timeout', () => { try { req.destroy(); } catch { /* ignore */ } finish({ alive: false }); });
+  });
+}
+
+// Classify a GENUINE gone-exit (CDP already confirmed dead). Never returns
+// USER_CLOSED_WINDOW without positive evidence (the browser had actually come up).
+function classifyGoneExit({ code, signal, elapsedMs, cdpEverUp, stderr }) {
+  const s = String(stderr || '');
+  if (/SingletonLock|ProcessSingleton|already running|profile.*in use|The profile appears to be in use/i.test(s)) return EXIT_REASONS.PROFILE_LOCK;
+  if (signal) return EXIT_REASONS.CHROMIUM_CRASH;             // terminated by a signal (incl. job-object kill)
+  if (typeof code === 'number' && code !== 0) return EXIT_REASONS.CHROMIUM_CRASH;
+  if (cdpEverUp) return EXIT_REASONS.USER_CLOSED_WINDOW;      // was a live browser, clean exit ⇒ window closed
+  // Exited 0 having NEVER become a browser — a hand-off/relaunch we could not follow.
+  return EXIT_REASONS.UNKNOWN_EXIT;
+}
+
+// Redact anything credential-shaped from a stderr tail / arg list before it is stored
+// or surfaced (defence in depth — the CLI is already credential-free by construction).
+function redact(text) {
+  return String(text == null ? '' : text)
+    .replace(/\/\/[^/@\s:]+:[^/@\s]+@/g, '//<redacted>@')      // user:pass@ in URLs
+    .replace(/(password|passwd|token|authorization|cookie)=[^\s&]+/gi, '$1=<redacted>');
+}
+function sanitizeArgs(args) { return (Array.isArray(args) ? args : []).map((a) => redact(a)); }
 
 // Credential-free --proxy-server / --proxy-bypass-list for a run's proxy (or []).
 function proxyArgs(proxy) { return toChromeArgs(proxy); }
@@ -99,9 +165,19 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, mobileTouch = false, chromeExecutable = null, sandboxDisabled = false, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null } = {}) {
+  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, mobileTouch = false, chromeExecutable = null, sandboxDisabled = false, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null, probeCdp = defaultProbeCdp, now = () => Date.now(), instanceId = null, livenessWatchMs = 4000 } = {}) {
     this.profilePath = profilePath;               // per-run persistent user-data-dir
     this.env = env;
+    // Per-launcher instance id — one launcher owns one browser run for its whole life.
+    this.instanceId = instanceId || `LNCH-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`;
+    // Injectable CDP liveness probe + clock (real defaults; overridden in tests).
+    this._probe = typeof probeCdp === 'function' ? probeCdp : defaultProbeCdp;
+    this._now = typeof now === 'function' ? now : (() => Date.now());
+    // After a TRACKED_PID_REPLACED swap we no longer own the browser's process handle, so
+    // a later genuine close is detected by POLLING the CDP endpoint. 0 disables the poll
+    // (unit tests that drive exits directly). The timer is always unref'd.
+    this._watchIntervalMs = Number.isFinite(livenessWatchMs) ? livenessWatchMs : 4000;
+    this._watchTimer = null;
     // Explicit pinned Chromium executable (PHOM custom runtime). null = discover system Chrome.
     this.chromeExecutable = chromeExecutable || null;
     this.windowSize = windowSize || DEFAULT_WINDOW;
@@ -122,6 +198,30 @@ class ChromeLauncher {
     this.proxy = proxy || null;
     this.process = null;
     this.port = null;
+    // ---- exit-classification / instrumentation state ----
+    this._appClosing = false;   // set by close()/closeGraceful() ⇒ APP_REQUESTED_CLOSE (no cascade)
+    this._cdpEverUp = false;    // becomes true once CDP has answered (attach or probe)
+    this._alive = false;        // logical browser liveness (survives a bootstrap PID swap)
+    this._spawnedAt = null;     // process spawn timestamp
+    this._bootstrapPid = null;  // the ORIGINAL spawned (bootstrap) pid
+    this._trackedPid = null;    // the currently-tracked live pid (may be a replacement)
+    this._executable = null;    // resolved executable path (instrumentation)
+    this._launchArgs = [];      // sanitized launch args (instrumentation)
+    this._stderrTail = '';      // bounded, redacted stderr tail
+    this.lastExit = null;       // most recent exit record
+    this.exitRecords = [];      // bounded history of exit records (instrumentation)
+  }
+
+  // Called by the CDP transport once a target attaches — positive evidence the browser
+  // fully came up, so a later clean exit can be honestly classified USER_CLOSED_WINDOW.
+  markCdpUp() { this._cdpEverUp = true; }
+
+  _recordExit(rec) {
+    const full = { instanceId: this.instanceId, cdpPort: this.port, at: this._now(), ...rec };
+    this.lastExit = full;
+    this.exitRecords.push(full);
+    if (this.exitRecords.length > 20) this.exitRecords.shift();
+    return full;
   }
 
   // A fresh OS-assigned free port, owned by THIS run's Chrome for its whole life.
@@ -168,20 +268,105 @@ class ChromeLauncher {
       '--new-window',
       url,
     ];
-    this.process = this._spawn(executable, args, { detached: true, windowsHide: false, stdio: 'ignore' });
+    // stderr is PIPED (not ignored) so a lock/crash leaves a redacted diagnostic tail;
+    // stdin/stdout stay ignored. detached+unref keeps the browser independent of us.
+    this._spawnedAt = this._now();
+    this._executable = executable;
+    this._launchArgs = sanitizeArgs(args);
+    this._appClosing = false;
+    this._cdpEverUp = false;
+    this._stderrTail = '';
+    this.process = this._spawn(executable, args, { detached: true, windowsHide: false, stdio: ['ignore', 'ignore', 'pipe'] });
     if (this.process && this.process.unref) this.process.unref();
-    this.process.once('exit', () => {
-      this.process = null;
-      this.onRuntime({ chromePid: null });
-      try { this.onExit(); } catch { /* best effort */ }
-    });
+    this._bootstrapPid = this.process.pid;
+    this._trackedPid = this.process.pid;
+    this._alive = true;
+    if (this.process.stderr && this.process.stderr.on) {
+      try { this.process.stderr.unref && this.process.stderr.unref(); } catch { /* ignore */ }
+      this.process.stderr.on('data', (chunk) => {
+        this._stderrTail = redact((this._stderrTail + String(chunk)).slice(-4096));
+      });
+      this.process.stderr.on('error', () => { /* stream may drop as chrome exits */ });
+    }
+    // Do NOT declare the browser dead on the bootstrap `exit`: verify via CDP first.
+    this.process.once('exit', (code, signal) => { this._onChildExit(code, signal); });
     this.onRuntime({ cdpPort: port, chromePid: this.process.pid, chromeProfile: profile });
     return { ok: true, reused: false, endpoint: { host: '127.0.0.1', port }, profile, pid: this.process.pid };
   }
 
+  // The tracked (bootstrap) process exited. Decide — with evidence — whether the BROWSER
+  // is actually gone. Returns the exit record (also for tests). onExit fires ONLY for a
+  // genuine, non-app-initiated close, with an honest reason.
+  async _onChildExit(code, signal) {
+    const bootstrapPid = this._bootstrapPid;
+    const elapsedMs = this._spawnedAt != null ? this._now() - this._spawnedAt : null;
+    this.process = null;
+    this.onRuntime({ chromePid: null });
+
+    // We asked for the close — authoritative, no probe, no cascade to onExit.
+    if (this._appClosing) {
+      this._alive = false; this._trackedPid = null; this._stopLivenessWatch();
+      return this._recordExit({ reason: EXIT_REASONS.APP_REQUESTED_CLOSE, exitCode: code == null ? null : code, signal: signal || null, elapsedMs, bootstrapPid, cdpAlive: false, cdpEverUp: this._cdpEverUp, fired: false, stderrTail: this._stderrTail, executable: this._executable, userDataDir: this.profilePath, launchArgs: this._launchArgs });
+    }
+
+    // Probe: is the browser still answering CDP on our port? (bounded, retried once.)
+    let probe = { alive: false };
+    for (let i = 0; i < 2 && !(probe && probe.alive); i++) {
+      try { probe = await this._probe({ host: '127.0.0.1', port: this.port, timeoutMs: 1500 }); } catch { probe = { alive: false }; }
+    }
+
+    if (probe && probe.alive) {
+      // TRACKED_PID_REPLACED — the browser lives on a replacement main process. Keep the
+      // run OPEN, re-track, and DO NOT fire onExit (this is the auto-close root-cause fix).
+      this._cdpEverUp = true;
+      this._alive = true;
+      this._trackedPid = probe.pid != null ? probe.pid : this._trackedPid;
+      // We no longer own the browser's process handle — poll CDP so a later real close is
+      // still detected (otherwise the slot would be stuck OPEN forever).
+      this._startLivenessWatch();
+      return this._recordExit({ reason: EXIT_REASONS.TRACKED_PID_REPLACED, exitCode: code == null ? null : code, signal: signal || null, elapsedMs, bootstrapPid, replacementPid: this._trackedPid, cdpAlive: true, cdpEverUp: true, fired: false, stderrTail: this._stderrTail, executable: this._executable, userDataDir: this.profilePath, launchArgs: this._launchArgs });
+    }
+
+    // Genuinely gone. Classify honestly — never a blanket CLOSED_BY_USER.
+    this._alive = false;
+    this._trackedPid = null;
+    const reason = classifyGoneExit({ code, signal, elapsedMs, cdpEverUp: this._cdpEverUp, stderr: this._stderrTail });
+    const record = this._recordExit({ reason, exitCode: code == null ? null : code, signal: signal || null, elapsedMs, bootstrapPid, cdpAlive: false, cdpEverUp: this._cdpEverUp, fired: true, stderrTail: this._stderrTail, executable: this._executable, userDataDir: this.profilePath, launchArgs: this._launchArgs });
+    try { this.onExit(record); } catch { /* best effort */ }
+    return record;
+  }
+
+  // Poll CDP after a TRACKED_PID_REPLACED swap. When the replacement browser finally stops
+  // answering, fire onExit ONCE with an honest reason. Disabled when _watchIntervalMs<=0.
+  _startLivenessWatch() {
+    if (this._watchTimer || !(this._watchIntervalMs > 0)) return;
+    const schedule = () => {
+      this._watchTimer = setTimeout(run, this._watchIntervalMs);
+      if (this._watchTimer && this._watchTimer.unref) this._watchTimer.unref();  // never keeps the app alive
+    };
+    const run = async () => {
+      this._watchTimer = null;
+      if (!this._alive || this._appClosing) return;
+      let probe = { alive: false };
+      try { probe = await this._probe({ host: '127.0.0.1', port: this.port, timeoutMs: 1500 }); } catch { probe = { alive: false }; }
+      if (!this._alive || this._appClosing) return;
+      if (probe && probe.alive) { if (probe.pid != null) this._trackedPid = probe.pid; schedule(); return; }
+      // The replacement browser is now gone for real.
+      this._alive = false; this._trackedPid = null;
+      const reason = this._cdpEverUp ? EXIT_REASONS.USER_CLOSED_WINDOW : EXIT_REASONS.UNKNOWN_EXIT;
+      const record = this._recordExit({ reason, exitCode: null, signal: null, elapsedMs: null, bootstrapPid: this._bootstrapPid, cdpAlive: false, cdpEverUp: this._cdpEverUp, fired: true, viaWatcher: true, stderrTail: this._stderrTail, executable: this._executable, userDataDir: this.profilePath, launchArgs: this._launchArgs });
+      try { this.onExit(record); } catch { /* best effort */ }
+    };
+    schedule();
+  }
+  _stopLivenessWatch() { if (this._watchTimer) { try { clearTimeout(this._watchTimer); } catch { /* ignore */ } this._watchTimer = null; } }
+
   // Terminate the browser this launcher owns (used when a BrowserRun is closed
   // from the app rather than by the user closing the window). Best effort.
   close() {
+    this._appClosing = true;   // mark app-initiated so the exit is APP_REQUESTED_CLOSE (no cascade)
+    this._alive = false;
+    this._stopLivenessWatch();
     const proc = this.process;
     if (proc && !proc.killed) { try { proc.kill(); } catch { /* already gone */ } }
     this.process = null;
@@ -193,8 +378,10 @@ class ChromeLauncher {
   // for the process to exit, then FORCE KILL if it is still alive — so the D2-001 guarantee
   // (no phantom Chrome, no stuck profile lock) is preserved even if graceful close hangs.
   async closeGraceful(timeoutMs = 3500) {
+    this._appClosing = true;   // app-initiated ⇒ APP_REQUESTED_CLOSE (never a spurious user-close)
+    this._stopLivenessWatch();
     const proc = this.process;
-    if (!proc || proc.killed) { this.process = null; return { ok: true, graceful: false, reason: 'not-running' }; }
+    if (!proc || proc.killed) { this.process = null; this._alive = false; return { ok: true, graceful: false, reason: 'not-running' }; }
     const exited = new Promise((res) => proc.once('exit', () => res(true)));
     const port = this.port;
     // Fire the graceful close request but NEVER block on it: a frozen Chrome could make
@@ -212,16 +399,29 @@ class ChromeLauncher {
     const timedOut = await Promise.race([exited.then(() => false), new Promise((res) => setTimeout(() => res(true), Math.max(500, timeoutMs)))]);
     if (timedOut && proc && !proc.killed) { try { proc.kill(); } catch { /* already gone */ } }
     this.process = null;
+    this._alive = false;
     return { ok: true, graceful: !timedOut, forced: !!timedOut };
   }
 
+  // Liveness reflects the BROWSER, not the bootstrap process handle: it survives a
+  // TRACKED_PID_REPLACED swap (bootstrap gone, browser alive on a replacement PID).
+  alive() { return !!this._alive; }
+
   snapshot() {
     return {
+      instanceId: this.instanceId,
       cdpPort: this.port,
-      chromePid: this.process && !this.process.killed ? this.process.pid : null,
+      // Report the tracked live pid (a replacement main pid survives a bootstrap swap);
+      // null only when the browser is actually gone.
+      chromePid: this._alive ? this._trackedPid : null,
+      bootstrapPid: this._bootstrapPid,
       chromeProfile: this.profilePath,
+      executable: this._executable,
+      alive: this._alive,
+      spawnedAt: this._spawnedAt,
+      lastExit: this.lastExit,
     };
   }
 }
 
-module.exports = { ChromeLauncher, findChromeExecutable, ensureChromePersistentSession, DEFAULT_WINDOW };
+module.exports = { ChromeLauncher, findChromeExecutable, ensureChromePersistentSession, DEFAULT_WINDOW, EXIT_REASONS, classifyGoneExit, defaultProbeCdp };
