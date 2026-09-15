@@ -86,6 +86,58 @@ function buildEnterGameHook(descriptor) {
 })();`;
 }
 
+// A lobby-level modal (the anti-phishing "CẢNH BÁO LỪA ĐẢO" warning, node PopupWarningPhishing) can
+// sit ON TOP of the NewLobby and block the game scene transition — so firing the tile enters nothing
+// (BUG #3, live-observed). This hook dismisses such KNOWN blocking popups by firing their OWN wired
+// close button (same in-engine mechanism as the tile; RESOLVE-BEFORE-INVOKE; fires nothing if the
+// popup / its close button is absent or inactive). It changes NOTHING about the tile-entry firing.
+// Targets are (popupNodeName, closeButtonNodeName) proven from the live scene graph.
+const BLOCKING_POPUPS = [['PopupWarningPhishing', 'btnClose']];
+function buildDismissPopupsHook() {
+  const TARGETS = JSON.stringify(BLOCKING_POPUPS);
+  return `(() => { try {
+  var g = (typeof globalThis !== 'undefined') ? globalThis : (typeof self !== 'undefined') ? self : this; if (!g) return;
+  var TARGETS = ${TARGETS};
+  g.__phomDismissPopups = function () {
+    var out = { ccAvailable:false, dismissed:[] };
+    try {
+      var cc = g.cc;
+      if (!cc || typeof cc.director === 'undefined' || !cc.director || typeof cc.director.getScene !== 'function' || !cc.Button || !cc.Component || !cc.Component.EventHandler || typeof cc.Component.EventHandler.emitEvents !== 'function') return out;
+      out.ccAvailable = true;
+      var Button = cc.Button, scene = null; try { scene = cc.director.getScene(); } catch (e) {} if (!scene) return out;
+      function findActive(root, name) { var res = null; (function w(n){ if(!n||res)return; try{ if((n.name||n._name)===name && n.activeInHierarchy){res=n;return;} }catch(e){} var ch=n.children||[]; for(var i=0;i<ch.length;i++) w(ch[i]); })(root); return res; }
+      for (var t=0;t<TARGETS.length;t++){
+        var pop = findActive(scene, TARGETS[t][0]); if (!pop) continue;
+        // 1) try the popup's OWN close button (clean close), 2) then force-hide the popup node so the
+        // NewLobby scene transition is unblocked even if the close is wired via a non-clickEvents path.
+        var closeBtn = findActive(pop, TARGETS[t][1]);
+        if (closeBtn && typeof closeBtn.getComponent === 'function') { var b = closeBtn.getComponent(Button); if (b && b.clickEvents) { try { cc.Component.EventHandler.emitEvents(b.clickEvents, closeBtn); closeBtn.emit('click', b); } catch (e) {} } }
+        try { if (pop.activeInHierarchy) { pop.active = false; } } catch (e) {}
+        out.dismissed.push(TARGETS[t][0]);
+      }
+    } catch (e) {}
+    return out;
+  };
+  } catch (e) {} })();`;
+}
+
+// Best-effort: dismiss known blocking lobby popups through the target's own CDP session before entry.
+async function runDismissBlockingPopups(client, sessionId, onDiag) {
+  const diag = typeof onDiag === 'function' ? onDiag : () => {};
+  if (!client || !client.Runtime || typeof client.Runtime.evaluate !== 'function') return { dismissed: [] };
+  try { await client.Runtime.evaluate({ expression: buildDismissPopupsHook(), includeCommandLineAPI: false }, sessionId); } catch { /* worker/detached */ }
+  try {
+    const res = await client.Runtime.evaluate({ expression: "globalThis.__phomDismissPopups ? globalThis.__phomDismissPopups() : ({ dismissed:[] })", awaitPromise: true, returnByValue: true }, sessionId);
+    const v = (res && res.result && res.result.value) || { dismissed: [] };
+    if (Array.isArray(v.dismissed) && v.dismissed.length) {
+      diag({ event: 'COCOS_POPUP_DISMISSED', popups: v.dismissed.slice() });
+      // eslint-disable-next-line no-console
+      console.log('[COCOS-CLICK] dismissed blocking popup(s):', v.dismissed.join(','));
+    }
+    return v;
+  } catch (e) { return { dismissed: [] }; }
+}
+
 // Execute the sealed op through a target's OWN CDP client/session. Returns { ok:true } |
 // { error:{ code, step? } }. Surfaces ONLY non-secret resolve booleans + resolvedBy to onDiag.
 // `meta.fallbackGameId` is diag-only. INVOKED != ENTERED (caller confirms on server evidence).
@@ -94,6 +146,9 @@ async function runEnterGameViaSite(client, sessionId, gameId, onDiag, meta = {})
   if (!client || !client.Runtime || typeof client.Runtime.evaluate !== 'function') {
     return { error: { code: 'ENTER_NO_CLIENT', message: 'Target connection is gone' } };
   }
+  // BUG #3 — clear any blocking lobby popup (e.g. the anti-phishing warning) FIRST, so firing the tile
+  // actually transitions into the game. Best-effort + resolve-before-invoke; never blocks entry.
+  try { await runDismissBlockingPopups(client, sessionId, diag); } catch { /* best effort */ }
   let hook;
   try { hook = buildEnterGameHook({ gameId }); } catch (e) { return { error: { code: 'ENTER_NO_DESCRIPTOR', message: String(e && e.message || e) } }; }
   try { await client.Runtime.evaluate({ expression: hook, includeCommandLineAPI: false }, sessionId); } catch { /* worker/detached — the call below still reports */ }
@@ -121,4 +176,5 @@ async function runEnterGameViaSite(client, sessionId, gameId, onDiag, meta = {})
 module.exports = {
   COCOS_KNOWN_PATH_PREFIX, COCOS_MAX_DEPTH, GAME_ID_RE, isValidGameId,
   buildEnterGameHook, runEnterGameViaSite,
+  BLOCKING_POPUPS, buildDismissPopupsHook, runDismissBlockingPopups,
 };
