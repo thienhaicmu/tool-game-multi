@@ -191,6 +191,38 @@ test('T17 abandon invalid candidate, then accept a valid one', () => {
   assert.equal(coord.validateHostCandidate().valid, true);
 });
 
+// CASE 1 end-to-end — runDiscovery seats A (empty room), then B, then C sequentially, each confirmed
+// in the authoritative ps[], reaching SAME_TABLE. A server simulator answers each JOIN with the right
+// TABLE_STATE / SEAT_UPDATE frames (host learns later joiners via cmd:200 deltas).
+test('CASE1 e2e discovery: A -> B -> C sequential => SAME_TABLE', async () => {
+  const UID = { A: '1_1', B: '1_2', C: '1_3' }, SIT = { A: 0, B: 1, C: 2 };
+  const table = { seats: [] };
+  let coord;
+  const feed = (id, raw) => coord.ingest(id, { raw, direction: 'recv', targetId: id, url: 'wss://x', now: Date.now() });
+  const chan = () => '[5,{"rs":[{"rid":500,"b":100,"uC":0,"zn":"Simms","gid":8,"Mu":4}],"cmd":300,"aid":"1"}]';
+  const tState = (seats) => `[5,{"b":100,"ps":[${seats.map((s) => `{"uid":"${s.uid}","sit":${s.sit},"r":false}`).join(',')}],"cmd":202}]`;
+  const delta = (uid, sit) => `[5,{"p":{"uid":"${uid}","sit":${sit},"r":false},"t":1,"cmd":200}]`;
+  const mkSend = (id) => async (fr) => {
+    let j; try { j = JSON.parse(fr); } catch { return { ok: true }; }
+    if (j[0] === 6 && j[3] && j[3].cmd === 300) { feed(id, chan()); return { ok: true }; }
+    if (j[0] === 4) { table.seats = table.seats.filter((s) => s.uid !== UID[id]); return { ok: true }; }
+    if (j[0] === 3) {
+      if (!table.seats.find((s) => s.uid === UID[id])) table.seats.push({ sit: SIT[id], uid: UID[id] });
+      for (const pid of ['A', 'B', 'C']) { if (pid === id) feed(pid, tState(table.seats)); else if (table.seats.find((s) => s.uid === UID[pid])) feed(pid, delta(UID[id], SIT[id])); }
+      return { ok: true };
+    }
+    return { ok: true };
+  };
+  coord = new HostTableCoordinator({ environmentAuthorized: true, hostId: 'A', selectedStake: 100, delay: () => Promise.resolve(), profiles: [{ id: 'A', send: mkSend('A') }, { id: 'B', send: mkSend('B') }, { id: 'C', send: mkSend('C') }] });
+  for (const id of ['A', 'B', 'C']) { feed(id, selfId(UID[id])); coord.setIdentity(id, { aid: '1' }); }
+  const r = await coord.runDiscovery();
+  assert.equal(r.ok, true);
+  assert.equal(r.sameTable, true, JSON.stringify(coord.verifySameTable()));
+  assert.equal(coord.verifySameTable().result, 'SAME_TABLE');
+  // host learned B and C via SEAT_UPDATE deltas (sequential follow)
+  assert.deepEqual(coord.host().ctx.tableState().uids, [UID.A, UID.B, UID.C].sort());
+});
+
 // TEST 18 — C kick + outsider invalidation while rejoining => INVALID takes precedence (safe).
 test('T18 outsider invalidation during C rejoin is reconciled to INVALID', () => {
   const coord = mkCoord(); seatAll(coord);

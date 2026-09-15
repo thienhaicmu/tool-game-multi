@@ -516,11 +516,11 @@ class HostTableCoordinator extends EventEmitter {
           await this._delay(this._discoverBackoffMs); continue;
         }
         this._candidateValid = true; this._setState(SESSION.HOST_CANDIDATE_VALID); this._log('HOST_MEMBERSHIP_CONFIRMED', {}); this._log('CANDIDATE_VALID', { freeSeats: val.freeSeats });
-        // §8/§9 — B then C follow the host's table (existing joinFollowers preserves follower order).
-        this._setState(SESSION.FOLLOWERS_JOINING); this._log('FOLLOWER_B_JOIN'); this._log('FOLLOWER_C_JOIN');
-        await this.joinFollowers();
+        // §4/§8/§9 — SEQUENTIAL follow: B joins, wait until B is in the host's authoritative ps[],
+        // then C joins and wait for C — re-validating capacity after each seat.
+        const followed = await this._followSequential(gen);
         if (stale()) break;
-        const same = await this._awaitSameTable(gen);
+        const same = followed && await this._awaitSameTable(gen);
         if (stale()) break;
         if (same) { this._setState(SESSION.SAME_TABLE); this._log('SAME_TABLE', this._sameTableEvidence()); await this.applyReady(); this._setState(SESSION.MONITORING); this._log('READY_POLICY', { policy: this._readyPolicySummary() }); return { ok: true, sameTable: true }; }
         const rec = this.reconcileSeated();
@@ -542,6 +542,38 @@ class HostTableCoordinator extends EventEmitter {
     }
     const v = this.validateHostCandidate();
     return v.valid ? v : { valid: false, reason: v.reason || 'HOST_VALIDATION_TIMEOUT' };
+  }
+
+  // §4 — bring followers to the host's table ONE AT A TIME (B then C), each confirmed present in the
+  // host's authoritative ps[] before the next joins; re-validate capacity after every seat so an
+  // outsider that fills the table mid-sequence aborts cleanly (caller then leaves all + restarts).
+  async _followSequential(gen) {
+    const host = this.host(); const rid = host && host._joinedRid;
+    if (rid == null) return false;
+    this._setState(SESSION.FOLLOWERS_JOINING);
+    for (const rec of this.followers()) { // followerIndex order: B (0) then C (1)
+      if (this._gen !== gen || this._stopped) return false;
+      this._log(rec.followerIndex === 0 ? 'FOLLOWER_B_JOIN' : 'FOLLOWER_C_JOIN', { id: rec.id });
+      if (!(rec.confirmedInTable && this._followerAtHostTable(rec))) {
+        rec.leaving = true; rec.state = PSTATE.JOINING;
+        try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { /* best effort */ }
+        rec.leaving = false;
+        try { await rec.send(buildJoinFrame(rid), rec.ctx.sendContext()); } catch (e) { rec.state = PSTATE.ERROR; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; }
+        rec._joinedRid = rid;
+      }
+      const seated = await this._awaitFollowerSeated(rec, gen);
+      if (this._gen !== gen || this._stopped) return false;
+      if (!seated) return false;                          // this follower could not be seated
+      if (this.reconcileSeated().verdict === 'INVALID') return false; // outsider filled it mid-sequence
+    }
+    return true;
+  }
+
+  async _awaitFollowerSeated(rec, gen, timeoutMs = 8000) {
+    const host = this.host(); const t0 = this._now();
+    const present = () => { const uid = rec.ctx.uid(); const hts = host && host.ctx.tableState(); return !!(uid && hts && hts.uids.includes(uid)); };
+    while (this._gen === gen && !this._stopped && this._now() - t0 < timeoutMs) { if (present()) return true; await this._delay(200); }
+    return present();
   }
 
   async _awaitSameTable(gen, timeoutMs = 8000) {
