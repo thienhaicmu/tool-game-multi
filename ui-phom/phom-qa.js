@@ -683,7 +683,10 @@
   // must satisfy this before TÌM BÀN unlocks; otherwise the gate stays in ĐANG VÀO GAME PHỎM.
   function slotInPhom(runId) {
     const p = (session && session.profiles || []).find((x) => x.id === runId);
-    return !!(p && p.socketReady && p.connected && p.uid);
+    // In Phỏm = the game socket is bound (server-evidence frame observed) + connected. uid is NOT
+    // required here: it only arrives on a table JOIN (the lobby doesn't push cmd:100 reliably), so
+    // requiring it made the entry gate hang even though A/B/C are already logged in at the lobby.
+    return !!(p && p.socketReady && p.connected);
   }
   function allInPhom() {
     const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
@@ -1108,9 +1111,12 @@
     const sel = await api.selectStake(stake);
     if (sel && sel.ok === false) return note(errText(sel), true);
     autoFlow = true;
-    const acq = await api.acquireHost();
-    if (acq && acq.ok === false) { autoFlow = false; return note(errText(acq), true); }
-    note('HOST đang tìm bàn trống…');
+    // Host-first discovery loop (§ real flow): A joins first, is validated from ps[], and ONLY then
+    // do B then C follow A's table; an invalid candidate/table makes A (or A+B+C) leave and A search
+    // again. The coordinator owns the whole loop + ready policy + C-rejoin; the UI just starts it.
+    const d = await api.discover();
+    if (d && d.ok === false) { autoFlow = false; return note(errText(d), true); }
+    note('HOST đang tìm bàn hợp lệ — A vào trước → kiểm tra → B/C theo A.');
     refresh();
   }
   // Advance the happy path when authoritative state confirms each stage.
@@ -1121,16 +1127,12 @@
   // idempotent in the domain, so re-issuing it never double-sends. Host loss / rejoin
   // exhaustion stops orchestration (no follower promotion — §12/§15).
   let flowBusy = false;
+  // The host-first discovery loop (main-process coordinator) now owns follower join, ready policy,
+  // C-rejoin and invalid-table restart. The renderer must NOT drive join/ready itself (that caused
+  // B/C to join before A was validated). This only clears the local "running" flag on terminal states.
   function advanceAutoFlow(s) {
-    if (!autoFlow || !s || flowBusy) return;
-    if (s.state === 'HOST_LOST' || s.state === 'HOST_TABLE_LOST' || s.state === 'REJOIN_EXHAUSTED') { autoFlow = false; return; }
-    const desired = (s.playerCount >= 4) ? 3 : 2;
-    if (s.state === 'HOST_ACQUIRED' && !s.sameTable) {
-      flowBusy = true; api.joinFollowers().finally(() => { flowBusy = false; refresh(); }); return;
-    }
-    if (s.sameTable && (s.controlledReadyCount || 0) < desired) {
-      flowBusy = true; api.applyReady().finally(() => { flowBusy = false; refresh(); }); return;
-    }
+    if (!autoFlow || !s) return;
+    if (s.state === 'HOST_ACQUIRE_FAILED' || s.state === 'REJOIN_EXHAUSTED' || s.state === 'STOPPED') autoFlow = false;
   }
 
   // Cluster CTA: SETUP → OPENING_CLUSTER → CONTROL. create → open → connect → apply

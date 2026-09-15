@@ -76,12 +76,15 @@ test('READY is set ONLY by the authoritative in-Phỏm signal (never by the entr
   assert.match(rec, /entryPhase === ENTRY\.ENTERING && allInPhom\(\)/);
   assert.match(rec, /entryPhase = ENTRY\.READY/);
   const inPhom = between('function slotInPhom(', 'function allInPhom(');
-  assert.match(inPhom, /p\.socketReady && p\.connected && p\.uid/);
+  // Authoritative in-Phỏm signal = a bound game socket (server-evidence frame) + connected. uid is
+  // NOT required for the entry gate (it only arrives on a table JOIN; requiring it hung the gate at
+  // the lobby). socketReady is not fakeable, so readiness is still authoritative.
+  assert.match(inPhom, /p\.socketReady && p\.connected/);
 });
 
-test('PHOM_READY requires the authoritative 3/3 in-Phỏm signal (socketReady+connected+uid), never faked', () => {
+test('PHOM_READY requires the authoritative 3/3 in-Phỏm signal (socketReady+connected), never faked', () => {
   const inPhom = between('function slotInPhom(', 'function reconcileEntryPhase(');
-  assert.match(inPhom, /p\.socketReady && p\.connected && p\.uid/);
+  assert.match(inPhom, /p\.socketReady && p\.connected/);
   const rec = between('function reconcileEntryPhase(', 'async function openCluster()');
   assert.match(rec, /entryPhase === ENTRY\.ENTERING && allInPhom\(\)/);
   assert.match(rec, /entryPhase = ENTRY\.READY/);
