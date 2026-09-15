@@ -91,3 +91,60 @@ test('malformed frames come back UNKNOWN, never throw', () => {
     assert.equal(cls.isHandEvent, false);
   }
 });
+
+// PHASE-2 fix (live-captured evidence): the SERVER channel-list reply echoes cmd:300, i.e.
+// [5,{rs:[...],cmd:300}]. It must classify as CHANNEL_LIST (server evidence), NOT as the client
+// CHANNEL_LIST_REQUEST. Raw frames below are the REAL ones captured from a logged-in Phỏm session.
+test('PHASE2: server channel-list reply that echoes cmd:300 => CHANNEL_LIST + server evidence', () => {
+  const raw = '[5,{"rs":[{"mM":10000,"b":1000,"gid":8,"MMBI":0,"hpwd":false,"aG":"G","Mu":4,"ahp":false,"rid":141,"uC":73,"sid":1,"zn":"Simms","mMBI":0,"rn":"Phom#2","aid":1,"inc":false},{"mM":500,"b":100,"gid":8,"Mu":4,"rid":142,"uC":10,"zn":"Simms","rn":"Phom#1"}],"cmd":300}]';
+  const cls = classifyPhomFrame(raw);
+  assert.equal(cls.type, 'CHANNEL_LIST');
+  assert.equal(cls.isServerEvidence, true);
+  assert.equal(Array.isArray(cls.rs) && cls.rs.length, 2);
+  assert.equal(normalizeChannel(cls.rs[0]).rid, 141);
+  assert.equal(normalizeChannel(cls.rs[0]).b, 1000);
+});
+
+test('PHASE2: client cmd:300 request (op 6) stays CHANNEL_LIST_REQUEST and is NOT server evidence', () => {
+  const cls = classifyPhomFrame('[6,"Simms","channelPlugin",{"cmd":300,"aid":"1","gid":8}]');
+  assert.equal(cls.type, 'CHANNEL_LIST_REQUEST');
+  assert.equal(cls.isServerEvidence, false);
+});
+
+test('PHASE2: self-identity push (cmd:100 with own wallet As) => SELF_IDENTITY carrying uid, server evidence', () => {
+  const raw = '[5,{"uid":"Vxq2WWdg","a":"Avatar20","As":{"gold":21062,"guarranteed_gold":0},"u":"Vxq2WWdg","g":0,"dn":"baycao1002","cmd":100,"id":1}]';
+  const cls = classifyPhomFrame(raw);
+  assert.equal(cls.type, 'SELF_IDENTITY');
+  assert.equal(cls.isServerEvidence, true);
+  assert.equal(cls.uid, 'Vxq2WWdg');
+  // a cmd:100 WITHOUT own-wallet As must NOT be treated as self-identity (avoids peer/other pushes).
+  assert.notEqual(classifyPhomFrame('[5,{"uid":"peer","cmd":100}]').type, 'SELF_IDENTITY');
+});
+
+test('PHASE2: unrelated/malformed pushes are NOT CHANNEL_LIST', () => {
+  assert.notEqual(classifyPhomFrame('[5,{"errC":10005,"gid":10889,"cmd":10004}]').type, 'CHANNEL_LIST');
+  assert.notEqual(classifyPhomFrame('not json').type, 'CHANNEL_LIST');
+  assert.equal(classifyPhomFrame('[5,{"bs":{"b":[]},"gid":10110,"cmd":10003}]').isServerEvidence, false);
+  assert.equal(CMD.SELF_IDENTITY, 100);
+});
+
+// PHASE-2 integration: feeding the REAL server frames through PhomContext (recv) binds the
+// authoritative session signal (socketReady+connected+uid) that the PHỎM READY gate requires;
+// a client request alone must NOT bind it.
+test('PHASE2: PhomContext binds socketReady/connected/uid + rs from real server frames only', () => {
+  const { PhomContext } = require('../../desktop/protocol/phom/phom-context.cjs');
+  const serverResp = '[5,{"rs":[{"rid":141,"rn":"Phom#2","gid":8,"b":1000,"Mu":4,"uC":73,"zn":"Simms"},{"rid":142,"b":100,"zn":"Simms"}],"cmd":300}]';
+  const selfId = '[5,{"uid":"Vxq2WWdg","As":{"gold":21062},"u":"Vxq2WWdg","dn":"baycao1002","cmd":100,"id":1}]';
+  const ctx = new PhomContext({ profileId: 'A' });
+  ctx.observe({ raw: serverResp, direction: 'recv', targetId: 't1', url: 'wss://x', now: 1 });
+  ctx.observe({ raw: selfId, direction: 'recv', targetId: 't1', url: 'wss://x', now: 2 });
+  const g = ctx.get();
+  assert.equal(g.socketReady, true);
+  assert.equal(g.connected, true);
+  assert.equal(g.uid, 'Vxq2WWdg');
+  assert.equal(g.channels.length, 2);
+  // a client cmd:300 request (send) must NOT bind the socket by itself.
+  const ctx2 = new PhomContext({ profileId: 'B' });
+  ctx2.observe({ raw: '[6,"Simms","channelPlugin",{"cmd":300,"aid":"1","gid":8}]', direction: 'send', targetId: 't2', url: 'wss://x', now: 1 });
+  assert.equal(ctx2.get().socketReady, false);
+});

@@ -28,6 +28,7 @@ const GAME_ID = 'vgcg_8';
 
 // Confirmed command set. Names are stable semantic labels for UI / evidence.
 const CMD = Object.freeze({
+  SELF_IDENTITY: 100,  // server push of the OWN session identity (uid + own wallet As) — live-captured
   CHANNEL_LIST: 300,   // client asks for stake channels; server replies with rs[]
   FIND_TABLE: 311,     // client quick-find; server replies { b:[], mB }
   READY: 363,          // client marks ready (aRd:"true")
@@ -59,6 +60,7 @@ const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'ROUND_E
 // game socket) when it is a recognised server push for this game.
 const SERVER_EVIDENCE_TYPES = Object.freeze(new Set([
   'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'DEAL', 'PLAY', 'DRAW', 'ROUND_END', 'MELD',
+  'SELF_IDENTITY',
 ]));
 
 function base(raw) {
@@ -109,12 +111,22 @@ function classifyPhomFrame(raw) {
   }
 
   if (op === OP.PUSH) {
-    // Server -> client. May be a cmd game event, a channel list (rs[]), a
-    // find-table reply (b array + mB), or an authoritative table state (ps[]).
-    if (cmd != null && CMD_TYPE[cmd]) return finalize(out, { type: CMD_TYPE[cmd] });
+    // Server -> client. IMPORTANT (live-captured): a server RESPONSE echoes the request cmd —
+    // the channel-list reply is [5,{rs:[...],cmd:300}], i.e. it carries cmd:300 (the same code
+    // as the CLIENT request). So the STRUCTURAL server payload (rs[]/ps[]/b+mB) is authoritative
+    // and MUST be checked BEFORE the CMD_TYPE map (which holds CLIENT-request semantics).
+    // Otherwise the channel-list reply is misread as CHANNEL_LIST_REQUEST and misses server
+    // evidence (the PHASE-2 blocker).
     if (payload && Array.isArray(payload.rs)) return finalize(out, { type: 'CHANNEL_LIST' });
     if (payload && Array.isArray(payload.ps)) return finalize(out, { type: 'TABLE_STATE' });
     if (payload && Array.isArray(payload.b) && payload.mB !== undefined) return finalize(out, { type: 'FIND_TABLE' });
+    // Own-session identity push (live-captured [5,{uid,u,As:{gold},dn,cmd:100,id}]): carries the
+    // authoritative own uid. `As` (own wallet) marks it as THIS session's identity, not a peer's.
+    if (cmd === CMD.SELF_IDENTITY && (payload.uid != null || payload.u != null) && payload.As != null) {
+      return finalize(out, { type: 'SELF_IDENTITY', uid: payload.uid != null ? payload.uid : payload.u });
+    }
+    // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / ROUND_END 853 / MELD 854).
+    if (cmd != null && CMD_TYPE[cmd]) return finalize(out, { type: CMD_TYPE[cmd] });
     return finalize(out, { type: 'UNKNOWN' });
   }
 
@@ -141,7 +153,7 @@ function finalize(out, extra) {
     hasPassword: extra.hasPassword !== undefined ? extra.hasPassword : undefined,
     // identity / table fields (surfaced verbatim; undefined when absent)
     aid: p.aid !== undefined ? p.aid : undefined,
-    uid: p.uid !== undefined ? p.uid : undefined,
+    uid: extra.uid !== undefined ? extra.uid : (p.uid !== undefined ? p.uid : undefined),
     gid: p.gid !== undefined ? p.gid : undefined,
     b: p.b !== undefined ? p.b : undefined,
     rs: Array.isArray(p.rs) ? p.rs : undefined,

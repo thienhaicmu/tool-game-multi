@@ -74,6 +74,9 @@ class PhomContext extends EventEmitter {
     // Learn OWN uid from an authoritative own-hand frame (sAC is only sent to the
     // receiving session, so its uid IS this profile's uid).
     if (this._uid == null && Array.isArray(cls.sAC) && cls.uid != null) { this._uid = String(cls.uid); changed = true; }
+    // Learn OWN uid from the self-identity push (cmd:100, carries own wallet As) — the
+    // authoritative pre-play identity, so socketReady+uid can bind before any hand is dealt.
+    if (this._uid == null && cls.type === 'SELF_IDENTITY' && cls.uid != null) { this._uid = String(cls.uid); changed = true; }
 
     if (cls.type === 'CHANNEL_LIST' && Array.isArray(cls.rs)) {
       this._channels = cls.rs.map(normalizeChannel).filter(Boolean);
