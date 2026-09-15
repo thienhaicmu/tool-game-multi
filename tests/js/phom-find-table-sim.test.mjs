@@ -14,14 +14,16 @@ const { HostTableCoordinator } = require('../../desktop/protocol/phom/host-table
 class PhomServerSim {
   constructor({ rooms, uids }) {
     // room: { rid, b, Mu, seats:[{sit,uid}] }  (initial seats = uncontrolled outsiders)
-    this.rooms = rooms.map((r) => ({ rid: r.rid, b: r.b, Mu: r.Mu != null ? r.Mu : 4, rn: r.rn || 'Phom', seats: (r.seats || []).slice() }));
+    this.rooms = rooms.map((r) => ({ rid: r.rid, b: r.b, Mu: r.Mu != null ? r.Mu : 4, rn: r.rn || 'Phom', reportedUC: r.reportedUC, seats: (r.seats || []).slice() }));
     this.uids = uids; // { A, B, C } -> game uids
     this.coord = null;
     this.joinLog = [];
   }
   attach(coord) { this.coord = coord; }
   _feed(id, raw) { this.coord.ingest(id, { raw, direction: 'recv', targetId: id, url: 'wss://sim', now: Date.now() }); }
-  _channelList() { const rs = this.rooms.map((r) => ({ rid: r.rid, b: r.b, uC: r.seats.length, Mu: r.Mu, zn: 'Simms', gid: 8, rn: r.rn })); return JSON.stringify([5, { rs, cmd: 300 }]); }
+  // rs[] reports uC. A room may advertise a STALE uC (reportedUC) that is LOWER than the real
+  // occupancy — modelling the live 139 race where the list says "empty" but the table is full.
+  _channelList() { const rs = this.rooms.map((r) => ({ rid: r.rid, b: r.b, uC: (r.reportedUC != null ? r.reportedUC : r.seats.length), Mu: r.Mu, zn: 'Simms', gid: 8, rn: r.rn })); return JSON.stringify([5, { rs, cmd: 300 }]); }
   _tableState(room) { const ps = room.seats.map((s) => ({ uid: s.uid, sit: s.sit, r: false })); return JSON.stringify([5, { b: room.b, ps, cmd: 202 }]); }
   _seatDelta(uid, sit) { return JSON.stringify([5, { p: { uid, sit, r: false }, t: 1, cmd: 200 }]); }
   _room(rid) { return this.rooms.find((r) => r.rid === rid); }
@@ -99,6 +101,24 @@ test('when only full rooms/buckets exist, host search does NOT falsely succeed',
   const r = await coord.runDiscovery();
   assert.equal(r.ok, false);
   assert.notEqual(coord.verifySameTable().result, 'SAME_TABLE');
+});
+
+// The live 139 problem: the channel list advertises a room as empty (stale uC) but it is actually
+// full. The host must join, see from ps[] it can't fit A+B+C, ABANDON that rid, and find a real
+// empty room — reaching SAME_TABLE instead of looping on the stale entry.
+test('stale-uC race: host abandons a falsely-empty room and finds a real one => SAME_TABLE', async () => {
+  const ROOMS = [
+    { rid: 139, b: 100, Mu: 4, rn: 'Phom#1', reportedUC: 0, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] }, // list says empty, really full
+    { rid: 700400, b: 100, Mu: 4, rn: 'Phom', seats: [] }, // real empty
+  ];
+  const { coord, sim } = mkSession(ROOMS);
+  const r = await coord.runDiscovery();
+  assert.equal(r.sameTable, true, JSON.stringify(coord.verifySameTable()));
+  // it tried 139 first (stale-empty), abandoned it, then joined the real empty room
+  const rids = sim.joinLog.map((j) => j.rid);
+  assert.ok(rids.includes(139), 'attempted the falsely-empty room');
+  assert.ok(rids.includes(700400), 'recovered onto the real empty room');
+  assert.deepEqual(coord.host().ctx.tableState().uids, ['1_1', '1_2', '1_3'].sort());
 });
 
 test('a room with exactly 3 free seats (1 outsider) is acceptable and yields SAME_TABLE + an outsider', async () => {

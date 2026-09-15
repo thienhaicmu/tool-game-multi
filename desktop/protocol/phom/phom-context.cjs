@@ -142,6 +142,15 @@ class PhomContext extends EventEmitter {
     this._emit();
   }
 
+  // Leave the current table but KEEP the live game socket/aid/uid/channels — used when the host
+  // abandons a candidate and must immediately search/join again. Clearing the socket (reset) here
+  // breaks the next acquireHost with PHOM_PROTOCOL_CONTEXT_MISSING (observed live).
+  leaveTable() {
+    if (this._tableState == null && this._joinedChannel == null) return;
+    this._tableState = null; this._tableStateAt = null; this._joinedChannel = null;
+    this._emit();
+  }
+
   // The socket send-context the coordinator hands to wsReplay.sendProtocol.
   sendContext() { return this._socket ? { ...this._socket } : null; }
 

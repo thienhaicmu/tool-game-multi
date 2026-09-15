@@ -456,7 +456,10 @@ class HostTableCoordinator extends EventEmitter {
     if (!ts) return { valid: false, reason: 'NO_TABLE_STATE' };            // not yet authoritative
     const hostUid = host.ctx.uid();
     if (!hostUid) return { valid: false, reason: 'HOST_UID_UNKNOWN' };
-    if (!ts.uids.includes(hostUid)) return { valid: false, reason: 'HOST_NOT_IN_PS' }; // ACK != membership
+    // ACK != membership. If A is not in ps[] AND the table is already FULL, A can never be seated here
+    // (the live 139 stale-uC race) -> decisively invalid, abandon at once. If the table still has room,
+    // A's own seating frame may just be in flight -> keep waiting (HOST_NOT_IN_PS is non-decisive).
+    if (!ts.uids.includes(hostUid)) return { valid: false, reason: ts.playerCount >= this._capacity ? 'TABLE_FULL_NO_HOST_SEAT' : 'HOST_NOT_IN_PS' };
     if (this._duplicateSeat(ts)) return { valid: false, reason: 'SEAT_CONFLICT' };
     const controlled = new Set(this._controlledUids());
     const controlledSeated = ts.uids.filter((u) => controlled.has(u)).length;
@@ -489,7 +492,9 @@ class HostTableCoordinator extends EventEmitter {
     if (!host) return;
     this._setState(SESSION.LEAVING_TABLE);
     if (host._joinedRid != null) { this._failedRids.add(host._joinedRid); if (this._failedRids.size > 32) this._failedRids.delete(this._failedRids.values().next().value); }
-    host.state = PSTATE.LEFT; host.confirmedInTable = false; host._joinedRid = null; host.ctx.reset();
+    // Leave the TABLE but keep the live socket/aid so the very next acquireHost can send again
+    // (ctx.reset() would drop the socket -> PHOM_PROTOCOL_CONTEXT_MISSING on the retry, observed live).
+    host.state = PSTATE.LEFT; host.confirmedInTable = false; host._joinedRid = null; host.ctx.leaveTable();
     try { await host.send(buildLeaveFrame(), host.ctx.sendContext()); } catch { /* best effort */ }
   }
 
