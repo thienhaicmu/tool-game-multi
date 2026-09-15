@@ -223,6 +223,16 @@ test('CASE1 e2e discovery: A -> B -> C sequential => SAME_TABLE', async () => {
   assert.deepEqual(coord.host().ctx.tableState().uids, [UID.A, UID.B, UID.C].sort());
 });
 
+// A + one follower on a FULL table (no seat for the third) => INVALID: both/all leave, A re-searches.
+test('A + one follower with a full table (no room for the third) => INVALID (all out)', () => {
+  const coord = mkCoord(); ident(coord);
+  // A(0), B(1) plus two outsiders fill seats 2 and 3 -> C can never be seated here
+  coord.ingest('A', frame(tableState(100, [[0, A], [1, B], [2, '1_x1'], [3, '1_x2']])));
+  coord._hostTableIdentity = { channelRid: 500, selectedStake: 100 };
+  const rc = coord.reconcileSeated();
+  assert.equal(rc.verdict, 'INVALID', JSON.stringify(rc));
+});
+
 // LOBBY RESET — returning to the Phỏm lobby (CHANNEL_LIST arrives) clears stale table state so a
 // fresh TÌM BÀN starts clean (no sticky BÀN / SAME_TABLE / MISMATCH / HOST_LOST).
 test('lobby reset: CHANNEL_LIST after leaving clears stale table state', () => {

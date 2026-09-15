@@ -516,9 +516,11 @@ class HostTableCoordinator extends EventEmitter {
           await this._delay(this._discoverBackoffMs); continue;
         }
         this._candidateValid = true; this._setState(SESSION.HOST_CANDIDATE_VALID); this._log('HOST_MEMBERSHIP_CONFIRMED', {}); this._log('CANDIDATE_VALID', { freeSeats: val.freeSeats });
-        // §4/§8/§9 — SEQUENTIAL follow: B joins, wait until B is in the host's authoritative ps[],
-        // then C joins and wait for C — re-validating capacity after each seat.
-        const followed = await this._followSequential(gen);
+        // After A is valid, B and C join A's table TOGETHER, then reconcile against A's authoritative
+        // ps[]: all three present => SAME_TABLE; one missing but a seat is free => rejoin it; A + one
+        // follower with the table full (no slot for the third) => INVALID (all leave + A searches
+        // again). Goal is strictly all three on one table.
+        const followed = await this._followTogether(gen);
         if (stale()) break;
         const same = followed && await this._awaitSameTable(gen);
         if (stale()) break;
@@ -542,6 +544,40 @@ class HostTableCoordinator extends EventEmitter {
     }
     const v = this.validateHostCandidate();
     return v.valid ? v : { valid: false, reason: v.reason || 'HOST_VALIDATION_TIMEOUT' };
+  }
+
+  // Bring B and C to the host's table TOGETHER (each on its own socket), then reconcile from the
+  // host's authoritative ps[]. Goal: all three on one table. Outcomes:
+  //   SAME_TABLE           -> success
+  //   one missing + a seat free -> rejoin only the missing follower
+  //   A + one follower, table FULL (no room for the third) -> abort (caller leaves ALL + A retries)
+  async _followTogether(gen) {
+    const host = this.host(); const rid = host && host._joinedRid;
+    if (rid == null) return false;
+    this._setState(SESSION.FOLLOWERS_JOINING); this._log('FOLLOWER_B_JOIN'); this._log('FOLLOWER_C_JOIN');
+    const joinOne = async (rec) => {
+      if (rec.confirmedInTable && this._followerAtHostTable(rec)) return;
+      rec.leaving = true; rec.state = PSTATE.JOINING;
+      try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { /* best effort */ }
+      rec.leaving = false;
+      try { await rec.send(buildJoinFrame(rid), rec.ctx.sendContext()); } catch (e) { rec.state = PSTATE.ERROR; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; }
+      rec._joinedRid = rid;
+    };
+    await Promise.all(this.followers().map(joinOne)); // B and C join simultaneously
+    const t0 = this._now();
+    while (this._gen === gen && !this._stopped && this._now() - t0 < 12000) {
+      if (this.verifySameTable().result === 'SAME_TABLE') return true;
+      const rc = this.reconcileSeated();
+      if (rc.verdict === 'INVALID') return false;                    // full / can't fit the third -> all out
+      if (rc.verdict === 'C_REJOIN') {                               // a follower missing but a seat is free
+        for (const uid of (rc.missing || [])) {
+          const rec = this.followers().find((r) => r.ctx.uid() === uid);
+          if (rec && rec.state !== PSTATE.REJOINING) { this._log('C_REJOIN', { id: rec.id }); await joinOne(rec); }
+        }
+      }
+      await this._delay(400);
+    }
+    return this.verifySameTable().result === 'SAME_TABLE';
   }
 
   // §4 — bring followers to the host's table ONE AT A TIME (B then C), each confirmed present in the
