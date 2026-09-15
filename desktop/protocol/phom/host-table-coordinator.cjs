@@ -233,13 +233,18 @@ class HostTableCoordinator extends EventEmitter {
     let chans = host.ctx.channels().filter((c) => (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID) && Number(c.b) === Number(this._selectedStake));
     if (!chans.length) return null;
     // Skip candidates whose authoritative state already proved invalid this discovery run (so the host
-    // tries a DIFFERENT empty room instead of re-picking the same racy/populated one). If every
-    // candidate has been excluded, fall back to the full set (state may have changed since).
+    // tries a DIFFERENT room instead of re-picking the same racy/populated one). If every candidate
+    // has been excluded, fall back to the full set (state may have changed since).
     const fresh = chans.filter((c) => !this._failedRids.has(c.rid));
     if (fresh.length) chans = fresh;
-    // Prefer the emptiest by uC as a HINT only (authoritative empty is confirmed from ps[] after
-    // join, never from uC alone).
-    return chans.slice().sort((a, b) => (a.uC || 0) - (b.uC || 0))[0];
+    // Prefer a REAL table that can still seat the whole controlled group A+B+C: a single-table entry
+    // (uC <= Mu — a stake BUCKET has uC far above Mu and must NOT be joined) with at least 3 FREE
+    // seats. uC/Mu are HINTS only (authoritative membership is confirmed from ps[] after join), but
+    // they let the host target an actually-joinable empty table instead of a full/bucket one.
+    const need = 3;
+    const fittable = chans.filter((c) => { const Mu = c.Mu != null ? c.Mu : this._capacity; const uC = c.uC != null ? c.uC : 0; return uC <= Mu && (Mu - uC) >= need; });
+    const pool = fittable.length ? fittable : chans;
+    return pool.slice().sort((a, b) => (a.uC || 0) - (b.uC || 0))[0];
   }
 
   // Called on each evaluate: confirm HOST acquisition from authoritative table state.
