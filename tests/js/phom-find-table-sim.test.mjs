@@ -121,6 +121,22 @@ test('stale-uC race: host abandons a falsely-empty room and finds a real one => 
   assert.deepEqual(coord.host().ctx.tableState().uids, ['1_1', '1_2', '1_3'].sort());
 });
 
+// Partial stale-uC: the list shows the room empty, but it already has 2 outsiders — so A can sit
+// yet there is no room for BOTH B and C. The host must reject it (INSUFFICIENT_CAPACITY, from ps[])
+// and move to a room that fits all three.
+test('partial stale-uC: room fits A but not B+C => abandon => SAME_TABLE elsewhere', async () => {
+  const ROOMS = [
+    { rid: 139, b: 100, Mu: 4, rn: 'P1', reportedUC: 0, seats: [{ sit: 0, uid: 'o1' }, { sit: 1, uid: 'o2' }] }, // shows empty, really 2 seated
+    { rid: 700500, b: 100, Mu: 4, rn: 'P', seats: [] }, // real empty
+  ];
+  const { coord, sim } = mkSession(ROOMS);
+  const r = await coord.runDiscovery();
+  assert.equal(r.sameTable, true, JSON.stringify(coord.verifySameTable()));
+  const rids = sim.joinLog.map((j) => j.rid);
+  assert.ok(rids.includes(139) && rids.includes(700500));
+  assert.deepEqual(coord.host().ctx.tableState().uids, ['1_1', '1_2', '1_3'].sort());
+});
+
 test('a room with exactly 3 free seats (1 outsider) is acceptable and yields SAME_TABLE + an outsider', async () => {
   const ROOMS = [
     { rid: 139, b: 100, Mu: 4, rn: 'Phom#2', seats: Array.from({ length: 60 }, (_, i) => ({ sit: i, uid: 'b' + i })) }, // bucket
