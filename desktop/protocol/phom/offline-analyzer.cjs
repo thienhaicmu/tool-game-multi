@@ -121,4 +121,79 @@ function analyzeConsistency({ knownHands = [], publicCards = [], deckSize = 52 }
   };
 }
 
-module.exports = { ALLOWED_SOURCE_KINDS, assertOffline, classifyMeld, findMelds, discardFormsPhom, validateServerMelds, analyzeConsistency };
+// The other three codes of the same rank as `card` (the same-rank cards in the other 3 suits).
+function sameRankOthers(card) { const r = rankOf(card); const out = []; for (let su = 0; su < 4; su++) { const c = r * 4 + su; if (c !== card) out.push(c); } return out; }
+
+// Can an OPPONENT complete a fresh 3-card phỏm using `card` (a card we might discard) plus TWO cards
+// drawn from `pool` (the unknown/possible-opponent codes)? Returns the concrete meld completions.
+//   SET  : two more of the same rank (from the 3 other suits) that are in the pool
+//   RUN  : a same-suit consecutive pair around `card` — [r-2,r-1] | [r-1,r+1] | [r+1,r+2]
+function opponentEatThreats(card, poolSet) {
+  const r = rankOf(card), s = suitOf(card), out = [];
+  const setAvail = sameRankOthers(card).filter((c) => poolSet.has(c));
+  if (setAvail.length >= 2) out.push({ type: 'SET', with: sortCardCodes(setAvail.slice(0, 3)) });
+  const windows = [[-2, -1], [-1, 1], [1, 2]];
+  for (const [o1, o2] of windows) {
+    const r1 = r + o1, r2 = r + o2; if (r1 < 0 || r1 > 12 || r2 < 0 || r2 > 12) continue;
+    const c1 = r1 * 4 + s, c2 = r2 * 4 + s;
+    if (poolSet.has(c1) && poolSet.has(c2)) out.push({ type: 'RUN', with: sortCardCodes([c1, c2]) });
+  }
+  return out;
+}
+
+// Does `card` extend an already-laid PUBLIC meld (a 4th of a laid SET, or either end of a laid RUN)?
+function extendsPublicMeld(card, publicMelds) {
+  for (const m of (publicMelds || [])) {
+    const meld = (m || []).filter(isValidCardCode); const type = classifyMeld(meld); if (!type) continue;
+    if (type === 'SET' && rankOf(meld[0]) === rankOf(card)) return { type: 'SET', meld: sortCardCodes(meld) };
+    if (type === 'RUN' && suitOf(meld[0]) === suitOf(card)) {
+      const ranks = meld.map(rankOf).sort((a, b) => a - b);
+      if (rankOf(card) === ranks[0] - 1 || rankOf(card) === ranks[ranks.length - 1] + 1) return { type: 'RUN', meld: sortCardCodes(meld) };
+    }
+  }
+  return null;
+}
+
+// §16 OFFLINE QA — SAFE-DISCARD / OPPONENT-THREAT analysis. Given the cards WE control (1..3 hands)
+// plus public cards/melds, exclude them from the 52-card deck to get the UNKNOWN pool (⊆ opponent
+// hands + draw pile), then classify each of our cards as SAFE or DANGEROUS to discard, and list every
+// deck card an opponent could kết-phỏm with. Pure + offline-gated; NEVER infers a specific opponent
+// hand — only what is POSSIBLE from unknown cards (the more we control, the tighter the safety).
+function analyzeSafeDiscards({ controlledHands = [], publicCards = [], publicMelds = [], deckSize = 52 } = {}, ctx = {}) {
+  const blocked = assertOffline(ctx); if (blocked) return blocked;
+  const known = [];
+  for (const h of controlledHands) for (const c of (h || [])) known.push(c);
+  for (const c of publicCards) known.push(c);
+  for (const m of (publicMelds || [])) for (const c of (m || [])) known.push(c);
+  const invalid = known.filter((c) => !isValidCardCode(c));
+  if (invalid.length) return { ok: false, error: { code: 'PHOM_INVALID_CARD_CODE', message: `${invalid.length} invalid card code(s)` } };
+  const knownSet = new Set(known);
+  const unknown = []; for (let c = 0; c < deckSize; c++) if (!knownSet.has(c)) unknown.push(c);
+  const poolSet = new Set(unknown);
+
+  const seen = new Set();
+  const candidates = [];
+  for (const h of controlledHands) for (const card of (h || [])) {
+    if (seen.has(card)) continue; seen.add(card);
+    const eat = opponentEatThreats(card, poolSet);
+    const ext = extendsPublicMeld(card, publicMelds);
+    const threats = eat.concat(ext ? [{ type: 'EXTEND_' + ext.type, meld: ext.meld }] : []);
+    candidates.push({ card, label: decodeCard(card).label, safe: threats.length === 0, threats });
+  }
+  const opponentPhomCards = [];
+  for (let c = 0; c < deckSize; c++) { if (opponentEatThreats(c, poolSet).length || extendsPublicMeld(c, publicMelds)) opponentPhomCards.push(c); }
+
+  return {
+    ok: true,
+    controlledCount: controlledHands.filter((h) => h && h.length).length,
+    KNOWN_CARDS: knownSet.size,
+    UNKNOWN_COUNT: unknown.length,
+    UNKNOWN_POOL: sortCardCodes(unknown),
+    candidates: candidates.sort((a, b) => a.card - b.card),
+    SAFE_DISCARDS: sortCardCodes(candidates.filter((c) => c.safe).map((c) => c.card)),
+    DANGEROUS_DISCARDS: sortCardCodes(candidates.filter((c) => !c.safe).map((c) => c.card)),
+    OPPONENT_PHOM_CARDS: sortCardCodes(opponentPhomCards),
+  };
+}
+
+module.exports = { ALLOWED_SOURCE_KINDS, assertOffline, classifyMeld, findMelds, discardFormsPhom, validateServerMelds, analyzeConsistency, opponentEatThreats, extendsPublicMeld, analyzeSafeDiscards };
