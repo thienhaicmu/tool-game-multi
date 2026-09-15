@@ -29,6 +29,7 @@ const GAME_ID = 'vgcg_8';
 // Confirmed command set. Names are stable semantic labels for UI / evidence.
 const CMD = Object.freeze({
   SELF_IDENTITY: 100,  // server push of the OWN session identity (uid + own wallet As) — live-captured
+  SEAT_UPDATE: 200,    // server push: ONE player took/updated a seat at THIS table ({p:{seat}, t}) — live-captured
   CHANNEL_LIST: 300,   // client asks for stake channels; server replies with rs[]
   FIND_TABLE: 311,     // client quick-find; server replies { b:[], mB }
   READY: 363,          // client marks ready (aRd:"true")
@@ -59,7 +60,7 @@ const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'ROUND_E
 // A frame carries authoritative Phỏm SERVER evidence (used to bind the owning
 // game socket) when it is a recognised server push for this game.
 const SERVER_EVIDENCE_TYPES = Object.freeze(new Set([
-  'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'DEAL', 'PLAY', 'DRAW', 'ROUND_END', 'MELD',
+  'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'SEAT_UPDATE', 'DEAL', 'PLAY', 'DRAW', 'ROUND_END', 'MELD',
   'SELF_IDENTITY',
 ]));
 
@@ -131,10 +132,21 @@ function classifyPhomFrame(raw) {
     if (payload && Array.isArray(payload.rs)) return finalize(out, { type: 'CHANNEL_LIST' });
     if (payload && Array.isArray(payload.ps)) return finalize(out, { type: 'TABLE_STATE' });
     if (payload && Array.isArray(payload.b) && payload.mB !== undefined) return finalize(out, { type: 'FIND_TABLE' });
+    // Single-seat delta (live-captured [5,{p:{...seat...},t:1,cmd:200}]): ONE player took/updated a
+    // seat at THIS table. `p` is a single seat object (same shape as a ps[] entry); `t===1` = present
+    // (joined). This is how an EARLY joiner learns about LATER joiners (the full ps[] snapshot only
+    // arrives on one's own join), so it MUST be folded into table state. Removal (t!==1) is not yet
+    // evidenced, so only presence is surfaced here.
+    if (cmd === CMD.SEAT_UPDATE && payload && payload.p && typeof payload.p === 'object' && !Array.isArray(payload.p)) {
+      return finalize(out, { type: 'SEAT_UPDATE', seat: payload.p, present: payload.t === 1, t: payload.t });
+    }
     // Own-session identity push (live-captured [5,{uid,u,As:{gold},dn,cmd:100,id}]): carries the
     // authoritative own uid. `As` (own wallet) marks it as THIS session's identity, not a peer's.
     if (cmd === CMD.SELF_IDENTITY && (payload.uid != null || payload.u != null) && payload.As != null) {
-      return finalize(out, { type: 'SELF_IDENTITY', uid: payload.uid != null ? payload.uid : payload.u });
+      // Live capture shows TWO cmd:100 forms: the authoritative game identity (id:0, uid "<aid>_<n>"
+      // — the SAME form used in ps[]) and a session-token identity (id:1, token uid + As.time). Surface
+      // `id` so the context binds only the authoritative game uid (never the token, which races ahead).
+      return finalize(out, { type: 'SELF_IDENTITY', uid: payload.uid != null ? payload.uid : payload.u, identityId: payload.id });
     }
     // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / ROUND_END 853 / MELD 854).
     if (cmd != null && CMD_TYPE[cmd]) return finalize(out, { type: CMD_TYPE[cmd] });
@@ -163,6 +175,11 @@ function finalize(out, extra) {
     channel: extra.channel !== undefined ? extra.channel : undefined,
     hasPassword: extra.hasPassword !== undefined ? extra.hasPassword : undefined,
     accepted: extra.accepted !== undefined ? extra.accepted : undefined,
+    // identity / seat-delta fields
+    identityId: extra.identityId !== undefined ? extra.identityId : undefined,
+    seat: extra.seat !== undefined ? extra.seat : undefined,     // single seat object (SEAT_UPDATE)
+    present: extra.present !== undefined ? extra.present : undefined,
+    t: extra.t !== undefined ? extra.t : undefined,
     // identity / table fields (surfaced verbatim; undefined when absent)
     aid: p.aid !== undefined ? p.aid : undefined,
     uid: extra.uid !== undefined ? extra.uid : (p.uid !== undefined ? p.uid : undefined),

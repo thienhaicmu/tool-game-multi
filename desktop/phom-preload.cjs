@@ -34,6 +34,7 @@ contextBridge.exposeInMainWorld('phomQA', {
   requestChannels: () => ipcRenderer.invoke('phom:request-channels'),
   stakeChannels: () => ipcRenderer.invoke('phom:stake-channels'),
   acquireHost: () => ipcRenderer.invoke('phom:acquire-host'),
+  discover: () => ipcRenderer.invoke('phom:discover'),
   joinFollowers: () => ipcRenderer.invoke('phom:join-followers'),
   applyReady: () => ipcRenderer.invoke('phom:apply-ready'),
   rejoinFollower: (id) => ipcRenderer.invoke('phom:rejoin-follower', id),
@@ -49,6 +50,7 @@ contextBridge.exposeInMainWorld('phomQA', {
   onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
   onHands: (cb) => ipcRenderer.on('phom:hands', (_e, hands) => cb(hands)),
   onKick: (cb) => ipcRenderer.on('phom:kick', (_e, k) => cb(k)),
+  onLog: (cb) => ipcRenderer.on('phom:log', (_e, l) => cb(l)),
   // custom Chromium runtime + cluster control-plane
   chromiumStatus: () => ipcRenderer.invoke('phom:chromium-status'),
   clusterCreate: (config) => ipcRenderer.invoke('phom:cluster-create', config),

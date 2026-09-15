@@ -238,6 +238,7 @@ else {
     phomSessions.on('update', (snap) => send('phom:session', snap));
     phomSessions.on('hands', (hands) => send('phom:hands', hands));
     phomSessions.on('kick', (k) => send('phom:kick', k));
+    phomSessions.on('log', (l) => { try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
     return phomSessions;
   }
 
@@ -766,6 +767,8 @@ else {
     ipcMain.handle('phom:request-channels', guarded(async () => { ensurePhomSessions(); return phomSessions.requestChannels(); }));
     ipcMain.handle('phom:stake-channels', guarded(() => { ensurePhomSessions(); return { ok: true, stakes: phomSessions.availableStakes(), sessionActive: !!(phomSessions && phomSessions.active()) }; }));
     ipcMain.handle('phom:acquire-host', guarded(() => ensurePhomSessions().acquireHost()));
+    // §18/§22 — host-first find-again discovery loop (single orchestrator; validates from ps[]).
+    ipcMain.handle('phom:discover', guarded(() => ensurePhomSessions().runDiscovery()));
     ipcMain.handle('phom:join-followers', guarded(() => ensurePhomSessions().joinFollowers()));
     ipcMain.handle('phom:apply-ready', guarded(() => ensurePhomSessions().applyReady()));
     ipcMain.handle('phom:rejoin-follower', guarded((_e, id) => ensurePhomSessions().rejoinFollower(id)));

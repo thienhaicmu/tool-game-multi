@@ -30,9 +30,20 @@ const SESSION = Object.freeze({
   HOST_WAITING_CONFIRMATION: 'HOST_WAITING_CONFIRMATION',
   HOST_ACQUIRED: 'HOST_ACQUIRED',
   HOST_ACQUIRE_FAILED: 'HOST_ACQUIRE_FAILED',
+  // Phase-3B FINAL host-first discovery states (§21). Membership/validity are proven ONLY from
+  // authoritative TABLE_STATE.ps[], never from JOIN ACK or rs[].uC.
+  LOBBY_WAITING: 'LOBBY_WAITING',
+  HOST_VALIDATING: 'HOST_VALIDATING',           // A joined; awaiting ps[] to validate the candidate
+  HOST_CANDIDATE_VALID: 'HOST_CANDIDATE_VALID', // A present in ps[] + table can still form A+B+C
+  INVALID_TABLE: 'INVALID_TABLE',               // candidate/table cannot form A+B+C -> leave + restart
+  LEAVING_TABLE: 'LEAVING_TABLE',
+  RESTART_SEARCH: 'RESTART_SEARCH',
+  C_REJOINING: 'C_REJOINING',
+  MONITORING: 'MONITORING',
   FOLLOWERS_JOINING: 'FOLLOWERS_JOINING',
   VERIFYING_SAME_TABLE: 'VERIFYING_SAME_TABLE',
   CONTROLLED_THREE_PRESENT: 'CONTROLLED_THREE_PRESENT',
+  SAME_TABLE: 'SAME_TABLE',
   WAITING_AUTHORIZED_FOURTH: 'WAITING_AUTHORIZED_FOURTH',
   TABLE_FULL: 'TABLE_FULL',
   READY_3_OF_3: 'READY_3_OF_3',
@@ -64,11 +75,21 @@ class HostTableCoordinator extends EventEmitter {
     this._rejoinCooldownMs = deps.rejoinCooldownMs != null ? deps.rejoinCooldownMs : 1000;
     this._kickDebounce = deps.kickDebounce != null ? deps.kickDebounce : 2; // consecutive confirmations
     this._joinWindowMs = deps.joinWindowMs != null ? deps.joinWindowMs : 300;
+    // Phase-3B FINAL discovery config.
+    this._capacity = deps.tableCapacity != null ? deps.tableCapacity : 4; // Phỏm seats per table (Mu)
+    this._maxHostSearch = deps.maxHostSearchAttempts != null ? deps.maxHostSearchAttempts : 8;
+    this._discoverBackoffMs = deps.discoverBackoffMs != null ? deps.discoverBackoffMs : 800;
+    this._delay = deps.delay || ((ms) => new Promise((r) => setTimeout(r, ms)));
 
     this._state = SESSION.IDLE;
     this._stopped = false;
     this._hostTableIdentity = null;
     this._roundRunning = false;
+    this._gen = 0;                 // orchestration generation token (§22 single orchestrator)
+    this._running = false;         // discovery loop active
+    this._hostSearchAttempts = 0;
+    this._candidateValid = false;
+    this._failedRids = new Set();  // candidates whose authoritative state proved invalid (avoid re-pick)
     this._profiles = new Map();
 
     const list = Array.isArray(deps.profiles) ? deps.profiles : [];
@@ -187,6 +208,14 @@ class HostTableCoordinator extends EventEmitter {
     const aid = host.ctx.aid();
     if (aid == null || !host.ctx.sendContext()) return { ok: false, error: { code: 'PHOM_PROTOCOL_CONTEXT_MISSING', message: 'host aid/socket not ready' } };
     await host.send(buildChannelListFrame(aid), host.ctx.sendContext());
+    // Wait briefly for the authoritative CHANNEL_LIST reply (rs[]) to arrive so selection sees the
+    // real, current room set (not a stale/empty cache). The rs is ingested asynchronously via the
+    // capture stream, so an immediate pick can miss it.
+    for (let i = 0; i < 10; i++) {
+      const chans = host.ctx.channels().filter((c) => Number(c.b) === Number(this._selectedStake) && !this._failedRids.has(c.rid));
+      if (chans.length) break;
+      await this._delay(200);
+    }
     // Find a candidate channel matching the stake (empty table decided from real state
     // AFTER join — the channel list only narrows to the right stake/zone).
     const candidate = this._pickStakeChannel(host);
@@ -201,10 +230,15 @@ class HostTableCoordinator extends EventEmitter {
   }
 
   _pickStakeChannel(host) {
-    const chans = host.ctx.channels().filter((c) => (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID) && Number(c.b) === Number(this._selectedStake));
+    let chans = host.ctx.channels().filter((c) => (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID) && Number(c.b) === Number(this._selectedStake));
     if (!chans.length) return null;
-    // Prefer the emptiest by uC as a HINT only (authoritative empty is confirmed from
-    // ps[] after join, never from uC alone).
+    // Skip candidates whose authoritative state already proved invalid this discovery run (so the host
+    // tries a DIFFERENT empty room instead of re-picking the same racy/populated one). If every
+    // candidate has been excluded, fall back to the full set (state may have changed since).
+    const fresh = chans.filter((c) => !this._failedRids.has(c.rid));
+    if (fresh.length) chans = fresh;
+    // Prefer the emptiest by uC as a HINT only (authoritative empty is confirmed from ps[] after
+    // join, never from uC alone).
     return chans.slice().sort((a, b) => (a.uC || 0) - (b.uC || 0))[0];
   }
 
@@ -333,7 +367,9 @@ class HostTableCoordinator extends EventEmitter {
     this._setState(SESSION.STOPPED);
     return { ok: true, results: out };
   }
-  stop() { this._stopped = true; this._setState(SESSION.STOPPING); this.emit('update', this.snapshot()); }
+  // §23 — DỪNG: stop orchestration only. Bumps the generation so every in-flight discovery/join/
+  // rejoin step becomes a no-op; never closes browsers/tabs/sessions (that is a separate owner).
+  stop() { this._stopped = true; this._gen++; this._running = false; this._setState(SESSION.STOPPING); this._log('STOPPED'); this.emit('update', this.snapshot()); }
   isStopped() { return this._stopped; }
 
   // ---- §17/§18 kick detection + follower rejoin ----
@@ -400,6 +436,130 @@ class HostTableCoordinator extends EventEmitter {
     return { ok: !!(res && res.ok), ...res };
   }
 
+  // ---- Phase-3B FINAL: host-first discovery / validation / restart ----
+  _log(event, data = {}) { this.emit('log', { tag: 'PHOM-3B', event, at: this._now(), ...data }); }
+  // Two different uids occupying the same seat index within ONE authoritative table state.
+  _duplicateSeat(ts) { const sits = (ts.seats || []).map((s) => s.sit).filter((s) => s != null); return new Set(sits).size !== sits.length; }
+
+  // §5/§6 — validate the host's candidate from AUTHORITATIVE ps[] only (never JOIN ACK / rs[].uC).
+  // Valid iff: A appears in ps[], AND the table can still seat the controlled group A+B+C, i.e. the
+  // number of free seats is enough for the controlled followers not yet seated.
+  validateHostCandidate() {
+    const host = this.host();
+    const ts = host && host.ctx.tableState();
+    if (!ts) return { valid: false, reason: 'NO_TABLE_STATE' };            // not yet authoritative
+    const hostUid = host.ctx.uid();
+    if (!hostUid) return { valid: false, reason: 'HOST_UID_UNKNOWN' };
+    if (!ts.uids.includes(hostUid)) return { valid: false, reason: 'HOST_NOT_IN_PS' }; // ACK != membership
+    if (this._duplicateSeat(ts)) return { valid: false, reason: 'SEAT_CONFLICT' };
+    const controlled = new Set(this._controlledUids());
+    const controlledSeated = ts.uids.filter((u) => controlled.has(u)).length;
+    const needSeats = 3 - controlledSeated;                                // seats still needed for B/C
+    const freeSeats = this._capacity - ts.playerCount;
+    if (freeSeats < needSeats) return { valid: false, reason: 'INSUFFICIENT_CAPACITY', freeSeats, needSeats };
+    const outsiders = ts.uids.filter((u) => !controlled.has(u));
+    return { valid: true, freeSeats, outsiders };
+  }
+
+  // §12/§14 — reconcile a table that WAS seated: SAME_TABLE holds; else a missing controlled follower
+  // that the (still-valid, host-present) table can re-seat -> C_REJOIN; otherwise -> INVALID (all leave).
+  reconcileSeated() {
+    const v = this.verifySameTable();
+    if (v.result === 'SAME_TABLE') return { verdict: 'SAME_TABLE' };
+    const host = this.host();
+    const ts = host && host.ctx.tableState();
+    const hostUid = host && host.ctx.uid();
+    if (!ts || !hostUid || !ts.uids.includes(hostUid)) return { verdict: 'INVALID', reason: 'HOST_LOST_OR_NO_STATE' };
+    const controlled = new Set(this._controlledUids());
+    const missing = [...controlled].filter((u) => u !== hostUid && !ts.uids.includes(u));
+    const freeSeats = this._capacity - ts.playerCount;
+    if (this._duplicateSeat(ts)) return { verdict: 'INVALID', reason: 'SEAT_CONFLICT' };
+    if (missing.length >= 1 && freeSeats >= missing.length) return { verdict: 'C_REJOIN', missing };
+    return { verdict: 'INVALID', reason: 'CANNOT_RESEAT_CONTROLLED' };
+  }
+
+  async _leaveHost() {
+    const host = this.host();
+    if (!host) return;
+    this._setState(SESSION.LEAVING_TABLE);
+    if (host._joinedRid != null) { this._failedRids.add(host._joinedRid); if (this._failedRids.size > 32) this._failedRids.delete(this._failedRids.values().next().value); }
+    host.state = PSTATE.LEFT; host.confirmedInTable = false; host._joinedRid = null; host.ctx.reset();
+    try { await host.send(buildLeaveFrame(), host.ctx.sendContext()); } catch { /* best effort */ }
+  }
+
+  // §22 — SINGLE orchestrator. Increments the generation token; any in-flight loop from a prior
+  // generation becomes a no-op. §18 — the host-first find-again loop.
+  async runDiscovery() {
+    if (!this._guard()) return this._unauthorized();
+    if (this._running) { this._log('DISCOVERY_ALREADY_RUNNING'); return { ok: true, already: true, gen: this._gen }; }
+    const gen = ++this._gen;
+    this._running = true; this._hostSearchAttempts = 0; this._failedRids.clear();
+    const stale = () => this._gen !== gen || this._stopped;
+    try {
+      while (!stale()) {
+        this._setState(SESSION.HOST_SEARCHING); this._log('HOST_SEARCH', { attempt: this._hostSearchAttempts });
+        const acq = await this.acquireHost();
+        if (stale()) break;
+        if (!acq.ok) {
+          if (++this._hostSearchAttempts >= this._maxHostSearch) { this._setState(SESSION.HOST_ACQUIRE_FAILED); this._log('HOST_SEARCH_EXHAUSTED', {}); return { ok: false, error: acq.error }; }
+          await this._delay(this._discoverBackoffMs); continue;
+        }
+        this._log('CANDIDATE_SELECTED', { rid: acq.candidate && acq.candidate.rid, b: acq.candidate && acq.candidate.b });
+        this._setState(SESSION.HOST_VALIDATING); this._log('HOST_JOIN_SENT', {});
+        const val = await this._awaitHostValidation(gen);
+        if (stale()) break;
+        if (!val.valid) {
+          this._log('CANDIDATE_INVALID', { reason: val.reason });
+          await this._leaveHost();
+          this._setState(SESSION.RESTART_SEARCH);
+          if (++this._hostSearchAttempts >= this._maxHostSearch) { this._setState(SESSION.HOST_ACQUIRE_FAILED); return { ok: false, error: { code: 'PHOM_HOST_SEARCH_EXHAUSTED' } }; }
+          await this._delay(this._discoverBackoffMs); continue;
+        }
+        this._candidateValid = true; this._setState(SESSION.HOST_CANDIDATE_VALID); this._log('HOST_MEMBERSHIP_CONFIRMED', {}); this._log('CANDIDATE_VALID', { freeSeats: val.freeSeats });
+        // §8/§9 — B then C follow the host's table (existing joinFollowers preserves follower order).
+        this._setState(SESSION.FOLLOWERS_JOINING); this._log('FOLLOWER_B_JOIN'); this._log('FOLLOWER_C_JOIN');
+        await this.joinFollowers();
+        if (stale()) break;
+        const same = await this._awaitSameTable(gen);
+        if (stale()) break;
+        if (same) { this._setState(SESSION.SAME_TABLE); this._log('SAME_TABLE', this._sameTableEvidence()); await this.applyReady(); this._setState(SESSION.MONITORING); this._log('READY_POLICY', { policy: this._readyPolicySummary() }); return { ok: true, sameTable: true }; }
+        const rec = this.reconcileSeated();
+        if (rec.verdict === 'INVALID') { this._log('TABLE_INVALIDATED', { reason: rec.reason }); await this.leaveAll(); this._setState(SESSION.RESTART_SEARCH); this._log('RESTART_SEARCH'); await this._delay(this._discoverBackoffMs); continue; }
+        // else partial/other -> loop re-evaluates
+        await this._delay(this._discoverBackoffMs);
+      }
+      return { ok: !this._stopped, stale: this._gen !== gen };
+    } finally { if (this._gen === gen) this._running = false; }
+  }
+
+  async _awaitHostValidation(gen, timeoutMs = 8000) {
+    const t0 = this._now();
+    while (this._gen === gen && !this._stopped && this._now() - t0 < timeoutMs) {
+      const v = this.validateHostCandidate();
+      if (v.valid) return v;
+      if (v.reason && v.reason !== 'NO_TABLE_STATE' && v.reason !== 'HOST_UID_UNKNOWN' && v.reason !== 'HOST_NOT_IN_PS') return v; // decisively invalid
+      await this._delay(200);
+    }
+    const v = this.validateHostCandidate();
+    return v.valid ? v : { valid: false, reason: v.reason || 'HOST_VALIDATION_TIMEOUT' };
+  }
+
+  async _awaitSameTable(gen, timeoutMs = 8000) {
+    const t0 = this._now();
+    while (this._gen === gen && !this._stopped && this._now() - t0 < timeoutMs) {
+      if (this.verifySameTable().result === 'SAME_TABLE') return true;
+      await this._delay(200);
+    }
+    return this.verifySameTable().result === 'SAME_TABLE';
+  }
+
+  _sameTableEvidence() {
+    const v = this.verifySameTable();
+    const host = this.host(); const ts = host && host.ctx.tableState();
+    return { stake: ts ? ts.b : null, playerCount: ts ? ts.playerCount : 0, fingerprint: ts && ts.identity ? ts.identity.value : null, controlled: v.controlled ? v.controlled.map(shortUid) : [] };
+  }
+  _readyPolicySummary() { const rp = this.readyPolicy(); return { playerCount: rp.playerCount, waitingFourth: rp.waitingFourth }; }
+
   // ---- evaluation / state derivation ----
   _evaluate() {
     if (this._stopped) { this.emit('update', this.snapshot()); return; }
@@ -430,6 +590,19 @@ class HostTableCoordinator extends EventEmitter {
         this._setState(SESSION.TABLE_MISMATCH); this._markFollowerMismatch();
       } else if (verdict.result === 'PARTIAL_JOIN') {
         this._setState(SESSION.PARTIAL_JOIN);
+      }
+    }
+
+    // §12/§13/§14 — post-seated MONITORING reconciliation (no sticky table). Once the controlled
+    // group has been seated, every authoritative TABLE_STATE change is reconciled: a recoverable
+    // missing follower (host still present, seat free) => C_REJOINING; an unrecoverable composition
+    // => INVALID_TABLE (the owner then leaves all + restarts host search).
+    if ([SESSION.MONITORING, SESSION.READY_3_OF_3, SESSION.TABLE_FULL, SESSION.WAITING_AUTHORIZED_FOURTH, SESSION.SAME_TABLE, SESSION.C_REJOINING].includes(this._state)) {
+      const rc = this.reconcileSeated();
+      if (rc.verdict === 'INVALID' && this._state !== SESSION.INVALID_TABLE) {
+        this._setState(SESSION.INVALID_TABLE); this._log('TABLE_INVALIDATED', { reason: rc.reason }); this.emit('invalidated', { reason: rc.reason });
+      } else if (rc.verdict === 'C_REJOIN' && this._state !== SESSION.C_REJOINING) {
+        this._setState(SESSION.C_REJOINING); this._log('C_REJOIN_REQUIRED', { missing: (rc.missing || []).map(shortUid) }); this.emit('cRejoinRequired', { missing: rc.missing });
       }
     }
     this.emit('update', this.snapshot());

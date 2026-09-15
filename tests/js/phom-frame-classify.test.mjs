@@ -134,14 +134,16 @@ test('PHASE2: unrelated/malformed pushes are NOT CHANNEL_LIST', () => {
 test('PHASE2: PhomContext binds socketReady/connected/uid + rs from real server frames only', () => {
   const { PhomContext } = require('../../desktop/protocol/phom/phom-context.cjs');
   const serverResp = '[5,{"rs":[{"rid":141,"rn":"Phom#2","gid":8,"b":1000,"Mu":4,"uC":73,"zn":"Simms"},{"rid":142,"b":100,"zn":"Simms"}],"cmd":300}]';
-  const selfId = '[5,{"uid":"Vxq2WWdg","As":{"gold":21062},"u":"Vxq2WWdg","dn":"baycao1002","cmd":100,"id":1}]';
+  // Authoritative game identity (id:0, "<aid>_<n>" — the SAME uid form used in ps[]); the token
+  // form (id:1) must NOT bind (covered in the phom-same-table-live suite).
+  const selfId = '[5,{"uid":"1_644555813","As":{"gold":21062},"u":"1_644555813","dn":"baycao1002","cmd":100,"id":0}]';
   const ctx = new PhomContext({ profileId: 'A' });
   ctx.observe({ raw: serverResp, direction: 'recv', targetId: 't1', url: 'wss://x', now: 1 });
   ctx.observe({ raw: selfId, direction: 'recv', targetId: 't1', url: 'wss://x', now: 2 });
   const g = ctx.get();
   assert.equal(g.socketReady, true);
   assert.equal(g.connected, true);
-  assert.equal(g.uid, 'Vxq2WWdg');
+  assert.equal(g.uid, '1_644555813');
   assert.equal(g.channels.length, 2);
   // a client cmd:300 request (send) must NOT bind the socket by itself.
   const ctx2 = new PhomContext({ profileId: 'B' });

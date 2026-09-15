@@ -52,7 +52,19 @@ class HostSessionManager extends EventEmitter {
     coord.on('hands', (hands) => this.emit('hands', hands));
     coord.on('state', (s) => this.emit('state', s));
     coord.on('kick', (k) => this.emit('kick', k));
+    coord.on('log', (l) => this.emit('log', l));
+    // §14 — autonomous C rejoin: a debounced kick of a confirmed follower triggers an immediate
+    // rejoin to the SAME host table (host never promoted, C never searches).
+    coord.on('kick', ({ id } = {}) => { if (id && this.authorized() && !coord.isStopped()) Promise.resolve(coord.rejoinFollower(id)).catch(() => {}); });
+    // §12/§17 — global invalidation: all leave, then the host restarts discovery (bounded).
+    coord.on('invalidated', async () => {
+      if (!this.authorized() || coord.isStopped()) return;
+      this._restarts = (this._restarts || 0) + 1;
+      try { await coord.leaveAll(); } catch { /* best effort */ }
+      if (this._restarts <= (this._maxRestarts || 20) && !coord.isStopped()) Promise.resolve(coord.runDiscovery()).catch(() => {});
+    });
     this._session = { coord, runIds: new Set(ids) };
+    this._restarts = 0;
     this.emit('update', coord.snapshot());
     return { ok: true, sessionId: coord.sessionId(), hostId: host, state: coord.state() };
   }
@@ -75,6 +87,7 @@ class HostSessionManager extends EventEmitter {
   requestChannels() { return this._guarded((c) => c.requestChannels()); }
   availableStakes() { const c = this._c(); return c && typeof c.availableStakes === 'function' ? c.availableStakes() : []; }
   acquireHost() { return this._guarded((c) => c.acquireHost()); }
+  runDiscovery() { return this._guarded((c) => c.runDiscovery()); }
   joinFollowers() { return this._guarded((c) => c.joinFollowers()); }
   applyReady() { return this._guarded((c) => c.applyReady()); }
   rejoinFollower(id) { return this._guarded((c) => c.rejoinFollower(id)); }
