@@ -54,14 +54,19 @@ class HostSessionManager extends EventEmitter {
     coord.on('kick', (k) => this.emit('kick', k));
     coord.on('log', (l) => this.emit('log', l));
     // §14 — autonomous C rejoin: a debounced kick of a confirmed follower triggers an immediate
-    // rejoin to the SAME host table (host never promoted, C never searches).
-    coord.on('kick', ({ id } = {}) => { if (id && this.authorized() && !coord.isStopped()) Promise.resolve(coord.rejoinFollower(id)).catch(() => {}); });
-    // §12/§17 — global invalidation: all leave, then the host restarts discovery (bounded).
+    // rejoin to the SAME host table. Only when a discovery loop is NOT running (the loop owns joins
+    // while active) — otherwise the two double-drive and flood join/leave. rejoinFollower itself has
+    // cooldown + a REJOINING guard against duplicates.
+    coord.on('kick', ({ id } = {}) => { if (id && this.authorized() && !coord.isStopped() && !coord.isRunning()) Promise.resolve(coord.rejoinFollower(id)).catch(() => {}); });
+    // §12/§17 — global invalidation: all leave, then the host restarts discovery. Debounced + gated
+    // on NOT already running, so a per-frame stream of 'invalidated' can't spam leaveAll/restart.
     coord.on('invalidated', async () => {
-      if (!this.authorized() || coord.isStopped()) return;
+      if (!this.authorized() || coord.isStopped() || coord.isRunning() || this._restartInFlight) return;
+      this._restartInFlight = true;
       this._restarts = (this._restarts || 0) + 1;
       try { await coord.leaveAll(); } catch { /* best effort */ }
-      if (this._restarts <= (this._maxRestarts || 20) && !coord.isStopped()) Promise.resolve(coord.runDiscovery()).catch(() => {});
+      if (this._restarts <= (this._maxRestarts || 20) && !coord.isStopped()) { try { await coord.runDiscovery(); } catch {} }
+      this._restartInFlight = false;
     });
     this._session = { coord, runIds: new Set(ids) };
     this._restarts = 0;

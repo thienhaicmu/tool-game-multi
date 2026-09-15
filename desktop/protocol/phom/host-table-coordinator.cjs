@@ -370,6 +370,7 @@ class HostTableCoordinator extends EventEmitter {
   // §23 — DỪNG: stop orchestration only. Bumps the generation so every in-flight discovery/join/
   // rejoin step becomes a no-op; never closes browsers/tabs/sessions (that is a separate owner).
   stop() { this._stopped = true; this._gen++; this._running = false; this._setState(SESSION.STOPPING); this._log('STOPPED'); this.emit('update', this.snapshot()); }
+  isRunning() { return this._running; } // a discovery loop owns join/ready/rejoin/restart while true
   isStopped() { return this._stopped; }
 
   // ---- §17/§18 kick detection + follower rejoin ----
@@ -563,19 +564,15 @@ class HostTableCoordinator extends EventEmitter {
       try { await rec.send(buildJoinFrame(rid), rec.ctx.sendContext()); } catch (e) { rec.state = PSTATE.ERROR; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; }
       rec._joinedRid = rid;
     };
-    await Promise.all(this.followers().map(joinOne)); // B and C join simultaneously
+    await Promise.all(this.followers().map(joinOne)); // B and C join ONCE, simultaneously
+    // Then just WAIT for the authoritative outcome — do NOT re-issue joins in a tight loop (that
+    // floods the server with join/leave churn). If the three don't converge in time, or the table
+    // can't fit them, return false and let the discovery loop leave-all + restart (bounded, spaced).
     const t0 = this._now();
-    while (this._gen === gen && !this._stopped && this._now() - t0 < 12000) {
+    while (this._gen === gen && !this._stopped && this._now() - t0 < 10000) {
       if (this.verifySameTable().result === 'SAME_TABLE') return true;
-      const rc = this.reconcileSeated();
-      if (rc.verdict === 'INVALID') return false;                    // full / can't fit the third -> all out
-      if (rc.verdict === 'C_REJOIN') {                               // a follower missing but a seat is free
-        for (const uid of (rc.missing || [])) {
-          const rec = this.followers().find((r) => r.ctx.uid() === uid);
-          if (rec && rec.state !== PSTATE.REJOINING) { this._log('C_REJOIN', { id: rec.id }); await joinOne(rec); }
-        }
-      }
-      await this._delay(400);
+      if (this.reconcileSeated().verdict === 'INVALID') return false; // full / can't fit the third -> all out
+      await this._delay(500);
     }
     return this.verifySameTable().result === 'SAME_TABLE';
   }
