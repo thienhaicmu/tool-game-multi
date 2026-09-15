@@ -495,18 +495,27 @@
   // shown until the whole cluster is PHỎM READY. Reflects state only; drives no automation.
   function entryStatusBar() {
     if (entryPhase === ENTRY.READY) return null;
-    const title = entryPhase === ENTRY.LOGIN ? 'CHỜ ĐĂNG NHẬP' : entryPhase === ENTRY.CONFIRMED ? 'ĐÃ LOGIN — CHỜ VÀO GAME PHỎM' : 'ĐANG VÀO GAME PHỎM';
+    // Title + chips reflect the REAL per-run signal (socketReady/connected/uid/channelCount), not the
+    // one-shot entryPhase — so a browser that is already logged in is shown as ĐÃ LOGIN immediately,
+    // never stuck on "CHỜ LOGIN" (BUG #1).
+    const inLobby = SLOTS.filter((sl) => slotInPhom(assign[sl].runId)).length;
+    const loggedIn = SLOTS.filter((sl) => slotLoggedIn(assign[sl].runId)).length;
+    const title = entryPhase === ENTRY.ENTERING ? 'ĐANG VÀO GAME PHỎM'
+      : loggedIn === 3 ? 'ĐÃ LOGIN 3/3 — bấm “VÀO GAME PHỎM”'
+      : `CHỜ ĐĂNG NHẬP (${loggedIn}/3 đã có phiên)`;
     const chips = el('div', { class: 'qa-chips' });
     for (const slot of SLOTS) {
       const runId = assign[slot].runId;
       let cls = 'gray', label = 'CHƯA MỞ';
       const cp = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
+      const p = slotProfile(runId);
       if (cp.browserState && cp.browserState !== 'OPEN' && cp.browserState !== 'NOT_OPEN') { cls = 'red'; label = 'BROWSER LỖI'; }
       else if (!runId) { cls = 'gray'; label = 'CHƯA MỞ'; }
-      else if (entryPhase === ENTRY.LOGIN) { cls = 'yellow'; label = 'CHỜ LOGIN'; }
-      else if (entryPhase === ENTRY.CONFIRMED) { cls = 'blue'; label = 'ĐÃ LOGIN'; }
       else if (assign[slot].entryError) { cls = 'red'; label = 'LỖI VÀO PHỎM'; } // failure isolated to THIS slot; browser stays open
-      else { const ok = slotInPhom(runId); cls = ok ? 'green' : 'yellow'; label = ok ? 'PHỎM READY' : 'ĐANG VÀO PHỎM'; }
+      else if (p && p.socketReady && p.connected && (p.channelCount || 0) > 0) { cls = 'green'; label = 'PHỎM READY'; }
+      else if (p && p.socketReady && p.connected && p.uid != null) { cls = 'blue'; label = 'ĐÃ LOGIN'; }
+      else if (p && p.socketReady && p.connected) { cls = 'yellow'; label = 'ĐANG VÀO PHỎM'; }
+      else { cls = 'yellow'; label = 'CHỜ LOGIN'; }
       chips.appendChild(el('span', { class: 'chip ' + cls }, `${slot} · ${label}`));
     }
     return el('div', { class: 'qa-status' }, el('div', { class: 'section-t', style: 'margin:0 0 4px' }, title), chips);
@@ -605,7 +614,9 @@
     if (entryPhase === ENTRY.ENTERING) {
       primary = el('button', { class: 'btn primary', disabled: true }, 'ĐANG VÀO GAME PHỎM…');
     } else if (ready) {
-      primary = el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!caps.authorized || browserCount() !== 3 || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC');
+      // Only DISABLE while a search is running. Do NOT mute-disable for authorization/browser-count:
+      // that made the button look dead. Those are checked on click and reported with a typed reason.
+      primary = el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: running ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC');
     } else {
       primary = el('button', { class: 'btn primary', title: 'Đưa A/B/C vào game Phỏm (fires vgcg_8 cho slot chưa ở Phỏm)', onclick: enterPhom }, inCount > 0 ? 'VÀO LẠI GAME PHỎM' : 'VÀO GAME PHỎM');
     }
@@ -693,15 +704,15 @@
   // Authoritative "in Phỏm" signal from the game's OWN frames (never fabricated): a slot has
   // entered the Phỏm game when its socket is ready AND the game assigned it a uid. All three
   // must satisfy this before TÌM BÀN unlocks; otherwise the gate stays in ĐANG VÀO GAME PHỎM.
-  function slotInPhom(runId) {
-    const p = (session && session.profiles || []).find((x) => x.id === runId);
-    // In the PHỎM LOBBY = the game socket is bound + connected AND the Phỏm stake channel list has
-    // arrived (channelCount > 0). socketReady alone is too weak: the Simms socket can connect right
-    // after portal login, before the user is actually in the Phỏm lobby — which would light up TÌM
-    // BÀN prematurely (stake list empty). The channel list only arrives in the Phỏm lobby. uid is
-    // NOT required (it only binds on a table JOIN).
-    return !!(p && p.socketReady && p.connected && (p.channelCount || 0) > 0);
-  }
+  function slotProfile(runId) { return (session && session.profiles || []).find((x) => x.id === runId) || null; }
+  // Authoritative "has a valid Phỏm session" signal (BUG #1): the game socket is bound + connected
+  // AND the game assigned a uid. This is proven from the run's OWN frames — never fabricated, never a
+  // process-alive assumption — and is detected as soon as those frames arrive (no fixed timeout).
+  function slotLoggedIn(runId) { const p = slotProfile(runId); return !!(p && p.socketReady && p.connected && p.uid != null); }
+  // In the PHỎM LOBBY = logged in AND the stake channel list has arrived (channelCount > 0). The
+  // channel list only arrives in the Phỏm lobby, so this gates TÌM BÀN (a stake list must exist).
+  function slotInPhom(runId) { const p = slotProfile(runId); return !!(p && p.socketReady && p.connected && (p.channelCount || 0) > 0); }
+  function allLoggedIn() { const ids = SLOTS.map((sl) => assign[sl].runId).filter(Boolean); return ids.length === 3 && ids.every(slotLoggedIn); }
   function allInPhom() {
     const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
     return runIds.length === 3 && runIds.every(slotInPhom);
@@ -1098,6 +1109,12 @@
       await ensurePassiveSession();
       try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
       try { clusterSnap = await api.clusterSnapshot(); } catch {}
+      // BUG #1 latency fix: when a run is logged in (socket+uid) but the coordinator hasn't seen the
+      // stake channel list yet (channelCount 0), the game only re-sends it sparsely — so actively
+      // request it once so PHỎM READY is detected in seconds, not after a long wait. This is a passive
+      // read of the lobby's own list (not orchestration); harmless if it fails (typed, swallowed).
+      const needChannels = SLOTS.some((sl) => { const p = slotProfile(assign[sl].runId); return p && p.socketReady && p.connected && !((p.channelCount || 0) > 0); });
+      if (needChannels && phomSessionStarted) { try { await api.requestChannels(); } catch {} }
       reconcileEntryPhase();
       if (!$('workspace').hidden) renderApp();
     }, 2000);
@@ -1109,8 +1126,10 @@
   // the session so the HOST can request the server channel list, then shows the
   // AUTHORITATIVE distinct stakes. Confirm runs the full flow; Cancel sends nothing more.
   async function openFindTable() {
+    // BUG #2 §9/§10 — never fail silently: report the exact gate reason on click.
     const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
     if (runIds.length !== 3) return note('Cần mở đủ 3 browser trước.', true);
+    if (!caps.authorized) return note('Không thể tìm bàn: môi trường chưa được cấp quyền QA (PHOM_QA_ENABLED=1 và PHOM_QA_AUTHORIZED=1).', true);
     const host = hostId && runIds.includes(hostId) ? hostId : runIds[0];
     hostId = host;
     document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
@@ -1160,16 +1179,23 @@
   // Run the full HOST/follower/Ready/ReJoin flow for a validated stake (§14).
   async function runFindTable(stake) {
     selectedStake = stake;
+    note('Đang tìm bàn (mức cược ' + stake + ')…'); // FIND_TABLE_REQUESTED — immediate visible feedback
     const sel = await api.selectStake(stake);
-    if (sel && sel.ok === false) return note(errText(sel), true);
-    autoFlow = true;
-    // Host-first discovery loop (§ real flow): A joins first, is validated from ps[], and ONLY then
-    // do B then C follow A's table; an invalid candidate/table makes A (or A+B+C) leave and A search
-    // again. The coordinator owns the whole loop + ready policy + C-rejoin; the UI just starts it.
-    const d = await api.discover();
-    if (d && d.ok === false) { autoFlow = false; return note(errText(d), true); }
-    note('HOST đang tìm bàn hợp lệ — A vào trước → kiểm tra → B/C theo A.');
-    refresh();
+    if (sel && sel.ok === false) { note('Không thể chọn mức cược: ' + errText(sel), true); return; }
+    autoFlow = true; renderApp(); // FIND_TABLE_STARTED — button reflects the running search
+    try {
+      // Host-first discovery loop (§ real flow): A joins + validates first, then B/C follow. The
+      // coordinator owns the whole loop; the UI just starts it and reports the typed outcome.
+      const d = await api.discover();
+      if (d && d.ok === false) { note('Không thể tìm bàn: ' + errText(d), true); return; }
+      note('HOST đang tìm bàn hợp lệ — A vào trước → kiểm tra → B/C theo A.');
+    } catch (e) {
+      note('Lỗi tìm bàn: ' + String(e && e.message || e), true);
+    } finally {
+      // ALWAYS clear the running flag so the TÌM BÀN button re-enables — never leave it stuck
+      // "ĐANG CHẠY…" (that made the button look dead on the next click). BUG #2.
+      autoFlow = false; refresh();
+    }
   }
   // Advance the happy path when authoritative state confirms each stage.
   // Re-entrant-safe automatic flow: HOST acquired -> followers join -> Ready policy is

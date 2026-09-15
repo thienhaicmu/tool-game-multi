@@ -138,3 +138,49 @@ test('entry gate never closes a browser on any failure path', () => {
   const confirm = between('function confirmLogin()', 'async function enterPhom()');
   assert.equal(/closeRun|clusterStop|closeBrowsers|kill/.test(confirm), false, 'login-confirm must not close browsers');
 });
+
+// ===== BLOCKING BUG FIXES =====
+
+// BUG #1 — readiness is the run's OWN authoritative signal (socketReady+connected+uid), detected as
+// soon as frames arrive (no fixed 10-min timeout); the status reflects real per-run state.
+test('BUG1: slotLoggedIn = socketReady && connected && uid (authoritative, per run)', () => {
+  const fn = between('function slotLoggedIn(', 'function slotInPhom(');
+  assert.match(fn, /p\.socketReady && p\.connected && p\.uid != null/);
+});
+
+test('BUG1: entry status chips reflect REAL per-run state, not the entryPhase', () => {
+  const bar = between('function entryStatusBar()', 'function slotStatus(');
+  // must key off the live signal…
+  assert.match(bar, /p\.socketReady && p\.connected && p\.uid != null/);
+  assert.match(bar, /p\.channelCount \|\| 0\) > 0/);
+  // …and NOT gate the login label purely on entryPhase === ENTRY.LOGIN anymore
+  assert.equal(/entryPhase === ENTRY\.LOGIN\) \{ cls = 'yellow'; label = 'CHỜ LOGIN'/.test(bar), false);
+});
+
+test('BUG1: detection is prompt — poll actively requests the channel list when socket is up but list missing', () => {
+  const poll = between('function startEntryPolling()', 'function stopEntryPolling()');
+  assert.match(poll, /needChannels/);
+  assert.match(poll, /api\.requestChannels\(\)/);
+  // no fixed multi-minute sleep to become ready
+  assert.equal(/600000|300000|sleep\(\s*[0-9]{6,}/.test(poll), false);
+});
+
+// BUG #2 — TÌM BÀN click always produces an observable action + never leaves the button stuck.
+test('BUG2: runFindTable emits immediate feedback and ALWAYS clears autoFlow (finally)', () => {
+  const fn = between('async function runFindTable(', 'function advanceAutoFlow(');
+  assert.match(fn, /Đang tìm bàn/);            // FIND_TABLE_REQUESTED visible feedback
+  assert.match(fn, /await api\.discover\(\)/); // handler is actually invoked
+  assert.match(fn, /finally \{[^]*autoFlow = false/); // never stuck "ĐANG CHẠY…"
+  assert.match(fn, /Không thể tìm bàn/);       // typed error, not silent
+});
+
+test('BUG2: TÌM BÀN button is disabled ONLY while running (not mute-disabled by auth/browser count)', () => {
+  const bar = between('function commandToolbar(s)', 'function confirmLogin(');
+  assert.match(bar, /disabled: running \? true : null, onclick: openFindTable/);
+});
+
+test('BUG2: openFindTable reports the authorization gate with a typed note (no silent failure)', () => {
+  const fn = between('async function openFindTable()', 'async function runFindTable(');
+  assert.match(fn, /caps\.authorized/);
+  assert.match(fn, /Không thể tìm bàn: môi trường chưa được cấp quyền QA/);
+});
