@@ -683,10 +683,12 @@
   // must satisfy this before TÌM BÀN unlocks; otherwise the gate stays in ĐANG VÀO GAME PHỎM.
   function slotInPhom(runId) {
     const p = (session && session.profiles || []).find((x) => x.id === runId);
-    // In Phỏm = the game socket is bound (server-evidence frame observed) + connected. uid is NOT
-    // required here: it only arrives on a table JOIN (the lobby doesn't push cmd:100 reliably), so
-    // requiring it made the entry gate hang even though A/B/C are already logged in at the lobby.
-    return !!(p && p.socketReady && p.connected);
+    // In the PHỎM LOBBY = the game socket is bound + connected AND the Phỏm stake channel list has
+    // arrived (channelCount > 0). socketReady alone is too weak: the Simms socket can connect right
+    // after portal login, before the user is actually in the Phỏm lobby — which would light up TÌM
+    // BÀN prematurely (stake list empty). The channel list only arrives in the Phỏm lobby. uid is
+    // NOT required (it only binds on a table JOIN).
+    return !!(p && p.socketReady && p.connected && (p.channelCount || 0) > 0);
   }
   function allInPhom() {
     const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);

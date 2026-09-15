@@ -728,6 +728,9 @@ class HostTableCoordinator extends EventEmitter {
         state: rec.state, uid: shortUid(c.uid), aid: c.aid, socketReady: c.socketReady, connected: c.connected,
         seat: c.seat, ready: c.ready, desiredReady: rp.desired.get(rec.id) === true,
         playerCount: c.tableState ? c.tableState.playerCount : 0,
+        // channelCount > 0 means this run received the Phỏm stake list (CHANNEL_LIST) — i.e. it is in
+        // the Phỏm LOBBY, not merely logged in at the portal (where the socket may connect early).
+        channelCount: Array.isArray(c.channels) ? c.channels.length : 0,
         confirmedInTable: rec.confirmedInTable, rejoinAttempts: rec.rejoinAttempts, lastError: rec.lastError || null,
       };
     });
