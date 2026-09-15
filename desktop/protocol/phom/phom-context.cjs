@@ -145,6 +145,13 @@ class PhomContext extends EventEmitter {
       ready: this.ready(),
       joinedChannel: this._joinedChannel,
       physicalTableIdentity: this._tableState ? this._tableState.identity : null,
+      // Phase-3A derivations from the authoritative TABLE_STATE (see buildTableState). The
+      // protocol carries no server-assigned table id in TABLE_STATE, so the physical-table
+      // reference is the PLAYER-SET FINGERPRINT (physicalTableIdentity) — never a rid guess.
+      selectedStake: this._tableState ? this._tableState.b : null,
+      ownSeat: this.seat(),
+      players: this._tableState ? this._tableState.seats : [],
+      playerCount: this._tableState ? this._tableState.playerCount : 0,
       lastFrameAt: this._lastFrameAt,
     };
   }

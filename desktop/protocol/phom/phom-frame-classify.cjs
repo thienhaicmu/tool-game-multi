@@ -87,8 +87,19 @@ function classifyPhomFrame(raw) {
 
   // ---- client request frames (no server cmd) ----
   if (op === OP.JOIN) {
-    // [3,"Simms",<rid>,"<pwd>"] — the numeric arg is a stake/CHANNEL code, NOT a
-    // physical table id (server assigns the physical table). Password stays opaque.
+    // op 3 has TWO live-captured shapes distinguished by element [1]:
+    //   client request  [3,"Simms",139,""]     — [1] is the zone STRING; [2] the join code
+    //   server response  [3,true,0,-1,null]     — [1] is a BOOLEAN success flag
+    // The server ack alone is NOT proof of table membership — the authoritative proof is the
+    // ensuing TABLE_STATE ps[] push carrying own uid + sit. So neither op-3 shape is server
+    // evidence for socket binding (only TABLE_STATE / other pushes are).
+    if (typeof json[1] === 'boolean') {
+      return finalize(out, { type: 'JOIN_ACCEPTED', accepted: json[1] });
+    }
+    // The numeric arg is the SmartFoxServer room-join code (live capture: 139). It is distinct
+    // from the lobby stake-bucket rids in CHANNEL_LIST rs[] (141/142/320872 observed same
+    // session) — physical membership is confirmed by TABLE_STATE, never by this send. Password
+    // stays opaque.
     return finalize(out, {
       type: 'JOIN_REQUEST',
       channel: Number.isFinite(json[2]) ? json[2] : (json[2] != null ? Number(json[2]) : null),
@@ -151,6 +162,7 @@ function finalize(out, extra) {
     // request-frame fields
     channel: extra.channel !== undefined ? extra.channel : undefined,
     hasPassword: extra.hasPassword !== undefined ? extra.hasPassword : undefined,
+    accepted: extra.accepted !== undefined ? extra.accepted : undefined,
     // identity / table fields (surfaced verbatim; undefined when absent)
     aid: p.aid !== undefined ? p.aid : undefined,
     uid: extra.uid !== undefined ? extra.uid : (p.uid !== undefined ? p.uid : undefined),
