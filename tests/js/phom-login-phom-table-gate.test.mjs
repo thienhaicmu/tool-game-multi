@@ -90,14 +90,14 @@ test('PHOM_READY requires the authoritative 3/3 in-Phỏm signal (socketReady+co
   assert.match(rec, /entryPhase = ENTRY\.READY/);
 });
 
-test('TÌM BÀN is enabled ONLY at READY (not after login-confirm, not while entering)', () => {
-  assert.match(js, /function ctaEnabled\(\)[^]*entryPhase === ENTRY\.READY/);
-  // the primary CTA maps each phase to the right button; VÀO GAME PHỎM sits between login and table.
-  const bar = between('function commandToolbar(s)', 'function confirmLogin()');
-  assert.match(bar, /entryPhase === ENTRY\.LOGIN[^]*ĐÃ LOGIN — TIẾP TỤC/);
-  assert.match(bar, /entryPhase === ENTRY\.CONFIRMED[^]*VÀO GAME PHỎM/);
+test('TÌM BÀN is enabled ONLY when in the Phỏm lobby (ready); otherwise (re)enter Phỏm', () => {
+  // The CTA is derived from the REAL live signal (allInPhom), not a one-shot phase, so it recovers
+  // for repeated use / after a logout. TÌM BÀN shows only when ready; else the (re)enter button.
+  const bar = between('function commandToolbar(s)', 'function confirmLogin(');
+  assert.match(bar, /const ready = allInPhom\(\)/);
   assert.match(bar, /entryPhase === ENTRY\.ENTERING[^]*ĐANG VÀO GAME PHỎM/);
-  assert.match(bar, /TÌM BÀN · CHỌN CƯỢC/);
+  assert.match(bar, /ready[^]*TÌM BÀN · CHỌN CƯỢC/);
+  assert.match(bar, /VÀO GAME PHỎM/); // (re)enter when not in Phỏm
 });
 
 test('stake appears ONLY in the Find-Table modal (never on Screen 1, never before TÌM BÀN)', () => {

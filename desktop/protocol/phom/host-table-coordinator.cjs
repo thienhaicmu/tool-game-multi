@@ -628,15 +628,22 @@ class HostTableCoordinator extends EventEmitter {
   }
   _readyPolicySummary() { const rp = this.readyPolicy(); return { playerCount: rp.playerCount, waitingFourth: rp.waitingFourth }; }
 
-  // §8/§17 — lobby reset. If we HAD a host table but now no profile has any table state (all back in
-  // the lobby) and no discovery loop is running, clear stale membership/identity and return to a clean
-  // LOBBY_WAITING state so a fresh TÌM BÀN starts cleanly (no sticky BÀN / MISMATCH / HOST_LOST).
+  // §8/§17 — lobby reset (recovery for repeated use). Whenever ALL controlled runs are back in the
+  // Phỏm LOBBY (have the channel list, no table state) and no discovery loop is running, clear any
+  // stale membership/identity/PSTATE and return to a clean LOBBY_WAITING — so a fresh TÌM BÀN always
+  // works, even after a previous partial/failed attempt (no sticky BÀN / MISMATCH / ĐÃ RỜI / HOST_LOST).
   _maybeLobbyReset() {
     if (this._running) return false;
-    if (!this._hostTableIdentity) return false;
-    if ([...this._profiles.values()].some((r) => r.ctx.tableState())) return false;
+    const profs = [...this._profiles.values()];
+    if (!profs.length) return false;
+    const allInLobby = profs.every((r) => { const g = r.ctx.get(); return g.socketReady && g.connected && Array.isArray(g.channels) && g.channels.length > 0 && !g.tableState; });
+    if (!allInLobby) return false;
+    const alreadyClean = (this._state === SESSION.LOBBY_WAITING || this._state === SESSION.IDLE)
+      && !this._hostTableIdentity
+      && profs.every((r) => r.state === PSTATE.IDLE || r.state === PSTATE.DISCONNECTED);
+    if (alreadyClean) return false;
     this._hostTableIdentity = null; this._failedRids.clear();
-    for (const r of this._profiles.values()) {
+    for (const r of profs) {
       r.confirmedInTable = false; r._joinedRid = null; r.missingStreak = 0;
       if (r.state !== PSTATE.DISCONNECTED) r.state = PSTATE.IDLE;
     }

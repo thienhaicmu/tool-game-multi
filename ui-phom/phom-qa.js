@@ -596,20 +596,22 @@
     const running = autoFlow;
     // §1-§4 — the primary CTA is DRIVEN BY THE ENTRY PHASE. Each step is an explicit user
     // action; TÌM BÀN is unavailable until the user has confirmed login AND entered Phỏm.
+    // The primary CTA reflects the REAL live state (not a one-shot phase), so it stays usable across
+    // repeated attempts and recovers after a logout/drop: in the Phỏm lobby -> TÌM BÀN; otherwise ->
+    // (re)enter Phỏm. This fixes "chỉ dùng được lần đầu" and "logout -> không có nút vào lại".
+    const ready = allInPhom();
+    const inCount = SLOTS.filter((sl) => slotInPhom(assign[sl].runId)).length;
     let primary;
-    if (entryPhase === ENTRY.LOGIN) {
-      primary = el('button', { class: 'btn primary', title: 'Xác nhận đã đăng nhập cả 3 browser', onclick: confirmLogin }, 'ĐÃ LOGIN — TIẾP TỤC');
-    } else if (entryPhase === ENTRY.CONFIRMED) {
-      primary = el('button', { class: 'btn primary', title: 'Đưa A/B/C vào game Phỏm (chưa tìm bàn)', onclick: enterPhom }, 'VÀO GAME PHỎM');
-    } else if (entryPhase === ENTRY.ENTERING) {
+    if (entryPhase === ENTRY.ENTERING) {
       primary = el('button', { class: 'btn primary', disabled: true }, 'ĐANG VÀO GAME PHỎM…');
+    } else if (ready) {
+      primary = el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!caps.authorized || browserCount() !== 3 || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC');
     } else {
-      primary = el('button', { class: 'btn primary', title: 'Mở hộp chọn mức cược rồi tự tìm bàn', disabled: (!ctaEnabled(s) || running) ? true : null, onclick: openFindTable }, running ? 'ĐANG CHẠY…' : 'TÌM BÀN · CHỌN CƯỢC');
+      primary = el('button', { class: 'btn primary', title: 'Đưa A/B/C vào game Phỏm (fires vgcg_8 cho slot chưa ở Phỏm)', onclick: enterPhom }, inCount > 0 ? 'VÀO LẠI GAME PHỎM' : 'VÀO GAME PHỎM');
     }
-    const phaseChip = entryPhase === ENTRY.LOGIN ? el('span', { class: 'chip yellow', style: 'margin-left:6px' }, 'CHỜ ĐĂNG NHẬP A/B/C')
-      : entryPhase === ENTRY.CONFIRMED ? el('span', { class: 'chip blue', style: 'margin-left:6px' }, 'ĐÃ LOGIN — CHỜ VÀO PHỎM')
-      : entryPhase === ENTRY.ENTERING ? el('span', { class: 'chip yellow', style: 'margin-left:6px' }, 'ĐANG VÀO GAME PHỎM')
-      : el('span', { class: 'chip green', style: 'margin-left:6px' }, 'PHỎM READY');
+    const phaseChip = entryPhase === ENTRY.ENTERING ? el('span', { class: 'chip yellow', style: 'margin-left:6px' }, 'ĐANG VÀO GAME PHỎM')
+      : ready ? el('span', { class: 'chip green', style: 'margin-left:6px' }, 'PHỎM READY')
+      : el('span', { class: 'chip blue', style: 'margin-left:6px' }, `Ở PHỎM ${inCount}/3 — vào game`);
     return el('div', { class: 'qa-cmd' },
       primary,
       el('button', { class: 'btn', onclick: () => clusterFocus('A') }, 'Focus A'),
@@ -665,6 +667,7 @@
     note('Đang vào game Phỏm (action vgcg_8)… chờ tín hiệu game.');
     for (const sl of SLOTS) {
       const runId = assign[sl].runId; if (!runId) continue;
+      if (slotInPhom(runId)) continue; // already in the Phỏm lobby — don't disturb it
       try { const r = await api.enterGame(runId); if (r && r.ok === false) assign[sl].entryError = errText(r); }
       catch (e) { assign[sl].entryError = String(e && e.message || e); }
     }
@@ -675,7 +678,16 @@
   // just a friendly message; the browsers stay open so the user can retry / finish manually.
   function armEntryTimeout() {
     if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
-    entryTimer = setTimeout(() => { entryTimer = null; if (entryPhase === ENTRY.ENTERING) note('PHOM_ENTRY_TIMEOUT — chưa xác nhận vào Phỏm. Trình duyệt vẫn mở; hãy thử lại hoặc vào Phỏm thủ công.', true); }, 60000);
+    entryTimer = setTimeout(() => {
+      entryTimer = null;
+      if (entryPhase === ENTRY.ENTERING) {
+        // Don't hang on "ĐANG VÀO…": revert so the (re)enter button is usable again (e.g. a browser
+        // was logged out and needs manual re-login before vgcg_8 can enter Phỏm).
+        entryPhase = ENTRY.CONFIRMED;
+        note('PHOM_ENTRY_TIMEOUT — chưa vào được Phỏm. Nếu browser bị logout hãy đăng nhập lại rồi bấm VÀO GAME PHỎM.', true);
+        renderApp();
+      }
+    }, 30000);
   }
 
   // Authoritative "in Phỏm" signal from the game's OWN frames (never fabricated): a slot has
@@ -697,14 +709,17 @@
   // Called from the session subscription: promote ENTERING → READY only on the authoritative
   // 3/3 in-Phỏm signal. Never auto-advances past READY (TÌM BÀN stays a user action).
   function reconcileEntryPhase() {
-    // Auto-advance to READY from ANY pre-READY phase once the authoritative 3/3 in-Phỏm signal holds
-    // (socket bound + connected). The passive session is auto-started when the browsers open, so if
-    // A/B/C are already logged in and in Phỏm the tool reflects it immediately — no manual clicks.
-    if (entryPhase !== ENTRY.READY && allInPhom()) {
-      const was = entryPhase;
-      entryPhase = ENTRY.READY; entrySub = null;
-      if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
-      if (was !== ENTRY.READY) note('A/B/C đã vào game Phỏm. Có thể bấm “TÌM BÀN · CHỌN CƯỢC”.');
+    // Track the REAL 3/3 in-Phỏm signal both ways (auto-detect + recover): advance to READY when all
+    // three are in the Phỏm lobby; revert out of READY when a slot drops/logs out so the (re)enter CTA
+    // reappears. socketReady+channelList is authoritative (not fakeable); no manual clicks required.
+    if (allInPhom()) {
+      if (entryPhase !== ENTRY.READY) {
+        entryPhase = ENTRY.READY; entrySub = null;
+        if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
+        note('A/B/C đã vào game Phỏm. Có thể bấm “TÌM BÀN · CHỌN CƯỢC”.');
+      }
+    } else if (entryPhase === ENTRY.READY) {
+      entryPhase = ENTRY.CONFIRMED; // a slot left Phỏm — allow (re)enter
     }
   }
 

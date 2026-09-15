@@ -109,7 +109,9 @@ test('DỪNG is orchestration-only; browser close is a separate explicit action'
   // Explicit entry gate (LOGIN → CONFIRMED → ENTERING → READY): the user drives each step.
   assert.match(js, /const ENTRY = \{ LOGIN: 'LOGIN', CONFIRMED: 'CONFIRMED', ENTERING: 'ENTERING', READY: 'READY' \}/);
   assert.match(js, /entryPhase = ENTRY\.LOGIN/);
-  assert.match(js, /ĐÃ LOGIN — TIẾP TỤC/);
+  // Entry is auto-detected from the real in-Phỏm signal (no manual login-confirm click); the CTA
+  // (re)enters Phỏm when not ready and offers TÌM BÀN when ready.
+  assert.match(js, /const ready = allInPhom\(\)/);
   assert.match(js, /VÀO GAME PHỎM/);
   // TÌM BÀN unlocks only at READY (never on login-confirm alone).
   assert.match(js, /function ctaEnabled\(\)[^]*entryPhase === ENTRY\.READY/);
