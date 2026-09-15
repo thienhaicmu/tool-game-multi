@@ -73,7 +73,7 @@ test('the Phỏm game id `vgcg_8` is the verified entry action id (not vgmn_221,
 
 test('READY is set ONLY by the authoritative in-Phỏm signal (never by the entry action firing)', () => {
   const rec = between('function reconcileEntryPhase(', 'async function openCluster(');
-  assert.match(rec, /entryPhase === ENTRY\.ENTERING && allInPhom\(\)/);
+  assert.match(rec, /allInPhom\(\)/); // READY is gated on the authoritative in-Phỏm signal
   assert.match(rec, /entryPhase = ENTRY\.READY/);
   const inPhom = between('function slotInPhom(', 'function allInPhom(');
   // Authoritative in-Phỏm signal = a bound game socket (server-evidence frame) + connected. uid is
@@ -86,7 +86,7 @@ test('PHOM_READY requires the authoritative 3/3 in-Phỏm signal (socketReady+co
   const inPhom = between('function slotInPhom(', 'function reconcileEntryPhase(');
   assert.match(inPhom, /p\.socketReady && p\.connected/);
   const rec = between('function reconcileEntryPhase(', 'async function openCluster()');
-  assert.match(rec, /entryPhase === ENTRY\.ENTERING && allInPhom\(\)/);
+  assert.match(rec, /allInPhom\(\)/); // READY is gated on the authoritative in-Phỏm signal
   assert.match(rec, /entryPhase = ENTRY\.READY/);
 });
 

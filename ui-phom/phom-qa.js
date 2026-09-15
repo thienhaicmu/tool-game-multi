@@ -695,10 +695,14 @@
   // Called from the session subscription: promote ENTERING → READY only on the authoritative
   // 3/3 in-Phỏm signal. Never auto-advances past READY (TÌM BÀN stays a user action).
   function reconcileEntryPhase() {
-    if (entryPhase === ENTRY.ENTERING && allInPhom()) {
+    // Auto-advance to READY from ANY pre-READY phase once the authoritative 3/3 in-Phỏm signal holds
+    // (socket bound + connected). The passive session is auto-started when the browsers open, so if
+    // A/B/C are already logged in and in Phỏm the tool reflects it immediately — no manual clicks.
+    if (entryPhase !== ENTRY.READY && allInPhom()) {
+      const was = entryPhase;
       entryPhase = ENTRY.READY; entrySub = null;
       if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
-      note('A/B/C đã vào game Phỏm. Có thể bấm “TÌM BÀN · CHỌN CƯỢC”.');
+      if (was !== ENTRY.READY) note('A/B/C đã vào game Phỏm. Có thể bấm “TÌM BÀN · CHỌN CƯỢC”.');
     }
   }
 
@@ -1052,6 +1056,37 @@
   const step = (fn, ok) => async () => { const res = await fn(); if (res && res.ok === false) note(errText(res), true); else if (ok) note(ok); refresh(); };
   async function refresh() { try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {} renderApp(); }
 
+  // Start the PASSIVE host session as soon as the 3 browsers are open, so the coordinator observes
+  // each run's frames immediately (socketReady/uid/table state, live monitor). This is what lets the
+  // tool reflect the real browser state without waiting for a manual VÀO GAME PHỎM click. It performs
+  // NO orchestration (no channel request / join / ready) — that stays a user action (TÌM BÀN).
+  async function ensurePassiveSession() {
+    if (phomSessionStarted) return;
+    const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
+    if (runIds.length !== 3) return;
+    const prof = selectedProfile();
+    const hostSlot = (prof && prof.defaultHostSlot) || 'A';
+    const host = (assign[hostSlot] && assign[hostSlot].runId) || runIds[0];
+    hostId = host;
+    try { const start = await api.startSession({ runIds, hostId: host }); if (start && start.ok !== false) phomSessionStarted = true; } catch {}
+  }
+
+  // Poll the session while on Screen 2 so the entry gate + monitor update promptly even before any
+  // push event arrives (the coordinator only pushes on frames; at an idle lobby that can be sparse).
+  let entryPollTimer = null;
+  function startEntryPolling() {
+    if (entryPollTimer) return;
+    entryPollTimer = setInterval(async () => {
+      if (uiState !== UI.CONTROL) return;
+      await ensurePassiveSession();
+      try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
+      try { clusterSnap = await api.clusterSnapshot(); } catch {}
+      reconcileEntryPhase();
+      if (!$('workspace').hidden) renderApp();
+    }, 2000);
+  }
+  function stopEntryPolling() { if (entryPollTimer) { clearInterval(entryPollTimer); entryPollTimer = null; } }
+
   // Primary CTA: start the session over the 3 opened runs, pick HOST + stake, then run
   // §13 — Find-Table: the ONLY place a stake is chosen. Opens a compact modal, starts
   // the session so the HOST can request the server channel list, then shows the
@@ -1147,6 +1182,7 @@
     if (clusterSnap && (clusterSnap.openBrowserCount || 0) >= 3 && clusterSnap.stopped !== true) {
       for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
       uiState = UI.CONTROL; renderApp();
+      await ensurePassiveSession(); startEntryPolling();
       note('Cụm đã mở sẵn — dùng lại 3 trình duyệt hiện có (không mở lại).');
       return;
     }
@@ -1184,7 +1220,10 @@
       // an explicit user action (LOGIN → VÀO GAME PHỎM → TÌM BÀN).
       entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
       uiState = UI.CONTROL; renderApp();
-      note(`Đã mở ${open.opened || 0}/3 trình duyệt. Đăng nhập A/B/C rồi bấm “ĐÃ LOGIN — TIẾP TỤC”.`);
+      // Observe the browsers immediately (auto-start passive session + poll) so the gate reflects
+      // real state and advances to READY on its own once A/B/C are in Phỏm.
+      await ensurePassiveSession(); startEntryPolling();
+      note(`Đã mở ${open.opened || 0}/3 trình duyệt. Đăng nhập A/B/C — tool sẽ tự nhận khi vào Phỏm.`);
     } catch (e) {
       // A failed open NEVER closes the browsers that DID open (§6/§14). Land on Screen 2
       // if anything opened so the user keeps those browsers; only fall back to ERROR when
