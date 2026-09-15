@@ -566,12 +566,14 @@ class HostTableCoordinator extends EventEmitter {
     };
     await Promise.all(this.followers().map(joinOne)); // B and C join ONCE, simultaneously
     // Then just WAIT for the authoritative outcome — do NOT re-issue joins in a tight loop (that
-    // floods the server with join/leave churn). If the three don't converge in time, or the table
-    // can't fit them, return false and let the discovery loop leave-all + restart (bounded, spaced).
-    const t0 = this._now();
+    // floods the server with join/leave churn). Per-browser TABLE_STATE frames arrive out of order,
+    // so require INVALID to PERSIST across a few consecutive reads before bailing (avoids a false
+    // restart on a transient/stale read — the "desync" case). On timeout / persistent INVALID the
+    // discovery loop leaves-all + restarts (bounded, spaced).
+    const t0 = this._now(); let invalidStreak = 0;
     while (this._gen === gen && !this._stopped && this._now() - t0 < 10000) {
       if (this.verifySameTable().result === 'SAME_TABLE') return true;
-      if (this.reconcileSeated().verdict === 'INVALID') return false; // full / can't fit the third -> all out
+      if (this.reconcileSeated().verdict === 'INVALID') { if (++invalidStreak >= 3) return false; } else invalidStreak = 0;
       await this._delay(500);
     }
     return this.verifySameTable().result === 'SAME_TABLE';
