@@ -92,6 +92,10 @@ class PhomContext extends EventEmitter {
     if (cls.type === 'CHANNEL_LIST' && Array.isArray(cls.rs)) {
       this._channels = cls.rs.map(normalizeChannel).filter(Boolean);
       this._channelsAt = now;
+      // Receiving the stake channel list means this profile is in the LOBBY, not seated (the client
+      // never polls the channel list while at a table). Clear any stale table membership so returning
+      // to the lobby resets state — no sticky BÀN / SAME_TABLE / MISMATCH after leaving a table.
+      if (this._tableState) { this._tableState = null; this._tableStateAt = now; }
       changed = true;
     }
 

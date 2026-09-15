@@ -592,9 +592,26 @@ class HostTableCoordinator extends EventEmitter {
   }
   _readyPolicySummary() { const rp = this.readyPolicy(); return { playerCount: rp.playerCount, waitingFourth: rp.waitingFourth }; }
 
+  // §8/§17 — lobby reset. If we HAD a host table but now no profile has any table state (all back in
+  // the lobby) and no discovery loop is running, clear stale membership/identity and return to a clean
+  // LOBBY_WAITING state so a fresh TÌM BÀN starts cleanly (no sticky BÀN / MISMATCH / HOST_LOST).
+  _maybeLobbyReset() {
+    if (this._running) return false;
+    if (!this._hostTableIdentity) return false;
+    if ([...this._profiles.values()].some((r) => r.ctx.tableState())) return false;
+    this._hostTableIdentity = null; this._failedRids.clear();
+    for (const r of this._profiles.values()) {
+      r.confirmedInTable = false; r._joinedRid = null; r.missingStreak = 0;
+      if (r.state !== PSTATE.DISCONNECTED) r.state = PSTATE.IDLE;
+    }
+    this._setState(SESSION.LOBBY_WAITING); this._log('LOBBY_RESET');
+    return true;
+  }
+
   // ---- evaluation / state derivation ----
   _evaluate() {
     if (this._stopped) { this.emit('update', this.snapshot()); return; }
+    if (this._maybeLobbyReset()) { this.emit('update', this.snapshot()); return; }
     // host acquisition confirmation
     if ([SESSION.HOST_WAITING_CONFIRMATION, SESSION.HOST_JOIN_SENT, SESSION.HOST_SEARCHING].includes(this._state)) {
       this._confirmHostAcquired();

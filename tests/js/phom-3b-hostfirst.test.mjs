@@ -223,6 +223,22 @@ test('CASE1 e2e discovery: A -> B -> C sequential => SAME_TABLE', async () => {
   assert.deepEqual(coord.host().ctx.tableState().uids, [UID.A, UID.B, UID.C].sort());
 });
 
+// LOBBY RESET — returning to the Phỏm lobby (CHANNEL_LIST arrives) clears stale table state so a
+// fresh TÌM BÀN starts clean (no sticky BÀN / SAME_TABLE / MISMATCH / HOST_LOST).
+test('lobby reset: CHANNEL_LIST after leaving clears stale table state', () => {
+  const coord = mkCoord(); ident(coord);
+  coord.ingest('A', frame(tableState(100, [[0, A], [1, B], [2, C]])));
+  coord.ingest('B', frame(tableState(100, [[0, A], [1, B], [2, C]])));
+  coord.ingest('C', frame(tableState(100, [[0, A], [1, B], [2, C]])));
+  coord._hostTableIdentity = { channelRid: 500, selectedStake: 100 }; // simulate an acquired table
+  assert.equal(coord.verifySameTable().result, 'SAME_TABLE');
+  const chan = '[5,{"rs":[{"rid":500,"b":100,"uC":0,"zn":"Simms","gid":8}],"cmd":300}]';
+  coord.ingest('A', frame(chan)); coord.ingest('B', frame(chan)); coord.ingest('C', frame(chan));
+  assert.equal(coord.state(), SESSION.LOBBY_WAITING);
+  assert.equal(coord.hostTableIdentity(), null);
+  assert.notEqual(coord.verifySameTable().result, 'SAME_TABLE');
+});
+
 // TEST 18 — C kick + outsider invalidation while rejoining => INVALID takes precedence (safe).
 test('T18 outsider invalidation during C rejoin is reconciled to INVALID', () => {
   const coord = mkCoord(); seatAll(coord);
