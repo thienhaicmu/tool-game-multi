@@ -18,7 +18,7 @@
   const BUSY = ['SEARCHING', 'JOINING', 'RECONNECTING', 'LEAVING'];
   const sid = (v) => (v == null ? null : String(v));
 
-  function create() { return { searchingBrowserId: null, sharedRid: null, sharedRidOwner: null }; }
+  function create() { return { searchingBrowserId: null, sharedRid: null, sharedRidOwner: null, sharedStake: null }; }
 
   // Decide what a FIND click does for a browser (§8/§10/§31). If a shared RID already exists the click
   // JOINs it — never a second matchmaking. Otherwise it starts a REAL search and locks the cluster,
@@ -36,7 +36,7 @@
     const id = sid(browserId);
     const next = { ...state };
     if (next.searchingBrowserId === id) next.searchingBrowserId = null;
-    if (result && result.ok && result.rid != null && next.sharedRid == null) { next.sharedRid = result.rid; next.sharedRidOwner = id; }
+    if (result && result.ok && result.rid != null && next.sharedRid == null) { next.sharedRid = result.rid; next.sharedRidOwner = id; if (result.stake != null) next.sharedStake = result.stake; }
     return next;
   }
 
@@ -60,7 +60,7 @@
     }
     if (next.sharedRid != null && list.length) {
       const anyJoined = list.some((x) => x.manualState === 'JOINED' && Number(x.rid) === Number(next.sharedRid));
-      if (!anyJoined) { next.sharedRid = null; next.sharedRidOwner = null; }
+      if (!anyJoined) { next.sharedRid = null; next.sharedRidOwner = null; next.sharedStake = null; }
     }
     return next;
   }
@@ -73,6 +73,29 @@
   function canRejoin(state, b) { return !!(b && b.canRejoin) && !['JOINING', 'RECONNECTING'].includes(b.manualState); }
   function canLeave(state, b) { return !!b && b.manualState === 'JOINED'; }
 
+  // PHASE 6.2.2 — the ONE business action for a browser card, from authoritative state (§2/§3/§5/§13):
+  //   chromium closed            → MỞ CHROMIUM
+  //   not in game (entering)     → ĐANG VÀO GAME…  (busy)
+  //   not in game                → VÀO GAME
+  //   in game, joined shared RID → THOÁT GAME
+  //   in game, joining/searching → ĐANG VÀO BÀN… / ĐANG TÌM…  (busy)
+  //   in game, shared RID exists → VÀO BÀN        (JOIN the shared RID — NEVER a new discovery, §3)
+  //   in game, no shared RID     → TÌM BÀN        (real discovery)
+  // ctx = { opened, inGame, entering }.
+  function browserAction(state, b, ctx) {
+    ctx = ctx || {};
+    if (!ctx.opened) return { action: 'CLOSED', label: 'MỞ CHROMIUM' };
+    if (ctx.entering) return { action: 'ENTERING', label: 'ĐANG VÀO GAME…', busy: true };
+    if (!ctx.inGame) return { action: 'ENTER_GAME', label: 'VÀO GAME' };
+    const s = b && b.manualState;
+    const joinedShared = state.sharedRid != null && s === 'JOINED' && Number(b && b.rid) === Number(state.sharedRid);
+    if (joinedShared) return { action: 'LEAVE', label: 'THOÁT GAME' };
+    if (s === 'JOINING' || s === 'RECONNECTING') return { action: 'JOINING', label: 'ĐANG VÀO BÀN…', busy: true };
+    if (s === 'SEARCHING') return { action: 'SEARCHING', label: '🔍 ĐANG TÌM…', busy: true };
+    if (state.sharedRid != null) return { action: 'JOIN_SHARED', label: 'VÀO BÀN', rid: state.sharedRid };
+    return { action: 'FIND', label: 'TÌM BÀN' };
+  }
+
   // The FIND button label reflects the cluster state (§10/§28/§30): searching / join-shared / find.
   function findLabel(state, b) {
     if (b && b.manualState === 'SEARCHING') return '🔍 ĐANG TÌM BÀN…';
@@ -82,5 +105,5 @@
   // The prefill RID for a browser's Room/RID input: its own rid, else the shared rid (§14).
   function prefillRid(state, b) { if (b && b.rid != null) return String(b.rid); if (state.sharedRid != null) return String(state.sharedRid); return ''; }
 
-  return { create, onFindStart, onFindResult, onJoinResult, reconcile, canFind, canJoin, canRejoin, canLeave, findLabel, prefillRid, BUSY };
+  return { create, onFindStart, onFindResult, onJoinResult, reconcile, canFind, canJoin, canRejoin, canLeave, findLabel, prefillRid, browserAction, BUSY };
 });

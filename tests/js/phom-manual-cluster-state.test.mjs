@@ -127,6 +127,20 @@ test('find label + RID prefill reflect the cluster state', () => {
   assert.equal(S.prefillRid(st, B('2', 'JOINED', { rid: 139 })), '139', 'own rid prefilled');
 });
 
+// 6.2.1 — the discovered table's STAKE is captured into the shared room (server-derived, not user input)
+test('shared room captures the discovered table stake (sharedStake)', () => {
+  let st = S.onFindResult(S.onFindStart(S.create(), '1').state, '1', { ok: true, rid: 700100, stake: 500 });
+  assert.equal(st.sharedRid, 700100);
+  assert.equal(st.sharedStake, 500, 'stake stored from the discovered table');
+  // a follower joining the shared room does not change the stake
+  const after = S.onJoinResult(st, '2', { ok: true });
+  assert.equal(after.sharedStake, 500);
+  // all-leave clears the stake with the rid
+  const cleared = S.reconcile(st, [{ profileId: '1', manualState: 'LEFT', rid: null }]);
+  assert.equal(cleared.sharedRid, null);
+  assert.equal(cleared.sharedStake, null);
+});
+
 // 11/12 — manual join / rejoin do not disturb the lock; manual join keeps ownership stable
 test('manual join result clears only a matching lock and never steals ownership', () => {
   let st = { searchingBrowserId: null, sharedRid: 500, sharedRidOwner: '3' };

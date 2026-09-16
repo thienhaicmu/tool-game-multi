@@ -112,6 +112,8 @@ class HostSessionManager extends EventEmitter {
   runHostAnchoredJoin(channel, opts) { return this._guarded((c) => c.runHostAnchoredJoin(channel, opts)); }
   // PHASE-6 — MANUAL per-browser control (independent; no host/follower role).
   manualFindTable(id, channel, opts) { return this._guarded((c) => c.manualFindTable(String(id), channel, opts)); }
+  // PHASE-6.2.1 — REAL discovery: find a qualifying empty table (rid + stake from the server table), join it.
+  manualDiscoverTable(id, opts) { return this._guarded((c) => c.manualDiscoverTable(String(id), opts)); }
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
   manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }

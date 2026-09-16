@@ -28,25 +28,49 @@ test('renderControl renders the compact UI (header + browser row + remaining), n
   assert.equal(/statusToolbar\(|commandToolbar\(|entryStatusBar\(|liveMonitor\(/.test(body), false, 'no legacy toolbars/monitor on the main screen');
 });
 
-test('header shows the shared BÀN (RID) and CÒN LẠI from backend state (no hard-coded RID)', () => {
+test('header shows server-derived BÀN (RID) + CƯỢC (stake) + CÒN LẠI; NO manual stake input (6.2.1)', () => {
   const body = fn(js, 'compactHeader');
   assert.match(body, /BÀN:/);
   assert.match(body, /manualCluster\.sharedRid/);
+  assert.match(body, /CƯỢC:/);
+  assert.match(body, /manualCluster\.sharedStake/, 'stake is the server-derived shared stake');
   assert.match(body, /CÒN LẠI:/);
   assert.match(body, /remaining\.count/);
+  // §8/§12 — no stake/channel input in the header (stake comes from the discovered table)
+  assert.equal(/phq-manual-stake|oninput.*manualStake|placeholder: '100'/.test(body), false, 'no manual stake input');
+});
+
+test('real FIND uses discovery (not a user stake); stake flows from the discovered table', () => {
+  const body = fn(js, 'onManualFind');
+  assert.match(body, /api\.manualDiscover\(b\.profileId\)/, 'real FIND calls discovery');
+  assert.match(body, /rid: res\.rid, stake: res\.stake/, 'publishes the discovered rid + stake');
+  assert.equal(/api\.manualFind\(|Number\(stake\)|Nhập mức cược/.test(body), false, 'no user-stake path in FIND');
+});
+
+test('VÀO GAME has a real ENTERING state and a failure state (not a fake success)', () => {
+  const cell = fn(js, 'compactBrowserCell');
+  assert.match(cell, /manualEntering\[runId\]/);
+  assert.match(cell, /ĐANG VÀO GAME/);
+  assert.match(cell, /VÀO GAME THẤT BẠI|THỬ LẠI/);
+  const enter = fn(js, 'manualEnterGame');
+  assert.match(enter, /manualEntering\[runId\] = true/);
+  assert.match(enter, /api\.enterGame\(runId\)/);
+  assert.match(enter, /setTimeout/, 'bounded entry timeout (no infinite ĐANG VÀO GAME)');
+  // in-game flip is authoritative (slotInPhom), cleared in a reconcile
+  assert.match(js, /function reconcileEnterStates\(\)/);
+  assert.match(js, /slotInPhom\(runId\)/);
 });
 
 test('one horizontal row maps slot A/B/C -> Browser 1/2/3 (deterministic, not launch order)', () => {
   const row = fn(js, 'compactBrowserRow');
   assert.match(row, /browser-row/);
-  assert.match(row, /SLOTS\.forEach\(\(slot, i\) => .*compactBrowserCell\(i \+ 1, assign\[slot\]\.runId\)/);
+  assert.match(row, /SLOTS\.forEach\(\(slot, i\) => .*compactBrowserCell\(i \+ 1, slot, assign\[slot\]\.runId\)/);
 });
 
-test('VÀO GAME gates TÌM BÀN: find only appears once the browser is in game', () => {
-  const cell = fn(js, 'compactBrowserCell');
-  assert.match(cell, /if \(!inGame\) \{[\s\S]*?VÀO GAME/);
-  assert.match(cell, /const canFind = [^;]*MCS\.canFind\(manualCluster, b\) && inGame/); // §8
-  assert.match(cell, /findLabel\(manualCluster, b\)/);
+test('VÀO GAME gates TÌM BÀN: FIND (from browserAction) is enabled only after in-game (§8)', () => {
+  const action = fn(js, 'actionButton');
+  assert.match(action, /act\.action === 'FIND'[\s\S]*?MCS\.canFind\(manualCluster, b\) && inGame/); // §8
+  assert.match(action, /act\.action === 'ENTER_GAME'[\s\S]*?manualEnterGame\(runId\)/);
 });
 
 test('main screen shows NO username and NO Host/Follower/player-4 terminology', () => {

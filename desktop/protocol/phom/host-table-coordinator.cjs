@@ -700,6 +700,52 @@ class HostTableCoordinator extends EventEmitter {
     return { ok: true, id: rec.id, rid: r, state: 'JOINED', seat: rec.ctx.seat(), membership: ts ? ts.uids.slice() : [], fingerprint: ts && ts.identity ? ts.identity.value : null };
   }
 
+  // Pick a QUALIFYING EMPTY table from this browser's authoritative channel list (server rs[]): the right
+  // zone/game, a REAL table (uC <= Mu — a stake BUCKET has uC >> Mu and is excluded), with >= `need` FREE
+  // seats (full tables uC==Mu are rejected). Prefers the emptiest. The stake is the table's own `b` — it
+  // is NEVER user-entered. Returns null when no table qualifies (caller → PHOM_NO_EMPTY_TABLE).
+  _pickManualCandidate(rec, need) {
+    let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; }
+    const fittable = chans.filter((c) => c && c.rid != null && c.b != null && c.Mu != null
+      && (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID)
+      && Number(c.uC) <= Number(c.Mu) && (Number(c.Mu) - Number(c.uC)) >= need
+      && !this._failedRids.has(c.rid));
+    if (!fittable.length) return null;
+    return fittable.slice().sort((a, b) => (Number(a.uC) || 0) - (Number(b.uC) || 0))[0];
+  }
+
+  // REAL table discovery for ONE browser (PHASE 6.2.1): request the authoritative channel list (CMD 300),
+  // pick a qualifying EMPTY table, JOIN its real RID, and confirm from ps[]. The RID and STAKE both come
+  // from the SELECTED SERVER TABLE — never invented, never user-entered. Reuses the production channel-list
+  // request + the qualification concept + the tested manualJoinRoom (own uid in own ps[]) for the join.
+  async manualDiscoverTable(profileId, opts = {}) {
+    if (!this._guard()) return this._unauthorized();
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
+    const ctx = rec.ctx.sendContext();
+    if (!ctx) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
+    const need = opts.need != null ? opts.need : 3; // the found table must fit all three browsers (shared room)
+    const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
+    const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+    rec.manualState = 'SEARCHING'; rec.lastError = null;
+    this._mark('M_DISCOVER_SENT', { id: rec.id });
+    this.emit('update', this.snapshot());
+    // Request the authoritative stake/room list (CMD 300); the reply (rs[]) is ingested into ctx.channels().
+    const aid = rec.ctx.aid();
+    if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); } catch { /* best effort */ } }
+    // Wait (event-driven) for a qualifying empty table to appear in the list.
+    let candidate = this._pickManualCandidate(rec, need);
+    if (!candidate) await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need); return !!candidate; }, rec, myGen, timeoutMs);
+    if (rec._manualGen !== myGen) return { ok: false, id: rec.id, result: 'STALE' };
+    if (this._stopped) { rec.manualState = 'LEFT'; return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+    if (!candidate) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: 'Không tìm thấy bàn trống phù hợp' }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError }; }
+    this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
+    // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[].
+    const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND' });
+    if (!res.ok) return { ...res, stake: candidate.b, playerCount: candidate.uC };
+    return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC };
+  }
+
   // FIND a table on ONE browser: native JOIN by the chosen channel/stake and report the RID it landed
   // in (that browser's own _joinedRid) for the user to share. No matchmaking coupling to other browsers.
   async manualFindTable(profileId, channel, opts = {}) {

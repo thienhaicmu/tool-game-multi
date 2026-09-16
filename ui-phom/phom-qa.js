@@ -59,8 +59,13 @@
   let manualCluster = MCS ? MCS.create() : { searchingBrowserId: null, sharedRid: null, sharedRidOwner: null };
   let manualBrowsers = [];   // last manualBrowserSnapshot() (per-browser independent state)
   let remaining = null;      // last remainingCards() view for Screen 2
-  let manualStake = '';      // shared stake/channel the finder uses (native find only)
+  let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
   const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
+  const manualEntering = {}; // browserId -> true while VÀO GAME is in flight (real ENTERING state, §5)
+  const manualEnterError = {}; // browserId -> message when VÀO GAME failed/timed out (retryable)
+  const manualEnterTimers = {}; // browserId -> bounded entry timeout handle
+  const manualJoining = {};  // browserId -> true while VÀO BÀN (join shared RID) is in flight (§4)
+  let activeTab = 'SETUP';   // PHASE 6.2.2 — two tabs: SETUP (config/open) and PHOM (control)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
   let selectedClusterProfileId = null;
@@ -134,17 +139,34 @@
     return !!cs.clusterSessionId && ((cs.openBrowserCount || 0) > 0 || (cs.connectedCount || 0) > 0);
   }
 
+  // PHASE 6.2.2 — two tabs: SETUP (config + open browsers) and PHỎM (control). The Tool is a single OS
+  // window; the tabs switch its content without closing the three Chromium windows.
+  function renderTabBar() {
+    const bar = el('div', { class: 'tab-bar' });
+    const tab = (id, label) => el('button', { class: 'tab' + (activeTab === id ? ' active' : ''), onclick: () => { activeTab = id; renderApp(); } }, label);
+    bar.appendChild(tab('SETUP', 'SETUP'));
+    bar.appendChild(tab('PHOM', 'PHỎM'));
+    return bar;
+  }
+
   // ---------- top-level dispatch ----------
   function renderApp() {
     const r = $('phq-root'); if (!r) return;
     r.innerHTML = '';
     r.className = 'mode-' + uiState.toLowerCase();
     banners(r);
-    if (uiState === UI.SETUP) return renderSetup(r);
     if (uiState === UI.OPENING_CLUSTER) return renderTransient(r, 'ĐANG MỞ 3 TRÌNH DUYỆT…', 'Ba cửa sổ Chromium đang bung ra bên ngoài.');
     if (uiState === UI.STOPPING) return renderTransient(r, 'ĐANG DỪNG CỤM…', 'Đóng ba trình duyệt, giữ nguyên cấu hình đã lưu.');
     if (uiState === UI.ERROR) return renderError(r);
-    return renderControl(r);
+    // SETUP / CONTROL steady states → two-tab surface.
+    const open = clusterIsOpen();
+    r.appendChild(renderTabBar());
+    const content = el('div', { class: 'tab-content' });
+    r.appendChild(content);
+    if (activeTab === 'PHOM') {
+      if (open || uiState === UI.CONTROL) renderControl(content);
+      else content.appendChild(el('div', { class: 'note', style: 'margin-top:10px' }, 'Chưa mở trình duyệt — sang tab SETUP để mở 3 trình duyệt.'));
+    } else { renderSetup(content); }
   }
 
   function banners(r) {
@@ -171,7 +193,7 @@
   function renderError(r) {
     r.appendChild(header('ERROR'));
     r.appendChild(el('div', { class: 'warnrow', style: 'margin:10px 0' }, errorMsg || 'Đã xảy ra lỗi.'));
-    r.appendChild(el('button', { class: 'btn primary', onclick: () => { uiState = UI.SETUP; renderApp(); } }, 'Về SETUP'));
+    r.appendChild(el('button', { class: 'btn primary', onclick: () => { uiState = UI.SETUP; activeTab = "SETUP"; renderApp(); } }, 'Về SETUP'));
   }
 
   function selectedProfile() { return clusterProfiles.find((p) => p.id === selectedClusterProfileId) || null; }
@@ -499,56 +521,131 @@
     r.appendChild(renderRemainingCards());
   }
 
-  // Low header: product · stake · shared BÀN (RID) · CÒN LẠI · overflow menu · ready dot.
+  // Low header: product · shared BÀN (RID) · CƯỢC (stake) · CÒN LẠI · overflow menu · ready dot. BÀN and
+  // CƯỢC are SERVER-DERIVED from the discovered table (never a user-entered stake — §8/§11/§12).
   function compactHeader() {
     const rid = manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : '—';
+    const stake = manualCluster.sharedStake != null ? String(manualCluster.sharedStake) : '—';
     const anyOpen = SLOTS.some((s) => assign[s].runId);
     return el('div', { class: 'tool-header' },
       el('b', { class: 'th-brand' }, 'PHỎM QA'),
-      el('span', { class: 'th-bet' }, 'Cược ', el('input', { class: 'f mono th-stake', id: 'phq-manual-stake', value: manualStake, placeholder: '100', oninput: (e) => { manualStake = e.target.value; } })),
       el('span', { class: 'th-rid' }, 'BÀN: ', el('b', null, rid)),
+      el('span', { class: 'th-bet' }, 'CƯỢC: ', el('b', null, stake)),
       el('span', { class: 'th-still' }, 'CÒN LẠI: ', el('b', null, remaining ? (remaining.count + ' LÁ') : '—')),
       moreMenuButton(),
       el('span', { class: 'chip ' + (anyOpen ? 'green' : 'gray') }, anyOpen ? '● READY' : '○'),
     );
   }
 
-  // A single horizontal row: Browser 1 / 2 / 3. Before a browser is in game it shows [VÀO GAME]; once
-  // in game it shows [TÌM BÀN] [↻ rejoin] [× leave] (search-locked; shared-RID aware). Deterministic
-  // mapping slot A/B/C -> Browser 1/2/3 (never launch/PID order).
+  // A single horizontal row: Browser 1 / 2 / 3. One business action per card (VÀO GAME / TÌM BÀN / VÀO BÀN
+  // / THOÁT GAME) + lifecycle controls (↻ WEB, ⏻). Deterministic slot A/B/C -> Browser 1/2/3.
   function compactBrowserRow() {
     const row = el('div', { class: 'browser-row' });
-    SLOTS.forEach((slot, i) => row.appendChild(compactBrowserCell(i + 1, assign[slot].runId)));
+    SLOTS.forEach((slot, i) => row.appendChild(compactBrowserCell(i + 1, slot, assign[slot].runId)));
     return row;
   }
-  function compactBrowserCell(index, runId) {
+  function compactBrowserCell(index, slot, runId) {
     const cell = el('div', { class: 'browser-cell' });
-    const opened = !!runId;
+    const cs = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot];
+    const chromiumClosed = !!(cs && cs.browserState && cs.browserState !== 'OPEN' && cs.browserState !== 'NOT_OPEN');
+    const opened = !!runId && !chromiumClosed;
     const inGame = opened && slotInPhom(runId);
     const mb = opened ? manualBrowserById(runId) : null;
-    const b = mb || { profileId: runId, manualState: opened ? 'READY' : 'CLOSED', canRejoin: false, rid: null };
-    const searching = b.manualState === 'SEARCHING';
-    const dot = !opened ? '⚪' : (searching ? '🟡' : (inGame ? '🟢' : '⚪'));
-    cell.appendChild(el('span', { class: 'bl' }, 'B' + index + ' ', dot));
-    if (!opened) { cell.appendChild(el('span', { class: 'faint sm' }, 'chưa mở')); return cell; }
-    if (!inGame) { cell.appendChild(el('button', { class: 'btn primary sm', onclick: () => manualEnterGame(runId) }, 'VÀO GAME')); return cell; }
-    if (searching) { cell.appendChild(el('span', { class: 'chip yellow sm' }, 'ĐANG TÌM…')); return cell; }
-    const canFind = !!MCS && MCS.canFind(manualCluster, b) && inGame; // §8 — FIND only after in-game
-    const canRejoin = !!MCS && MCS.canRejoin(manualCluster, b);
-    const canLeave = !!MCS && MCS.canLeave(manualCluster, b);
-    cell.appendChild(el('button', { class: 'btn primary sm', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, MCS ? MCS.findLabel(manualCluster, b) : 'TÌM BÀN'));
-    cell.appendChild(el('button', { class: 'btn sm', title: 'Rejoin', disabled: canRejoin ? null : true, onclick: () => onManualRejoin(b) }, '↻'));
-    cell.appendChild(el('button', { class: 'btn danger sm', title: 'Thoát', disabled: canLeave ? null : true, onclick: () => onManualLeave(b) }, '×'));
+    const b = mb || { profileId: runId, manualState: opened ? 'READY' : 'CLOSED', canRejoin: false, rid: null, lastError: null };
+    const entering = opened && !inGame && !!manualEntering[runId];
+    const joining = opened && inGame && !!manualJoining[runId];
+    const enterErr = opened && !inGame && manualEnterError[runId];
+    const dot = !runId ? '⚪' : (chromiumClosed ? '🔴' : ((b.manualState === 'SEARCHING' || entering || joining) ? '🟡' : (inGame ? '🟢' : '⚪')));
+    cell.appendChild(el('div', { class: 'bc-line' }, el('span', { class: 'bl' }, 'B' + index + ' ', dot)));
+
+    // primary business action (single button) — from authoritative state.
+    if (!runId) { cell.appendChild(el('span', { class: 'faint sm' }, 'chưa mở')); return cell; }
+    if (chromiumClosed) {
+      cell.appendChild(el('span', { class: 'chip red sm' }, '● OFFLINE'));
+      cell.appendChild(el('button', { class: 'btn primary sm', onclick: () => onReopenBrowser(slot) }, '＋ MỞ CHROMIUM'));
+      return cell;
+    }
+    if (entering) cell.appendChild(el('span', { class: 'chip yellow sm' }, 'ĐANG VÀO GAME…'));
+    else if (joining) cell.appendChild(el('span', { class: 'chip yellow sm' }, 'ĐANG VÀO BÀN…'));
+    else {
+      const act = MCS ? MCS.browserAction(manualCluster, b, { opened, inGame, entering: false }) : { action: 'ENTER_GAME', label: 'VÀO GAME' };
+      cell.appendChild(actionButton(act, b, runId, inGame));
+    }
+    if (enterErr) cell.appendChild(el('span', { class: 'chip red sm', title: enterErr }, 'VÀO GAME THẤT BẠI'));
+    if (opened && inGame && b.manualState === 'ERROR' && manualCluster.sharedRid != null && b.lastError) cell.appendChild(el('span', { class: 'chip red sm', title: errText({ error: b.lastError }) }, 'VÀO BÀN THẤT BẠI'));
+
+    // lifecycle row: ↻ WEB (reload/re-open web in the SAME Chromium) + ⏻ (close this Chromium only).
+    cell.appendChild(el('div', { class: 'bc-life' },
+      el('button', { class: 'btn sm', title: 'Tải lại / mở lại web trong chính Chromium này', onclick: () => onReloadWeb(runId) }, '↻ WEB'),
+      el('button', { class: 'btn danger sm', title: 'Tắt Chromium này (không đóng Tool/B khác)', onclick: () => onCloseBrowser(slot, runId) }, '⏻')));
     return cell;
   }
-  // Per-browser VÀO GAME (fires the verified vgcg_8 entry on THAT run only, §8/§15).
+  // Build the single business-action button from the browserAction decision.
+  function actionButton(act, b, runId, inGame) {
+    if (act.busy) return el('span', { class: 'chip yellow sm' }, act.label);
+    if (act.action === 'ENTER_GAME') return el('button', { class: 'btn primary sm', onclick: () => manualEnterGame(runId) }, act.label);
+    if (act.action === 'FIND') { const canFind = !!MCS && MCS.canFind(manualCluster, b) && inGame; return el('button', { class: 'btn primary sm', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, act.label); }
+    if (act.action === 'JOIN_SHARED') return el('button', { class: 'btn primary sm', onclick: () => onManualJoinShared(b) }, act.label); // VÀO BÀN → shared RID
+    if (act.action === 'LEAVE') return el('button', { class: 'btn danger sm', onclick: () => onManualLeave(b) }, act.label);       // THOÁT GAME
+    return el('span', { class: 'faint sm' }, act.label);
+  }
+  // VÀO BÀN — JOIN the shared RID (never a new discovery, §3/§4). Immediate ĐANG VÀO BÀN; confirmed by ps[].
+  async function onManualJoinShared(b) {
+    const rid = manualCluster.sharedRid;
+    if (rid == null) return note('Chưa có bàn dùng chung.', true);
+    manualJoining[b.profileId] = true; note(`Đang vào bàn ${rid}…`); renderApp();
+    let res; try { res = await api.manualJoin(b.profileId, rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (MCS) manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
+    delete manualJoining[b.profileId];
+    if (res && res.ok === false) note(errText(res), true);
+    await refreshManual(); renderApp();
+  }
+  // ↻ WEB — reload the page in the SAME Chromium; if the page is gone, re-navigate. Never a new window (§6).
+  async function onReloadWeb(runId) {
+    note('Đang tải lại web…');
+    let res; try { res = await api.reloadWeb(runId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (res && res.ok === false) note(errText(res), true); else note('Đã tải lại web.');
+  }
+  // ⏻ — close ONLY this Chromium (Tool + other browsers untouched, §7).
+  async function onCloseBrowser(slot, runId) {
+    note('Đang tắt Chromium…');
+    try { await api.closeBrowser(runId); } catch (e) { note(String(e && e.message || e), true); }
+    try { clusterSnap = await api.clusterSnapshot(); } catch {}
+    await refreshManual(); renderApp();
+  }
+  // ＋ MỞ CHROMIUM — reopen the closed browser with its own profile/proxy/device/geometry (clusterOpen only
+  // reopens CLOSED slots; live browsers untouched). No auto-rejoin (§16).
+  async function onReopenBrowser(slot) {
+    note('Đang mở lại Chromium…');
+    try { await api.clusterOpen(); } catch (e) { return note(errText(e), true); }
+    try { clusterSnap = await api.clusterSnapshot(); } catch {}
+    for (const s of SLOTS) { const p = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[s]; if (p && p.profileId) assign[s].runId = p.profileId; }
+    await refreshManual(); renderApp();
+  }
+  // Per-browser VÀO GAME (§5/§6) — fires the VERIFIED vgcg_8 entry action on THAT run only, then WAITS
+  // for real game evidence (slotInPhom). The cell shows ĐANG VÀO GAME immediately; it flips to ĐÃ VÀO
+  // GAME only when the authoritative in-Phỏm signal arrives (cleared in refreshManual), else THẤT BẠI on
+  // a bounded timeout. Never a fake success — FIND unlocks only on real slotInPhom evidence.
   async function manualEnterGame(runId) {
     if (!runId) return;
-    note('Đang vào game Phỏm…');
+    manualEntering[runId] = true; delete manualEnterError[runId];
+    note('Đang vào game Phỏm…'); renderApp(); // immediate ĐANG VÀO GAME before any await (§17)
     if (!phomSessionStarted) { try { await ensurePassiveSession(); } catch {} }
-    try { const res = await api.enterGame(runId); if (res && res.ok === false) note(errText(res), true); }
-    catch (e) { note(String(e && e.message || e), true); }
+    if (manualEnterTimers[runId]) clearTimeout(manualEnterTimers[runId]);
+    manualEnterTimers[runId] = setTimeout(() => {
+      manualEnterTimers[runId] = null;
+      if (manualEntering[runId] && !slotInPhom(runId)) { delete manualEntering[runId]; manualEnterError[runId] = 'Vào game thất bại — đăng nhập rồi thử lại.'; renderApp(); }
+    }, 30000);
+    try { const res = await api.enterGame(runId); if (res && res.ok === false) { manualEnterError[runId] = errText(res); note(errText(res), true); } }
+    catch (e) { manualEnterError[runId] = String(e && e.message || e); note(manualEnterError[runId], true); }
     await refreshManual(); renderApp();
+  }
+  // Clear the transient VÀO GAME states once a browser is authoritatively in game (real evidence).
+  function reconcileEnterStates() {
+    for (const slot of SLOTS) {
+      const runId = assign[slot].runId;
+      if (runId && slotInPhom(runId)) { if (manualEntering[runId]) delete manualEntering[runId]; if (manualEnterError[runId]) delete manualEnterError[runId]; if (manualEnterTimers[runId]) { clearTimeout(manualEnterTimers[runId]); manualEnterTimers[runId] = null; } }
+    }
   }
 
   // §16 — the entry gate's per-slot status (CHỜ LOGIN → ĐÃ LOGIN → ĐANG VÀO PHỎM → PHỎM READY),
@@ -1315,7 +1412,7 @@
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
     if (clusterSnap && (clusterSnap.openBrowserCount || 0) >= 3 && clusterSnap.stopped !== true) {
       for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
-      uiState = UI.CONTROL; renderApp();
+      uiState = UI.CONTROL; activeTab = "PHOM"; renderApp();
       await ensurePassiveSession(); startEntryPolling();
       note('Cụm đã mở sẵn — dùng lại 3 trình duyệt hiện có (không mở lại).');
       return;
@@ -1353,7 +1450,7 @@
       // does NOT auto-request channels, auto-enter Phỏm, or auto-find a table; every step is
       // an explicit user action (LOGIN → VÀO GAME PHỎM → TÌM BÀN).
       entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
-      uiState = UI.CONTROL; renderApp();
+      uiState = UI.CONTROL; activeTab = "PHOM"; renderApp();
       // Observe the browsers immediately (auto-start passive session + poll) so the gate reflects
       // real state and advances to READY on its own once A/B/C are in Phỏm.
       await ensurePassiveSession(); startEntryPolling();
@@ -1365,7 +1462,7 @@
       try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
       if (clusterSnap && (clusterSnap.openBrowserCount || 0) > 0) {
         for (const slot of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[slot]; if (p && p.profileId) assign[slot].runId = p.profileId; }
-        entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null; uiState = UI.CONTROL; renderApp();
+        entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null; uiState = UI.CONTROL; activeTab = "PHOM"; renderApp();
         note('Mở cụm chưa đủ 3 — các trình duyệt đã mở vẫn được giữ. ' + errText(e), true);
       } else {
         errorMsg = errText(e) + '  (chưa mở được trình duyệt nào — thử lại)';
@@ -1398,7 +1495,7 @@
     entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
     if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
     stopEntryPolling(); qaMonitorPlay(false);
-    uiState = UI.SETUP; renderApp();
+    uiState = UI.SETUP; activeTab = "SETUP"; renderApp();
     note('Đang quay về SETUP — huỷ tìm bàn/join, giữ nguyên 3 trình duyệt…');
     try { await api.orchestrationStop(); } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch {}
@@ -1421,7 +1518,7 @@
     try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch {}
     try { const pl = await api.proxyList(); proxies = (pl && pl.proxies) || []; } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
-    uiState = UI.SETUP; renderApp();
+    uiState = UI.SETUP; activeTab = "SETUP"; renderApp();
     note('Đã đóng 3 trình duyệt. Cấu hình proxy/thiết bị được giữ nguyên.');
   }
 
@@ -1469,6 +1566,7 @@
     try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; } catch { manualBrowsers = []; }
     try { const rc = await api.remainingCards(); remaining = rc && rc.ok !== false ? rc : null; } catch { remaining = null; }
     if (MCS) manualCluster = MCS.reconcile(manualCluster, manualBrowsers);
+    reconcileEnterStates(); // clear ĐANG VÀO GAME once the browser is authoritatively in game
   }
   function manualBrowserById(id) { return manualBrowsers.find((b) => String(b.profileId) === String(id)) || null; }
   function ownerIndex() { const o = manualCluster.sharedRidOwner; const b = o != null ? manualBrowserById(o) : null; return b ? b.browserIndex : null; }
@@ -1486,11 +1584,12 @@
       try { res = await api.manualJoin(b.profileId, dec.rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
       manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
     } else {
-      const stake = (manualStake || '').trim() || (selectedStake != null ? String(selectedStake) : '');
-      if (!stake) { manualCluster = MCS.onFindResult(manualCluster, b.profileId, { ok: false }); renderApp(); return note('Nhập mức cược/kênh để tìm bàn.', true); }
-      note('🔍 Đang tìm bàn…');
-      try { res = await api.manualFind(b.profileId, Number(stake)); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-      manualCluster = MCS.onFindResult(manualCluster, b.profileId, res && res.ok ? { ok: true, rid: res.rid } : { ok: false });
+      // PHASE 6.2.1 — REAL discovery: the backend requests the server channel list, picks a qualifying
+      // EMPTY table, and JOINs its actual RID. The RID + STAKE come from the SELECTED SERVER TABLE — the
+      // user never enters a stake here.
+      note('🔍 Đang tìm bàn trống…');
+      try { res = await api.manualDiscover(b.profileId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+      manualCluster = MCS.onFindResult(manualCluster, b.profileId, res && res.ok ? { ok: true, rid: res.rid, stake: res.stake } : { ok: false });
     }
     if (res && res.ok === false) note(errText(res), true);
     await refreshManual(); renderApp();

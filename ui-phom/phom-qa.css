@@ -333,3 +333,12 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .browser-cell .bl { font-weight: 600; white-space: nowrap; }
 .browser-cell .btn.sm { padding: 2px 8px; }
 .chip.sm { font-size: 11px; }
+/* PHASE 6.2.2 — two tabs + per-browser lifecycle row */
+.tab-bar { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.tab-bar .tab { border: 1px solid var(--border); border-bottom: none; background: var(--panel-2); color: var(--text-faint); padding: 4px 14px; border-radius: 8px 8px 0 0; cursor: pointer; font-weight: 600; }
+.tab-bar .tab.active { background: var(--panel); color: var(--text); border-color: var(--primary); }
+.tab-content { min-height: 40px; }
+.browser-cell { flex-direction: column; align-items: stretch; gap: 4px; }
+.bc-line { display: flex; align-items: center; justify-content: space-between; }
+.bc-life { display: flex; gap: 4px; }
+.bc-life .btn { flex: 1; }

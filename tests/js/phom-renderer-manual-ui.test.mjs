@@ -17,11 +17,12 @@ test('index.html loads the shared search-lock/shared-RID module before the rende
   assert.ok(html.indexOf('manual-cluster-state.js') < html.indexOf('phom-qa.js'), 'state module loads first');
 });
 
-test('renderer consumes the manual backend contract (find/join/rejoin/leave/snapshot/remaining)', () => {
-  for (const call of ['api.manualFind(', 'api.manualJoin(', 'api.manualRejoin(', 'api.manualLeave(', 'api.manualSnapshot(', 'api.remainingCards(']) {
+test('renderer consumes the manual backend contract (discover/join/rejoin/leave/snapshot/remaining)', () => {
+  // PHASE 6.2.1 — a REAL find now goes through discovery (api.manualDiscover); JOIN_SHARED uses api.manualJoin.
+  for (const call of ['api.manualDiscover(', 'api.manualJoin(', 'api.manualRejoin(', 'api.manualLeave(', 'api.manualSnapshot(', 'api.remainingCards(']) {
     assert.ok(js.includes(call), `renderer should call ${call}`);
   }
-  for (const bridge of ['manualFind:', 'manualJoin:', 'manualRejoin:', 'manualLeave:', 'manualSnapshot:', 'remainingCards:']) {
+  for (const bridge of ['manualDiscover:', 'manualJoin:', 'manualRejoin:', 'manualLeave:', 'manualSnapshot:', 'remainingCards:']) {
     assert.ok(preload.includes(bridge), `preload should expose ${bridge}`);
   }
 });

@@ -830,10 +830,30 @@ else {
     // PHASE-6 — MANUAL per-browser table control (browserId === browserRunId). Each command targets ONE
     // browser; there is no host/follower role. Confirmation is authoritative (own ps[]). Observe-only wire.
     ipcMain.handle('phom:manual-find', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualFindTable(cfg && cfg.browserId, cfg && cfg.channel, cfg && cfg.opts); }));
+    // PHASE-6.2.1 — REAL discovery: qualifying empty table (rid + stake from the server table) → JOIN → ps[].
+    ipcMain.handle('phom:manual-discover', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualDiscoverTable(cfg && cfg.browserId, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualRejoin(cfg && cfg.browserId, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualLeave(cfg && cfg.browserId); }));
     ipcMain.handle('phom:manual-snapshot', () => (phomSessions ? { ok: true, browsers: phomSessions.manualBrowserSnapshot() } : { ok: true, browsers: [] }));
+    // PHASE-6.2.2 — browser lifecycle, all scoped to ONE run (never touches the Tool or the other browsers).
+    // ↻ WEB: reload the page in the SAME Chromium; if the page is gone, re-navigate to the game URL — never
+    // launches a second Chromium OS window.
+    ipcMain.handle('phom:reload-web', guarded(async (_e, cfg) => {
+      const runId = cfg && cfg.browserId; if (!runId || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
+      const client = runClientFor(String(runId));
+      const run = runManager.get(String(runId));
+      const url = run && run.launchUrl ? run.launchUrl : null;
+      if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
+      try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); return { ok: true, action: 'RELOAD' }; }
+      catch (e) { if (url) { try { await client.Page.navigate({ url }); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
+    }));
+    // ⏻ TẮT CHROMIUM: close ONLY this run's Chromium window/process (Tool + other browsers untouched).
+    ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => {
+      const runId = cfg && cfg.browserId; if (!runId || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
+      try { await runManager.closeRun(String(runId)); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(String(runId), 'USER_CLOSED_WINDOW'); return { ok: true }; }
+      catch (e) { return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
+    }));
     // Screen 2 — cards REMAINING after removing all cards held by the 3 browsers (never "player 4").
     ipcMain.handle('phom:remaining-cards', () => (phomSessions ? { ok: true, ...phomSessions.remainingCards() } : { ok: true, count: 0, codes: [], cards: [] }));
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.

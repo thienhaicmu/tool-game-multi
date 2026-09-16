@@ -52,6 +52,9 @@ contextBridge.exposeInMainWorld('phomQA', {
   hostAnchoredJoin: (channel, opts) => ipcRenderer.invoke('phom:host-anchored-join', { channel, opts }),
   // PHASE-6 — manual per-browser control (browserId === browserRunId). No host/follower role.
   manualFind: (browserId, channel, opts) => ipcRenderer.invoke('phom:manual-find', { browserId, channel, opts }),
+  manualDiscover: (browserId, opts) => ipcRenderer.invoke('phom:manual-discover', { browserId, opts }),
+  reloadWeb: (browserId) => ipcRenderer.invoke('phom:reload-web', { browserId }),
+  closeBrowser: (browserId) => ipcRenderer.invoke('phom:close-browser', { browserId }),
   manualJoin: (browserId, rid, opts) => ipcRenderer.invoke('phom:manual-join', { browserId, rid, opts }),
   manualRejoin: (browserId, opts) => ipcRenderer.invoke('phom:manual-rejoin', { browserId, opts }),
   manualLeave: (browserId) => ipcRenderer.invoke('phom:manual-leave', { browserId }),
