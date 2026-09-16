@@ -110,6 +110,13 @@ class HostSessionManager extends EventEmitter {
   runJoinExperiment(channel, opts) { return this._guarded((c) => c.runJoinExperiment(channel, opts)); }
   // PHASE-4 — HOST ROOM ANCHOR test: A native-JOIN → confirm in ps[] → bind A's room → B/C JOIN that room.
   runHostAnchoredJoin(channel, opts) { return this._guarded((c) => c.runHostAnchoredJoin(channel, opts)); }
+  // PHASE-6 — MANUAL per-browser control (independent; no host/follower role).
+  manualFindTable(id, channel, opts) { return this._guarded((c) => c.manualFindTable(String(id), channel, opts)); }
+  manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
+  manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
+  manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
+  manualBrowserSnapshot() { const c = this._c(); return c && typeof c.manualBrowserSnapshot === 'function' ? c.manualBrowserSnapshot() : []; }
+  remainingCards(opts) { const c = this._c(); return c && typeof c.remainingCards === 'function' ? c.remainingCards(opts) : { count: 0, codes: [], cards: [] }; }
 }
 
 module.exports = { HostSessionManager };

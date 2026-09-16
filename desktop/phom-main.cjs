@@ -47,7 +47,7 @@ const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
 const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
-const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot } = require('./protocol/phom/grid-layout.cjs');
+const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows } = require('./protocol/phom/grid-layout.cjs');
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
 const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
@@ -380,6 +380,15 @@ else {
     try { const b = shell && !shell.isDestroyed() ? shell.getBounds() : null; const d = b ? screen.getDisplayMatching(b) : screen.getPrimaryDisplay(); return d.workArea; } catch { return { x: 0, y: 0, width: 1280, height: 800 }; }
   }
   function gridRectForSlot(slot) { return rectForSlot(currentWorkArea(), slot, { gap: 8 }); }
+  // PHASE-6 — the deterministic 3-window arrangement across the LIVE display topology (one browser per
+  // monitor when ≥3 monitors; tiled otherwise). Uses the three slot devices' viewports so each window
+  // fits its mobile-landscape content. Pure geometry (grid-layout); the placement is applied via each
+  // run's chrome --window-position/--window-size at launch.
+  function allDisplayWorkAreas() { try { return screen.getAllDisplays().map((d) => d.workArea); } catch { return [currentWorkArea()]; } }
+  function clusterWindowArrangement() {
+    const devs = SLOTS_ABC.map((s) => { let d = null; try { d = profileStore && profileStore.deviceFor(s); } catch { d = null; } return d ? { viewportWidth: d.viewportWidth, viewportHeight: d.viewportHeight } : {}; });
+    return arrangeBrowserWindows(allDisplayWorkAreas(), devs, { gap: 8 });
+  }
   // Re-tile all owned session runs into the 2×2 grid + place the control window BR.
   function restoreLayout() {
     try {
@@ -657,13 +666,19 @@ else {
     // (keyed by the authoritative browser profile, not the window slot) (§12).
     const profileDir = path.join(phomRoot(), 'browser-profiles', pk || slot || 'X');
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
-    // PHASE-3 — a DESKTOP window sized to this profile's MOBILE-LANDSCAPE viewport (device metrics
-    // are still applied over CDP; only the native window bounds change). A/B/C are spread across the
-    // work area (A left, B center, C right). Without a device (e.g. localTest about:blank) fall back
-    // to the legacy quadrant tiling so the window is still placed sensibly.
-    const windowRect = device
-      ? desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight })
-      : gridRectForSlot(slot);
+    // PHASE-6 — DETERMINISTIC multi-monitor placement. Browser slot A/B/C ⇒ window 1/2/3 (stable, never
+    // by launch/PID order). Sizes each window to the profile's MOBILE-LANDSCAPE viewport + chrome (device
+    // metrics still applied over CDP — only the native window bounds change). Reads the live display
+    // topology so the three windows are visible simultaneously across monitors. Falls back to the Phase-3
+    // single-slot spread, then to the legacy quadrant (localTest / no device).
+    const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
+    let windowRect;
+    if (device) {
+      try {
+        const arr = clusterWindowArrangement();
+        windowRect = (arr && arr.slots && arr.slots[slotIndex]) || desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight });
+      } catch { windowRect = desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight }); }
+    } else { windowRect = gridRectForSlot(slot); }
     const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
@@ -806,6 +821,15 @@ else {
     // the production discovery flow. A native-joins, is confirmed in ps[], its room is bound, then B/C
     // join THAT exact room id and are confirmed co-seated.
     ipcMain.handle('phom:host-anchored-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.runHostAnchoredJoin(cfg && cfg.channel, cfg && cfg.opts); }));
+    // PHASE-6 — MANUAL per-browser table control (browserId === browserRunId). Each command targets ONE
+    // browser; there is no host/follower role. Confirmation is authoritative (own ps[]). Observe-only wire.
+    ipcMain.handle('phom:manual-find', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualFindTable(cfg && cfg.browserId, cfg && cfg.channel, cfg && cfg.opts); }));
+    ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
+    ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualRejoin(cfg && cfg.browserId, cfg && cfg.opts); }));
+    ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualLeave(cfg && cfg.browserId); }));
+    ipcMain.handle('phom:manual-snapshot', () => (phomSessions ? { ok: true, browsers: phomSessions.manualBrowserSnapshot() } : { ok: true, browsers: [] }));
+    // Screen 2 — cards REMAINING after removing all cards held by the 3 browsers (never "player 4").
+    ipcMain.handle('phom:remaining-cards', () => (phomSessions ? { ok: true, ...phomSessions.remainingCards() } : { ok: true, count: 0, codes: [], cards: [] }));
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.
     ipcMain.handle('phom:cluster-create', guarded((_e, config) => {
       ensureStores();

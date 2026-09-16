@@ -50,6 +50,13 @@ contextBridge.exposeInMainWorld('phomQA', {
   trace: () => ipcRenderer.invoke('phom:trace'),
   joinExperiment: (channel, opts) => ipcRenderer.invoke('phom:join-experiment', { channel, opts }),
   hostAnchoredJoin: (channel, opts) => ipcRenderer.invoke('phom:host-anchored-join', { channel, opts }),
+  // PHASE-6 — manual per-browser control (browserId === browserRunId). No host/follower role.
+  manualFind: (browserId, channel, opts) => ipcRenderer.invoke('phom:manual-find', { browserId, channel, opts }),
+  manualJoin: (browserId, rid, opts) => ipcRenderer.invoke('phom:manual-join', { browserId, rid, opts }),
+  manualRejoin: (browserId, opts) => ipcRenderer.invoke('phom:manual-rejoin', { browserId, opts }),
+  manualLeave: (browserId) => ipcRenderer.invoke('phom:manual-leave', { browserId }),
+  manualSnapshot: () => ipcRenderer.invoke('phom:manual-snapshot'),
+  remainingCards: () => ipcRenderer.invoke('phom:remaining-cards'),
   onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
   onHands: (cb) => ipcRenderer.on('phom:hands', (_e, hands) => cb(hands)),
   onKick: (cb) => ipcRenderer.on('phom:kick', (_e, k) => cb(k)),

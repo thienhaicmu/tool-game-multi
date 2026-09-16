@@ -6,6 +6,7 @@ const { PhomContext } = require('./phom-context.cjs');
 const { reduceHand, emptyHand, SYNC } = require('./hand-reducer.cjs');
 const { ZONE, GID } = require('./phom-frame-classify.cjs');
 const { buildChannelListFrame, buildJoinFrame, buildReadyFrame, buildLeaveFrame } = require('./phom-coordinator.cjs');
+const { remainingCardsView } = require('./remaining-cards.cjs');
 
 // ---------------------------------------------------------------------------
 // HostTableCoordinator (§10–20) — the HOST/FOLLOWER controlled-table orchestration.
@@ -642,6 +643,122 @@ class HostTableCoordinator extends EventEmitter {
     this._mark(confM, { id: F.id, roomId: hostRoomId, hostSeat: host.ctx.seat(), followerSeat: F.ctx.seat() });
     observed.push({ id: F.id, label, seated: true, seat: F.ctx.seat(), fingerprint: F.ctx.tableState().identity ? F.ctx.tableState().identity.value : null });
     return { ok: true };
+  }
+
+  // ---- PHASE-6 · MANUAL per-browser table control (NO host/follower role) ----
+  // Each browser (profileId === browserRunId) is driven INDEPENDENTLY by the user: FIND / JOIN by RID /
+  // REJOIN / LEAVE. These operate on ONE profile, never assign a host, never run _followTogether, and
+  // never touch the global discovery generation (_gen) — so one browser's action does not cancel
+  // another's. Cancellation is per-browser via rec._manualGen. Confirmation is authoritative: own uid
+  // in own TABLE_STATE.ps[]. Reuses buildJoinFrame / buildLeaveFrame (no invented protocol).
+
+  // Per-browser event-driven wait (mirrors _waitUntil but scoped to ONE browser's generation).
+  _waitManual(pred, rec, myGen, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const cleanup = () => { if (done) return; done = true; this.off('update', onUpdate); clearTimeout(timer); };
+      const settle = (v) => { cleanup(); resolve(v); };
+      const check = () => { if (this._stopped || rec._manualGen !== myGen) { settle(false); return true; } let ok = false; try { ok = !!pred(); } catch { ok = false; } if (ok) { settle(true); return true; } return false; };
+      const onUpdate = () => { check(); };
+      const timer = setTimeout(() => { let ok = false; try { ok = !!pred(); } catch { ok = false; } settle(ok && !this._stopped && rec._manualGen === myGen); }, timeoutMs);
+      if (check()) return;
+      this.on('update', onUpdate);
+    });
+  }
+
+  _rec(profileId) { return this._profiles.get(String(profileId)) || null; }
+  _ownSeated(rec) { const ts = rec.ctx.tableState(); const uid = rec.ctx.uid(); return !!(ts && uid && ts.uids.includes(uid)); }
+  // Authoritative logged-in username = the display name (dn) on this browser's OWN seat in ps[]. From
+  // server evidence only; USER_UNKNOWN until seated (never guessed, never a "Browser N" placeholder §11).
+  _username(rec) { const ts = rec.ctx.tableState(); const uid = rec.ctx.uid(); if (!ts || !uid) return null; const mine = (ts.seats || []).find((s) => s.uid === uid); return mine && mine.dn ? mine.dn : null; }
+
+  // JOIN a specific RID on ONE browser; confirm from that browser's own ps[]. `intent` labels the trace
+  // (FIND vs JOIN vs REJOIN) but the wire frame is identical (buildJoinFrame(rid)).
+  async manualJoinRoom(profileId, rid, opts = {}) {
+    if (!this._guard()) return this._unauthorized();
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
+    const r = Number.isFinite(rid) ? rid : (rid != null && String(rid).trim() !== '' ? Number(rid) : NaN);
+    if (!Number.isFinite(r)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_RID', message: 'Room/RID trống hoặc không hợp lệ' } }; }
+    const ctx = rec.ctx.sendContext();
+    if (!ctx) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
+    const intent = opts.intent === 'FIND' ? 'FIND' : (opts.intent === 'REJOIN' ? 'REJOIN' : 'JOIN');
+    const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+    rec.manualState = intent === 'FIND' ? 'SEARCHING' : (intent === 'REJOIN' ? 'RECONNECTING' : 'JOINING');
+    this._mark(`M_${intent}_SENT`, { id: rec.id, rid: r });
+    this.emit('update', this.snapshot());
+    try { await rec.send(buildJoinFrame(r), ctx); } catch (e) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, error: rec.lastError }; }
+    rec._joinedRid = r; rec._lastRid = r; // _lastRid survives LEAVE so REJOIN can return to this room
+    const seated = await this._waitManual(() => this._ownSeated(rec), rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
+    if (rec._manualGen !== myGen) return { ok: false, id: rec.id, rid: r, superseded: true, state: rec.manualState };
+    if (this._stopped) { rec.manualState = 'LEFT'; return { ok: false, id: rec.id, rid: r, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+    if (!seated) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_NOT_CONFIRMED', message: 'no TABLE_STATE membership within timeout' }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, state: 'JOIN_FAILED', error: rec.lastError }; }
+    rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+    this._mark(`M_${intent}_CONFIRMED`, { id: rec.id, rid: r, seat: rec.ctx.seat() });
+    this.emit('update', this.snapshot());
+    const ts = rec.ctx.tableState();
+    return { ok: true, id: rec.id, rid: r, state: 'JOINED', seat: rec.ctx.seat(), membership: ts ? ts.uids.slice() : [], fingerprint: ts && ts.identity ? ts.identity.value : null };
+  }
+
+  // FIND a table on ONE browser: native JOIN by the chosen channel/stake and report the RID it landed
+  // in (that browser's own _joinedRid) for the user to share. No matchmaking coupling to other browsers.
+  async manualFindTable(profileId, channel, opts = {}) {
+    const ch = Number.isFinite(channel) ? channel : (channel != null && String(channel).trim() !== '' ? Number(channel) : this._selectedStake);
+    if (ch == null || !Number.isFinite(ch)) { const rec = this._rec(profileId); if (rec) rec.manualState = 'ERROR'; return { ok: false, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'chọn mức cược/kênh để tìm bàn' } }; }
+    const res = await this.manualJoinRoom(profileId, ch, { ...opts, intent: 'FIND' });
+    return res.ok ? { ...res, state: 'FOUND', roomAnchor: res.rid } : res;
+  }
+
+  // REJOIN ONE browser using ITS OWN last known RID (never a fresh find, never a new room).
+  async manualRejoin(profileId, opts = {}) {
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
+    const rid = rec._joinedRid != null ? rec._joinedRid : rec._lastRid; // survives an intentional LEAVE
+    if (rid == null) return { ok: false, id: rec.id, error: { code: 'PHOM_REJOIN_NO_RID', message: 'Chưa có Room/RID để Rejoin' } };
+    return this.manualJoinRoom(profileId, rid, { ...opts, intent: 'REJOIN' });
+  }
+
+  // LEAVE ONE browser only (never leave-all). Sends the native LEAVE and clears that browser's table.
+  async manualLeave(profileId) {
+    if (!this._guard()) return this._unauthorized();
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
+    rec._manualGen = (rec._manualGen || 0) + 1; // cancel any in-flight join for THIS browser
+    rec.manualState = 'LEAVING';
+    this.emit('update', this.snapshot());
+    let ok = true; try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { ok = false; }
+    rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.LEFT; rec.manualState = 'LEFT';
+    this._mark('M_LEAVE_SENT', { id: rec.id });
+    this.emit('update', this.snapshot());
+    return { ok, id: rec.id, state: 'LEFT' };
+  }
+
+  // Per-browser INDEPENDENT state for the manual UI (no host/follower; stable Browser 1/2/3 order).
+  manualBrowserSnapshot() {
+    const recs = [...this._profiles.values()];
+    return recs.map((rec, i) => {
+      const c = rec.ctx.get();
+      const ts = rec.ctx.tableState();
+      return {
+        browserIndex: i + 1, profileId: rec.id, displayName: rec.displayName,
+        username: this._username(rec) || 'USER_UNKNOWN',
+        connected: c.connected, socketReady: c.socketReady,
+        rid: rec._joinedRid != null ? rec._joinedRid : null,
+        lastRid: rec._lastRid != null ? rec._lastRid : null,
+        canRejoin: (rec._joinedRid != null || rec._lastRid != null),
+        manualState: rec.manualState || (c.socketReady && c.connected ? 'READY' : 'CLOSED'),
+        seat: c.seat, uid: shortUid(c.uid),
+        membership: ts ? ts.uids.map(shortUid) : [],
+        playerCount: ts ? ts.playerCount : 0,
+        lastError: rec.lastError || null,
+      };
+    });
+  }
+
+  // Screen 2 — cards REMAINING after removing every card held by the three browsers (NOT player 4).
+  remainingCards(opts = {}) {
+    const hands = [...this._profiles.values()].map((rec) => (rec.hand && Array.isArray(rec.hand.cardsRaw) ? rec.hand.cardsRaw : []));
+    return remainingCardsView(hands, opts);
   }
 
   // ---- Phase-3B FINAL: host-first discovery / validation / restart ----
