@@ -29,8 +29,11 @@
 /* The `hidden` attribute must win over element display rules — otherwise a hidden
    screen still paints over the visible one. */
 [hidden] { display: none !important; }
-body { margin: 0; font-family: "Segoe UI", system-ui, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; font-size: 13px; }
-.mono { font-family: ui-monospace, Consolas, monospace; }
+body { margin: 0; font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; font-size: 13px; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility; letter-spacing: .1px; }
+.mono { font-family: ui-monospace, "Cascadia Mono", Consolas, monospace; }
+/* PHASE 6.3 — Lucide-style inline SVG icons (no emoji glyphs, §6). Uniform 1.75px stroke. */
+.lucide { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.75; stroke-linecap: round; stroke-linejoin: round; fill: none; flex: 0 0 auto; vertical-align: -3px; }
+.lucide.sm { width: 14px; height: 14px; }
 
 /* Focus visibility (a11y): every interactive control gets a clear focus ring. */
 button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible, summary:focus-visible {
@@ -345,3 +348,81 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .bet-find { display: flex; gap: 4px; align-items: center; }
 .bet-find .bet-sel { flex: 1; min-width: 64px; padding: 2px 4px; font-size: 12px; }
 .sel.sm { padding: 2px 4px; font-size: 12px; }
+
+/* ============================================================================
+   PHASE 6.3 — unified design language (redesign). Overrides earlier compact
+   styles for the two tabs, the browser PANELS, tables, badges and icon buttons.
+   Presentation only; reuses the existing light tokens. ============================================================================ */
+
+/* icon buttons (icon-only, tooltip-driven, §6/§24) */
+.icon-wrap { display: inline-flex; align-items: center; }
+.icon-btn2 { display: inline-flex; align-items: center; justify-content: center; width: 30px; height: 28px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: var(--text-2); cursor: pointer; }
+.icon-btn2:hover { background: var(--panel-2); color: var(--text); border-color: var(--border-strong); }
+.icon-btn2.danger:hover { color: var(--error); border-color: #e7b7b7; background: var(--error-bg); }
+.btn .lucide, .bc-main .lucide { margin-right: 5px; }
+.spin { animation: phq-spin .9s linear infinite; }
+@keyframes phq-spin { to { transform: rotate(360deg); } }
+
+/* status dots + badges (semantic; §22) */
+.status-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--text-faint); }
+.status-dot.ok { background: var(--success); }
+.status-dot.warn { background: var(--warning); }
+.status-dot.danger { background: var(--error); }
+.status-dot.info { background: var(--primary); }
+.status-dot.off { background: var(--text-faint); }
+.bc-badge { display: inline-flex; align-items: center; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .3px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--text-2); background: var(--panel-2); }
+.bc-badge.ok { color: var(--success); background: var(--success-bg); border-color: #bfe3ca; }
+.bc-badge.warn { color: var(--warning); background: var(--warning-bg); border-color: #f0d9ab; }
+.bc-badge.danger { color: var(--error); background: var(--error-bg); border-color: #f0c4c4; }
+.bc-badge.info { color: var(--primary); background: #e8f0fe; border-color: #c5d8fb; }
+
+/* PHỎM tab: header */
+.tool-header { align-items: center; gap: 14px; padding: 6px 4px 10px; }
+.tool-header .th-brand { font-size: 16px; font-weight: 600; letter-spacing: .2px; }
+.tool-header .th-rid, .tool-header .th-bet, .tool-header .th-still { display: inline-flex; align-items: baseline; gap: 6px; font-size: 11px; font-weight: 600; letter-spacing: .4px; color: var(--text-faint); text-transform: uppercase; }
+.tool-header .th-rid { margin-left: auto; }
+.tool-header .th-rid b, .tool-header .th-bet b, .tool-header .th-still b { font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: 0; text-transform: none; }
+
+/* PHỎM tab: browser PANELS (cards) — the redesigned B1/B2/B3 */
+.browser-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 6px 0 4px; align-items: stretch; }
+.browser-cell { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; background: var(--panel); box-shadow: var(--shadow); min-height: 132px; }
+.browser-cell.st-ok { border-color: #bfe3ca; }
+.browser-cell.st-warn { border-color: #f0d9ab; }
+.browser-cell.st-danger { border-color: #f0c4c4; }
+.bc-head { display: flex; align-items: center; justify-content: space-between; }
+.bc-id { font-size: 15px; font-weight: 700; letter-spacing: .5px; }
+.bc-meta { display: flex; flex-direction: column; gap: 1px; line-height: 1.35; }
+.bc-dev { font-size: 12px; font-weight: 500; color: var(--text); }
+.bc-res { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.bc-body { margin-top: auto; display: flex; flex-direction: column; gap: 6px; }
+.bc-main { width: 100%; justify-content: center; height: 34px; font-weight: 600; }
+.bc-life { display: flex; gap: 6px; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 8px; }
+.bc-life .btn { flex: none; }
+.chip.busy { display: inline-flex; align-items: center; gap: 6px; }
+
+/* bet selector inside a panel */
+.bet-find { display: flex; gap: 6px; align-items: center; }
+.bet-find .bet-sel { flex: 1; min-width: 60px; height: 30px; }
+.bet-find .btn { height: 30px; }
+
+/* buttons — consistent sizing/weight */
+.btn { display: inline-flex; align-items: center; justify-content: center; border: 1px solid var(--border-strong); background: var(--panel); color: var(--text); border-radius: 8px; padding: 6px 12px; font-size: 12px; font-weight: 600; cursor: pointer; }
+.btn:hover { background: var(--panel-2); }
+.btn.primary { background: var(--primary); border-color: var(--primary); color: var(--primary-ink); }
+.btn.primary:hover { background: var(--primary-hover); border-color: var(--primary-hover); }
+.btn.danger { color: var(--error); border-color: #e7b7b7; }
+.btn.danger:hover { background: var(--error-bg); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+.btn.sm { padding: 4px 10px; font-size: 12px; }
+
+/* SETUP tab: device profiles TABLE (§9/§10) */
+.setup-table { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 12px; }
+.setup-table th { text-align: left; font-size: 10px; font-weight: 600; letter-spacing: .5px; text-transform: uppercase; color: var(--text-faint); padding: 6px 10px; border-bottom: 1px solid var(--border); }
+.setup-table td { padding: 8px 10px; border-bottom: 1px solid var(--border); vertical-align: middle; }
+.setup-table tr:last-child td { border-bottom: none; }
+.setup-table .col-name { font-weight: 600; }
+.setup-table .col-tag { color: var(--primary); font-weight: 700; width: 28px; }
+.setup-table .num { font-variant-numeric: tabular-nums; color: var(--text-2); }
+.setup-panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.setup-section-h { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; }
+.setup-section-h .h-title { font-size: 13px; font-weight: 600; }

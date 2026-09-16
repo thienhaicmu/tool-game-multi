@@ -71,10 +71,10 @@ test('no manual stake input and no username anywhere in the main control surface
   }
 });
 
-test('lifecycle controls: ↻ WEB and ⏻ appear per browser card', () => {
+test('lifecycle controls: reload-web + power icon buttons appear per browser card (§6/§24)', () => {
   const cell = fn(js, 'compactBrowserCell');
-  assert.match(cell, /↻ WEB/);
-  assert.match(cell, /onReloadWeb\(runId\)/);
-  assert.match(cell, /onCloseBrowser\(slot, runId\)/);
+  // PHASE 6.3 — icon buttons (no emoji glyphs); wiring + tooltips preserved
+  assert.match(cell, /iconButton\('refresh',[\s\S]*?onReloadWeb\(runId\)/);
+  assert.match(cell, /iconButton\('power',[\s\S]*?onCloseBrowser\(slot, runId\)/);
   assert.match(cell, /MỞ CHROMIUM/);
 });

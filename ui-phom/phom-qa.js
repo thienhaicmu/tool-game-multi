@@ -84,6 +84,30 @@
     return n;
   }
   const $ = (id) => document.getElementById(id);
+
+  // PHASE 6.3 — Lucide-style inline SVG icon set (no emoji glyphs, §6). icon(name) returns an <svg>.
+  const ICON_PATHS = {
+    refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
+    power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>',
+    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
+    trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
+    plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
+    search: '<circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    play: '<path d="m7 4 13 8-13 8Z"/>',
+    logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
+    monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
+  };
+  function icon(name, opts) {
+    const span = document.createElement('span');
+    span.className = 'icon-wrap'; span.setAttribute('aria-hidden', 'true');
+    span.innerHTML = `<svg class="lucide${opts && opts.sm ? ' sm' : ''}" viewBox="0 0 24 24">${ICON_PATHS[name] || ''}</svg>`;
+    return span.firstChild;
+  }
+  // An icon-only button with a mandatory tooltip (§6). `variant` maps to a btn class.
+  function iconButton(name, title, onClick, variant) {
+    return el('button', { class: 'icon-btn2' + (variant ? ' ' + variant : ''), title, 'aria-label': title, onclick: onClick }, icon(name, { sm: true }));
+  }
   const pill = (l, v, c) => el('span', { class: 'pill ' + (c || '') }, l + ' ', el('b', null, String(v)));
 
   // ---------- boot / license ----------
@@ -255,10 +279,21 @@
     return panel;
   }
 
-  // LEFT panel 2 — THIẾT BỊ VÀ PROXY ĐÃ GÁN: A/B/C display rows (NO proxy selector/Test).
+  // LEFT panel 2 — THIẾT BỊ VÀ PROXY ĐÃ GÁN, rendered as a DEVICE PROFILES TABLE (§9/§10): one row per
+  // browser (B1/B2/B3) with Type / OS Window / Viewport / Proxy columns + an Edit icon. No proxy
+  // selector/Test here (Quick Proxy is the config surface). Data model unchanged (still the 3 slots).
+  const SLOT_INDEX = { A: '1', B: '2', C: '3' };
+  const TYPE_LABEL = { DESKTOP: 'Desktop', LAPTOP: 'Laptop', LAPTOP_SMALL: 'Laptop Small', MOBILE_LANDSCAPE: 'Mobile Ngang', CUSTOM: 'Custom' };
   function panelAssigned() {
-    const panel = el('div', { class: 's1-panel' }, el('div', { class: 's1-panel-t' }, 'THIẾT BỊ VÀ PROXY ĐÃ GÁN'));
-    for (const slot of SLOTS) panel.appendChild(assignedRow(slot));
+    const panel = el('div', { class: 's1-panel setup-panel' });
+    panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title s1-panel-t' }, 'THIẾT BỊ VÀ PROXY ĐÃ GÁN')));
+    const table = el('table', { class: 'setup-table' });
+    table.appendChild(el('thead', null, el('tr', null,
+      el('th', null, ''), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, ''))));
+    const tbody = el('tbody');
+    for (const slot of SLOTS) tbody.appendChild(assignedRow(slot));
+    table.appendChild(tbody);
+    panel.appendChild(table);
     return panel;
   }
   function assignedRow(slot) {
@@ -270,16 +305,18 @@
     const pxText = px ? `${px.protocol}://${px.host}:${px.port}` : 'Trực tiếp (không proxy)';
     // Proxy is OPTIONAL — a slot with no proxyRef renders DIRECT (not an error).
     const status = !a.proxyRef ? 'DIRECT' : a.testState;
-    // §8/§13 — surface BOTH OS window + game viewport independently.
-    const osTxt = dev ? (dev.osWindow || 'Desktop Window') : '';
-    const devText = dev ? `${dev.name} · OS ${osTxt} · VP ${dev.resolution}` : '(chưa tạo)';
-    return el('div', { class: 'prow s1', id: 'setup-' + slot },
-      el('span', { class: 'slot-tag' }, slot),
-      el('span', { class: 'ar-dev', title: dev ? devText : '(chưa tạo thiết bị)' },
-        devText,
-        el('button', { class: 'icon-btn', title: dev ? 'Sửa thiết bị' : 'Tạo thiết bị', onclick: () => openDeviceModal(slot) }, '✎')),
-      el('span', { class: 'ar-px', title: pxText }, pxText),
-      el('span', { class: 'badge ' + testBadge(status), title: a.ip ? ('IP ' + a.ip) : '' }, status),
+    // §8/§13 — OS window and game viewport are independent axes; show both columns.
+    const typeText = dev ? (TYPE_LABEL[dev.profileType] || dev.profileType || '—') : '—';
+    const osText = dev ? (dev.osWindow || (dev.osWindowWidth ? `${dev.osWindowWidth}×${dev.osWindowHeight}` : 'Desktop')) : '—';
+    const vpText = dev ? dev.resolution : '—';
+    return el('tr', { class: 'prow s1', id: 'setup-' + slot },
+      el('td', { class: 'col-tag' }, SLOT_INDEX[slot] || slot),
+      el('td', { class: 'col-name', title: dev ? dev.name : '(chưa tạo thiết bị)' }, dev ? dev.name : el('span', { class: 'faint' }, '(chưa tạo)')),
+      el('td', null, typeText),
+      el('td', { class: 'num' }, osText),
+      el('td', { class: 'num' }, vpText),
+      el('td', { class: 'ar-px', title: pxText }, el('span', { class: 'badge ' + testBadge(status) }, status)),
+      el('td', null, iconButton('edit', dev ? 'Sửa thiết bị' : 'Tạo thiết bị', () => openDeviceModal(slot))),
     );
   }
 
@@ -629,10 +666,11 @@
     SLOTS.forEach((slot, i) => row.appendChild(compactBrowserCell(i + 1, slot, assign[slot].runId)));
     return row;
   }
+  // PHASE 6.3 — a professional browser PANEL (card): header (B# + status badge) · device meta · body
+  // (single business action) · footer (icon buttons). Presentation only — all handlers unchanged.
   function compactBrowserCell(index, slot, runId) {
-    const cell = el('div', { class: 'browser-cell' });
-    const cs = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot];
-    const chromiumClosed = !!(cs && cs.browserState && cs.browserState !== 'OPEN' && cs.browserState !== 'NOT_OPEN');
+    const cs = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
+    const chromiumClosed = !!(cs.browserState && cs.browserState !== 'OPEN' && cs.browserState !== 'NOT_OPEN');
     const opened = !!runId && !chromiumClosed;
     const inGame = opened && slotInPhom(runId);
     const mb = opened ? manualBrowserById(runId) : null;
@@ -640,40 +678,59 @@
     const entering = opened && !inGame && !!manualEntering[runId];
     const joining = opened && inGame && !!manualJoining[runId];
     const enterErr = opened && !inGame && manualEnterError[runId];
-    const dot = !runId ? '⚪' : (chromiumClosed ? '🔴' : ((b.manualState === 'SEARCHING' || entering || joining) ? '🟡' : (inGame ? '🟢' : '⚪')));
-    cell.appendChild(el('div', { class: 'bc-line' }, el('span', { class: 'bl' }, 'B' + index + ' ', dot)));
+    const joinedShared = opened && inGame && b.manualState === 'JOINED' && manualCluster.sharedRid != null && Number(b.rid) === Number(manualCluster.sharedRid);
+    const st = !runId ? { label: 'CHƯA MỞ', cls: 'off' }
+      : chromiumClosed ? { label: 'OFFLINE', cls: 'off' }
+      : entering ? { label: 'ĐANG VÀO GAME', cls: 'warn' }
+      : joining ? { label: 'ĐANG VÀO BÀN', cls: 'warn' }
+      : b.manualState === 'SEARCHING' ? { label: 'ĐANG TÌM BÀN', cls: 'warn' }
+      : joinedShared ? { label: 'ĐÃ VÀO BÀN', cls: 'ok' }
+      : inGame ? { label: 'ĐÃ VÀO GAME', cls: 'ok' }
+      : enterErr ? { label: 'LỖI VÀO GAME', cls: 'danger' }
+      : { label: 'ONLINE', cls: 'info' };
+    const cell = el('div', { class: 'browser-cell st-' + st.cls });
+    // header: B# + status badge
+    cell.appendChild(el('div', { class: 'bc-head' },
+      el('div', { class: 'bc-id' }, 'B' + index),
+      el('span', { class: 'bc-badge ' + st.cls }, el('span', { class: 'status-dot ' + st.cls }), st.label)));
+    // device metadata (name · resolution) — no account/login name is ever shown (§7)
+    cell.appendChild(el('div', { class: 'bc-meta' },
+      el('span', { class: 'bc-dev' }, cs.deviceName || 'Chưa gán thiết bị'),
+      cs.resolution ? el('span', { class: 'bc-res' }, cs.resolution) : null));
 
-    // primary business action (single button) — from authoritative state.
-    if (!runId) { cell.appendChild(el('span', { class: 'faint sm' }, 'chưa mở')); return cell; }
+    const body = el('div', { class: 'bc-body' });
+    if (!runId) { body.appendChild(el('span', { class: 'faint sm' }, 'Mở 3 trình duyệt ở tab SETUP.')); cell.appendChild(body); return cell; }
     if (chromiumClosed) {
-      cell.appendChild(el('span', { class: 'chip red sm' }, '● OFFLINE'));
-      cell.appendChild(el('button', { class: 'btn primary sm', onclick: () => onReopenBrowser(slot) }, '＋ MỞ CHROMIUM'));
-      return cell;
+      body.appendChild(el('span', { class: 'faint sm' }, 'Chromium chưa mở.'));
+      body.appendChild(el('button', { class: 'btn primary bc-main', onclick: () => onReopenBrowser(slot) }, icon('monitor', { sm: true }), ' MỞ CHROMIUM'));
+      cell.appendChild(body); return cell;
     }
-    if (entering) cell.appendChild(el('span', { class: 'chip yellow sm' }, 'ĐANG VÀO GAME…'));
-    else if (joining) cell.appendChild(el('span', { class: 'chip yellow sm' }, 'ĐANG VÀO BÀN…'));
+    if (entering) body.appendChild(el('span', { class: 'chip yellow sm busy bc-main' }, spinner(), ' ĐANG VÀO GAME…'));
+    else if (joining) body.appendChild(el('span', { class: 'chip yellow sm busy bc-main' }, spinner(), ' ĐANG VÀO BÀN…'));
     else {
       const act = MCS ? MCS.browserAction(manualCluster, b, { opened, inGame, entering: false }) : { action: 'ENTER_GAME', label: 'VÀO GAME' };
-      cell.appendChild(actionButton(act, b, runId, inGame));
+      body.appendChild(actionButton(act, b, runId, inGame));
     }
-    if (enterErr) cell.appendChild(el('span', { class: 'chip red sm', title: enterErr }, 'VÀO GAME THẤT BẠI'));
-    if (opened && inGame && b.manualState === 'ERROR' && manualCluster.sharedRid != null && b.lastError) cell.appendChild(el('span', { class: 'chip red sm', title: errText({ error: b.lastError }) }, 'VÀO BÀN THẤT BẠI'));
-
-    // lifecycle row: ↻ WEB (reload/re-open web in the SAME Chromium) + ⏻ (close this Chromium only).
+    if (enterErr) body.appendChild(el('span', { class: 'chip red sm', title: enterErr }, 'VÀO GAME THẤT BẠI'));
+    if (inGame && b.manualState === 'ERROR' && manualCluster.sharedRid != null && b.lastError) body.appendChild(el('span', { class: 'chip red sm', title: errText({ error: b.lastError }) }, 'VÀO BÀN THẤT BẠI'));
+    cell.appendChild(body);
+    // footer: reload web (same Chromium) + power (close this Chromium only) — icon buttons + tooltips (§24).
     cell.appendChild(el('div', { class: 'bc-life' },
-      el('button', { class: 'btn sm', title: 'Tải lại / mở lại web trong chính Chromium này', onclick: () => onReloadWeb(runId) }, '↻ WEB'),
-      el('button', { class: 'btn danger sm', title: 'Tắt Chromium này (không đóng Tool/B khác)', onclick: () => onCloseBrowser(slot, runId) }, '⏻')));
+      iconButton('refresh', 'Tải lại / mở lại web trong chính Chromium này (Reload web)', () => onReloadWeb(runId)),
+      iconButton('power', 'Tắt Chromium này (không đóng Tool/các browser khác)', () => onCloseBrowser(slot, runId), 'danger')));
     return cell;
   }
   // Build the single business-action button from the browserAction decision.
   function actionButton(act, b, runId, inGame) {
-    if (act.busy) return el('span', { class: 'chip yellow sm' }, act.label);
-    if (act.action === 'ENTER_GAME') return el('button', { class: 'btn primary sm', onclick: () => manualEnterGame(runId) }, act.label);
+    if (act.busy) return el('span', { class: 'chip yellow sm busy' }, spinner(), ' ' + act.label);
+    if (act.action === 'ENTER_GAME') return el('button', { class: 'btn primary bc-main', onclick: () => manualEnterGame(runId) }, icon('play', { sm: true }), ' ' + act.label);
     if (act.action === 'FIND') return betFindGroup(b, runId, inGame); // PHASE 6.2.3 — real bet selector + TÌM BÀN
-    if (act.action === 'JOIN_SHARED') return el('button', { class: 'btn primary sm', onclick: () => onManualJoinShared(b) }, act.label); // VÀO BÀN → shared RID
-    if (act.action === 'LEAVE') return el('button', { class: 'btn danger sm', onclick: () => onManualLeave(b) }, act.label);       // THOÁT GAME
+    if (act.action === 'JOIN_SHARED') return el('button', { class: 'btn primary bc-main', onclick: () => onManualJoinShared(b) }, icon('logout', { sm: true }), ' ' + act.label); // VÀO BÀN → shared RID
+    if (act.action === 'LEAVE') return el('button', { class: 'btn danger bc-main', onclick: () => onManualLeave(b) }, act.label);       // THOÁT GAME
     return el('span', { class: 'faint sm' }, act.label);
   }
+  // A real spinning loader icon (§27) — no emoji, no heavy animation.
+  function spinner() { const s = icon('refresh', { sm: true }); try { s.classList.add('spin'); } catch {} return s; }
   // PHASE 6.2.3 — the finder's bet selector (REAL server stakes) + TÌM BÀN. The stake list comes from this
   // browser's own betOptions (distinct rs[].b); FIND is enabled only after a stake is chosen (§5/§11). No
   // manual number input, no hard-coded list. While a search is running, FIND is search-locked as before.
@@ -681,8 +738,8 @@
     const group = el('div', { class: 'bet-find' });
     const options = (b && Array.isArray(b.betOptions)) ? b.betOptions : [];
     if (!options.length) {
-      group.appendChild(el('span', { class: 'chip yellow sm' }, 'CƯỢC: đang tải…'));
-      group.appendChild(el('button', { class: 'btn sm', title: 'Tải lại danh sách mức cược', onclick: () => onRefreshBets(runId) }, '↻'));
+      group.appendChild(el('span', { class: 'chip yellow sm busy' }, spinner(), ' CƯỢC: đang tải…'));
+      group.appendChild(iconButton('refresh', 'Tải lại danh sách mức cược', () => onRefreshBets(runId)));
       return group;
     }
     const selected = selectedStakeByBrowser[runId];
@@ -693,6 +750,7 @@
     const sel = el('select', { class: 'sel sm bet-sel', onchange: (e) => { const v = e.target.value ? Number(e.target.value) : null; selectedStakeByBrowser[runId] = v; setEnabled(v); } },
       el('option', { value: '' }, 'CƯỢC…'));
     for (const s of options) { const o = el('option', { value: String(s) }, String(s)); if (selected != null && Number(selected) === Number(s)) o.setAttribute('selected', 'selected'); sel.appendChild(o); }
+    findBtn.insertBefore(icon('search', { sm: true }), findBtn.firstChild); // TÌM BÀN with a search icon
     group.appendChild(sel);
     setEnabled(selected); // §11 — FIND needs a chosen stake
     group.appendChild(findBtn);

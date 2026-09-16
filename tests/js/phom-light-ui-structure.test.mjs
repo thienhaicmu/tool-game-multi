@@ -74,7 +74,7 @@ test('Screen 1 is a TWO-COLUMN grid: left = general + assigned devices/proxy, ri
 test('Screen 1 assigned rows are DISPLAY-only (no duplicate proxy selector/Test in each profile)', () => {
   assert.match(js, /function assignedRow\(slot\)/);
   const rowStart = js.indexOf('function assignedRow(slot) {');
-  const rowBody = js.slice(rowStart, rowStart + 1200);
+  const rowBody = js.slice(rowStart, rowStart + 2000);
   assert.equal(/proxySelector\(slot\)/.test(rowBody), false, 'no proxy <select> inside the assigned row');
   assert.equal(/testProxy\(slot\)/.test(rowBody), false, 'no per-row Test button (Quick Proxy is the config place)');
   assert.match(rowBody, /ar-px/);      // shows the ASSIGNED proxy (redacted) as text
