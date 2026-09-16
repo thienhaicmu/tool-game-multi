@@ -92,23 +92,40 @@ test('bootScript is idempotent, exposes the render hook + binding, and uses THO�
   assert.equal(/innerHTML|canvas|document\.title\s*=/.test(src), false);
 });
 
+// PHASE 6.3.2.2 — self-healing + identity.
+test('bootScript self-heals (re-mounts if the bar was removed) and carries browser identity + actionId', () => {
+  const src = gh.bootScript({ slotId: 'B2', profileId: 'prof-x', runId: 'run-9' });
+  // already-installed but bar missing => re-mount instead of returning early
+  assert.match(src, /if \(window\.__phomHeaderInstalled\) \{ if \(!document\.getElementById\('__phom_header'\) && window\.__phomHeaderMount\) window\.__phomHeaderMount\(\); return; \}/);
+  assert.match(src, /window\.__phomHeaderMount = ready/);
+  // every action carries slot/profile/run identity + a correlation actionId
+  assert.match(src, /"slotId":"B2"/);
+  assert.match(src, /"profileId":"prof-x"/);
+  assert.match(src, /"runId":"run-9"/);
+  assert.match(src, /actionId:/);
+  assert.match(src, /slotId: ID\.slotId/);
+});
+
 test('bootScript honors a custom binding name', () => {
   assert.match(gh.bootScript({ bindingName: '__x' }), /const BID = "__x"/);
 });
 
 // ---- phom-header-bridge — CDP install + push (mock client) ----
-function mockClient() {
-  const calls = { addBinding: [], addScript: [], evaluate: [], bindingCbs: [], navCbs: [] };
+function mockClient({ present = true } = {}) {
+  const calls = { addBinding: [], addScript: [], evaluate: [], bindingCbs: [], navCbs: [], loadCbs: [], domCbs: [] };
   return {
     calls,
     Runtime: {
       enable: async () => {}, addBinding: async (a) => { calls.addBinding.push(a); },
-      evaluate: async (a) => { calls.evaluate.push(a.expression); return {}; },
+      // verifyPresent uses returnByValue; the bar-injection evaluates just record the expression.
+      evaluate: async (a) => { calls.evaluate.push(a.expression); return a.returnByValue ? { result: { value: present } } : {}; },
       bindingCalled: (cb) => calls.bindingCbs.push(cb),
     },
     Page: {
       enable: async () => {}, addScriptToEvaluateOnNewDocument: async (a) => { calls.addScript.push(a.source); },
       frameNavigated: (cb) => calls.navCbs.push(cb),
+      loadEventFired: (cb) => calls.loadCbs.push(cb),
+      domContentEventFired: (cb) => calls.domCbs.push(cb),
     },
   };
 }
@@ -146,12 +163,64 @@ test('pushHeaderState evaluates window.__phomHeaderRender with the JSON state', 
   assert.match(c.calls.evaluate[0], /window\.__phomHeaderRender && window\.__phomHeaderRender\(\{"account":"Simms","rid":"5"\}\)/);
 });
 
+// PHASE 6.3.2.2 — the boot is re-driven from EVERY lifecycle signal (attach + load + DOMContentLoaded +
+// top-frame navigation), so the header is present whether attach lands before or after the page loaded.
+test('installHeader re-injects the boot on load / DOMContentLoaded / top-frame navigation (not once)', async () => {
+  const c = mockClient();
+  await bridge.installHeader(c, { runId: 'B1', slotId: 'B1', boot: 'BOOT();', onAction: () => {} });
+  const injectedAtAttach = c.calls.evaluate.filter((e) => e === 'BOOT();').length;
+  assert.ok(injectedAtAttach >= 1, 'injected on attach');
+  assert.equal(c.calls.loadCbs.length, 1); c.calls.loadCbs[0]();
+  assert.equal(c.calls.domCbs.length, 1); c.calls.domCbs[0]();
+  c.calls.navCbs[0]({ frame: { url: 'x' } }); // top frame (no parentId)
+  await new Promise((r) => setImmediate(r));
+  assert.ok(c.calls.evaluate.filter((e) => e === 'BOOT();').length >= injectedAtAttach + 3, 'boot re-driven by each signal');
+});
+
+test('installHeader logs each step and reports errors instead of swallowing them', async () => {
+  const events = [];
+  const c = mockClient();
+  await bridge.installHeader(c, { runId: 'B1', slotId: 'B1', boot: 'B();', onAction: () => {}, log: (ev, d) => events.push({ ev, d }) });
+  const names = events.map((e) => e.ev);
+  assert.ok(names.includes('binding-install'));
+  assert.ok(names.includes('header-inject'));
+  assert.ok(names.includes('header-ready'));
+  // a routed click is logged with its actionId (traceable end-to-end)
+  c.calls.bindingCbs[0]({ name: '__phomAction', payload: JSON.stringify({ action: 'ENTER_GAME', actionId: 'a1' }) });
+  await new Promise((r) => setImmediate(r));
+  assert.ok(events.some((e) => e.ev === 'action-received' && e.d && e.d.actionId === 'a1'));
+});
+
+test('verifyPresent reflects whether the bar + binding exist in the page', async () => {
+  assert.equal(await bridge.verifyPresent(mockClient({ present: true })), true);
+  assert.equal(await bridge.verifyPresent(mockClient({ present: false })), false);
+});
+
 // ---- main-process wiring (source-level) ----
 const main = read('desktop/phom-main.cjs');
 
-test('main installs the header on attach and routes clicks to the coordinator', () => {
-  assert.match(main, /headerBridge\.installHeader\(client, \{ runId: run\.id, boot: gameHeader\.bootScript\(\)/);
-  assert.match(main, /onAction: \(rid, payload\) => phomHeaderAction\(rid, payload\)/);
+test('main installs the header on attach with per-run identity + logging, routes clicks to the coordinator', () => {
+  assert.match(main, /gameHeader\.bootScript\(\{ slotId: run\.slot \|\| null, profileId: run\.profileId \|\| null, runId: run\.id \}\)/);
+  assert.match(main, /headerBridge\.installHeader\(client, \{ runId: run\.id, slotId: run\.slot \|\| null, boot, onAction: \(rid, payload\) => phomHeaderAction\(rid, payload\), log: headerLog \}\)/);
+});
+
+// PHASE 6.3.2.2 — reliability guards in the action router.
+test('router has a per-browser duplicate-action guard, a dead-session guard, and identity cross-check', () => {
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 3400);
+  assert.match(r, /headerActionBusy\[rid\]/);           // one op per browser
+  assert.match(r, /PHOM_HEADER_BUSY/);
+  assert.match(r, /if \(!runClientFor\(rid\)\)/);        // never route into a dead CDP session
+  assert.match(r, /PHOM_HEADER_NO_CLIENT/);
+  assert.match(r, /identity-mismatch/);                  // payload identity cross-check (never cross-route)
+  assert.match(r, /finally \{ delete headerActionBusy\[rid\]/);
+});
+
+test('main tracks header readiness + exposes read-only runtime/CDP/header status for Screen 2', () => {
+  assert.match(main, /const headerReady = Object\.create\(null\)/);
+  assert.match(main, /function browserRuntimeStatus\(runId\)/);
+  assert.match(main, /header: \(cdp && headerReady\[String\(runId\)\]\) \? 'READY' : 'NOT_READY'/);
+  // the manual snapshot merges it per browser
+  assert.match(main, /Object\.assign\(b, browserRuntimeStatus\(b\.profileId\)\)/);
 });
 
 test('main pushes header state on every session update (no Tool screen needed)', () => {

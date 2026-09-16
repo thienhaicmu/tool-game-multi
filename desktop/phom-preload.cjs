@@ -73,6 +73,9 @@ contextBridge.exposeInMainWorld('phomQA', {
   onLog: (cb) => ipcRenderer.on('phom:log', (_e, l) => cb(l)),
   // custom Chromium runtime + cluster control-plane
   chromiumStatus: () => ipcRenderer.invoke('phom:chromium-status'),
+  // PHASE 6.3.2.2 — browser runtime preference (Custom Chromium / Google Chrome)
+  browserRuntimeGet: () => ipcRenderer.invoke('phom:browser-runtime-get'),
+  browserRuntimeSet: (cfg) => ipcRenderer.invoke('phom:browser-runtime-set', cfg),
   clusterCreate: (config) => ipcRenderer.invoke('phom:cluster-create', config),
   clusterOpen: () => ipcRenderer.invoke('phom:cluster-open'),
   clusterConnect: () => ipcRenderer.invoke('phom:cluster-connect'),

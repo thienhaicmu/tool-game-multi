@@ -70,6 +70,7 @@
   // PHASE 6.3.1 — flexible N-profile SETUP: the profile LIST + the ordered selection (→ B1/B2/B3) + game URL.
   const PS = (typeof window !== 'undefined' && window.ProfileSelection) ? window.ProfileSelection : null;
   let profilesX = [];              // all saved device profiles (from phom:profiles-list)
+  let browserRuntimeInfo = null;   // PHASE 6.3.2.2 — { preference, customAvailable, chromeAvailable, resolved }
   let selectedProfileIds = [];     // ORDERED selection (max 3); selection order → B1/B2/B3
   let bulkProxyText = '';          // bulk-proxy textarea (one proxy per line)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
@@ -158,6 +159,7 @@
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
     await refreshClusterProfiles();
     await refreshProfilesX(); // PHASE 6.3.1 — load the flexible profile list
+    await refreshBrowserRuntime(); // PHASE 6.3.2.2 — load the browser runtime preference/availability
     // Land in CONTROL if a cluster is already open (e.g. renderer reload), else SETUP.
     uiState = clusterIsOpen() ? UI.CONTROL : UI.SETUP;
     renderApp();
@@ -254,8 +256,27 @@
     const page = el('div', { class: 'setup-page' });
     page.appendChild(profileTablePanel());
     page.appendChild(bulkProxyPanel());
+    page.appendChild(browserRuntimePanel());
     r.appendChild(page);
     r.appendChild(runGameFooter());
+  }
+
+  // PHASE 6.3.2.2 — BROWSER RUNTIME selector (AUTO / Custom Chromium / Google Chrome). AUTO prefers the
+  // packaged custom Chromium and falls back to Chrome. Persisted; per-profile user-data-dir/cookie/URL are
+  // unaffected by the choice. Read-only availability hints come from the main resolver.
+  function browserRuntimePanel() {
+    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
+    panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title' }, 'BROWSER RUNTIME ', el('span', { class: 'faint sm' }, '· engine chạy 3 trình duyệt'))));
+    const body = el('div', { style: 'padding:0 12px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap' });
+    const rt = browserRuntimeInfo || {};
+    const opt = (val, label) => el('option', { value: val, selected: (rt.preference || 'AUTO') === val ? 'selected' : null }, label);
+    const sel = el('select', { class: 'sel sm', onchange: async (e) => { const res = await api.browserRuntimeSet({ preference: e.target.value }); if (res && res.ok) { await refreshBrowserRuntime(); renderApp(); } } },
+      opt('AUTO', 'AUTO (Chromium → Chrome)'), opt('CUSTOM_CHROMIUM', 'Custom Chromium'), opt('GOOGLE_CHROME', 'Google Chrome'));
+    body.appendChild(sel);
+    if (rt.resolved && rt.resolved.kind) body.appendChild(el('span', { class: 'chip sm ' + (rt.resolved.fellBack ? 'yellow' : 'green') }, 'Đang dùng: ' + (rt.resolved.kind === 'chrome' ? 'Google Chrome' : 'Custom Chromium') + (rt.resolved.fellBack ? ' (fallback)' : '')));
+    body.appendChild(el('span', { class: 'faint sm' }, 'Chromium: ' + (rt.customAvailable ? '✓' : '—') + ' · Chrome: ' + (rt.chromeAvailable ? '✓' : '—')));
+    panel.appendChild(body);
+    return panel;
   }
 
   // DEVICE PROFILES table — manage (add/edit/delete) + select (checkbox, max 3, order → B1/B2/B3).
@@ -344,6 +365,10 @@
     if (PS) selectedProfileIds = PS.prune(selectedProfileIds, profilesX.map((p) => p.id));
     // PHASE 6.3.2.1 — Game URL is now a per-profile property (edited in Edit Profile), not a global input,
     // so there is nothing to pre-fill here; each profile carries + reuses its own saved URL.
+  }
+  // PHASE 6.3.2.2 — load the browser runtime preference + availability (Custom Chromium / Google Chrome).
+  async function refreshBrowserRuntime() {
+    try { const r = await api.browserRuntimeGet(); if (r && r.ok) browserRuntimeInfo = r; } catch { /* keep last */ }
   }
   async function deleteProfileX(id) {
     const p = profilesX.find((x) => x.id === id);
@@ -873,6 +898,13 @@
     body.appendChild(infoRow('RID', ridText));
     body.appendChild(infoRow('STATE', st.label, st.cls));
     body.appendChild(infoRow('WS', wsOk ? 'Kết nối' : 'Mất kết nối', wsOk ? 'ok' : 'off'));
+    // PHASE 6.3.2.2 — runtime diagnostics (read-only): which engine, CDP link, header readiness.
+    const rtKind = mb && mb.runtimeKind ? (mb.runtimeKind === 'chrome' ? 'Chrome' : 'Chromium') : '—';
+    const cdpOk = mb && mb.cdp === 'CONNECTED';
+    const hdrOk = mb && mb.header === 'READY';
+    body.appendChild(infoRow('RUNTIME', rtKind));
+    body.appendChild(infoRow('CDP', cdpOk ? 'Kết nối' : 'Mất kết nối', cdpOk ? 'ok' : 'off'));
+    body.appendChild(infoRow('HEADER', hdrOk ? 'Sẵn sàng' : 'Chưa sẵn sàng', hdrOk ? 'ok' : 'warn'));
     body.appendChild(el('div', { class: 'bc-note faint xs' }, 'Điều khiển game nằm trên thanh tiêu đề trong Chromium.'));
     cell.appendChild(body);
     // footer: reload web (same Chromium) + power (close this Chromium only) — icon buttons + tooltips (§24).

@@ -40,10 +40,17 @@ function deriveHeaderState(view = {}) {
 // clicks call the CDP binding window.__phomAction. Namespaced; no game-DOM mutation beyond its own bar.
 function bootScript(opts = {}) {
   const bindingName = opts.bindingName || '__phomAction';
+  const identity = { slotId: opts.slotId != null ? String(opts.slotId) : null, profileId: opts.profileId != null ? String(opts.profileId) : null, runId: opts.runId != null ? String(opts.runId) : null };
   return `(() => {
-  if (window.__phomHeaderInstalled) return; window.__phomHeaderInstalled = true;
   const BID = ${JSON.stringify(bindingName)};
-  function emit(action, extra){ try { window[BID] && window[BID](JSON.stringify(Object.assign({ action }, extra||{}))); } catch(e){} }
+  const ID = ${JSON.stringify(identity)};
+  // 6.3.2.2 idempotent + SELF-HEALING: if the boot already ran but the game wiped the bar out of the DOM
+  // (SPA body swap), re-mount it instead of returning early — so the header can never silently vanish.
+  if (window.__phomHeaderInstalled) { if (!document.getElementById('__phom_header') && window.__phomHeaderMount) window.__phomHeaderMount(); return; }
+  window.__phomHeaderInstalled = true;
+  // Every action carries the browser IDENTITY (slot/profile/run) + a correlation actionId so a single
+  // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
+  function emit(action, extra){ try { window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: (Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)), slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
   const bar = document.createElement('div'); bar.id = '__phom_header';
   bar.setAttribute('style','position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;gap:10px;padding:0 10px;background:#111827;color:#e5e7eb;font:600 12px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.3);');
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
@@ -52,7 +59,8 @@ function bootScript(opts = {}) {
   const st  = mk('span'); st.id='__ph_st';
   const act = mk('div','margin-left:auto;display:flex;gap:6px;align-items:center'); act.id='__ph_act';
   bar.appendChild(acc); bar.appendChild(rid); bar.appendChild(st); bar.appendChild(act);
-  function ready(){ if(document.body){ document.body.appendChild(bar); document.body.style.marginTop='34px'; } else { requestAnimationFrame(ready); } }
+  function ready(){ if(document.body){ if(!document.getElementById('__phom_header')) document.body.appendChild(bar); document.body.style.marginTop='34px'; } else { requestAnimationFrame(ready); } }
+  window.__phomHeaderMount = ready; // allow the bridge / render to re-mount after an SPA body swap
   ready();
   function btn(label, dis, danger, onClick){ const b=mk('button', 'padding:4px 12px;border-radius:6px;border:1px solid '+(danger?'#7f1d1d':'#374151')+';background:'+(danger?'#7f1d1d':'#2563eb')+';color:#fff;font:600 12px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.5':'1')); b.textContent=label; if(dis) b.disabled=true; else b.onclick=onClick; return b; }
   window.__phomHeaderRender = function(state){ try {

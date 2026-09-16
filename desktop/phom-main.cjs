@@ -25,6 +25,7 @@ const fs = require('node:fs');
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
 const { lifecycleLog } = require('./browser/chrome-launcher.cjs');
 const phomChromium = require('./browser/phom-chromium-runtime.cjs');
+const browserRuntimeResolver = require('./browser/browser-runtime-resolver.cjs');
 const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -118,6 +119,25 @@ else {
     if (_chromiumRuntime) return _chromiumRuntime;
     _chromiumRuntime = phomChromium.resolveAndValidate({ env: process.env, isPackaged: app.isPackaged, resourcesPath: process.resourcesPath, projectRoot: path.join(__dirname, '..') });
     return _chromiumRuntime;
+  }
+  // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME), persisted so the
+  // choice survives restarts. AUTO uses the pinned custom Chromium and falls back to Google Chrome.
+  function browserRuntimeSettingPath() { return path.join(phomRoot(), 'browser-runtime.json'); }
+  var _browserRuntimePref = null;
+  function browserRuntimePref() {
+    if (_browserRuntimePref) return _browserRuntimePref;
+    try { const j = JSON.parse(fs.readFileSync(browserRuntimeSettingPath(), 'utf8')); _browserRuntimePref = browserRuntimeResolver.normalizePreference(j && j.preference); }
+    catch { _browserRuntimePref = 'AUTO'; }
+    return _browserRuntimePref;
+  }
+  function setBrowserRuntimePref(p) {
+    _browserRuntimePref = browserRuntimeResolver.normalizePreference(p);
+    try { ensureDir(phomRoot()); fs.writeFileSync(browserRuntimeSettingPath(), JSON.stringify({ preference: _browserRuntimePref }, null, 2), 'utf8'); } catch { /* best effort */ }
+    return _browserRuntimePref;
+  }
+  // Resolve the executable for a launch given the current preference (custom Chromium result injected).
+  function resolveBrowserRuntimeChoice() {
+    return browserRuntimeResolver.resolveBrowserRuntime({ preference: browserRuntimePref(), customChromium: chromiumRuntime(), env: process.env });
   }
   const chromeRuntime = new ChromeRuntime({
     chromeExecutable: (() => { const r = chromiumRuntime(); return r && r.ok ? r.executable : null; })(),
@@ -486,6 +506,22 @@ else {
   // source of business truth (find/join/leave semantics unchanged).
   const headerEntering = Object.create(null); // runId -> true while VÀO GAME is in flight (transient)
   const headerError = Object.create(null);    // runId -> last action error message (transient, per browser)
+  const headerActionBusy = Object.create(null); // runId -> true while ANY header op is in flight (dup guard)
+  const headerReady = Object.create(null);      // runId -> true once the header bridge installed on its client
+
+  // Per-browser RUNTIME status for the READ-ONLY Screen 2 (browser kind · CDP · header). No actions.
+  function browserRuntimeStatus(runId) {
+    const run = runManager && runManager.get(String(runId));
+    const cdp = !!runClientFor(String(runId));
+    return { runtimeKind: (run && run.browserKind) || null, cdp: cdp ? 'CONNECTED' : 'DISCONNECTED', header: (cdp && headerReady[String(runId)]) ? 'READY' : 'NOT_READY' };
+  }
+
+  // Structured header lifecycle log (§24) — one line per step so an intermittent failure is diagnosable.
+  // Gated behind PHOM_HEADER_LOG / PHOM_LIFECYCLE_LOG. NEVER logs cookies/tokens/secrets.
+  function headerLog(event, data = {}) {
+    if (process.env.PHOM_HEADER_LOG !== '1' && process.env.PHOM_LIFECYCLE_LOG !== '1') return;
+    try { lifecycleLog('PHOM_HEADER', { event, ...data }); } catch { /* best effort */ }
+  }
 
   // The cluster's shared RID = the RID of the first browser already JOINED to a table. Other in-game
   // browsers then show VÀO BÀN (JOIN_SHARED) for that RID — no independent re-discovery (§ shared RID).
@@ -537,13 +573,25 @@ else {
   async function phomHeaderAction(runId, payload) {
     const rid = String(runId == null ? '' : runId);
     const action = payload && payload.action;
+    const actionId = (payload && payload.actionId) || null;
+    // §6 — the run id is authoritative (bound per-client at install). The payload identity is a defensive
+    // cross-check: a click MUST NOT be attributed to another browser. Log a mismatch but keep the bound id.
+    if (payload && payload.runId != null && String(payload.runId) !== rid) headerLog('identity-mismatch', { runId: rid, payloadRunId: String(payload.runId), actionId });
+    headerLog('action-route', { runId: rid, slotId: payload && payload.slotId, action, actionId });
+    // §8 — one operation per browser. A second click while one is in flight is IGNORED (never stacks).
+    if (headerActionBusy[rid]) { headerLog('action-duplicate-ignored', { runId: rid, action, actionId }); return { ok: false, busy: true, error: { code: 'PHOM_HEADER_BUSY', message: 'Đang xử lý thao tác trước…' } }; }
+    // §12 — never route into a dead CDP session (page crashed / target closed).
+    if (!runClientFor(rid)) { headerLog('action-no-client', { runId: rid, action, actionId }); headerError[rid] = 'Chromium mất kết nối — MỞ lại trình duyệt.'; pushHeaderStates(); return { ok: false, error: { code: 'PHOM_HEADER_NO_CLIENT', message: 'no live CDP client' } }; }
+    headerActionBusy[rid] = true;
     delete headerError[rid];
     let res = { ok: true };
     try {
       if (action === 'ENTER_GAME') {
         headerEntering[rid] = true; pushHeaderStates();
+        headerLog('enter-game-start', { runId: rid, actionId });
         res = await phomEnterGame(rid);
         if (!res || res.ok === false) delete headerEntering[rid];
+        headerLog('enter-game-result', { runId: rid, actionId, ok: !!(res && res.ok) });
       } else if (action === 'FIND') {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
@@ -562,7 +610,9 @@ else {
         res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
       }
     } catch (e) { res = { ok: false, error: { code: 'PHOM_HEADER_ACTION_FAILED', message: safeMsg(e) } }; }
+    finally { delete headerActionBusy[rid]; }
     if (res && res.ok === false) headerError[rid] = (res.error && (res.error.message || res.error.code)) || 'LỖI';
+    headerLog('action-done', { runId: rid, action, actionId, ok: !!(res && res.ok), error: res && res.error && res.error.code });
     pushHeaderStates();
     return res;
   }
@@ -707,9 +757,14 @@ else {
       // Ensure the WS send-hook is present before the game opens its socket.
       wsReplay.injectSession(client, undefined).catch(() => {});
       // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG)
-      // and route its clicks to the coordinator. Best-effort; a CDP hiccup never blocks attach (§6.3.2).
-      headerBridge.installHeader(client, { runId: run.id, boot: gameHeader.bootScript(), onAction: (rid, payload) => phomHeaderAction(rid, payload) })
-        .then(() => pushHeaderStates()).catch(() => {});
+      // and route its clicks to the coordinator. The boot carries this run's IDENTITY (slot/profile/run)
+      // so every action is self-labelled. Best-effort; a CDP hiccup never blocks attach. On a re-attach
+      // (transient CDP drop → poll re-adds the target with a NEW client) this runs again → header + binding
+      // are reinstalled and the state re-pushed (§11 reattach). (§6.3.2 / §6.3.2.2)
+      headerLog('cdp-attach', { runId: run.id, slotId: run.slot, targetId: target.cdpTargetId });
+      const boot = gameHeader.bootScript({ slotId: run.slot || null, profileId: run.profileId || null, runId: run.id });
+      headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
+        .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); }).catch(() => {});
       // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).
       if (run.proxy && run.proxy.requiresAuth) {
         bindProxyAuth(client, {
@@ -723,7 +778,10 @@ else {
     manager.on('target-removed', (id) => {
       runManager.unregisterTarget(id);
       if (run.selectedTargetId === id) run.selectedTargetId = null;
-      if (!runManager.targetsForRun(run.id).length) { runManager.disconnectRun(run); try { phomSessions.routeDisconnect(run.id); } catch { /* best effort */ } }
+      // §11/§12 — the CDP session for this run's page is gone (transient drop or real close). Mark the
+      // header NOT READY so Screen 2 reflects it and no action is routed into a dead session. If the OS
+      // window is still alive, the 1.5s target poll re-attaches → installHeader re-runs on the new client.
+      if (!runManager.targetsForRun(run.id).length) { headerReady[String(run.id)] = false; headerLog('cdp-detached', { runId: run.id }); runManager.disconnectRun(run); try { phomSessions.routeDisconnect(run.id); } catch { /* best effort */ } pushHeaderStates(); }
     });
     if (!manager.start) return { ok: true };
     try { await manager.start(); return { ok: true }; }
@@ -783,10 +841,16 @@ else {
   // native 2×2 window size). The device belongs to the slot (browser profile), so the
   // same device is reapplied every time this slot's browser is (re)opened.
   async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username, device: deviceArg, profileId }) {
-    // §6 — the pinned custom Chromium runtime must validate; never fall back to system Chrome.
-    const rt = chromiumRuntime();
-    if (!rt.ok) return rt;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
+    // PHASE 6.3.2.2 — resolve the browser runtime (custom Chromium OR Google Chrome) per the saved
+    // preference. AUTO prefers custom Chromium; if it is unavailable it falls back to Chrome (logged).
+    const rt = chromiumRuntime();
+    const rtChoice = resolveBrowserRuntimeChoice();
+    if (!rtChoice.ok) return rtChoice; // no usable runtime at all → typed error, never a hidden fallback
+    const usingChrome = rtChoice.kind === 'chrome';
+    if (rtChoice.fellBack) headerLog('runtime-fallback-chrome', { executable: rtChoice.executable });
+    // The custom-Chromium sandbox ACL only applies when we actually launch the custom runtime.
+    if (!usingChrome && !rt.ok) return rt;
     // §3/§4 — the AUTHORITATIVE browser profile key (user-data-dir/device/proxy owner).
     // The cluster passes the saved profile's browserProfileId here; the legacy per-slot
     // open path defaults it to the window slot. The window slot (A/B/C) still drives the
@@ -809,7 +873,9 @@ else {
     // AppContainer ACL so it launches WITHOUT --no-sandbox (the real 0x5 fix).
     const sandbox = sandboxPolicyFor({ url, runProxy: gate.runProxy });
     lastSandboxPolicy = sandbox;
-    if (!sandbox.sandboxDisabled) {
+    // The AppContainer ACL self-heal is a CUSTOM-Chromium concern (its copied files may lack the sandbox
+    // helper ACLs). Google Chrome manages its own sandbox, so skip the ACL step when running Chrome.
+    if (!usingChrome && !sandbox.sandboxDisabled && rt.ok) {
       const acl = phomChromium.ensureSandboxAccess(rt.root);
       if (!acl.ok && phomChromium.sandboxAccessPresent(rt.root) === false) {
         return { ok: false, error: { code: 'PHOM_CHROMIUM_SANDBOX_REQUIRED', message: 'Chromium sandbox cannot be enabled: runtime filesystem permissions (AppContainer read+execute) could not be granted. Launch blocked (no silent --no-sandbox retry).' } };
@@ -843,6 +909,11 @@ else {
     run.slot = slot;
     run.profileId = udKey; // PHASE-6.3.1 — runtime browserRunId → profileId mapping (active-guard + reopen)
     run.deviceProfile = device || null; // reapplied on every attach/navigation
+    // PHASE 6.3.2.2 — per-run executable so each browser launches from the resolved runtime. The launcher
+    // uses run.chromeExecutable first (chrome-runtime.cjs); null keeps the runtime's pinned custom Chromium.
+    run.chromeExecutable = usingChrome ? rtChoice.executable : null;
+    run.browserKind = rtChoice.kind; // 'chromium' | 'chrome' — surfaced read-only on Screen 2
+    headerLog('browser-launch', { runId: run.id, slotId: slot, kind: rtChoice.kind, profileDir });
     run.proxyUsername = username || (gate.config && gate.config.username) || null;
     const launched = await run.launcher.open(String(url || ''));
     if (!launched.ok) { runManager.failRun(run, launched.error); return { ok: false, error: launched.error }; }
@@ -1015,7 +1086,20 @@ else {
     ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualRejoin(cfg && cfg.browserId, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualLeave(cfg && cfg.browserId); }));
-    ipcMain.handle('phom:manual-snapshot', () => (phomSessions ? { ok: true, browsers: phomSessions.manualBrowserSnapshot() } : { ok: true, browsers: [] }));
+    ipcMain.handle('phom:manual-snapshot', () => {
+      const browsers = phomSessions ? phomSessions.manualBrowserSnapshot() : [];
+      // PHASE 6.3.2.2 — merge the READ-ONLY runtime/CDP/header status per browser for Screen 2 (no actions).
+      for (const b of browsers) { if (b && b.profileId != null) Object.assign(b, browserRuntimeStatus(b.profileId)); }
+      return { ok: true, browsers };
+    });
+    // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
+    // saved preference + what each option currently resolves to (so SETUP can show availability).
+    ipcMain.handle('phom:browser-runtime-get', () => {
+      const custom = chromiumRuntime();
+      const chrome = browserRuntimeResolver.resolveGoogleChrome({ env: process.env });
+      return { ok: true, preference: browserRuntimePref(), customAvailable: !!(custom && custom.ok), chromeAvailable: !!(chrome && chrome.ok), resolved: (() => { const r = resolveBrowserRuntimeChoice(); return r.ok ? { kind: r.kind, fellBack: !!r.fellBack } : { error: r.error }; })() };
+    });
+    ipcMain.handle('phom:browser-runtime-set', guarded((_e, cfg) => ({ ok: true, preference: setBrowserRuntimePref(cfg && cfg.preference) })));
     // PHASE-6.2.2 — browser lifecycle, all scoped to ONE run (never touches the Tool or the other browsers).
     // ↻ WEB: reload the page in the SAME Chromium; if the page is gone, re-navigate to the game URL — never
     // launches a second Chromium OS window.
