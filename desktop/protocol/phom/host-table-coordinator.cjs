@@ -1,6 +1,7 @@
 'use strict';
 
 const EventEmitter = require('node:events');
+const { performance } = require('node:perf_hooks');
 const { PhomContext } = require('./phom-context.cjs');
 const { reduceHand, emptyHand, SYNC } = require('./hand-reducer.cjs');
 const { ZONE, GID } = require('./phom-frame-classify.cjs');
@@ -91,6 +92,14 @@ class HostTableCoordinator extends EventEmitter {
     this._candidateValid = false;
     this._failedRids = new Set();  // candidates whose authoritative state proved invalid (avoid re-pick)
     this._profiles = new Map();
+    // PHASE-2 instrumentation (§4/§14): a bounded, monotonic timeline of discovery/sync milestones so
+    // a LIVE trace (T0..T12) + latency (server-evidence → state → snapshot) can be measured without a
+    // fabricated feed. Pure telemetry — it never influences a state decision. Monotonic ms via
+    // performance.now() (immune to wall-clock jumps); wall ts kept for human-readable correlation.
+    this._trace = [];
+    this._traceCap = deps.traceCap != null ? deps.traceCap : 400;
+    this._mono = typeof deps.mono === 'function' ? deps.mono : (() => performance.now());
+    this._markedThisGen = new Set(); // one-shot milestones per discovery generation
 
     const list = Array.isArray(deps.profiles) ? deps.profiles : [];
     for (const p of list) this._addProfile(p);
@@ -158,8 +167,13 @@ class HostTableCoordinator extends EventEmitter {
     if (cls && cls.isHandEvent) {
       rec.hand = reduceHand(rec.hand, cls, { profileId: rec.id, profileUid: rec.ctx.uid(), seq: Number.isFinite(meta.seq) ? meta.seq : null, now });
     }
-    if (cls && cls.type === 'DEAL') { this._roundRunning = true; this._setState(SESSION.ROUND_RUNNING); }
-    if (cls && cls.type === 'ROUND_END') { this._roundRunning = false; this._setState(SESSION.ROUND_ENDED); }
+    // PHASE-2 trace: authoritative server-evidence arrival (from the HOST run — the run driving discovery).
+    if (cls && this._hostId && rec.id === this._hostId) {
+      if (cls.type === 'CHANNEL_LIST') this._markOnce('channel-list', 'T2_CHANNEL_LIST_RECEIVED');
+      if (cls.type === 'TABLE_STATE') this._markOnce('first-table-state', 'T5_FIRST_TABLE_STATE_RECEIVED');
+    }
+    if (cls && cls.type === 'DEAL') { this._roundRunning = true; this._setState(SESSION.ROUND_RUNNING); this._mark('ROUND_DEAL'); }
+    if (cls && cls.type === 'ROUND_END') { this._roundRunning = false; this._setState(SESSION.ROUND_ENDED); this._mark('ROUND_END'); }
     this._evaluate();
     this.emit('hands', this.handsSnapshot());
     return cls;
@@ -177,6 +191,17 @@ class HostTableCoordinator extends EventEmitter {
   }
 
   setIdentity(profileId, identity) { const rec = this._profiles.get(String(profileId)); if (rec) rec.ctx.setIdentity(identity); this._evaluate(); }
+
+  // PH-2 — a CDP `websocket-closed` fired for this run. Treat it as a real game disconnect ONLY
+  // when it matches this profile's bound game socket (never an unrelated socket on the same page);
+  // then reuse the existing disconnect path so the authoritative snapshot flips connected=false
+  // (host → HOST_LOST) and the renderer updates immediately instead of after a poll cycle.
+  markSocketClosed(profileId, meta = {}) {
+    const rec = this._profiles.get(String(profileId));
+    if (!rec || !rec.ctx.socketMatches(meta)) return false;
+    this.markDisconnected(profileId);
+    return true;
+  }
 
   // §13 — actively request the authoritative stake channel list (CMD 300) so the
   // server replies with rs[], which is ingested passively into each ctx.channels().
@@ -207,6 +232,7 @@ class HostTableCoordinator extends EventEmitter {
     // Only the host requests the channel list; followers do not join yet.
     const aid = host.ctx.aid();
     if (aid == null || !host.ctx.sendContext()) return { ok: false, error: { code: 'PHOM_PROTOCOL_CONTEXT_MISSING', message: 'host aid/socket not ready' } };
+    this._markOnce('channel-request', 'T1_REQUEST_CHANNELS_SENT');
     await host.send(buildChannelListFrame(aid), host.ctx.sendContext());
     // Wait briefly for the authoritative CHANNEL_LIST reply (rs[]) to arrive so selection sees the
     // real, current room set (not a stale/empty cache). The rs is ingested asynchronously via the
@@ -220,8 +246,10 @@ class HostTableCoordinator extends EventEmitter {
     // AFTER join — the channel list only narrows to the right stake/zone).
     const candidate = this._pickStakeChannel(host);
     if (!candidate) { this._setState(SESSION.HOST_ACQUIRE_FAILED); return { ok: false, error: { code: 'PHOM_NO_TABLE_FOR_SELECTED_STAKE', message: `no channel for stake ${this._selectedStake}` } }; }
+    this._mark('T3_CANDIDATE_SELECTED', { candidateRid: candidate.rid, b: candidate.b });
     host.state = PSTATE.JOINING;
     this._setState(SESSION.HOST_JOIN_SENT);
+    this._mark('T4_HOST_JOIN_SENT', { candidateRid: candidate.rid });
     await host.send(buildJoinFrame(candidate.rid), host.ctx.sendContext());
     host._joinedRid = candidate.rid;
     this._setState(SESSION.HOST_WAITING_CONFIRMATION);
@@ -275,6 +303,7 @@ class HostTableCoordinator extends EventEmitter {
     };
     host.state = PSTATE.AT_TABLE;
     host.confirmedInTable = true;
+    this._markOnce('room-bound', 'T7_ROOM_BOUND', { roomId: this._hostTableIdentity.channelRid });
   }
 
   // ---- §14 followers leave their table then join the host's table ----
@@ -354,6 +383,7 @@ class HostTableCoordinator extends EventEmitter {
     const verdict = this.verifySameTable();
     if (verdict.result !== 'SAME_TABLE') return { ok: false, error: { code: 'PHOM_TABLE_MISMATCH', message: `cannot ready: ${verdict.result}` }, verdict };
     const { desired } = this.readyPolicy();
+    this._markOnce('ready-sent', 'T11_READY_SENT');
     const out = [];
     for (const rec of this._profiles.values()) {
       if (desired.get(rec.id) !== true) { out.push({ id: rec.id, ready: false, skipped: true }); continue; }
@@ -442,8 +472,112 @@ class HostTableCoordinator extends EventEmitter {
     return { ok: !!(res && res.ok), ...res };
   }
 
+  // ---- PHASE-3 · PART B — observe-only native-JOIN experiment ----
+  // Sends the RAW native join ([3,"Simms",<channel/stake>,""]) for A, then B, then C — SAME channel,
+  // NO room id, NEVER A's rid handed to B/C — and records, from authoritative TABLE_STATE.ps[], WHERE
+  // the SERVER actually seats each account. It does NOT force a shared room and does NOT change the
+  // production host-first flow (runDiscovery). Pure observation. Guarded like any active send; bumps
+  // the generation so it is the single orchestrator while it runs (a concurrent discovery is cancelled).
+  async runJoinExperiment(channel, opts = {}) {
+    if (!this._guard()) return this._unauthorized();
+    const host = this.host();
+    if (!host) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no host selected' } };
+    const ch = Number.isFinite(channel) ? channel : (channel != null ? Number(channel) : this._selectedStake);
+    if (ch == null || !Number.isFinite(ch)) return { ok: false, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'no channel/stake to join' } };
+    const perJoinTimeoutMs = opts.perJoinTimeoutMs != null ? opts.perJoinTimeoutMs : 8000;
+    const gen = ++this._gen; this._running = true; this._markedThisGen.clear();
+    this._mark('JX0_EXPERIMENT_START', { channel: ch });
+    // Order: HOST first (must be ps[]-confirmed before the next), then followers B, C.
+    const steps = [
+      { rec: host, label: 'HOST', sent: 'J0_HOST_JOIN_SENT', conf: 'J1_HOST_PS_CONFIRMED' },
+      ...this.followers().map((f, i) => ({ rec: f, label: i === 0 ? 'B' : 'C', sent: `J${2 + i * 2}_${i === 0 ? 'B' : 'C'}_JOIN_SENT`, conf: `J${3 + i * 2}_${i === 0 ? 'B' : 'C'}_PS_CONFIRMED` })),
+    ];
+    const observed = [];
+    try {
+      for (const step of steps) {
+        if (this._gen !== gen || this._stopped) return { ok: false, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'experiment cancelled' }, observed };
+        const { rec, label } = step;
+        const ctx = rec.ctx.sendContext();
+        const tSent = this._mark(step.sent, { id: rec.id, label });
+        if (!ctx) { observed.push({ id: rec.id, label, seated: false, error: { code: 'PHOM_SOCKET_NOT_FOUND' } }); this._mark(step.conf, { id: rec.id, label, seated: false }); continue; }
+        try { await rec.send(buildJoinFrame(ch), ctx); } catch (e) { rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; }
+        // Authoritative confirmation ONLY: own uid present in this profile's own TABLE_STATE.ps[].
+        const seated = await this._waitUntil(() => { const uid = rec.ctx.uid(); const ts = rec.ctx.tableState(); return !!(uid && ts && ts.uids.includes(uid)); }, gen, perJoinTimeoutMs);
+        const ts = rec.ctx.tableState();
+        const tConf = this._mark(step.conf, { id: rec.id, label, seated, table: ts && ts.identity ? ts.identity.value : null, seat: rec.ctx.seat() });
+        observed.push({ id: rec.id, label, role: rec.role, seated,
+          table: ts && ts.identity ? ts.identity.value : null, seat: rec.ctx.seat(),
+          stake: ts ? ts.b : null, playerCount: ts ? ts.playerCount : 0,
+          joinToPsMs: seated ? Math.round((tConf.mono - tSent.mono) * 1000) / 1000 : null });
+      }
+    } finally { if (this._gen === gen) this._running = false; }
+    const result = this._classifyExperiment();
+    this._mark('J6_RESULT', result);
+    return { ok: true, channel: ch, observed, ...result };
+  }
+
+  // Classify per-profile table membership from the FINAL authoritative state (read live from each
+  // ctx, NOT the per-join snapshot): once B/C are seated, an earlier joiner has folded their seat
+  // deltas, so co-seated profiles converge to the SAME player-set fingerprint. Same table ⇔ identical
+  // fingerprint (with own uid present). Never asserts a server "failure": all-same / partial / all-
+  // different are equally valid OBSERVED matchmaking outcomes (§17).
+  _classifyExperiment() {
+    const host = this.host(); const fol = this.followers();
+    const A = host, B = fol[0] || null, C = fol[1] || null;
+    const fp = (rec) => { if (!rec) return null; const ts = rec.ctx.tableState(); const uid = rec.ctx.uid(); return (ts && uid && ts.identity && ts.uids.includes(uid)) ? ts.identity.value : null; };
+    const seatOf = (rec) => (rec ? rec.ctx.seat() : null);
+    const aT = fp(A), bT = fp(B), cT = fp(C);
+    const same = (x, y) => !!(x && y && x === y);
+    const aB = same(aT, bT), aC = same(aT, cT), bC = same(bT, cT);
+    const allThreeSame = aB && aC;
+    return {
+      aTable: aT, bTable: bT, cTable: cT,
+      aSeat: seatOf(A), bSeat: seatOf(B), cSeat: seatOf(C),
+      aBSame: aB, aCSame: aC, bCSame: bC, allThreeSame,
+      classification: allThreeSame ? 'ALL_THREE_SAME' : (aB || aC || bC ? 'PARTIAL_SAME' : 'ALL_DIFFERENT'),
+    };
+  }
+
   // ---- Phase-3B FINAL: host-first discovery / validation / restart ----
   _log(event, data = {}) { this.emit('log', { tag: 'PHOM-3B', event, at: this._now(), ...data }); }
+
+  // ---- PHASE-2 instrumentation ----
+  // Push one milestone onto the bounded monotonic timeline (and emit it on the existing log stream
+  // so it also reaches phom:log). `milestone` is a stable T-name (see trace() consumers).
+  _mark(milestone, extra = {}) {
+    const rid = this._hostTableIdentity && this._hostTableIdentity.channelRid != null ? this._hostTableIdentity.channelRid : (this.host() && this.host()._joinedRid != null ? this.host()._joinedRid : null);
+    const entry = { milestone, mono: Math.round(this._mono() * 1000) / 1000, at: this._now(), gen: this._gen, state: this._state, roomId: rid, ...extra };
+    this._trace.push(entry);
+    if (this._trace.length > this._traceCap) this._trace.splice(0, this._trace.length - this._traceCap);
+    this.emit('log', { tag: 'PHOM-TRACE', event: milestone, ...entry });
+    return entry;
+  }
+  // Emit a milestone at most once per discovery generation (idempotent stage markers).
+  _markOnce(key, milestone, extra) { const tag = `${this._gen}:${key}`; if (this._markedThisGen.has(tag)) return; this._markedThisGen.add(tag); this._mark(milestone, extra); }
+  // The recent milestone timeline (copy). Consumers compute latency deltas between named milestones.
+  trace() { return this._trace.map((e) => ({ ...e })); }
+
+  // Event-driven wait: resolve as soon as `pred()` is true, waking on the coordinator's OWN authoritative
+  // 'update' (emitted on every ingest/evaluate) instead of a fixed polling tick — so a stage advances the
+  // instant the server evidence (ps[]) arrives, not up to a poll interval later. This removes latency WITHOUT
+  // adding polling or artificial delay. Generation/stop aware; a bounded timeout is the only fallback.
+  _waitUntil(pred, gen, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const cleanup = () => { if (done) return; done = true; this.off('update', onUpdate); clearTimeout(timer); };
+      const settle = (v) => { cleanup(); resolve(v); };
+      const check = () => {
+        if (this._gen !== gen || this._stopped) { settle(false); return true; }
+        let ok = false; try { ok = !!pred(); } catch { ok = false; }
+        if (ok) { settle(true); return true; }
+        return false;
+      };
+      const onUpdate = () => { check(); };
+      const timer = setTimeout(() => { let ok = false; try { ok = !!pred(); } catch { ok = false; } settle(ok && this._gen === gen && !this._stopped); }, timeoutMs);
+      if (check()) return;           // already satisfied synchronously (e.g. evidence arrived before the wait)
+      this.on('update', onUpdate);   // otherwise wake on the next authoritative snapshot
+    });
+  }
   // Two different uids occupying the same seat index within ONE authoritative table state.
   _duplicateSeat(ts) { const sits = (ts.seats || []).map((s) => s.sit).filter((s) => s != null); return new Set(sits).size !== sits.length; }
 
@@ -505,6 +639,7 @@ class HostTableCoordinator extends EventEmitter {
     if (this._running) { this._log('DISCOVERY_ALREADY_RUNNING'); return { ok: true, already: true, gen: this._gen }; }
     const gen = ++this._gen;
     this._running = true; this._hostSearchAttempts = 0; this._failedRids.clear();
+    this._markedThisGen.clear(); this._mark('T0_DISCOVERY_START');
     const stale = () => this._gen !== gen || this._stopped;
     try {
       while (!stale()) {
@@ -546,14 +681,18 @@ class HostTableCoordinator extends EventEmitter {
   }
 
   async _awaitHostValidation(gen, timeoutMs = 8000) {
-    const t0 = this._now();
-    while (this._gen === gen && !this._stopped && this._now() - t0 < timeoutMs) {
+    // Wake the instant the authoritative ps[] resolves the candidate (valid OR decisively invalid),
+    // never a fixed 200ms tick. Same verdict semantics as before; only the latency changes.
+    let verdict = null;
+    await this._waitUntil(() => {
       const v = this.validateHostCandidate();
-      if (v.valid) return v;
-      if (v.reason && v.reason !== 'NO_TABLE_STATE' && v.reason !== 'HOST_UID_UNKNOWN' && v.reason !== 'HOST_NOT_IN_PS') return v; // decisively invalid
-      await this._delay(200);
-    }
+      if (v.valid) { verdict = v; return true; }
+      if (v.reason && v.reason !== 'NO_TABLE_STATE' && v.reason !== 'HOST_UID_UNKNOWN' && v.reason !== 'HOST_NOT_IN_PS') { verdict = v; return true; } // decisively invalid
+      return false;
+    }, gen, timeoutMs);
+    if (verdict) { if (verdict.valid) this._markOnce('host-confirmed', 'T6_HOST_CONFIRMED_IN_PS'); return verdict; }
     const v = this.validateHostCandidate();
+    if (v.valid) this._markOnce('host-confirmed', 'T6_HOST_CONFIRMED_IN_PS');
     return v.valid ? v : { valid: false, reason: v.reason || 'HOST_VALIDATION_TIMEOUT' };
   }
 
@@ -575,6 +714,7 @@ class HostTableCoordinator extends EventEmitter {
       rec._joinedRid = rid;
     };
     await Promise.all(this.followers().map(joinOne)); // B and C join ONCE, simultaneously
+    this._markOnce('followers-join-sent', 'T8_FOLLOWER_JOIN_SENT', { rid });
     // Then just WAIT for the authoritative outcome — do NOT re-issue joins in a tight loop (that
     // floods the server with join/leave churn). Per-browser TABLE_STATE frames arrive out of order,
     // so require INVALID to PERSIST across a few consecutive reads before bailing (avoids a false
@@ -615,19 +755,17 @@ class HostTableCoordinator extends EventEmitter {
   }
 
   async _awaitFollowerSeated(rec, gen, timeoutMs = 8000) {
-    const host = this.host(); const t0 = this._now();
+    const host = this.host();
     const present = () => { const uid = rec.ctx.uid(); const hts = host && host.ctx.tableState(); return !!(uid && hts && hts.uids.includes(uid)); };
-    while (this._gen === gen && !this._stopped && this._now() - t0 < timeoutMs) { if (present()) return true; await this._delay(200); }
+    await this._waitUntil(present, gen, timeoutMs);
     return present();
   }
 
   async _awaitSameTable(gen, timeoutMs = 8000) {
-    const t0 = this._now();
-    while (this._gen === gen && !this._stopped && this._now() - t0 < timeoutMs) {
-      if (this.verifySameTable().result === 'SAME_TABLE') return true;
-      await this._delay(200);
-    }
-    return this.verifySameTable().result === 'SAME_TABLE';
+    await this._waitUntil(() => this.verifySameTable().result === 'SAME_TABLE', gen, timeoutMs);
+    const same = this.verifySameTable().result === 'SAME_TABLE';
+    if (same) this._markOnce('same-table', 'T10_SAME_TABLE_CONFIRMED');
+    return same;
   }
 
   _sameTableEvidence() {
@@ -683,7 +821,7 @@ class HostTableCoordinator extends EventEmitter {
         }
         const { desired, playerCount } = this.readyPolicy();
         const allDesiredReady = [...this._profiles.values()].every((rec) => desired.get(rec.id) !== true || rec.ctx.ready());
-        if (playerCount >= 4) this._setState(allDesiredReady ? SESSION.READY_3_OF_3 : SESSION.TABLE_FULL);
+        if (playerCount >= 4) { this._setState(allDesiredReady ? SESSION.READY_3_OF_3 : SESSION.TABLE_FULL); if (allDesiredReady) this._markOnce('ready-confirmed', 'T12_READY_CONFIRMED'); }
         else this._setState(SESSION.WAITING_AUTHORIZED_FOURTH);
         // mark ready states
         for (const rec of this._profiles.values()) if (rec.ctx.ready()) rec.state = PSTATE.READY;

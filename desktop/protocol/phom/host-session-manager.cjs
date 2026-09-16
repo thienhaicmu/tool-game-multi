@@ -82,6 +82,9 @@ class HostSessionManager extends EventEmitter {
     this._session.coord.ingest(String(run.id), { raw: req.body && req.body.raw, direction: req.wsDirection, seq: req.seq, targetId: req.targetId, cdpSessionId: req.cdpSessionId || null, url: req.url, now: this._now() });
   }
   routeDisconnect(runId) { if (this._session && this._session.runIds.has(String(runId))) this._session.coord.markDisconnected(String(runId)); }
+  // PH-2 — route a CDP websocket-closed for one run; the coordinator ignores it unless the closed
+  // socket was that profile's bound game socket. Returns true if it flipped the profile offline.
+  routeSocketClosed(runId, meta) { return !!(this._session && this._session.runIds.has(String(runId)) && this._session.coord.markSocketClosed(String(runId), meta || {})); }
   setIdentity(runId, identity) { if (this._session && this._session.runIds.has(String(runId))) this._session.coord.setIdentity(String(runId), identity); }
 
   _c() { return this._session ? this._session.coord : null; }
@@ -101,6 +104,10 @@ class HostSessionManager extends EventEmitter {
   stop() { const c = this._c(); if (c) c.stop(); }
   verifySameTable() { const c = this._c(); return c ? c.verifySameTable() : { result: 'IDLE' }; }
   snapshot() { const c = this._c(); return c ? c.snapshot() : null; }
+  // PHASE-2 — the monotonic discovery/sync milestone timeline (telemetry only; empty when no session).
+  trace() { const c = this._c(); return c && typeof c.trace === 'function' ? c.trace() : []; }
+  // PHASE-3 · PART B — observe-only native-JOIN experiment (A then B then C, same stake, no room forcing).
+  runJoinExperiment(channel, opts) { return this._guarded((c) => c.runJoinExperiment(channel, opts)); }
 }
 
 module.exports = { HostSessionManager };

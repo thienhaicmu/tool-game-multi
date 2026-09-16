@@ -151,6 +151,19 @@ class PhomContext extends EventEmitter {
     this._emit();
   }
 
+  // Does a just-closed WebSocket belong to THIS profile's bound game socket? Used to map a
+  // CDP `websocket-closed` event to a real game disconnect. A close for a different target or
+  // a different host (e.g. an analytics/telemetry socket sharing the page) returns false so it
+  // never flips connected. When neither targetId nor url is supplied it defaults to a match
+  // (the caller already scoped the event to this run's target).
+  socketMatches(meta = {}) {
+    if (!this._socket) return false;
+    if (meta.targetId != null && this._socket.targetId !== meta.targetId) return false;
+    const host = meta.url != null ? hostOf(meta.url) : null;
+    if (host && this._socket.host && host !== this._socket.host) return false;
+    return true;
+  }
+
   // The socket send-context the coordinator hands to wsReplay.sendProtocol.
   sendContext() { return this._socket ? { ...this._socket } : null; }
 

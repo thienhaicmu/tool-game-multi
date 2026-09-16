@@ -53,6 +53,7 @@
   const MON = { LIVE: 'LIVE_INTERNAL', REPLAY: 'FIXTURE_REPLAY' };
   let monitorMode = MON.LIVE;
   let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
+  let clusterOpBusy = false; // guards RUN GAME against a duplicate click opening a 2nd cluster (§41)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
   let selectedClusterProfileId = null;
@@ -588,16 +589,39 @@
     return bar;
   }
 
-  // Progress label for the automatic table flow (§11).
+  // Progress label for the host-first discovery flow. Keys are the ACTUAL HostTableCoordinator
+  // SESSION states (not the legacy symmetric names) so every stage of TÌM BÀN shows truthful,
+  // authoritative feedback — never faked progress (§29/§45). Unmapped states fall through to ''.
   function autoFlowLabel(s) {
     const map = {
-      IDLE: '', HOST_ACQUIRING: 'HOST ĐANG TÌM…', HOST_ACQUIRED: 'ĐÃ CÓ BÀN — ĐANG ĐƯA 2 ACC VÀO…',
-      FOLLOWERS_JOINING: 'ĐANG ĐƯA 2 ACC VÀO…', SAME_TABLE: 'XÁC NHẬN CÙNG BÀN…', READY: 'ĐÃ SẴN SÀNG',
-      HOST_LOST: 'HOST MẤT BÀN', HOST_TABLE_LOST: 'HOST MẤT BÀN', REJOIN_EXHAUSTED: 'REJOIN THẤT BẠI',
+      IDLE: '', LOBBY_WAITING: '',
+      HOST_SEARCHING: 'ĐANG TÌM BÀN…',
+      HOST_JOIN_SENT: 'ĐANG VÀO BÀN ỨNG VIÊN…',
+      HOST_WAITING_CONFIRMATION: 'ĐANG XÁC NHẬN BÀN (chờ ps[])…',
+      HOST_VALIDATING: 'ĐANG XÁC NHẬN BÀN (chờ ps[])…',
+      HOST_CANDIDATE_VALID: 'ĐÃ XÁC NHẬN BÀN — ĐANG ĐƯA B & C VÀO…',
+      HOST_ACQUIRED: 'ĐÃ CÓ BÀN — ĐANG ĐƯA B & C VÀO…',
+      FOLLOWERS_JOINING: 'ĐANG ĐƯA B & C VÀO BÀN…',
+      VERIFYING_SAME_TABLE: 'ĐANG KIỂM TRA CÙNG BÀN…',
+      PARTIAL_JOIN: 'ĐANG KIỂM TRA CÙNG BÀN…',
+      SAME_TABLE: 'ĐÃ VÀO CÙNG BÀN',
+      CONTROLLED_THREE_PRESENT: 'ĐÃ VÀO CÙNG BÀN',
+      WAITING_AUTHORIZED_FOURTH: 'CÙNG BÀN — CHỜ NGƯỜI THỨ 4',
+      TABLE_FULL: 'BÀN ĐỦ NGƯỜI — SẴN SÀNG',
+      READY_3_OF_3: 'ĐÃ SẴN SÀNG',
+      MONITORING: 'ĐANG THEO DÕI BÀN',
+      C_REJOINING: 'ĐANG ĐƯA LẠI 1 ACC VÀO BÀN…',
+      INVALID_TABLE: 'BÀN KHÔNG HỢP LỆ — TÌM LẠI…',
+      RESTART_SEARCH: 'TÌM LẠI BÀN…',
+      TABLE_MISMATCH: 'SAI BÀN — ĐANG SỬA…',
+      LEAVING_TABLE: 'ĐANG RỜI BÀN…',
+      HOST_ACQUIRE_FAILED: 'KHÔNG TÌM THẤY BÀN PHÙ HỢP',
+      HOST_LOST: 'HOST MẤT BÀN', HOST_TABLE_LOST: 'HOST MẤT BÀN',
+      REJOIN_EXHAUSTED: 'VÀO LẠI THẤT BẠI', STOPPED: '', STOPPING: 'ĐANG DỪNG…',
     };
     if (s && s.roundRunning) return 'VÁN ĐANG CHẠY';
-    if (s && s.sameTable && (s.readyCount || 0) > 0) return 'CHỜ ĐỦ NGƯỜI / SẴN SÀNG';
-    return (s && map[s.state]) || '';
+    if (s && s.sameTable && (s.readyCount || 0) > 0 && s.waitingFourth) return 'CÙNG BÀN — CHỜ ĐỦ NGƯỜI';
+    return (s && map[s.state] != null ? map[s.state] : '') || '';
   }
 
   function commandToolbar(s) {
@@ -630,6 +654,7 @@
       el('button', { class: 'btn', onclick: () => clusterFocus('C') }, 'Focus C'),
       moreMenuButton(),
       el('button', { class: 'btn danger', title: 'Dừng tự động hoá tìm bàn (KHÔNG đóng trình duyệt)', onclick: stopOrchestration }, 'DỪNG'),
+      el('button', { class: 'btn', title: 'Huỷ mọi thao tác đang chạy và quay lại màn hình cấu hình (GIỮ trình duyệt đang mở)', onclick: returnToSetup }, 'QUAY VỀ SETUP'),
       phaseChip,
       hostLost ? el('span', { class: 'chip red', style: 'margin-left:6px' }, 'HOST MẤT BÀN — bấm TÌM BÀN') : null,
     );
@@ -1220,6 +1245,12 @@
     // selected profile id (+ the non-persisted localTest flag); host/stake/proxy/device
     // all come authoritatively from the saved profile in the main process.
     if (!selectedClusterProfileId) { note('Hãy chọn hoặc tạo một Cluster Profile trước khi mở cụm.', true); return; }
+    // §41 — a fast double-click must not open a second cluster / duplicate browser runs.
+    if (clusterOpBusy) { note('Đang mở cụm — vui lòng chờ…', true); return; }
+    clusterOpBusy = true;
+    try { await openClusterInner(); } finally { clusterOpBusy = false; }
+  }
+  async function openClusterInner() {
     // §11 IDEMPOTENT: if the cluster is already open, REUSE it — never teardown/reopen.
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
     if (clusterSnap && (clusterSnap.openBrowserCount || 0) >= 3 && clusterSnap.stopped !== true) {
@@ -1293,6 +1324,30 @@
     try { clusterSnap = await api.clusterSnapshot(); } catch {}
     renderApp();
     note('Đã dừng tự động hoá tìm bàn. Ba trình duyệt vẫn đang mở (không bị đóng).');
+  }
+
+  // QUAY VỀ SETUP (§19-§22) — navigate back to the config screen WITHOUT closing the browsers.
+  // Cluster-level by design: the architecture owns browser lifetime per-cluster (no per-profile
+  // teardown seam), so a single return cancels ALL in-flight orchestration (search/join/ready/
+  // rejoin) via the coordinator's generation guard, clears local operation flags, and returns to
+  // SETUP. Any late search/join result from the cancelled generation can no longer update state
+  // (§21/§22). Browsers stay open, so RUN GAME re-enters the SAME cluster idempotently.
+  async function returnToSetup() {
+    // Immediate acknowledgement (§7): reflect the intent before the async cancel resolves.
+    autoFlow = false; flowBusy = false; clusterOpBusy = false;
+    entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
+    if (entryTimer) { clearTimeout(entryTimer); entryTimer = null; }
+    stopEntryPolling(); qaMonitorPlay(false);
+    uiState = UI.SETUP; renderApp();
+    note('Đang quay về SETUP — huỷ tìm bàn/join, giữ nguyên 3 trình duyệt…');
+    try { await api.orchestrationStop(); } catch {}
+    try { clusterSnap = await api.clusterSnapshot(); } catch {}
+    // Refresh the SETUP inputs so the screen is accurate after returning.
+    try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch {}
+    try { const pl = await api.proxyList(); proxies = (pl && pl.proxies) || []; } catch {}
+    await refreshClusterProfiles();
+    renderApp();
+    note('Đã quay về SETUP. Ba trình duyệt vẫn mở — bấm RUN GAME để dùng lại cụm hiện có.');
   }
 
   // ĐÓNG 3 TRÌNH DUYỆT — the ONLY UI action that closes the browsers (explicit + confirmed).

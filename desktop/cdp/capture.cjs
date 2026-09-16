@@ -233,6 +233,11 @@ class CaptureCorrelator extends EventEmitter {
     const req = conn && this._store.get(conn.id);
     if (req) { req.state = 'FINISHED'; this.emit('update', req); }
     this._ws.delete(cdpKey);
+    // Additive lifecycle signal (non-breaking; non-listeners ignore it). A bare WebSocket
+    // close previously surfaced ONLY as an 'update' on the row, so a consumer that binds a
+    // game socket per target (Phỏm) never learned the socket dropped. Emit the closed URL so
+    // the consumer can decide if THIS was its game socket before flipping any state.
+    if (conn) this.emit('websocket-closed', { targetId, url: conn.url || null, cdpSessionId: sessionId || null, id: conn.id });
   }
 
   onWebSocketFrameSent(targetId, p, sessionId) { this._frame(targetId, p, sessionId, 'send'); }

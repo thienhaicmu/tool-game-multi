@@ -47,7 +47,7 @@ const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
 const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
-const { rectForSlot, toolWindowBounds } = require('./protocol/phom/grid-layout.cjs');
+const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot } = require('./protocol/phom/grid-layout.cjs');
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
 const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
@@ -527,6 +527,19 @@ else {
     } catch { /* never break capture */ }
   });
 
+  // PH-2 — a game WebSocket closed. Map it to the owning run and let the coordinator decide if it
+  // was that profile's bound game socket (it ignores unrelated sockets). This makes a bare WS drop
+  // flip the authoritative snapshot immediately (host → HOST_LOST) so the UI reflects it at once,
+  // instead of waiting for a stale-state timeout. Routed in BOTH modes (cluster active or not).
+  capture.on('websocket-closed', (info) => {
+    if (!info || !runManager) return;
+    try {
+      const run = runManager.runForTarget(info.targetId);
+      if (!run) return;
+      if (phomSessions) phomSessions.routeSocketClosed(run.id, { targetId: info.targetId, url: info.url });
+    } catch { /* never break capture */ }
+  });
+
   async function connectRunEndpoint(run, endpoint) {
     const manager = runManager.setTargetManager(run, endpoint);
     if (!manager) return { ok: false, error: { code: 'RUN_CLOSED', message: 'run closed' } };
@@ -644,7 +657,14 @@ else {
     // (keyed by the authoritative browser profile, not the window slot) (§12).
     const profileDir = path.join(phomRoot(), 'browser-profiles', pk || slot || 'X');
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
-    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect: gridRectForSlot(slot), mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
+    // PHASE-3 — a DESKTOP window sized to this profile's MOBILE-LANDSCAPE viewport (device metrics
+    // are still applied over CDP; only the native window bounds change). A/B/C are spread across the
+    // work area (A left, B center, C right). Without a device (e.g. localTest about:blank) fall back
+    // to the legacy quadrant tiling so the window is still placed sensibly.
+    const windowRect = device
+      ? desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight })
+      : gridRectForSlot(slot);
+    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
     run.deviceProfile = device || null; // reapplied on every attach/navigation
@@ -777,6 +797,11 @@ else {
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
     ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
+    // PHASE-2 — read the monotonic discovery/sync milestone timeline (telemetry for latency inspection).
+    ipcMain.handle('phom:trace', () => ({ ok: true, trace: phomSessions ? phomSessions.trace() : [] }));
+    // PHASE-3 · PART B — observe-only native-JOIN experiment (A→B→C, same stake, no room forcing).
+    // Authorized+licensed only; observes server matchmaking from ps[], never changes production flow.
+    ipcMain.handle('phom:join-experiment', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.runJoinExperiment(cfg && cfg.channel, cfg && cfg.opts); }));
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.
     ipcMain.handle('phom:cluster-create', guarded((_e, config) => {
       ensureStores();

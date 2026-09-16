@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   stop: () => ipcRenderer.invoke('phom:stop'),
   sessionState: () => ipcRenderer.invoke('phom:session-state'),
   verifyTable: () => ipcRenderer.invoke('phom:verify-table'),
+  trace: () => ipcRenderer.invoke('phom:trace'),
+  joinExperiment: (channel, opts) => ipcRenderer.invoke('phom:join-experiment', { channel, opts }),
   onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
   onHands: (cb) => ipcRenderer.on('phom:hands', (_e, hands) => cb(hands)),
   onKick: (cb) => ipcRenderer.on('phom:kick', (_e, k) => cb(k)),
