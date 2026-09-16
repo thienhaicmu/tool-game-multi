@@ -200,31 +200,40 @@ test('verifyPresent reflects whether the bar + binding exist in the page', async
 const main = read('desktop/phom-main.cjs');
 
 test('main installs the header on attach with per-run identity + logging, routes clicks to the coordinator', () => {
-  assert.match(main, /gameHeader\.bootScript\(\{ slotId: run\.slot \|\| null, profileId: run\.profileId \|\| null, runId: run\.id \}\)/);
+  assert.match(main, /gameHeader\.bootScript\(\{ slotId: run\.slot \|\| null, profileId: run\.profileId \|\| null, runId: run\.id, observerLog: process\.env\.PHOM_HEADER_OBSERVER_LOG === '1' \}\)/);
   assert.match(main, /headerBridge\.installHeader\(client, \{ runId: run\.id, slotId: run\.slot \|\| null, boot, onAction: \(rid, payload\) => phomHeaderAction\(rid, payload\), log: headerLog \}\)/);
 });
 
-// PHASE 6.3.2.2 — reliability guards in the action router.
-test('router has a per-browser duplicate-action guard, a dead-session guard, and identity cross-check', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 3400);
-  assert.match(r, /headerActionBusy\[rid\]/);           // one op per browser
-  assert.match(r, /PHOM_HEADER_BUSY/);
+// PHASE 6.3.2.2 / 6.3.2.3 — reliability guards in the action router (single-flight via the pure guard,
+// identity cross-check, and dead-session guard). PHOM_HEADER_BUSY now lives in header-action-guard.cjs.
+test('router has a per-browser single-flight + identity guard and a dead-session guard', () => {
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 4200);
+  assert.match(r, /evaluateHeaderAction\(/);             // pure single-flight + identity guard
+  assert.match(r, /busy: !!headerActionBusy\[rid\]/);    // one op per browser
   assert.match(r, /if \(!runClientFor\(rid\)\)/);        // never route into a dead CDP session
   assert.match(r, /PHOM_HEADER_NO_CLIENT/);
-  assert.match(r, /identity-mismatch/);                  // payload identity cross-check (never cross-route)
   assert.match(r, /finally \{ delete headerActionBusy\[rid\]/);
+  const guard = read('desktop/protocol/phom/header-action-guard.cjs');
+  assert.match(guard, /PHOM_HEADER_BUSY/);
+  assert.match(guard, /STALE_RUN/); assert.match(guard, /STALE_PROFILE/); assert.match(guard, /DUPLICATE_ACTION_ID/);
 });
 
 test('main tracks header readiness + exposes read-only runtime/CDP/header status for Screen 2', () => {
   assert.match(main, /const headerReady = Object\.create\(null\)/);
   assert.match(main, /function browserRuntimeStatus\(runId\)/);
-  assert.match(main, /header: \(cdp && headerReady\[String\(runId\)\]\) \? 'READY' : 'NOT_READY'/);
+  // §6.3.2.7 — HEADER is READY only when the page CONFIRMED the DOM present; RECOVERING when binding up but
+  // DOM missing; never a stale READY.
+  assert.match(main, /header = headerDomPresent\[rid\] \? 'READY' : 'RECOVERING'/);
+  assert.match(main, /const headerDomPresent = Object\.create\(null\)/);
   // the manual snapshot merges it per browser
   assert.match(main, /Object\.assign\(b, browserRuntimeStatus\(b\.profileId\)\)/);
 });
 
-test('main pushes header state on every session update (no Tool screen needed)', () => {
-  assert.match(main, /phomSessions\.on\('update', \(snap\) => \{ send\('phom:session', snap\); pushHeaderStates\(\); \}\)/);
+test('main pushes header state on session updates via a coalesced broadcast (no Tool screen needed)', () => {
+  // §6.3.2.6 lag fix — the per-frame storm is throttled; pushHeaderStates dedupes unchanged states.
+  assert.match(main, /phomSessions\.on\('update', \(snap\) => \{ scheduleSessionBroadcast\(snap\); \}\)/);
+  assert.match(main, /function scheduleSessionBroadcast\(snap\)/);
+  assert.match(main, /if \(headerLastPushed\[rid\] === json\) continue;/); // per-run dedupe skips the CDP evaluate
 });
 
 test('the cluster shared RID = the first JOINED browser (header VÀO BÀN uses it, § shared RID)', () => {

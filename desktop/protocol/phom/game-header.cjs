@@ -41,9 +41,11 @@ function deriveHeaderState(view = {}) {
 function bootScript(opts = {}) {
   const bindingName = opts.bindingName || '__phomAction';
   const identity = { slotId: opts.slotId != null ? String(opts.slotId) : null, profileId: opts.profileId != null ? String(opts.profileId) : null, runId: opts.runId != null ? String(opts.runId) : null };
+  const obsLog = opts.observerLog ? 'true' : 'false';
   return `(() => {
   const BID = ${JSON.stringify(bindingName)};
   const ID = ${JSON.stringify(identity)};
+  const OBSLOG = ${obsLog};
   // 6.3.2.2 idempotent + SELF-HEALING: if the boot already ran but the game wiped the bar out of the DOM
   // (SPA body swap), re-mount it instead of returning early — so the header can never silently vanish.
   if (window.__phomHeaderInstalled) { if (!document.getElementById('__phom_header') && window.__phomHeaderMount) window.__phomHeaderMount(); return; }
@@ -51,17 +53,62 @@ function bootScript(opts = {}) {
   // Every action carries the browser IDENTITY (slot/profile/run) + a correlation actionId so a single
   // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
   function emit(action, extra){ try { window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: (Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)), slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
+  // Report the header's REAL DOM presence to main (once per mount/remount — NOT per frame) so the Tool can
+  // show HEADER = Sẵn sàng only when #__phom_header actually exists; main force-repushes state on receipt.
+  function emitStatus(){ try { window[BID] && window[BID](JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId })); } catch(e){} }
   const bar = document.createElement('div'); bar.id = '__phom_header';
-  bar.setAttribute('style','position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:flex;align-items:center;gap:10px;padding:0 10px;background:#111827;color:#e5e7eb;font:600 12px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.3);');
+  // §13 — stable 3-column layout: LEFT (ACCOUNT · STATE) | CENTER (ACTION) | RIGHT (RID). The action is
+  // centered INSIDE the header bar via the grid center column (never centered over the game / pushed to a
+  // corner) regardless of how wide the left/right text is.
+  bar.setAttribute('style','position:fixed;top:0;left:0;right:0;height:34px;z-index:2147483647;display:grid;grid-template-columns:1fr auto 1fr;align-items:center;gap:10px;padding:0 10px;background:#111827;color:#e5e7eb;font:600 12px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 1px 4px rgba(0,0,0,.3);');
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
+  const left = mk('div','justify-self:start;display:flex;align-items:center;gap:10px;min-width:0;overflow:hidden;white-space:nowrap');
   const acc = mk('span'); acc.id='__ph_acc';
-  const rid = mk('span'); rid.id='__ph_rid';
   const st  = mk('span'); st.id='__ph_st';
-  const act = mk('div','margin-left:auto;display:flex;gap:6px;align-items:center'); act.id='__ph_act';
-  bar.appendChild(acc); bar.appendChild(rid); bar.appendChild(st); bar.appendChild(act);
-  function ready(){ if(document.body){ if(!document.getElementById('__phom_header')) document.body.appendChild(bar); document.body.style.marginTop='34px'; } else { requestAnimationFrame(ready); } }
+  left.appendChild(acc); left.appendChild(st);
+  const act = mk('div','justify-self:center;display:flex;gap:6px;align-items:center'); act.id='__ph_act';
+  const right = mk('div','justify-self:end;display:flex;align-items:center;gap:6px;white-space:nowrap');
+  const rid = mk('span'); rid.id='__ph_rid'; right.appendChild(rid);
+  bar.appendChild(left); bar.appendChild(act); bar.appendChild(right);
+  // Mount idempotently. On a real (re)mount, tell main so it re-pushes the current state into the fresh bar.
+  function ready(){ if(document.body){ if(!document.getElementById('__phom_header')){ document.body.appendChild(bar); emitStatus(); } document.body.style.marginTop='34px'; } else { requestAnimationFrame(ready); } }
   window.__phomHeaderMount = ready; // allow the bridge / render to re-mount after an SPA body swap
   ready();
+  // REAL self-heal (§5) — a Cocos/SPA bootstrap that rebuilds <body> AFTER load removes the bar, and (post
+  // 6.3.2.6 dedupe) nothing re-renders it in a steady lobby. NARROW in-PAGE observers re-mount the bar the
+  // instant it is removed — NEVER observing the whole game DOM (§2/§3):
+  //   L1 = <html> childList (subtree:false) — catches document.body being replaced/created.
+  //   L2 = <body> childList (subtree:false) — catches the header removed directly from body.
+  // The header is always a DIRECT child of body, so childList (no subtree) is sufficient; our own render
+  // (buttons appended INSIDE #__ph_act) is deeper than body, so it never even reaches these observers.
+  // rAF-coalesced, fast no-op while present, no CDP round-trips, no polling. pagehide disconnects both.
+  var __c = { observerCallbacks:0, mutationRecords:0, remountRequests:0, actualRemounts:0 };
+  window.__phomHeaderCounters = __c;
+  var __remountScheduled = false;
+  function scheduleRemount(){
+    if (document.getElementById('__phom_header')) return;                 // present → no-op (loop-safe §5)
+    __c.remountRequests++;
+    if (__remountScheduled) return; __remountScheduled = true;
+    requestAnimationFrame(function(){ __remountScheduled = false; if(!document.getElementById('__phom_header')){ __c.actualRemounts++; if(OBSLOG){ try{ console.log('[PHOM-HDR] remount', ID.slotId||ID.runId, JSON.stringify(__c)); }catch(e){} } ready(); } });
+  }
+  try {
+    if (!window.__phomHeaderObserver && typeof MutationObserver !== 'undefined') {
+      var __bodyObs = null, __bodyTarget = null;
+      var observeBody = function(){
+        if (!document.body || __bodyTarget === document.body) return;      // already watching this body
+        if (__bodyObs) { try{ __bodyObs.disconnect(); }catch(e){} }
+        __bodyTarget = document.body;
+        __bodyObs = new MutationObserver(function(m){ __c.observerCallbacks++; __c.mutationRecords += m.length; scheduleRemount(); });
+        __bodyObs.observe(document.body, { childList: true, subtree: false });
+        if (OBSLOG){ try{ console.log('[PHOM-HDR] observe body', ID.slotId||ID.runId); }catch(e){} }
+      };
+      var __htmlObs = new MutationObserver(function(m){ __c.observerCallbacks++; __c.mutationRecords += m.length; observeBody(); scheduleRemount(); });
+      __htmlObs.observe(document.documentElement, { childList: true, subtree: false }); // body replace/create
+      observeBody();
+      window.__phomHeaderObserver = { disconnect: function(){ try{ __htmlObs.disconnect(); }catch(e){} try{ if(__bodyObs) __bodyObs.disconnect(); }catch(e){} } };
+      window.addEventListener('pagehide', function(){ try { window.__phomHeaderObserver.disconnect(); } catch(e){} window.__phomHeaderObserver = null; }, { once:true });
+    }
+  } catch(e){}
   function btn(label, dis, danger, onClick){ const b=mk('button', 'padding:4px 12px;border-radius:6px;border:1px solid '+(danger?'#7f1d1d':'#374151')+';background:'+(danger?'#7f1d1d':'#2563eb')+';color:#fff;font:600 12px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.5':'1')); b.textContent=label; if(dis) b.disabled=true; else b.onclick=onClick; return b; }
   window.__phomHeaderRender = function(state){ try {
     if(!document.getElementById('__phom_header')) ready();

@@ -898,13 +898,16 @@
     body.appendChild(infoRow('RID', ridText));
     body.appendChild(infoRow('STATE', st.label, st.cls));
     body.appendChild(infoRow('WS', wsOk ? 'Kết nối' : 'Mất kết nối', wsOk ? 'ok' : 'off'));
-    // PHASE 6.3.2.2 — runtime diagnostics (read-only): which engine, CDP link, header readiness.
+    // PHASE 6.3.2.2/6.3.2.7 — runtime diagnostics (read-only): engine, CDP link, and REAL header DOM state.
     const rtKind = mb && mb.runtimeKind ? (mb.runtimeKind === 'chrome' ? 'Chrome' : 'Chromium') : '—';
     const cdpOk = mb && mb.cdp === 'CONNECTED';
-    const hdrOk = mb && mb.header === 'READY';
+    // HEADER reflects actual #__phom_header presence confirmed by the page: READY / Đang khôi phục / chưa.
+    const hdr = mb && mb.header;
+    const hdrText = hdr === 'READY' ? 'Sẵn sàng' : hdr === 'RECOVERING' ? 'Đang khôi phục' : 'Chưa sẵn sàng';
+    const hdrCls = hdr === 'READY' ? 'ok' : hdr === 'RECOVERING' ? 'warn' : 'off';
     body.appendChild(infoRow('RUNTIME', rtKind));
     body.appendChild(infoRow('CDP', cdpOk ? 'Kết nối' : 'Mất kết nối', cdpOk ? 'ok' : 'off'));
-    body.appendChild(infoRow('HEADER', hdrOk ? 'Sẵn sàng' : 'Chưa sẵn sàng', hdrOk ? 'ok' : 'warn'));
+    body.appendChild(infoRow('HEADER', hdrText, hdrCls));
     body.appendChild(el('div', { class: 'bc-note faint xs' }, 'Điều khiển game nằm trên thanh tiêu đề trong Chromium.'));
     cell.appendChild(body);
     // footer: reload web (same Chromium) + power (close this Chromium only) — icon buttons + tooltips (§24).

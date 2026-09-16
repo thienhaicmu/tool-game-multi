@@ -56,7 +56,7 @@ test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state
   assert.match(gh, /error:/); // failure surfaced back into the header
   // the main process tracks the transient entering flag + bounded evidence via slotInPhom-equivalent
   assert.match(main, /headerEntering/);
-  assert.match(main, /view\.inGame\) delete headerEntering/); // real in-game evidence clears ENTERING
+  assert.match(main, /if \(view\.inGame\) \{[\s\S]*?delete headerEntering\[rid\]/); // real in-game evidence clears ENTERING
 });
 
 test('Screen 2 cell is READ-ONLY: mirrors ACCOUNT/RID/STATE/WS, keeps only ↻/⏻ lifecycle (no game buttons)', () => {
@@ -103,7 +103,7 @@ test('main screen shows NO Host/Follower/player-4 terminology (ACCOUNT is now sh
 test('the header action router acts on ONE browser via the run-scoped coordinator API (no cross-browser)', () => {
   // ENTER_GAME -> phomEnterGame(runId); FIND/JOIN/REJOIN/LEAVE -> the run-scoped manual* API, all keyed by
   // the single runId the click came from (never a leave-all / cross-browser action).
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 3400);
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 4200);
   assert.match(r, /ENTER_GAME'[\s\S]*?phomEnterGame\(rid\)/);
   assert.match(r, /FIND'[\s\S]*?manualDiscoverTable\(rid, \{ selectedStake \}\)/);
   assert.match(r, /manualRejoin\(rid/);

@@ -7,6 +7,7 @@ const { reduceHand, emptyHand, SYNC } = require('./hand-reducer.cjs');
 const { ZONE, GID } = require('./phom-frame-classify.cjs');
 const { buildChannelListFrame, buildJoinFrame, buildReadyFrame, buildLeaveFrame } = require('./phom-coordinator.cjs');
 const { remainingCardsView } = require('./remaining-cards.cjs');
+const { pickQualifiedCandidate } = require('./table-qualify.cjs');
 
 // ---------------------------------------------------------------------------
 // HostTableCoordinator (§10–20) — the HOST/FOLLOWER controlled-table orchestration.
@@ -712,20 +713,21 @@ class HostTableCoordinator extends EventEmitter {
     return [...seen].sort((a, b) => a - b);
   }
 
-  // Pick a QUALIFYING EMPTY table from this browser's authoritative channel list (server rs[]): the right
-  // zone/game, MATCHING the SELECTED stake (candidate.b === selectedStake, §6A), a REAL table (uC <= Mu —
-  // a stake BUCKET has uC >> Mu and is excluded), with >= `need` FREE seats (full tables uC==Mu rejected).
-  // Prefers the emptiest. The rid + stake come from the table itself. Returns null when nothing qualifies.
+  // Pick a QUALIFYING EMPTY table from this browser's authoritative channel list (server rs[]) via the pure
+  // qualifier (table-qualify.cjs): right zone/game, MATCHING selected stake, a REAL table (uC <= Mu), and
+  // >= `need` (default 3) FREE seats so B1+B2+B3 can all JOIN. Prefers the emptiest. Logs each reject (esp.
+  // NOT_ENOUGH_FREE_SLOTS) for diagnosis (§B5). Qualification happens BEFORE any JOIN (§B6). Returns null
+  // when nothing qualifies. The rid + stake come from the table itself — never invented.
   _pickManualCandidate(rec, need, selectedStake) {
     let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; }
-    const wantStake = selectedStake != null && Number.isFinite(Number(selectedStake)) ? Number(selectedStake) : null;
-    const fittable = chans.filter((c) => c && c.rid != null && c.b != null && c.Mu != null
-      && (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID)
-      && (wantStake == null || Number(c.b) === wantStake)
-      && Number(c.uC) <= Number(c.Mu) && (Number(c.Mu) - Number(c.uC)) >= need
-      && !this._failedRids.has(c.rid));
-    if (!fittable.length) return null;
-    return fittable.slice().sort((a, b) => (Number(a.uC) || 0) - (Number(b.uC) || 0))[0];
+    const { candidate, rejects } = pickQualifiedCandidate(chans, {
+      need, selectedStake, zone: ZONE, gid: GID, isFailedRid: (rid) => this._failedRids.has(rid),
+    });
+    for (const r of rejects) {
+      // Surface WHY a table was skipped (never a secret). The free-slots shortfall is the key new rule.
+      if (r.reason === 'NOT_ENOUGH_FREE_SLOTS') this._mark('TABLE_REJECT', { id: rec.id, rid: r.rid, stake: r.stake, uC: r.uC, Mu: r.Mu, freeSlots: r.freeSlots, reason: r.reason });
+    }
+    return candidate;
   }
 
   // REAL table discovery for ONE browser (PHASE 6.2.1): request the authoritative channel list (CMD 300),

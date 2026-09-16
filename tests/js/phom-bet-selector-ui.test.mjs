@@ -51,9 +51,11 @@ test('FIND passes the CHOSEN stake to discovery (api.manualDiscover with selecte
 test('backend exposes per-browser betOptions = distinct server stakes (rs[].b), not hard-coded', () => {
   assert.match(coord, /_betOptionsFor\(rec\)/);
   assert.match(coord, /betOptions: this\._betOptionsFor\(rec\)/);
-  // discovery filters by the selected stake and requires it
-  assert.match(coord, /Number\(c\.b\) === wantStake/);
+  // discovery filters by the selected stake (now via the pure qualifier) and requires it (§6.3.2.3)
+  assert.match(coord, /pickQualifiedCandidate\(chans, \{[\s\S]*?selectedStake/);
   assert.match(coord, /PHOM_NO_STAKE_SELECTED/);
+  const qualify = read('desktop/protocol/phom/table-qualify.cjs');
+  assert.match(qualify, /Number\(c\.b\) !== wantStake/);
 });
 
 test('picking a stake enables TÌM BÀN IN PLACE (no full renderApp that would close the dropdown)', () => {

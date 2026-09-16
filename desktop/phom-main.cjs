@@ -52,6 +52,7 @@ const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
 const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
+const { evaluateHeaderAction } = require('./protocol/phom/header-action-guard.cjs');
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
 const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
@@ -261,8 +262,10 @@ else {
         return { displayName: (run && run.profileLabel) || runId, proxyRef: run && run.proxy ? run.proxy.id : null, uid: null };
       },
     });
-    phomSessions.on('update', (snap) => { send('phom:session', snap); pushHeaderStates(); });
-    phomSessions.on('hands', (hands) => send('phom:hands', hands));
+    // §9 lag fix — coalesce the per-frame 'update'/'hands' storm (leading+trailing throttle). pushHeaderStates
+    // dedupes unchanged states so steady-state WS traffic costs ~0 CDP evaluates.
+    phomSessions.on('update', (snap) => { scheduleSessionBroadcast(snap); });
+    phomSessions.on('hands', (hands) => { scheduleHandsBroadcast(hands); });
     phomSessions.on('kick', (k) => send('phom:kick', k));
     phomSessions.on('log', (l) => { try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
     return phomSessions;
@@ -507,13 +510,24 @@ else {
   const headerEntering = Object.create(null); // runId -> true while VÀO GAME is in flight (transient)
   const headerError = Object.create(null);    // runId -> last action error message (transient, per browser)
   const headerActionBusy = Object.create(null); // runId -> true while ANY header op is in flight (dup guard)
-  const headerReady = Object.create(null);      // runId -> true once the header bridge installed on its client
+  const headerLastActionId = Object.create(null); // runId -> last ACCEPTED actionId (dedupes re-delivery)
+  const headerReady = Object.create(null);      // runId -> true once the header bridge installed (binding ready)
+  const headerDomPresent = Object.create(null); // runId -> true when the PAGE confirmed #__phom_header exists
+  const headerLastPushed = Object.create(null); // runId -> last pushed state JSON (skip unchanged evaluates)
+  const headerEnterStartedAt = Object.create(null); // runId -> monotonic ms at ENTER_GAME accept (latency)
+  const nowMs = () => { try { return require('node:perf_hooks').performance.now(); } catch { return Date.now(); } };
 
   // Per-browser RUNTIME status for the READ-ONLY Screen 2 (browser kind · CDP · header). No actions.
+  // §2/§12 — HEADER distinguishes three facts: CDP connected, binding installed, and the header DOM actually
+  // present in the page (confirmed by the page itself via __HEADER_STATUS). READY only when ALL hold; when
+  // the binding is up but the DOM was removed (SPA rebuild, mid-remount) it reports RECOVERING, never READY.
   function browserRuntimeStatus(runId) {
-    const run = runManager && runManager.get(String(runId));
-    const cdp = !!runClientFor(String(runId));
-    return { runtimeKind: (run && run.browserKind) || null, cdp: cdp ? 'CONNECTED' : 'DISCONNECTED', header: (cdp && headerReady[String(runId)]) ? 'READY' : 'NOT_READY' };
+    const rid = String(runId);
+    const run = runManager && runManager.get(rid);
+    const cdp = !!runClientFor(rid);
+    let header = 'NOT_READY';
+    if (cdp && headerReady[rid]) header = headerDomPresent[rid] ? 'READY' : 'RECOVERING';
+    return { runtimeKind: (run && run.browserKind) || null, cdp: cdp ? 'CONNECTED' : 'DISCONNECTED', header };
   }
 
   // Structured header lifecycle log (§24) — one line per step so an intermittent failure is diagnosable.
@@ -563,9 +577,42 @@ else {
       const client = runClientFor(run.id);
       if (!client) continue;
       const view = headerViewFor(run.id, browsers, sharedRid);
-      if (view.inGame) delete headerEntering[String(run.id)]; // real evidence clears the transient
-      headerBridge.pushHeaderState(client, gameHeader.deriveHeaderState(view));
+      const rid = String(run.id);
+      if (view.inGame) {
+        // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
+        // and log the click→ENTERED latency once, then stop timing this run.
+        delete headerEntering[rid];
+        if (headerEnterStartedAt[rid] != null) { headerLog('ENTER_GAME_EVIDENCE', { runId: rid, slotId: run.slot, elapsedMs: Math.round(nowMs() - headerEnterStartedAt[rid]) }); delete headerEnterStartedAt[rid]; }
+      }
+      // §5/§14 lag fix — the coordinator emits 'update' on EVERY observed WS frame; deriving is cheap but a
+      // CDP Runtime.evaluate per frame per browser is an evaluate STORM that saturates the client the click
+      // rides on. Skip the round-trip when this browser's derived state is byte-identical to the last push.
+      const json = JSON.stringify(gameHeader.deriveHeaderState(view));
+      if (headerLastPushed[rid] === json) continue;
+      headerLastPushed[rid] = json;
+      client.Runtime.evaluate({ expression: `window.__phomHeaderRender && window.__phomHeaderRender(${json})` }).catch((e) => headerLog('push-error', { runId: rid, error: String(e && e.message || e) }));
     }
+  }
+
+  // §9 lag fix — the coordinator emits 'update'/'hands' on EVERY observed WS frame. Broadcasting each one to
+  // the renderer (IPC) + pushing every header (CDP) per frame is an IPC/CDP storm during normal play. These
+  // leading+trailing throttles coalesce a burst into at most ~2 emits per window while always delivering the
+  // LATEST snapshot — the header dedupe above then skips unchanged CDP evaluates entirely. State still
+  // converges; only redundant churn is removed (no authoritative evidence is dropped).
+  const BROADCAST_MS = 120;
+  let _sessTimer = null; let _sessPending = null;
+  function scheduleSessionBroadcast(snap) {
+    _sessPending = snap;
+    if (_sessTimer) return; // a trailing flush is already pending → coalesce
+    const s = _sessPending; _sessPending = null; if (s) send('phom:session', s); pushHeaderStates(); // leading edge
+    _sessTimer = setTimeout(() => { _sessTimer = null; if (_sessPending) { const t = _sessPending; _sessPending = null; send('phom:session', t); pushHeaderStates(); } }, BROADCAST_MS);
+  }
+  let _handsTimer = null; let _handsPending = null;
+  function scheduleHandsBroadcast(hands) {
+    _handsPending = hands;
+    if (_handsTimer) return;
+    const h = _handsPending; _handsPending = null; if (h) send('phom:hands', h); // leading edge
+    _handsTimer = setTimeout(() => { _handsTimer = null; if (_handsPending) { const t = _handsPending; _handsPending = null; send('phom:hands', t); } }, BROADCAST_MS);
   }
 
   // Route ONE header button click (from the in-page binding) to the coordinator's manual API. The action
@@ -574,24 +621,37 @@ else {
     const rid = String(runId == null ? '' : runId);
     const action = payload && payload.action;
     const actionId = (payload && payload.actionId) || null;
-    // §6 — the run id is authoritative (bound per-client at install). The payload identity is a defensive
-    // cross-check: a click MUST NOT be attributed to another browser. Log a mismatch but keep the bound id.
-    if (payload && payload.runId != null && String(payload.runId) !== rid) headerLog('identity-mismatch', { runId: rid, payloadRunId: String(payload.runId), actionId });
+    // §3/§8/§12 — INTERNAL: the page reports its real header DOM presence (on mount/remount, NOT per frame).
+    // Record it (drives the honest Tool indicator) and force a state re-push so the freshly (re)mounted bar
+    // gets its current content. This is the ONLY header-DOM signal — never a per-WS-frame CDP verify (§11).
+    if (action === '__HEADER_STATUS') {
+      headerDomPresent[rid] = !!(payload && payload.present);
+      headerLog('HEADER_DOM_PRESENT', { runId: rid, slotId: payload && payload.slotId, present: headerDomPresent[rid] });
+      delete headerLastPushed[rid]; // force the next push (re-fill the fresh bar)
+      pushHeaderStates();
+      return { ok: true, internal: true };
+    }
     headerLog('action-route', { runId: rid, slotId: payload && payload.slotId, action, actionId });
-    // §8 — one operation per browser. A second click while one is in flight is IGNORED (never stacks).
-    if (headerActionBusy[rid]) { headerLog('action-duplicate-ignored', { runId: rid, action, actionId }); return { ok: false, busy: true, error: { code: 'PHOM_HEADER_BUSY', message: 'Đang xử lý thao tác trước…' } }; }
+    // §A2/§A8 — single-flight + IDENTITY guard (pure). Rejects a click that belongs to a stale run/profile
+    // (e.g. fired by an OLD header after reopen), a re-delivered duplicate actionId, or a second op while
+    // one is already running. The bound runId is authoritative; the payload identity is the cross-check.
+    const runRec = runManager && runManager.get(rid);
+    const guard = evaluateHeaderAction({ payload: payload || {}, boundRunId: rid, runProfileId: runRec && runRec.profileId, busy: !!headerActionBusy[rid], lastActionId: headerLastActionId[rid] || null });
+    if (!guard.ok) { headerLog('action-rejected', { runId: rid, action, actionId, reason: guard.reason }); return { ok: false, busy: guard.reason === 'DUPLICATE_ACTION', error: { code: guard.code, message: guard.message } }; }
     // §12 — never route into a dead CDP session (page crashed / target closed).
     if (!runClientFor(rid)) { headerLog('action-no-client', { runId: rid, action, actionId }); headerError[rid] = 'Chromium mất kết nối — MỞ lại trình duyệt.'; pushHeaderStates(); return { ok: false, error: { code: 'PHOM_HEADER_NO_CLIENT', message: 'no live CDP client' } }; }
     headerActionBusy[rid] = true;
+    if (actionId != null) headerLastActionId[rid] = actionId;
     delete headerError[rid];
     let res = { ok: true };
     try {
       if (action === 'ENTER_GAME') {
+        headerEnterStartedAt[rid] = nowMs(); // T6 — start the click→ENTERED latency clock (§2/§17)
         headerEntering[rid] = true; pushHeaderStates();
-        headerLog('enter-game-start', { runId: rid, actionId });
-        res = await phomEnterGame(rid);
-        if (!res || res.ok === false) delete headerEntering[rid];
-        headerLog('enter-game-result', { runId: rid, actionId, ok: !!(res && res.ok) });
+        headerLog('ENTER_GAME_START', { runId: rid, slotId: payload && payload.slotId, actionId, elapsedMs: 0 });
+        res = await phomEnterGame(rid); // T8 — the in-engine tile click was fired (INVOKED != ENTERED)
+        if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; }
+        headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, actionId, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
       } else if (action === 'FIND') {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
@@ -762,7 +822,7 @@ else {
       // (transient CDP drop → poll re-adds the target with a NEW client) this runs again → header + binding
       // are reinstalled and the state re-pushed (§11 reattach). (§6.3.2 / §6.3.2.2)
       headerLog('cdp-attach', { runId: run.id, slotId: run.slot, targetId: target.cdpTargetId });
-      const boot = gameHeader.bootScript({ slotId: run.slot || null, profileId: run.profileId || null, runId: run.id });
+      const boot = gameHeader.bootScript({ slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1' });
       headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
         .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); }).catch(() => {});
       // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).
@@ -781,7 +841,7 @@ else {
       // §11/§12 — the CDP session for this run's page is gone (transient drop or real close). Mark the
       // header NOT READY so Screen 2 reflects it and no action is routed into a dead session. If the OS
       // window is still alive, the 1.5s target poll re-attaches → installHeader re-runs on the new client.
-      if (!runManager.targetsForRun(run.id).length) { headerReady[String(run.id)] = false; headerLog('cdp-detached', { runId: run.id }); runManager.disconnectRun(run); try { phomSessions.routeDisconnect(run.id); } catch { /* best effort */ } pushHeaderStates(); }
+      if (!runManager.targetsForRun(run.id).length) { headerReady[String(run.id)] = false; headerDomPresent[String(run.id)] = false; delete headerLastPushed[String(run.id)]; delete headerEnterStartedAt[String(run.id)]; headerLog('cdp-detached', { runId: run.id }); runManager.disconnectRun(run); try { phomSessions.routeDisconnect(run.id); } catch { /* best effort */ } pushHeaderStates(); }
     });
     if (!manager.start) return { ok: true };
     try { await manager.start(); return { ok: true }; }
@@ -1111,7 +1171,10 @@ else {
       if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
       // The reloaded page leaves the Phỏm game, so reset this browser's Phỏm context — slotInPhom goes
       // false and the tool shows VÀO GAME again (socket/channels rebind from the new page's own frames).
-      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } delete headerEntering[String(runId)]; delete headerError[String(runId)]; pushHeaderStates(); };
+      // §9 — on reload (F5) the document is torn down: the header DOM is gone until the new document's boot
+      // re-mounts it and re-reports __HEADER_STATUS. Mark it not-present so the Tool shows RECOVERING (not a
+      // stale Sẵn sàng), and clear the push cache so the fresh document is re-filled with LOBBY state.
+      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } delete headerEntering[String(runId)]; delete headerError[String(runId)]; headerDomPresent[String(runId)] = false; delete headerLastPushed[String(runId)]; delete headerEnterStartedAt[String(runId)]; pushHeaderStates(); };
       try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
       catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
     }));
