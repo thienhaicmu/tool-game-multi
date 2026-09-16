@@ -643,6 +643,7 @@ else {
     headerActionBusy[rid] = true;
     if (actionId != null) headerLastActionId[rid] = actionId;
     delete headerError[rid];
+    const _t0 = nowMs(); // 6.3.2.10 — main-side handler duration (M1→M4) for ALL actions
     let res = { ok: true };
     try {
       if (action === 'ENTER_GAME') {
@@ -672,7 +673,7 @@ else {
     } catch (e) { res = { ok: false, error: { code: 'PHOM_HEADER_ACTION_FAILED', message: safeMsg(e) } }; }
     finally { delete headerActionBusy[rid]; }
     if (res && res.ok === false) headerError[rid] = (res.error && (res.error.message || res.error.code)) || 'LỖI';
-    headerLog('action-done', { runId: rid, action, actionId, ok: !!(res && res.ok), error: res && res.error && res.error.code });
+    headerLog('action-done', { runId: rid, action, actionId, ok: !!(res && res.ok), error: res && res.error && res.error.code, elapsedMs: Math.round(nowMs() - _t0) });
     pushHeaderStates();
     return res;
   }
@@ -822,7 +823,7 @@ else {
       // (transient CDP drop → poll re-adds the target with a NEW client) this runs again → header + binding
       // are reinstalled and the state re-pushed (§11 reattach). (§6.3.2 / §6.3.2.2)
       headerLog('cdp-attach', { runId: run.id, slotId: run.slot, targetId: target.cdpTargetId });
-      const boot = gameHeader.bootScript({ slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1' });
+      const boot = gameHeader.bootScript({ slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' });
       headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
         .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); }).catch(() => {});
       // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).

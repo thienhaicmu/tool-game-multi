@@ -103,7 +103,7 @@ test('main screen shows NO Host/Follower/player-4 terminology (ACCOUNT is now sh
 test('the header action router acts on ONE browser via the run-scoped coordinator API (no cross-browser)', () => {
   // ENTER_GAME -> phomEnterGame(runId); FIND/JOIN/REJOIN/LEAVE -> the run-scoped manual* API, all keyed by
   // the single runId the click came from (never a leave-all / cross-browser action).
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 4200);
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 5200);
   assert.match(r, /ENTER_GAME'[\s\S]*?phomEnterGame\(rid\)/);
   assert.match(r, /FIND'[\s\S]*?manualDiscoverTable\(rid, \{ selectedStake \}\)/);
   assert.match(r, /manualRejoin\(rid/);

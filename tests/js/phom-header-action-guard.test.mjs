@@ -48,7 +48,7 @@ test('missing payload identity does not false-reject (bound runId is authoritati
 const main = read('desktop/phom-main.cjs');
 
 test('the router uses the pure guard, tracks last accepted actionId, and keeps the dead-session guard', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 4200);
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 5200);
   assert.match(r, /evaluateHeaderAction\(\{ payload: payload \|\| \{\}, boundRunId: rid, runProfileId: runRec && runRec\.profileId, busy: !!headerActionBusy\[rid\], lastActionId: headerLastActionId\[rid\] \|\| null \}\)/);
   assert.match(r, /if \(!guard\.ok\)/);
   assert.match(r, /headerLastActionId\[rid\] = actionId/);

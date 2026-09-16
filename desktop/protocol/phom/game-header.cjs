@@ -42,17 +42,27 @@ function bootScript(opts = {}) {
   const bindingName = opts.bindingName || '__phomAction';
   const identity = { slotId: opts.slotId != null ? String(opts.slotId) : null, profileId: opts.profileId != null ? String(opts.profileId) : null, runId: opts.runId != null ? String(opts.runId) : null };
   const obsLog = opts.observerLog ? 'true' : 'false';
+  const clickLog = opts.clickLog ? 'true' : 'false';
   return `(() => {
   const BID = ${JSON.stringify(bindingName)};
   const ID = ${JSON.stringify(identity)};
   const OBSLOG = ${obsLog};
+  const CLICKLOG = ${clickLog};
+  // 6.3.2.10 PROFILING (gated) — a single-clock page timer: stamp at click, report at the next header render.
+  // This is the user-perceived click→visual round-trip (page → CDP binding → main → CDP evaluate → page).
+  const CLK = (window.performance && performance.now) ? function(){ return performance.now(); } : function(){ return Date.now(); };
   // 6.3.2.2 idempotent + SELF-HEALING: if the boot already ran but the game wiped the bar out of the DOM
   // (SPA body swap), re-mount it instead of returning early — so the header can never silently vanish.
   if (window.__phomHeaderInstalled) { if (!document.getElementById('__phom_header') && window.__phomHeaderMount) window.__phomHeaderMount(); return; }
   window.__phomHeaderInstalled = true;
   // Every action carries the browser IDENTITY (slot/profile/run) + a correlation actionId so a single
   // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
-  function emit(action, extra){ try { window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: (Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)), slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
+  function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } applyOptimistic(action); window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
+  // 6.3.2.11 OPTIMISTIC visual state (page-local only). __authState = the last AUTHORITATIVE state pushed by
+  // main; __optAction = a transient action the user just clicked. The click paints an immediate busy state
+  // (ĐANG …) with NO CDP/main round-trip; the next authoritative __phomHeaderRender CLEARS it and wins. Only
+  // the status/action LABEL is optimistic — never RID/ACCOUNT/membership (those stay authoritative, §15).
+  var __authState = null, __optAction = null;
   // Report the header's REAL DOM presence to main (once per mount/remount — NOT per frame) so the Tool can
   // show HEADER = Sẵn sàng only when #__phom_header actually exists; main force-repushes state on receipt.
   function emitStatus(){ try { window[BID] && window[BID](JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId })); } catch(e){} }
@@ -110,7 +120,10 @@ function bootScript(opts = {}) {
     }
   } catch(e){}
   function btn(label, dis, danger, onClick){ const b=mk('button', 'padding:4px 12px;border-radius:6px;border:1px solid '+(danger?'#7f1d1d':'#374151')+';background:'+(danger?'#7f1d1d':'#2563eb')+';color:#fff;font:600 12px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.5':'1')); b.textContent=label; if(dis) b.disabled=true; else b.onclick=onClick; return b; }
-  window.__phomHeaderRender = function(state){ try {
+  // Paint ONE state object into the bar (authoritative OR optimistic — identical rendering, no duplicate
+  // renderer). Buttons still call emit(); a busy/disabled primary renders as a disabled button (no onclick),
+  // which is what naturally blocks a second click during an in-flight action.
+  function paint(state){
     if(!document.getElementById('__phom_header')) ready();
     acc.textContent = 'ACCOUNT: ' + (state.account||'—');
     rid.textContent = 'RID: ' + (state.rid||'—');
@@ -125,8 +138,50 @@ function bootScript(opts = {}) {
     } else if (p.action){ act.appendChild(btn(p.label||p.action, !!p.disabled, false, ()=> emit(p.action, p.rid!=null?{ rid:p.rid }:null))); }
     (state.secondary||[]).forEach(sa=> act.appendChild(btn(sa.label||sa.action, false, !!sa.danger, ()=> emit(sa.action))));
     if(state.error){ const e=mk('span','color:#f87171'); e.textContent=state.error; act.appendChild(e); }
-  } catch(e){} };
+    // 6.3.2.10 PROFILING (gated) — report click→visual in ONE (page) clock on the FIRST paint after a click.
+    // With 6.3.2.11 that first paint is the OPTIMISTIC one, so this now measures the immediate local response.
+    if(CLICKLOG && window.__phClickT!=null){ try{ console.log('[PHOM-CLK] CLICK_TO_RENDER', Math.round(CLK()-window.__phClickT)+'ms', 'action='+window.__phClickA, '->', state.statusLabel||''); }catch(e){} window.__phClickT=null; }
+  }
+  // Build the minimal OPTIMISTIC busy state for a just-clicked action. Reuses ACCOUNT/RID from the last
+  // authoritative state (never fabricates them); only the status label + a disabled busy primary are new.
+  function optState(action){
+    var base = __authState || {};
+    var label = action==='ENTER_GAME' ? 'ĐANG VÀO GAME…'
+      : action==='FIND' ? 'ĐANG TÌM BÀN…'
+      : (action==='JOIN_SHARED'||action==='JOIN') ? 'ĐANG VÀO BÀN…'
+      : action==='REJOIN' ? 'ĐANG VÀO BÀN…'
+      : action==='LEAVE' ? 'ĐANG THOÁT PHÒNG…'
+      : 'ĐANG XỬ LÝ…';
+    return { account: base.account, rid: base.rid, statusLabel: label, statusClass:'warn', primary:{ action: action, label: label, disabled: true, busy: true }, secondary: [], error: null };
+  }
+  // Synchronous, page-local: show the busy state the instant the user clicks — no CDP, no main round-trip.
+  function applyOptimistic(action){ try { __optAction = action; paint(optState(action)); } catch(e){} }
+  // AUTHORITATIVE render from main ALWAYS wins: store it, clear any optimistic overlay, paint it.
+  window.__phomHeaderRender = function(state){ try { __authState = state; __optAction = null; paint(state); } catch(e){} };
 })();`;
 }
 
-module.exports = { deriveHeaderState, bootScript };
+// 6.3.2.11 — PURE mirror of the in-page optimistic logic (for unit tests + a single source of truth for the
+// busy labels). optimisticState(action, authState) is what the page paints synchronously on click: only the
+// status label + a disabled busy primary are new; ACCOUNT/RID are reused from the authoritative state and
+// never fabricated (§15). deriveEffectiveHeaderState picks the optimistic overlay when set, else authState.
+function optimisticLabel(action) {
+  switch (action) {
+    case 'ENTER_GAME': return 'ĐANG VÀO GAME…';
+    case 'FIND': return 'ĐANG TÌM BÀN…';
+    case 'JOIN_SHARED': case 'JOIN': return 'ĐANG VÀO BÀN…';
+    case 'REJOIN': return 'ĐANG VÀO BÀN…';
+    case 'LEAVE': return 'ĐANG THOÁT PHÒNG…';
+    default: return 'ĐANG XỬ LÝ…';
+  }
+}
+function optimisticState(action, authState) {
+  const base = authState || {};
+  const label = optimisticLabel(action);
+  return { account: base.account, rid: base.rid, statusLabel: label, statusClass: 'warn', primary: { action, label, disabled: true, busy: true }, secondary: [], error: null };
+}
+function deriveEffectiveHeaderState({ authState = null, optAction = null } = {}) {
+  return optAction ? optimisticState(optAction, authState) : authState;
+}
+
+module.exports = { deriveHeaderState, bootScript, optimisticLabel, optimisticState, deriveEffectiveHeaderState };
