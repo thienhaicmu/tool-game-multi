@@ -245,7 +245,9 @@ test('inGame is derived like the renderer slotInPhom (socketReady + connected + 
   assert.match(main, /const inGame = opened && !!b\.socketReady && !!b\.connected && \(b\.channelCount \|\| 0\) > 0/);
   // and the coordinator snapshot now carries channelCount for the manual browser view
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
-  assert.match(coord, /channelCount: Array\.isArray\(c\.channels\) \? c\.channels\.length : 0,\n\s*rid: rec\._joinedRid/);
+  // NOTE: use \s* (not an explicit \n) so the assertion is line-ending agnostic — the file is LF in git but a
+  // Windows checkout (autocrlf) yields CRLF, and a literal \n would not match across the intervening \r.
+  assert.match(coord, /channelCount: Array\.isArray\(c\.channels\) \? c\.channels\.length : 0,\s*rid: rec\._joinedRid/);
 });
 
 test('REJOIN uses lastRid and LEAVE (THOÁT PHÒNG) preserves it (coordinator, unchanged this phase)', () => {

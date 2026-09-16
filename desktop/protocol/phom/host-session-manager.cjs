@@ -116,6 +116,8 @@ class HostSessionManager extends EventEmitter {
   // PHASE-6.2.1 — REAL discovery: find a qualifying empty table (rid + stake from the server table), join it.
   manualDiscoverTable(id, opts) { return this._guarded((c) => c.manualDiscoverTable(String(id), opts)); }
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
+  // PHASE 6.3.5 — FOLLOWER JOIN of the shared anchor RID with bounded, generation-safe, single-flight retry.
+  manualJoinShared(id, rid, opts) { return this._guarded((c) => c.manualJoinShared(String(id), rid, opts)); }
   manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
   manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
   // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).

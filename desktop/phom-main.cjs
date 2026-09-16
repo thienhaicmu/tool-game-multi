@@ -549,10 +549,13 @@ else {
     const list = browsers || [];
     // PHASE 6.3.4 §3/§16/§20 — Player 1 (browserIndex 1) is the SINGLE room anchor: the shared RID is P1's
     // own JOINED rid. Followers JOIN that RID; there is never a second anchor.
-    const anchor = list.find((b) => b && b.browserIndex === 1 && b.manualState === 'JOINED' && b.rid != null);
+    // PHASE 6.3.5 §7 — but ONLY once the anchor is validated (post-anchor capacity check passed). A
+    // provisional/invalid anchor (anchorValid === false) is never published to the followers.
+    const valid = (b) => b && b.manualState === 'JOINED' && b.rid != null && b.anchorValid !== false;
+    const anchor = list.find((b) => b.browserIndex === 1 && valid(b));
     if (anchor) return Number(anchor.rid);
-    // resilience fallback: the first JOINED browser (covers edge cases where P1 index is unknown)
-    const j = list.find((b) => b && b.manualState === 'JOINED' && b.rid != null);
+    // resilience fallback: the first VALID JOINED browser (covers edge cases where P1 index is unknown)
+    const j = list.find(valid);
     return j ? Number(j.rid) : null;
   }
 
@@ -679,7 +682,12 @@ else {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
         res = await phomSessions.manualDiscoverTable(rid, { selectedStake });
-      } else if (action === 'JOIN_SHARED' || action === 'JOIN') {
+      } else if (action === 'JOIN_SHARED') {
+        ensurePhomSessions();
+        // PHASE 6.3.5 — a FOLLOWER joins the anchor's shared RID with bounded same-RID retry + same-room proof.
+        const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
+        res = await phomSessions.manualJoinShared(rid, joinRid, {});
+      } else if (action === 'JOIN') {
         ensurePhomSessions();
         const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
         res = await phomSessions.manualJoinRoom(rid, joinRid, {});

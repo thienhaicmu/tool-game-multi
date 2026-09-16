@@ -11,7 +11,8 @@ const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
 const header = read('desktop/protocol/phom/game-header.cjs');
 
 test('main: Player 1 (browserIndex 1) is the SINGLE room anchor + the only finder', () => {
-  assert.match(main, /const anchor = list\.find\(\(b\) => b && b\.browserIndex === 1 && b\.manualState === 'JOINED' && b\.rid != null\)/);
+  assert.match(main, /const anchor = list\.find\(\(b\) => b\.browserIndex === 1 && valid\(b\)\)/);
+  assert.match(main, /b\.manualState === 'JOINED' && b\.rid != null && b\.anchorValid !== false/); // §7 only a validated anchor is published
   assert.match(main, /isFinder: b\.browserIndex === 1/);
 });
 
@@ -23,8 +24,8 @@ test('header: a follower (isFinder:false, no shared RID) is gated out of FIND (W
 test('coordinator: FIND is single-flight (no duplicate CMD 300) + reuses a fresh cached list', () => {
   assert.match(coord, /if \(rec\._discovering\)/);
   assert.match(coord, /PHOM_FIND_IN_FLIGHT/);
-  // reuse: pick a cached candidate BEFORE requesting CMD 300; only request when none qualifies
-  assert.match(coord, /let candidate = this\._pickManualCandidate\(rec, need, selectedStake\);/);
+  // reuse: pick a cached candidate BEFORE requesting CMD 300 (first pass); only request when none qualifies
+  assert.match(coord, /let candidate = recovery === 0 \? this\._pickManualCandidate\(rec, need, selectedStake\) : null;/);
   assert.match(coord, /buildChannelListFrame\(aid\)/);
   // the single-flight flag is released on the finally + on leave/reset
   assert.match(coord, /finally \{ rec\._discovering = false; \}/);

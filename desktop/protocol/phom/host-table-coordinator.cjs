@@ -68,6 +68,12 @@ const SESSION = Object.freeze({
 const ROLE = Object.freeze({ HOST: 'HOST', FOLLOWER: 'FOLLOWER' });
 const PSTATE = Object.freeze({ IDLE: 'IDLE', JOINING: 'JOINING', AT_TABLE: 'AT_TABLE', MISMATCH: 'MISMATCH', READY: 'READY', KICKED: 'KICKED', REJOINING: 'REJOINING', DISCONNECTED: 'DISCONNECTED', LEFT: 'LEFT', ERROR: 'ERROR' });
 
+// PHASE 6.3.5 — FIND RESILIENCE V2 bounds (all explicit, no hard-coded magic scattered around):
+const DISCOVER_FREE_SLOTS = 3;         // §21 — BEFORE P1 joins, a table must fit P1+P2+P3 (freeSlots >= 3)
+const POST_ANCHOR_FREE_SLOTS = 2;      // §20 — AFTER P1 is seated, it must still fit P2+P3 (freeSlots >= 2)
+const MAX_ANCHOR_RECOVERY = 2;         // §8  — bounded P1 re-FIND attempts after an invalid anchor
+const MAX_SHARED_RID_JOIN_RETRIES = 2; // §11 — follower same-RID retries (initial attempt + 2 = 3 tries max)
+
 class HostTableCoordinator extends EventEmitter {
   constructor(deps = {}) {
     super();
@@ -204,6 +210,7 @@ class HostTableCoordinator extends EventEmitter {
     const rec = this._profiles.get(String(profileId));
     if (!rec) return;
     rec.state = (rec.role === ROLE.HOST) ? PSTATE.DISCONNECTED : PSTATE.DISCONNECTED;
+    rec._manualGen = (rec._manualGen || 0) + 1; rec._followGen = (rec._followGen || 0) + 1; rec._discovering = false; rec._followInFlight = false; // §16/§17 — a dead socket cancels any in-flight find/join/retry
     rec.ctx.onDisconnect();
     rec.hand = reduceHand(rec.hand, { type: 'CONTROL', control: 'DISCONNECT' }, { profileId: rec.id, profileUid: rec.ctx.uid(), now: this._now() });
     if (rec.role === ROLE.HOST) this._setState(SESSION.HOST_LOST);
@@ -716,6 +723,10 @@ class HostTableCoordinator extends EventEmitter {
     if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, fg, { rid: r, intent }); return { ok: false, id: rec.id, rid: r, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
     if (!seated) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_NOT_CONFIRMED', message: 'no TABLE_STATE membership within timeout' }; this._findLog('FX_TIMEOUT', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, state: 'JOIN_FAILED', error: rec.lastError }; }
     rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+    // PHASE 6.3.5 §7 — a discover join is PROVISIONAL until manualDiscoverTable's post-anchor capacity check
+    // passes; it must NOT be published to followers yet. Every other join (follower JOIN / REJOIN / direct
+    // find-by-channel) is valid on ps[] immediately.
+    rec._joinedRidValidated = !opts.provisional;
     // §15/§16 — success is authoritative: own uid ∈ ps[]; the shared/anchor RID is the ACTUAL joined rid.
     this._findLog('F7_TABLE_STATE', rec, fg, { rid: r, intent }); this._findLog('F8_OWN_UID_CONFIRMED', rec, fg, { rid: r, seat: rec.ctx.seat() }); this._findLog('F9_RID_READY', rec, fg, { rid: r });
     this._mark(`M_${intent}_CONFIRMED`, { id: rec.id, rid: r, seat: rec.ctx.seat() });
@@ -764,51 +775,145 @@ class HostTableCoordinator extends EventEmitter {
     // §5/§6/§14 — the finder chooses a REAL stake from the server bet options; discovery filters by it.
     const selectedStake = opts.selectedStake != null ? Number(opts.selectedStake) : null;
     if (selectedStake == null || !Number.isFinite(selectedStake)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'Chọn mức cược trước khi tìm bàn' } }; }
-    const need = opts.need != null ? opts.need : 3; // the found table must fit all three browsers (shared room)
+    const need = opts.need != null ? opts.need : DISCOVER_FREE_SLOTS; // §21 — BEFORE join: fit P1+P2+P3 (>=3)
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
+    const maxRecovery = opts.maxRecovery != null ? opts.maxRecovery : MAX_ANCHOR_RECOVERY; // §8 bounded re-FIND
     // PHASE 6.3.4 §7/§23/§24 — SINGLE-FLIGHT: a duplicate FIND while one is already in flight for THIS browser
     // is ignored (never a second CMD 300 per rapid click). The header/renderer disable the button too; this
     // is defence-in-depth for the coordinator regardless of caller.
     if (rec._discovering) { this._findLog('FX_DUPLICATE_IGNORED', rec, rec._manualGen); return { ok: false, id: rec.id, busy: true, state: 'SEARCHING', error: { code: 'PHOM_FIND_IN_FLIGHT', message: 'đang tìm bàn' } }; }
     rec._discovering = true;
-    const myGen = (rec._manualGen = (rec._manualGen || 0) + 1); // §8 — find generation / cancellation token
+    let myGen = (rec._manualGen = (rec._manualGen || 0) + 1); // §8 — find generation / cancellation token
     const t0 = this._mono();
     rec.manualState = 'SEARCHING'; rec.lastError = null;
     this._findLog('F0_FIND_START', rec, myGen, { selectedStake, need });
     this._mark('M_DISCOVER_SENT', { id: rec.id, selectedStake });
     this.emit('update', this.snapshot());
     try {
-      // §10/§11/§12 — REUSE the fresh authoritative list first: if a qualifying table is already cached (rs[]
-      // from a recent CHANNEL_LIST), JOIN it WITHOUT another CMD 300. Only request CMD 300 when nothing
-      // currently qualifies. Every request thus has a clear reason (no cached candidate).
-      let candidate = this._pickManualCandidate(rec, need, selectedStake);
-      if (candidate) {
-        this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: true });
-      } else {
-        const aid = rec.ctx.aid();
-        if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); this._findLog('F1_CMD300_REQUEST', rec, myGen); } catch { /* best effort */ } }
-        // Wait (event-driven) for a qualifying empty table AT THE SELECTED STAKE to appear (§9 — no polling).
-        await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake); return !!candidate; }, rec, myGen, timeoutMs);
-        if (candidate) this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: false });
+      // §8 — BOUNDED re-anchor loop (never a while(true)). Each pass: (re)acquire a qualifying table, JOIN,
+      // confirm from ps[], then PROACTIVELY verify the room STILL fits both followers before publishing (§4/§6).
+      for (let recovery = 0; recovery <= maxRecovery; recovery++) {
+        // §10/§11/§12 — REUSE the fresh cached rs[] on the FIRST pass; on a RECOVERY pass force a fresh CMD 300
+        // (the just-invalidated room proved the cache stale, so re-request authoritative capacity — §22).
+        let candidate = recovery === 0 ? this._pickManualCandidate(rec, need, selectedStake) : null;
+        if (candidate) {
+          this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: true });
+        } else {
+          const aid = rec.ctx.aid();
+          if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); this._findLog('F1_CMD300_REQUEST', rec, myGen, { recovery }); } catch { /* best effort */ } }
+          // Wait (event-driven) for a qualifying empty table AT THE SELECTED STAKE to appear (§9/§30 — no polling).
+          await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake); return !!candidate; }, rec, myGen, timeoutMs);
+          if (candidate) this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: false });
+        }
+        // §8 — a stale FIND (superseded by a newer op / leave / stop) must NOT proceed to JOIN.
+        if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; }
+        if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, myGen); return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+        // §7/§21 — no auto-switch to another stake: fail typed and let the user pick a different stake.
+        if (!candidate) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}` }; this._findLog('FX_NO_TABLE', rec, myGen); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake }; }
+        this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
+        this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
+        // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[] (§15/§16).
+        const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND', findGen: myGen, provisional: true });
+        if (!res.ok) {
+          // §14/§21 — the table changed under us (lost the slot / rejected) → typed failure, never a hang.
+          this._findLog(res.state === 'JOIN_FAILED' ? 'FX_TABLE_CHANGED' : 'FX_JOIN_REJECTED', rec, myGen, { rid: candidate.rid });
+          return { ...res, stake: candidate.b, playerCount: candidate.uC };
+        }
+        // §4/§5/§19/§20 — POST-ANCHOR CAPACITY CHECK from AUTHORITATIVE state: Mu (the table's fixed capacity)
+        // minus the LIVE ps[] occupancy. P1 already holds a seat, so it must still leave >= 2 for P2 + P3.
+        const ts = rec.ctx.tableState();
+        const occupancy = ts ? ts.playerCount : null;
+        const freeAfter = (occupancy != null && Number.isFinite(Number(candidate.Mu))) ? Number(candidate.Mu) - occupancy : null;
+        this._findLog('F11_ANCHOR_CAPACITY_CHECK', rec, myGen, { rid: res.rid, Mu: candidate.Mu, uC: occupancy, freeAfter, need: POST_ANCHOR_FREE_SLOTS });
+        if (freeAfter != null && freeAfter >= POST_ANCHOR_FREE_SLOTS) {
+          rec._joinedRidValidated = true; // §6/§7 — now the anchor may be published to followers
+          this._findLog('F12_ANCHOR_VALID', rec, myGen, { rid: res.rid, freeAfter });
+          this._findLog('F10_FIND_SUCCESS', rec, myGen, { rid: res.rid, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 });
+          this.emit('update', this.snapshot());
+          return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC, freeAfter, anchorValid: true };
+        }
+        // §7 — ANCHOR INVALID: do NOT publish this RID. Blacklist it, LEAVE it, and (if attempts remain) re-FIND.
+        this._findLog('F13_ANCHOR_INVALID', rec, myGen, { rid: res.rid, freeAfter, need: POST_ANCHOR_FREE_SLOTS });
+        this._failedRids.add(candidate.rid); if (this._failedRids.size > 32) this._failedRids.delete(this._failedRids.values().next().value);
+        try { await rec.send(buildLeaveFrame(), ctx); } catch { /* best effort */ }
+        rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.IDLE;
+        // §9/§18 — a NEW generation makes the just-left RID's callbacks stale: an old-RID result can never
+        // overwrite the new anchor, and any follower still on the old RID is cancelled by the anchor change.
+        myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+        rec.manualState = 'SEARCHING';
+        this.emit('update', this.snapshot());
+        if (recovery < maxRecovery) this._findLog('F14_REANCHOR_START', rec, myGen, { attempt: recovery + 1 });
       }
-      // §8 — a stale FIND (superseded by a newer op / leave / stop) must NOT proceed to JOIN.
-      if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; }
-      if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, myGen); return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
-      // §7/§21 — no auto-switch to another stake: fail typed and let the user pick a different stake.
-      if (!candidate) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}` }; this._findLog('FX_NO_TABLE', rec, myGen); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake }; }
-      this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
-      this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
-      // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[] (§15/§16).
-      const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND', findGen: myGen });
-      if (!res.ok) {
-        // §14/§21 — the table changed under us (lost the slot / rejected) → typed failure, never a hang. The
-        // finder stays finder (P1); the user can retry. We do NOT invalidate to a second anchor here.
-        this._findLog(res.state === 'JOIN_FAILED' ? 'FX_TABLE_CHANGED' : 'FX_JOIN_REJECTED', rec, myGen, { rid: candidate.rid });
-        return { ...res, stake: candidate.b, playerCount: candidate.uC };
-      }
-      this._findLog('F10_FIND_SUCCESS', rec, myGen, { rid: res.rid, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 });
-      return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC };
+      // §31 — bounded recovery exhausted: stop (never an infinite re-FIND). The user can retry (TÌM LẠI).
+      rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: 'Không tìm được bàn còn đủ chỗ cho 3 người' };
+      this._findLog('FX_RESILIENCE_EXHAUSTED', rec, myGen, { attempts: maxRecovery + 1 });
+      this.emit('update', this.snapshot());
+      return { ok: false, id: rec.id, error: rec.lastError, resilienceExhausted: true };
     } finally { rec._discovering = false; }
+  }
+
+  // PHASE 6.3.5 — Player 1 is the anchor (browserIndex 1 = first profile, insertion order). Followers read
+  // the anchor's OWN _joinedRid / uid from authoritative state — never a cached/UI value.
+  _anchor() { const it = this._profiles.values().next(); return it && !it.done ? it.value : null; }
+  _anchorRid() { const a = this._anchor(); return a && a._joinedRid != null ? a._joinedRid : null; }
+  _anchorUid() { const a = this._anchor(); return a ? a.ctx.uid() : null; }
+  // Which follower-JOIN failures are worth a same-RID retry (§12). A transient room race / not-yet-confirmed
+  // membership is retryable; a dead/cancelled/invalid situation is NOT (retrying it is pointless).
+  _isRetryableJoin(res) {
+    if (!res || res.ok) return false;
+    if (res.superseded || res.ridChanged) return false; // a newer op / anchor change already owns the flow
+    const code = res.error && res.error.code;
+    if (res.state === 'JOIN_FAILED' || res.state === 'ROOM_MISMATCH') return true;
+    if (code === 'PHOM_JOIN_NOT_CONFIRMED' || code === 'PHOM_FOLLOWER_ROOM_MISMATCH') return true;
+    return false; // PHOM_INVALID_RID / PHOM_SOCKET_NOT_FOUND / PHOM_OPERATION_CANCELLED / PROFILE_NOT_READY
+  }
+
+  // FOLLOWER JOIN of the shared anchor RID with BOUNDED, generation-safe, single-flight same-RID retry (§10/
+  // §11/§13/§14/§15/§16/§25). A follower NEVER discovers. Success requires own uid ∈ ps[] AND the anchor's uid
+  // present in the SAME authoritative TABLE_STATE (real same-room proof). Retry is cancelled when the session
+  // dies, the browser is superseded, or the anchor RID changes (P1 re-anchored) — no second finder, no loop.
+  async manualJoinShared(profileId, rid, opts = {}) {
+    if (!this._guard()) return this._unauthorized();
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
+    const r = Number.isFinite(rid) ? rid : (rid != null && String(rid).trim() !== '' ? Number(rid) : NaN);
+    if (!Number.isFinite(r)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_RID', message: 'Room/RID trống hoặc không hợp lệ' } }; }
+    const maxRetries = opts.maxRetries != null ? opts.maxRetries : MAX_SHARED_RID_JOIN_RETRIES;
+    // §25 — SINGLE-FLIGHT: a duplicate JOIN of the SAME rid while one is already retrying is ignored; a JOIN
+    // of a DIFFERENT rid (anchor moved) supersedes the old loop via the generation bump below.
+    if (rec._followInFlight && Number(rec._followRid) === r) { this._findLog('FX_DUPLICATE_IGNORED', rec, rec._followGen, { rid: r, follower: true }); return { ok: false, id: rec.id, busy: true, state: 'JOINING', error: { code: 'PHOM_FOLLOW_IN_FLIGHT', message: 'đang vào bàn' } }; }
+    rec._followInFlight = true; rec._followRid = r;
+    const myGen = (rec._followGen = (rec._followGen || 0) + 1);
+    const t0 = this._mono();
+    this._findLog('J0_FOLLOWER_JOIN_START', rec, myGen, { rid: r, maxRetries });
+    try {
+      let last = null;
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        if (rec._followGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, myGen, { rid: r, follower: true, reason: 'SUPERSEDED' }); return { ok: false, id: rec.id, superseded: true }; }
+        if (this._stopped) { this._findLog('FX_SESSION_DEAD', rec, myGen, { rid: r, follower: true }); return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+        // §17/§18 — the anchor moved to a new RID → stop retrying the dead one (no parallel old/new flows).
+        const anchor = this._anchorRid();
+        if (anchor != null && Number(anchor) !== r) { this._findLog('FX_TABLE_CHANGED', rec, myGen, { rid: r, anchor, follower: true }); return { ok: false, id: rec.id, ridChanged: true, error: { code: 'PHOM_SHARED_RID_CHANGED', message: 'Player 1 đã đổi bàn' } }; }
+        if (attempt > 0) this._findLog('J5_RETRY', rec, myGen, { rid: r, attempt });
+        last = await this.manualJoinRoom(profileId, r, { ...opts, intent: 'JOIN', followGen: myGen });
+        if (last.ok) {
+          // §13/§14 — SAME-ROOM PROOF from authoritative ps[]: own uid confirmed (manualJoinRoom) AND the
+          // anchor (P1) uid present in the SAME table state. Otherwise it's a room mismatch → retryable.
+          this._findLog('J3_UID_CONFIRMED', rec, myGen, { rid: r });
+          const ts = rec.ctx.tableState();
+          const anchorUid = this._anchorUid();
+          const sameRoom = anchorUid == null || !!(ts && ts.uids.includes(anchorUid));
+          if (sameRoom) { this._findLog('J4_SAME_ROOM_CONFIRMED', rec, myGen, { rid: r, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 }); return { ...last, sameRoom: true, attempts: attempt + 1 }; }
+          last = { ...last, ok: false, state: 'ROOM_MISMATCH', error: { code: 'PHOM_FOLLOWER_ROOM_MISMATCH', message: 'không cùng bàn với Player 1' } };
+        }
+        if (!this._isRetryableJoin(last) || attempt === maxRetries) break; // §12 — non-retryable / out of tries
+      }
+      // §15/§16/§31 — retry exhausted or a non-retryable error: FOLLOWER_ERROR. NEVER become a finder.
+      rec.manualState = 'FOLLOWER_ERROR';
+      this._findLog('J6_RETRY_EXHAUSTED', rec, myGen, { rid: r });
+      this.emit('update', this.snapshot());
+      return { ...(last || { ok: false, id: rec.id }), retriesExhausted: true, error: (last && last.error) || { code: 'PHOM_FOLLOWER_JOIN_FAILED', message: 'Không vào được bàn' } };
+    } finally { if (rec._followGen === myGen) { rec._followInFlight = false; } }
   }
 
   // FIND a table on ONE browser: native JOIN by the chosen channel/stake and report the RID it landed
@@ -834,11 +939,11 @@ class HostTableCoordinator extends EventEmitter {
     if (!this._guard()) return this._unauthorized();
     const rec = this._rec(profileId);
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
-    rec._manualGen = (rec._manualGen || 0) + 1; rec._discovering = false; // §8 cancel in-flight join/find
+    rec._manualGen = (rec._manualGen || 0) + 1; rec._discovering = false; rec._followGen = (rec._followGen || 0) + 1; rec._followInFlight = false; // §8/§17 cancel in-flight find/join/retry
     rec.manualState = 'LEAVING';
     this.emit('update', this.snapshot());
     let ok = true; try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { ok = false; }
-    rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.LEFT; rec.manualState = 'LEFT';
+    rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec._joinedRidValidated = false; rec.state = PSTATE.LEFT; rec.manualState = 'LEFT';
     this._mark('M_LEAVE_SENT', { id: rec.id });
     this.emit('update', this.snapshot());
     return { ok, id: rec.id, state: 'LEFT' };
@@ -854,8 +959,9 @@ class HostTableCoordinator extends EventEmitter {
     if (!rec) return false;
     rec._manualGen = (rec._manualGen || 0) + 1; // supersede any pending find/join for this browser
     rec._discovering = false;                    // PHASE 6.3.4 — release the FIND single-flight on ↻ WEB reset
+    rec._followGen = (rec._followGen || 0) + 1; rec._followInFlight = false; // PHASE 6.3.5 — cancel follower retry
     try { rec.ctx.reset(); } catch { /* best effort */ }
-    rec.confirmedInTable = false; rec._joinedRid = null; rec.missingStreak = 0; rec.lastError = null;
+    rec.confirmedInTable = false; rec._joinedRid = null; rec._joinedRidValidated = false; rec.missingStreak = 0; rec.lastError = null;
     rec.state = PSTATE.IDLE; rec.manualState = 'READY';
     this._mark('M_WEB_RELOAD_RESET', { id: rec.id });
     this._evaluate();
@@ -879,6 +985,10 @@ class HostTableCoordinator extends EventEmitter {
         channelCount: Array.isArray(c.channels) ? c.channels.length : 0,
         rid: rec._joinedRid != null ? rec._joinedRid : null,
         lastRid: rec._lastRid != null ? rec._lastRid : null,
+        // PHASE 6.3.5 §7 — a discover anchor is published to followers ONLY after its post-anchor capacity
+        // check passes. A provisional (mid-check) FIND join reports anchorValid=false so headerSharedRid
+        // never publishes an unverified RID. Non-discover joins are valid immediately.
+        anchorValid: rec._joinedRidValidated !== false,
         // §3/§4 — REAL bet options for THIS browser (distinct server stakes from its channel list). Empty
         // until it has entered the game + received the channel list; scoped per browser (not the cluster).
         betOptions: this._betOptionsFor(rec),
