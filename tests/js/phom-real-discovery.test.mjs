@@ -52,7 +52,7 @@ const MIXED = [
 
 test('real discovery: requests the channel list, selects a qualifying EMPTY table, joins its real RID', async () => {
   const { coord, sim } = mk(MIXED);
-  const r = await coord.manualDiscoverTable('B1');
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500 });
   assert.equal(r.ok, true);
   assert.equal(r.state, 'FOUND');
   assert.equal(r.rid, 700100, 'the real empty table');
@@ -62,7 +62,7 @@ test('real discovery: requests the channel list, selects a qualifying EMPTY tabl
 
 test('STAKE comes from the SELECTED SERVER TABLE (b), never user-entered', async () => {
   const { coord } = mk(MIXED);
-  const r = await coord.manualDiscoverTable('B1');
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500 });
   assert.equal(r.stake, 500, 'stake is the discovered table\'s own bet value');
 });
 
@@ -76,7 +76,7 @@ test('FULL table (4/4) and the stake BUCKET are rejected; the emptiest real tabl
 
 test('authoritative JOIN confirmation: own uid in own ps[] (not just the send)', async () => {
   const { coord } = mk(MIXED);
-  const r = await coord.manualDiscoverTable('B1');
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500 });
   assert.equal(r.ok, true);
   assert.ok(r.membership.includes('1_1'), 'B1 present in the authoritative membership');
   assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1').manualState, 'JOINED');
@@ -88,22 +88,25 @@ test('no qualifying empty table => PHOM_NO_EMPTY_TABLE (typed; not a fake succes
     { rid: 142, b: 300, Mu: 4, seats: [{ sit: 0, uid: 'e' }, { sit: 1, uid: 'f' }, { sit: 2, uid: 'g' }] }, // only 1 free, need 3
   ];
   const { coord } = mk(FULL_ONLY);
-  const r = await coord.manualDiscoverTable('B1', { timeoutMs: 40 });
+  // choose stake 200 (the full 141 table's stake): it matches the stake but is full 4/4 -> no candidate
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 200, timeoutMs: 40 });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'PHOM_NO_EMPTY_TABLE');
 });
 
-test('discovery takes NO stake argument (the user never selects the stake)', () => {
+test('discovery REQUIRES a chosen stake (no positional stake arg; stake comes via opts.selectedStake)', async () => {
   const { coord } = mk(MIXED);
-  // signature: manualDiscoverTable(profileId, opts = {}) — profileId is the only required arg (opts is
-  // defaulted, so .length === 1). It has FEWER required args than manualFindTable(profileId, channel).
-  assert.equal(coord.manualDiscoverTable.length, 1, 'manualDiscoverTable(profileId, opts={}) — no stake param');
-  assert.ok(coord.manualFindTable.length > coord.manualDiscoverTable.length, 'discovery drops the channel/stake arg');
+  // signature: manualDiscoverTable(profileId, opts={}) — no positional stake/channel (unlike manualFindTable)
+  assert.ok(coord.manualFindTable.length > coord.manualDiscoverTable.length, 'discovery drops the positional channel/stake arg');
+  // without a selected stake it is refused typed (never a default/hard-coded stake)
+  const r = await coord.manualDiscoverTable('B1', {});
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'PHOM_NO_STAKE_SELECTED');
 });
 
 test('discovered RID+stake become the shared room for B2/B3 (no second discovery)', async () => {
   const { coord } = mk(MIXED);
-  const first = await coord.manualDiscoverTable('B1');
+  const first = await coord.manualDiscoverTable('B1', { selectedStake: 500 });
   // B2/B3 JOIN the discovered RID directly (renderer routes JOIN_SHARED -> manualJoinRoom); no re-discovery
   const r2 = await coord.manualJoinRoom('B2', first.rid);
   const r3 = await coord.manualJoinRoom('B3', first.rid);

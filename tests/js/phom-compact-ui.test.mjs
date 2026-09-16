@@ -40,11 +40,11 @@ test('header shows server-derived BÀN (RID) + CƯỢC (stake) + CÒN LẠI; NO 
   assert.equal(/phq-manual-stake|oninput.*manualStake|placeholder: '100'/.test(body), false, 'no manual stake input');
 });
 
-test('real FIND uses discovery (not a user stake); stake flows from the discovered table', () => {
+test('real FIND uses discovery with the CHOSEN server stake; stake flows from the discovered table', () => {
   const body = fn(js, 'onManualFind');
-  assert.match(body, /api\.manualDiscover\(b\.profileId\)/, 'real FIND calls discovery');
+  assert.match(body, /api\.manualDiscover\(b\.profileId, \{ selectedStake \}\)/, 'real FIND calls discovery with the chosen stake');
   assert.match(body, /rid: res\.rid, stake: res\.stake/, 'publishes the discovered rid + stake');
-  assert.equal(/api\.manualFind\(|Number\(stake\)|Nhập mức cược/.test(body), false, 'no user-stake path in FIND');
+  assert.equal(/api\.manualFind\(|Number\(stake\)|type: 'number'/.test(body), false, 'no manual/user-typed stake path in FIND');
 });
 
 test('VÀO GAME has a real ENTERING state and a failure state (not a fake success)', () => {
@@ -67,10 +67,12 @@ test('one horizontal row maps slot A/B/C -> Browser 1/2/3 (deterministic, not la
   assert.match(row, /SLOTS\.forEach\(\(slot, i\) => .*compactBrowserCell\(i \+ 1, slot, assign\[slot\]\.runId\)/);
 });
 
-test('VÀO GAME gates TÌM BÀN: FIND (from browserAction) is enabled only after in-game (§8)', () => {
+test('VÀO GAME gates TÌM BÀN: FIND renders the bet selector (canFind gated in betFindGroup, §8/§11)', () => {
   const action = fn(js, 'actionButton');
-  assert.match(action, /act\.action === 'FIND'[\s\S]*?MCS\.canFind\(manualCluster, b\) && inGame/); // §8
+  assert.match(action, /act\.action === 'FIND'[\s\S]*?betFindGroup\(b, runId, inGame\)/);
   assert.match(action, /act\.action === 'ENTER_GAME'[\s\S]*?manualEnterGame\(runId\)/);
+  const g = fn(js, 'betFindGroup');
+  assert.match(g, /MCS\.canFind\(manualCluster, b\) && inGame/); // §8 — FIND only after in-game
 });
 
 test('main screen shows NO username and NO Host/Follower/player-4 terminology', () => {

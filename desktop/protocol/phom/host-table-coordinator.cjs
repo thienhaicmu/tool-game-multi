@@ -700,14 +700,26 @@ class HostTableCoordinator extends EventEmitter {
     return { ok: true, id: rec.id, rid: r, state: 'JOINED', seat: rec.ctx.seat(), membership: ts ? ts.uids.slice() : [], fingerprint: ts && ts.identity ? ts.identity.value : null };
   }
 
-  // Pick a QUALIFYING EMPTY table from this browser's authoritative channel list (server rs[]): the right
-  // zone/game, a REAL table (uC <= Mu — a stake BUCKET has uC >> Mu and is excluded), with >= `need` FREE
-  // seats (full tables uC==Mu are rejected). Prefers the emptiest. The stake is the table's own `b` — it
-  // is NEVER user-entered. Returns null when no table qualifies (caller → PHOM_NO_EMPTY_TABLE).
-  _pickManualCandidate(rec, need) {
+  // The REAL bet options for ONE browser (PHASE 6.2.3): the DISTINCT stake values (rs[].b) in this
+  // browser's authoritative channel list for this zone/game. Server-sourced — never hard-coded, never a
+  // fallback list. Empty until the channel list (CMD 300) has arrived for this browser.
+  _betOptionsFor(rec) {
+    const seen = new Set();
     let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; }
+    for (const c of chans) { if ((c.zn != null && c.zn !== ZONE) || (c.gid != null && c.gid !== GID)) continue; const b = Number(c.b); if (Number.isFinite(b) && b > 0) seen.add(b); }
+    return [...seen].sort((a, b) => a - b);
+  }
+
+  // Pick a QUALIFYING EMPTY table from this browser's authoritative channel list (server rs[]): the right
+  // zone/game, MATCHING the SELECTED stake (candidate.b === selectedStake, §6A), a REAL table (uC <= Mu —
+  // a stake BUCKET has uC >> Mu and is excluded), with >= `need` FREE seats (full tables uC==Mu rejected).
+  // Prefers the emptiest. The rid + stake come from the table itself. Returns null when nothing qualifies.
+  _pickManualCandidate(rec, need, selectedStake) {
+    let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; }
+    const wantStake = selectedStake != null && Number.isFinite(Number(selectedStake)) ? Number(selectedStake) : null;
     const fittable = chans.filter((c) => c && c.rid != null && c.b != null && c.Mu != null
       && (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID)
+      && (wantStake == null || Number(c.b) === wantStake)
       && Number(c.uC) <= Number(c.Mu) && (Number(c.Mu) - Number(c.uC)) >= need
       && !this._failedRids.has(c.rid));
     if (!fittable.length) return null;
@@ -724,21 +736,25 @@ class HostTableCoordinator extends EventEmitter {
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
     const ctx = rec.ctx.sendContext();
     if (!ctx) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
+    // §5/§6/§14 — the finder chooses a REAL stake from the server bet options; discovery filters by it.
+    const selectedStake = opts.selectedStake != null ? Number(opts.selectedStake) : null;
+    if (selectedStake == null || !Number.isFinite(selectedStake)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'Chọn mức cược trước khi tìm bàn' } }; }
     const need = opts.need != null ? opts.need : 3; // the found table must fit all three browsers (shared room)
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
     const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
     rec.manualState = 'SEARCHING'; rec.lastError = null;
-    this._mark('M_DISCOVER_SENT', { id: rec.id });
+    this._mark('M_DISCOVER_SENT', { id: rec.id, selectedStake });
     this.emit('update', this.snapshot());
     // Request the authoritative stake/room list (CMD 300); the reply (rs[]) is ingested into ctx.channels().
     const aid = rec.ctx.aid();
     if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); } catch { /* best effort */ } }
-    // Wait (event-driven) for a qualifying empty table to appear in the list.
-    let candidate = this._pickManualCandidate(rec, need);
-    if (!candidate) await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need); return !!candidate; }, rec, myGen, timeoutMs);
+    // Wait (event-driven) for a qualifying empty table AT THE SELECTED STAKE to appear in the list.
+    let candidate = this._pickManualCandidate(rec, need, selectedStake);
+    if (!candidate) await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake); return !!candidate; }, rec, myGen, timeoutMs);
     if (rec._manualGen !== myGen) return { ok: false, id: rec.id, result: 'STALE' };
     if (this._stopped) { rec.manualState = 'LEFT'; return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
-    if (!candidate) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: 'Không tìm thấy bàn trống phù hợp' }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError }; }
+    // §7 — no auto-switch to another stake: fail typed and let the user pick a different stake.
+    if (!candidate) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}` }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake }; }
     this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
     // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[].
     const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND' });
@@ -791,6 +807,9 @@ class HostTableCoordinator extends EventEmitter {
         connected: c.connected, socketReady: c.socketReady,
         rid: rec._joinedRid != null ? rec._joinedRid : null,
         lastRid: rec._lastRid != null ? rec._lastRid : null,
+        // §3/§4 — REAL bet options for THIS browser (distinct server stakes from its channel list). Empty
+        // until it has entered the game + received the channel list; scoped per browser (not the cluster).
+        betOptions: this._betOptionsFor(rec),
         canRejoin: (rec._joinedRid != null || rec._lastRid != null),
         manualState: rec.manualState || (c.socketReady && c.connected ? 'READY' : 'CLOSED'),
         seat: c.seat, uid: shortUid(c.uid),

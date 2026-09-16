@@ -342,3 +342,6 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .bc-line { display: flex; align-items: center; justify-content: space-between; }
 .bc-life { display: flex; gap: 4px; }
 .bc-life .btn { flex: 1; }
+.bet-find { display: flex; gap: 4px; align-items: center; }
+.bet-find .bet-sel { flex: 1; min-width: 64px; padding: 2px 4px; font-size: 12px; }
+.sel.sm { padding: 2px 4px; font-size: 12px; }

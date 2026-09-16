@@ -65,6 +65,7 @@
   const manualEnterError = {}; // browserId -> message when VÀO GAME failed/timed out (retryable)
   const manualEnterTimers = {}; // browserId -> bounded entry timeout handle
   const manualJoining = {};  // browserId -> true while VÀO BÀN (join shared RID) is in flight (§4)
+  const selectedStakeByBrowser = {}; // PHASE 6.2.3 — the finder's chosen REAL stake (from server bet options)
   let activeTab = 'SETUP';   // PHASE 6.2.2 — two tabs: SETUP (config/open) and PHOM (control)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
@@ -264,10 +265,15 @@
     // Proxy is OPTIONAL: a slot with no proxyRef runs in DIRECT mode — a neutral, valid
     // state (never an error). Only a slot WITH a proxy shows its test state.
     const status = !a.proxyRef ? 'DIRECT' : a.testState;
+    // §13 — surface BOTH the OS window size and the emulated viewport (never fold
+    // them into one field). A device with no explicit OS window shows "Desktop
+    // Window" as its OS surface (Chromium OS window sized to viewport + chrome).
+    const osTxt = dev ? (dev.osWindow || ((dev.osWindowWidth && dev.osWindowHeight) ? `${dev.osWindowWidth} × ${dev.osWindowHeight}` : 'Desktop Window')) : '';
+    const devText = dev ? `${dev.name} · OS ${osTxt} · VP ${dev.resolution}` : '(chưa tạo)';
     return el('div', { class: 'prow s1', id: 'setup-' + slot },
       el('span', { class: 'slot-tag' }, slot),
-      el('span', { class: 'ar-dev', title: dev ? `${dev.name} · ${dev.resolution}` : '(chưa tạo thiết bị)' },
-        dev ? `${dev.name} · ${dev.resolution}` : '(chưa tạo)',
+      el('span', { class: 'ar-dev', title: dev ? devText : '(chưa tạo thiết bị)' },
+        devText,
         el('button', { class: 'icon-btn', title: dev ? 'Sửa thiết bị' : 'Tạo thiết bị', onclick: () => openDeviceModal(slot) }, '✎')),
       el('span', { class: 'ar-px', title: pxText }, pxText),
       el('span', { class: 'badge ' + testBadge(status), title: a.ip ? ('IP ' + a.ip) : '' }, status),
@@ -466,25 +472,101 @@
     renderApp();
   }
 
-  // Device modal: pick a mobile preset (orientation fixed Ngang) + name; preview.
+  // Device modal — PHASE 6.2.4. A flexible profile builder with independent axes:
+  // OS Window (Chromium native window on Windows) and Game Viewport (CDP device
+  // emulation). Loại profile drives preset auto-fill; user can still edit every
+  // field. Presets include Desktop / Laptop / Laptop Small / Mobile Landscape and
+  // the mixed "Laptop Small · Mobile Ngang" (960×540 OS + 851×393 viewport).
   function openDeviceModal(slot) {
     const saved = profiles[slot] || {};
+    const dev = saved.device || {};
     document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
     const ov = el('div', { class: 'phq-analyzer' });
     const close = () => ov.remove();
-    const sel = el('select', { class: 'sel', id: 'dev-preset' });
-    for (const p of presets) sel.appendChild(el('option', { value: p.id, selected: saved.device && saved.device.presetId === p.id }, `${p.name} · ${p.viewportWidth}×${p.viewportHeight}`));
+    // Group presets by profile type so users pick their intent first.
+    const TYPE_LABELS = { DESKTOP: 'Desktop', LAPTOP: 'Laptop', LAPTOP_SMALL: 'Laptop nhỏ', MOBILE_LANDSCAPE: 'Mobile ngang', CUSTOM: 'Tuỳ chỉnh' };
+    const typeSel = el('select', { class: 'sel', id: 'dev-ptype' });
+    for (const t of ['DESKTOP', 'LAPTOP', 'LAPTOP_SMALL', 'MOBILE_LANDSCAPE', 'CUSTOM']) typeSel.appendChild(el('option', { value: t }, TYPE_LABELS[t]));
+    typeSel.value = dev.profileType || 'MOBILE_LANDSCAPE';
+    // Preset picker (filtered by profile type when possible; CUSTOM lists all).
+    const presetSel = el('select', { class: 'sel', id: 'dev-preset' });
+    function refreshPresetOptions() {
+      const t = typeSel.value;
+      presetSel.innerHTML = '';
+      presetSel.appendChild(el('option', { value: '' }, '— tuỳ chỉnh —'));
+      const filtered = t === 'CUSTOM' ? presets : presets.filter((p) => p.profileType === t);
+      for (const p of filtered) {
+        const osWin = (p.osWindowWidth && p.osWindowHeight) ? `${p.osWindowWidth}×${p.osWindowHeight}` : 'Desktop';
+        const vp = `${p.viewportWidth}×${p.viewportHeight}`;
+        presetSel.appendChild(el('option', { value: p.id }, `${p.name} · OS ${osWin} · VP ${vp}`));
+      }
+    }
+    refreshPresetOptions();
+    if (dev.presetId) presetSel.value = dev.presetId;
+    // OS window + viewport + orientation + touch inputs.
+    const nameInput = el('input', { class: 'f', id: 'dev-name', value: saved.name || ('Profile ' + slot) });
+    const osW = el('input', { class: 'f', id: 'dev-osw', type: 'number', min: '1', value: dev.osWindowWidth || '' , placeholder: '(theo viewport + chrome)' });
+    const osH = el('input', { class: 'f', id: 'dev-osh', type: 'number', min: '1', value: dev.osWindowHeight || '', placeholder: '' });
+    const vpW = el('input', { class: 'f', id: 'dev-vpw', type: 'number', min: '1', value: dev.viewportWidth || 851 });
+    const vpH = el('input', { class: 'f', id: 'dev-vph', type: 'number', min: '1', value: dev.viewportHeight || 393 });
+    const dsf = el('input', { class: 'f', id: 'dev-dsf', type: 'number', min: '0.5', step: '0.05', value: dev.deviceScaleFactor || 1 });
+    const orient = el('select', { class: 'sel', id: 'dev-orient' });
+    for (const o of [{ v: 'landscapePrimary', t: 'Landscape' }, { v: 'portraitPrimary', t: 'Portrait' }]) orient.appendChild(el('option', { value: o.v, selected: (dev.orientationType || 'landscapePrimary') === o.v }, o.t));
+    const touchSel = el('select', { class: 'sel', id: 'dev-touch' });
+    for (const o of [{ v: 'true', t: 'Touch: ON' }, { v: 'false', t: 'Touch: OFF' }]) touchSel.appendChild(el('option', { value: o.v, selected: String(dev.touch === true) === o.v }, o.t));
+    // Apply a preset: overwrites every editable field so users can iterate rapidly.
+    function applyPreset(pid) {
+      const p = presets.find((x) => x.id === pid); if (!p) return;
+      nameInput.value = p.name;
+      osW.value = p.osWindowWidth || '';
+      osH.value = p.osWindowHeight || '';
+      vpW.value = p.viewportWidth; vpH.value = p.viewportHeight;
+      dsf.value = p.deviceScaleFactor;
+      orient.value = p.orientationType || 'landscapePrimary';
+      touchSel.value = String(p.touch === true);
+    }
+    presetSel.onchange = () => { if (presetSel.value) applyPreset(presetSel.value); };
+    typeSel.onchange = () => { refreshPresetOptions(); if (presetSel.options.length > 1) { presetSel.selectedIndex = 1; applyPreset(presetSel.value); } };
     const preview = el('div', { class: 'note' });
-    const renderPrev = () => { const p = presets.find((x) => x.id === sel.value) || presets[0]; preview.textContent = p ? `Màn hình: ${p.viewportWidth} × ${p.viewportHeight} · DSF ${p.deviceScaleFactor} · Ngang · Touch: Bật` : ''; };
-    sel.onchange = renderPrev;
+    function renderPrev() {
+      const oswv = osW.value ? Number(osW.value) : null, oshv = osH.value ? Number(osH.value) : null;
+      const os = (oswv && oshv) ? `${oswv} × ${oshv}` : '(theo viewport + chrome)';
+      preview.textContent = `OS Window: ${os} · Viewport: ${vpW.value} × ${vpH.value} · DSF ${dsf.value} · ${orient.value === 'landscapePrimary' ? 'Ngang' : 'Dọc'} · Touch: ${touchSel.value === 'true' ? 'BẬT' : 'TẮT'}`;
+    }
+    for (const inp of [osW, osH, vpW, vpH, dsf, orient, touchSel]) inp.onchange = renderPrev;
     const card = el('div', { class: 'anz-card' },
-      el('div', { class: 'section-t' }, 'TẠO THIẾT BỊ (MOBILE — NGANG)'),
-      el('div', { class: 'phq-row' }, el('span', null, 'Tên hồ sơ'), el('input', { class: 'f', id: 'dev-name', value: saved.name || ('Profile ' + slot) })),
-      el('div', { class: 'phq-row' }, el('span', null, 'Thiết bị'), sel),
+      el('div', { class: 'section-t' }, 'TẠO THIẾT BỊ'),
+      el('div', { class: 'phq-row' }, el('span', null, 'Tên hồ sơ'), nameInput),
+      el('div', { class: 'phq-row' }, el('span', null, 'Loại profile'), typeSel),
+      el('div', { class: 'phq-row' }, el('span', null, 'Preset'), presetSel),
+      el('div', { class: 'section-t' }, 'OS WINDOW (Chromium)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'Chiều rộng'), osW, el('span', null, 'Chiều cao'), osH),
+      el('div', { class: 'section-t' }, 'GAME VIEWPORT (CDP)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'Chiều rộng'), vpW, el('span', null, 'Chiều cao'), vpH),
+      el('div', { class: 'phq-row' }, el('span', null, 'DSF'), dsf, el('span', null, 'Orientation'), orient, el('span', null, 'Input'), touchSel),
       preview,
       el('div', { class: 'phq-row' },
         el('button', { class: 'btn primary', onclick: async () => {
-          const res = await api.profileUpsert(slot, { name: $('dev-name').value.trim(), device: { presetId: sel.value, regenerate: !(saved.device && saved.device.presetId === sel.value) } });
+          const pid = presetSel.value || null;
+          const patch = {
+            name: nameInput.value.trim(),
+            device: {
+              presetId: pid,
+              profileType: typeSel.value,
+              osWindowWidth: osW.value ? Number(osW.value) : null,
+              osWindowHeight: osH.value ? Number(osH.value) : null,
+              viewportWidth: Number(vpW.value),
+              viewportHeight: Number(vpH.value),
+              screenWidth: Number(vpW.value),
+              screenHeight: Number(vpH.value),
+              deviceScaleFactor: Number(dsf.value) || 1,
+              orientationType: orient.value,
+              touch: touchSel.value === 'true',
+              mobile: touchSel.value === 'true',
+              regenerate: !(dev.presetId && pid && dev.presetId === pid),
+            },
+          };
+          const res = await api.profileUpsert(slot, patch);
           if (!res || !res.ok) { note(errText(res), true); return; }
           const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x]));
           close(); renderApp();
@@ -584,10 +666,36 @@
   function actionButton(act, b, runId, inGame) {
     if (act.busy) return el('span', { class: 'chip yellow sm' }, act.label);
     if (act.action === 'ENTER_GAME') return el('button', { class: 'btn primary sm', onclick: () => manualEnterGame(runId) }, act.label);
-    if (act.action === 'FIND') { const canFind = !!MCS && MCS.canFind(manualCluster, b) && inGame; return el('button', { class: 'btn primary sm', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, act.label); }
+    if (act.action === 'FIND') return betFindGroup(b, runId, inGame); // PHASE 6.2.3 — real bet selector + TÌM BÀN
     if (act.action === 'JOIN_SHARED') return el('button', { class: 'btn primary sm', onclick: () => onManualJoinShared(b) }, act.label); // VÀO BÀN → shared RID
     if (act.action === 'LEAVE') return el('button', { class: 'btn danger sm', onclick: () => onManualLeave(b) }, act.label);       // THOÁT GAME
     return el('span', { class: 'faint sm' }, act.label);
+  }
+  // PHASE 6.2.3 — the finder's bet selector (REAL server stakes) + TÌM BÀN. The stake list comes from this
+  // browser's own betOptions (distinct rs[].b); FIND is enabled only after a stake is chosen (§5/§11). No
+  // manual number input, no hard-coded list. While a search is running, FIND is search-locked as before.
+  function betFindGroup(b, runId, inGame) {
+    const group = el('div', { class: 'bet-find' });
+    const options = (b && Array.isArray(b.betOptions)) ? b.betOptions : [];
+    if (!options.length) {
+      group.appendChild(el('span', { class: 'chip yellow sm' }, 'CƯỢC: đang tải…'));
+      group.appendChild(el('button', { class: 'btn sm', title: 'Tải lại danh sách mức cược', onclick: () => onRefreshBets(runId) }, '↻'));
+      return group;
+    }
+    const selected = selectedStakeByBrowser[runId];
+    const sel = el('select', { class: 'sel sm bet-sel', onchange: (e) => { selectedStakeByBrowser[runId] = e.target.value ? Number(e.target.value) : null; renderApp(); } },
+      el('option', { value: '' }, 'CƯỢC…'));
+    for (const s of options) { const o = el('option', { value: String(s) }, String(s)); if (selected != null && Number(selected) === Number(s)) o.setAttribute('selected', 'selected'); sel.appendChild(o); }
+    group.appendChild(sel);
+    const canFind = !!MCS && MCS.canFind(manualCluster, b) && inGame && selected != null; // §11 — FIND needs a chosen stake
+    group.appendChild(el('button', { class: 'btn primary sm', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, 'TÌM BÀN'));
+    return group;
+  }
+  // Reload the real bet options (re-request the channel list; the server re-sends rs[]).
+  async function onRefreshBets(runId) {
+    note('Đang tải mức cược…');
+    try { await api.requestChannels(); } catch {}
+    await refreshManual(); renderApp();
   }
   // VÀO BÀN — JOIN the shared RID (never a new discovery, §3/§4). Immediate ĐANG VÀO BÀN; confirmed by ps[].
   async function onManualJoinShared(b) {
@@ -1584,11 +1692,13 @@
       try { res = await api.manualJoin(b.profileId, dec.rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
       manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
     } else {
-      // PHASE 6.2.1 — REAL discovery: the backend requests the server channel list, picks a qualifying
-      // EMPTY table, and JOINs its actual RID. The RID + STAKE come from the SELECTED SERVER TABLE — the
-      // user never enters a stake here.
-      note('🔍 Đang tìm bàn trống…');
-      try { res = await api.manualDiscover(b.profileId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+      // PHASE 6.2.1/6.2.3 — REAL discovery filtered by the CHOSEN server stake: the backend requests the
+      // channel list, picks a qualifying EMPTY table whose b === selectedStake, and JOINs its actual RID.
+      // The RID + STAKE come from the SELECTED SERVER TABLE. The stake is chosen from real bet options.
+      const selectedStake = selectedStakeByBrowser[b.profileId];
+      if (selectedStake == null) { manualCluster = MCS.onFindResult(manualCluster, b.profileId, { ok: false }); renderApp(); return note('Chọn mức cược trước khi tìm bàn.', true); }
+      note('🔍 Đang tìm bàn theo mức cược ' + selectedStake + '…');
+      try { res = await api.manualDiscover(b.profileId, { selectedStake }); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
       manualCluster = MCS.onFindResult(manualCluster, b.profileId, res && res.ok ? { ok: true, rid: res.rid, stake: res.stake } : { ok: false });
     }
     if (res && res.ok === false) note(errText(res), true);
