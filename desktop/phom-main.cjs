@@ -546,7 +546,13 @@ else {
   // The cluster's shared RID = the RID of the first browser already JOINED to a table. Other in-game
   // browsers then show VÀO BÀN (JOIN_SHARED) for that RID — no independent re-discovery (§ shared RID).
   function headerSharedRid(browsers) {
-    const j = (browsers || []).find((b) => b && b.manualState === 'JOINED' && b.rid != null);
+    const list = browsers || [];
+    // PHASE 6.3.4 §3/§16/§20 — Player 1 (browserIndex 1) is the SINGLE room anchor: the shared RID is P1's
+    // own JOINED rid. Followers JOIN that RID; there is never a second anchor.
+    const anchor = list.find((b) => b && b.browserIndex === 1 && b.manualState === 'JOINED' && b.rid != null);
+    if (anchor) return Number(anchor.rid);
+    // resilience fallback: the first JOINED browser (covers edge cases where P1 index is unknown)
+    const j = list.find((b) => b && b.manualState === 'JOINED' && b.rid != null);
     return j ? Number(j.rid) : null;
   }
 
@@ -566,6 +572,8 @@ else {
       manualState: b.manualState || null,
       rid: b.rid != null ? b.rid : null,
       lastRid: b.lastRid != null ? b.lastRid : null,
+      // PHASE 6.3.4 §3 — only Player 1 (browserIndex 1) may FIND; followers wait for the anchor's shared RID.
+      isFinder: b.browserIndex === 1,
       sharedRid,
       betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
       error: headerError[String(runId)] || null,

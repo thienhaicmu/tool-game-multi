@@ -704,16 +704,20 @@ class HostTableCoordinator extends EventEmitter {
     if (!ctx) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
     const intent = opts.intent === 'FIND' ? 'FIND' : (opts.intent === 'REJOIN' ? 'REJOIN' : 'JOIN');
     const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+    const fg = opts.findGen != null ? opts.findGen : myGen; // PHASE 6.3.4 — correlate FIND trace across discover→join
     rec.manualState = intent === 'FIND' ? 'SEARCHING' : (intent === 'REJOIN' ? 'RECONNECTING' : 'JOINING');
     this._mark(`M_${intent}_SENT`, { id: rec.id, rid: r });
     this.emit('update', this.snapshot());
-    try { await rec.send(buildJoinFrame(r), ctx); } catch (e) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, error: rec.lastError }; }
+    try { await rec.send(buildJoinFrame(r), ctx); } catch (e) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; this._findLog('FX_JOIN_REJECTED', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, error: rec.lastError }; }
     rec._joinedRid = r; rec._lastRid = r; // _lastRid survives LEAVE so REJOIN can return to this room
+    this._findLog('F6_JOIN_SENT', rec, fg, { rid: r, intent });
     const seated = await this._waitManual(() => this._ownSeated(rec), rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
-    if (rec._manualGen !== myGen) return { ok: false, id: rec.id, rid: r, superseded: true, state: rec.manualState };
-    if (this._stopped) { rec.manualState = 'LEFT'; return { ok: false, id: rec.id, rid: r, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
-    if (!seated) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_NOT_CONFIRMED', message: 'no TABLE_STATE membership within timeout' }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, state: 'JOIN_FAILED', error: rec.lastError }; }
+    if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, fg, { rid: r, intent, reason: 'SUPERSEDED' }); return { ok: false, id: rec.id, rid: r, superseded: true, state: rec.manualState }; }
+    if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, fg, { rid: r, intent }); return { ok: false, id: rec.id, rid: r, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+    if (!seated) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_NOT_CONFIRMED', message: 'no TABLE_STATE membership within timeout' }; this._findLog('FX_TIMEOUT', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, state: 'JOIN_FAILED', error: rec.lastError }; }
     rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+    // §15/§16 — success is authoritative: own uid ∈ ps[]; the shared/anchor RID is the ACTUAL joined rid.
+    this._findLog('F7_TABLE_STATE', rec, fg, { rid: r, intent }); this._findLog('F8_OWN_UID_CONFIRMED', rec, fg, { rid: r, seat: rec.ctx.seat() }); this._findLog('F9_RID_READY', rec, fg, { rid: r });
     this._mark(`M_${intent}_CONFIRMED`, { id: rec.id, rid: r, seat: rec.ctx.seat() });
     this.emit('update', this.snapshot());
     const ts = rec.ctx.tableState();
@@ -762,25 +766,49 @@ class HostTableCoordinator extends EventEmitter {
     if (selectedStake == null || !Number.isFinite(selectedStake)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'Chọn mức cược trước khi tìm bàn' } }; }
     const need = opts.need != null ? opts.need : 3; // the found table must fit all three browsers (shared room)
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
-    const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+    // PHASE 6.3.4 §7/§23/§24 — SINGLE-FLIGHT: a duplicate FIND while one is already in flight for THIS browser
+    // is ignored (never a second CMD 300 per rapid click). The header/renderer disable the button too; this
+    // is defence-in-depth for the coordinator regardless of caller.
+    if (rec._discovering) { this._findLog('FX_DUPLICATE_IGNORED', rec, rec._manualGen); return { ok: false, id: rec.id, busy: true, state: 'SEARCHING', error: { code: 'PHOM_FIND_IN_FLIGHT', message: 'đang tìm bàn' } }; }
+    rec._discovering = true;
+    const myGen = (rec._manualGen = (rec._manualGen || 0) + 1); // §8 — find generation / cancellation token
+    const t0 = this._mono();
     rec.manualState = 'SEARCHING'; rec.lastError = null;
+    this._findLog('F0_FIND_START', rec, myGen, { selectedStake, need });
     this._mark('M_DISCOVER_SENT', { id: rec.id, selectedStake });
     this.emit('update', this.snapshot());
-    // Request the authoritative stake/room list (CMD 300); the reply (rs[]) is ingested into ctx.channels().
-    const aid = rec.ctx.aid();
-    if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); } catch { /* best effort */ } }
-    // Wait (event-driven) for a qualifying empty table AT THE SELECTED STAKE to appear in the list.
-    let candidate = this._pickManualCandidate(rec, need, selectedStake);
-    if (!candidate) await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake); return !!candidate; }, rec, myGen, timeoutMs);
-    if (rec._manualGen !== myGen) return { ok: false, id: rec.id, result: 'STALE' };
-    if (this._stopped) { rec.manualState = 'LEFT'; return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
-    // §7 — no auto-switch to another stake: fail typed and let the user pick a different stake.
-    if (!candidate) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}` }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake }; }
-    this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
-    // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[].
-    const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND' });
-    if (!res.ok) return { ...res, stake: candidate.b, playerCount: candidate.uC };
-    return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC };
+    try {
+      // §10/§11/§12 — REUSE the fresh authoritative list first: if a qualifying table is already cached (rs[]
+      // from a recent CHANNEL_LIST), JOIN it WITHOUT another CMD 300. Only request CMD 300 when nothing
+      // currently qualifies. Every request thus has a clear reason (no cached candidate).
+      let candidate = this._pickManualCandidate(rec, need, selectedStake);
+      if (candidate) {
+        this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: true });
+      } else {
+        const aid = rec.ctx.aid();
+        if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); this._findLog('F1_CMD300_REQUEST', rec, myGen); } catch { /* best effort */ } }
+        // Wait (event-driven) for a qualifying empty table AT THE SELECTED STAKE to appear (§9 — no polling).
+        await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake); return !!candidate; }, rec, myGen, timeoutMs);
+        if (candidate) this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: false });
+      }
+      // §8 — a stale FIND (superseded by a newer op / leave / stop) must NOT proceed to JOIN.
+      if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; }
+      if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, myGen); return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+      // §7/§21 — no auto-switch to another stake: fail typed and let the user pick a different stake.
+      if (!candidate) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}` }; this._findLog('FX_NO_TABLE', rec, myGen); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake }; }
+      this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
+      this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
+      // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[] (§15/§16).
+      const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND', findGen: myGen });
+      if (!res.ok) {
+        // §14/§21 — the table changed under us (lost the slot / rejected) → typed failure, never a hang. The
+        // finder stays finder (P1); the user can retry. We do NOT invalidate to a second anchor here.
+        this._findLog(res.state === 'JOIN_FAILED' ? 'FX_TABLE_CHANGED' : 'FX_JOIN_REJECTED', rec, myGen, { rid: candidate.rid });
+        return { ...res, stake: candidate.b, playerCount: candidate.uC };
+      }
+      this._findLog('F10_FIND_SUCCESS', rec, myGen, { rid: res.rid, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 });
+      return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC };
+    } finally { rec._discovering = false; }
   }
 
   // FIND a table on ONE browser: native JOIN by the chosen channel/stake and report the RID it landed
@@ -806,7 +834,7 @@ class HostTableCoordinator extends EventEmitter {
     if (!this._guard()) return this._unauthorized();
     const rec = this._rec(profileId);
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
-    rec._manualGen = (rec._manualGen || 0) + 1; // cancel any in-flight join for THIS browser
+    rec._manualGen = (rec._manualGen || 0) + 1; rec._discovering = false; // §8 cancel in-flight join/find
     rec.manualState = 'LEAVING';
     this.emit('update', this.snapshot());
     let ok = true; try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { ok = false; }
@@ -825,6 +853,7 @@ class HostTableCoordinator extends EventEmitter {
     const rec = this._rec(profileId);
     if (!rec) return false;
     rec._manualGen = (rec._manualGen || 0) + 1; // supersede any pending find/join for this browser
+    rec._discovering = false;                    // PHASE 6.3.4 — release the FIND single-flight on ↻ WEB reset
     try { rec.ctx.reset(); } catch { /* best effort */ }
     rec.confirmedInTable = false; rec._joinedRid = null; rec.missingStreak = 0; rec.lastError = null;
     rec.state = PSTATE.IDLE; rec.manualState = 'READY';
@@ -871,6 +900,17 @@ class HostTableCoordinator extends EventEmitter {
 
   // ---- Phase-3B FINAL: host-first discovery / validation / restart ----
   _log(event, data = {}) { this.emit('log', { tag: 'PHOM-3B', event, at: this._now(), ...data }); }
+
+  // PHASE 6.3.4 §27/§28 — FIND trace + latency, gated behind PHOM_FIND_LOG=1 (zero overhead when off). Every
+  // milestone carries runId + slotId + findGen so overlapping FIND operations can never be confused. Also
+  // emitted on the existing 'log' stream so it reaches phom:log.
+  _slotOf(rec) { const i = [...this._profiles.keys()].indexOf(rec ? rec.id : null); return i >= 0 ? 'B' + (i + 1) : null; }
+  _findLog(event, rec, findGen, data = {}) {
+    if (process.env.PHOM_FIND_LOG !== '1') return;
+    const entry = { tag: 'PHOM-FIND', event, runId: rec ? rec.id : null, slotId: this._slotOf(rec), findGen: findGen != null ? findGen : null, mono: Math.round(this._mono() * 1000) / 1000, at: this._now(), ...data };
+    try { console.log(`[PHOM-FIND] ${event}`, JSON.stringify(entry)); } catch { /* best effort */ }
+    this.emit('log', entry);
+  }
 
   // ---- PHASE-2 instrumentation ----
   // Push one milestone onto the bounded monotonic timeline (and emit it on the existing log stream

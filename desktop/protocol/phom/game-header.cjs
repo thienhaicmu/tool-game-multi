@@ -31,6 +31,10 @@ function deriveHeaderState(view = {}) {
   else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
   else if (joined) { statusLabel = 'ĐÃ VÀO BÀN'; statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }]; }
   else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_SHARED', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }
+  // PHASE 6.3.4 §3 — Player 1 is the SINGLE finder / room anchor. A FOLLOWER (isFinder === false) with no
+  // shared RID yet must NOT discover: it shows a waiting state (disabled) so it can never send CMD 300 / JOIN
+  // a self-found table. isFinder defaults to allowed (undefined ⇒ finder) for backward compatibility.
+  else if (view.isFinder === false) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'WAIT_ANCHOR', label: 'CHỜ PLAYER 1 TÌM BÀN', disabled: true }; }
   else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND', label: 'TÌM BÀN', needsBet: true, betOptions }; }
   return { account, rid, statusLabel, statusClass, primary, secondary, error: view.error || null, joinedShared };
 }
