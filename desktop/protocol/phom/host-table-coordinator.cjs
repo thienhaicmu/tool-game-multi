@@ -538,6 +538,112 @@ class HostTableCoordinator extends EventEmitter {
     };
   }
 
+  // ---- PHASE-4 · HOST ROOM ANCHOR experiment (A → room → B/C) ----
+  // Verifies the host-first + room-anchor direction: A native-JOINs a channel, is CONFIRMED in its own
+  // authoritative TABLE_STATE.ps[], its ROOM ANCHOR is bound (the rid A joined — the ONLY room id the
+  // protocol exposes; TABLE_STATE carries NO server table id, so same-room is proven by the player-set
+  // fingerprint), then B and C JOIN THAT EXACT rid (never a fresh stake matchmake) and are each confirmed
+  // co-seated with A. Observe-only; does NOT touch the production runDiscovery flow. Its own generation.
+  //
+  // SOURCE-REALITY caveat (documented, not guessed): the "room id" is host._joinedRid (the JOIN rid),
+  // authoritative once A ∈ ps[]. It is NOT a field inside TABLE_STATE — the captured protocol has none.
+
+  // Extract A's authoritative room anchor. Requires A actually seated in its own ps[]; the room id is the
+  // rid A joined (host._joinedRid). Returns HOST_ROOM_ID_NOT_FOUND if A is not seated or has no join rid.
+  _extractHostRoom(host) {
+    const ts = host && host.ctx.tableState();
+    const uid = host && host.ctx.uid();
+    if (!ts || !uid || !ts.uids.includes(uid)) return { ok: false, error: { code: 'HOST_ROOM_ID_NOT_FOUND', message: 'host not authoritatively seated in ps[]' } };
+    const roomId = host._joinedRid;
+    if (roomId == null || !Number.isFinite(Number(roomId))) return { ok: false, error: { code: 'HOST_ROOM_ID_NOT_FOUND', message: 'no room id (join rid) for the host' } };
+    return { ok: true, roomId: Number(roomId), fingerprint: ts.identity ? ts.identity.value : null, seat: host.ctx.seat() };
+  }
+
+  // Both authoritative views agree host H and follower F are co-seated (H+F present in BOTH ps[] sets).
+  _coSeated(H, F) {
+    const ht = H.ctx.tableState(), ft = F.ctx.tableState();
+    const hu = H.ctx.uid(), fu = F.ctx.uid();
+    return !!(ht && ft && hu && fu && ht.uids.includes(hu) && ht.uids.includes(fu) && ft.uids.includes(hu) && ft.uids.includes(fu));
+  }
+  _hostStillSeated(H, roomId) {
+    const ht = H.ctx.tableState(), hu = H.ctx.uid();
+    return !!(ht && hu && ht.uids.includes(hu) && Number(H._joinedRid) === Number(roomId));
+  }
+
+  async runHostAnchoredJoin(channel, opts = {}) {
+    if (!this._guard()) return this._unauthorized();
+    const host = this.host();
+    if (!host) return { ok: false, result: 'HOST_JOIN_FAILED', error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no host selected' } };
+    const followers = this.followers();
+    if (followers.length < 2) return { ok: false, result: 'HOST_JOIN_FAILED', error: { code: 'PHOM_PROFILE_NOT_READY', message: 'need two followers (B, C)' } };
+    const ch = Number.isFinite(channel) ? channel : (channel != null ? Number(channel) : this._selectedStake);
+    if (ch == null || !Number.isFinite(ch)) return { ok: false, result: 'HOST_JOIN_FAILED', error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'no channel/stake to join' } };
+    const timeoutMs = opts.perStageTimeoutMs != null ? opts.perStageTimeoutMs : 8000;
+    const gen = ++this._gen; this._running = true; this._markedThisGen.clear();
+    // Abort precedence: an explicit stop() (which also bumps _gen) reports CANCELLED; a competing new
+    // operation that only bumps the generation reports STALE_GENERATION.
+    const stale = () => (this._stopped ? 'CANCELLED' : (this._gen !== gen ? 'STALE_GENERATION' : null));
+    const observed = [];
+    try {
+      // ---- J0/J1 — A native JOIN by channel, confirmed from A's own ps[] ----
+      const ctxA = host.ctx.sendContext();
+      if (!ctxA) return { ok: false, result: 'HOST_JOIN_FAILED', error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'host has no game socket' }, observed };
+      this._mark('J0_HOST_JOIN_SENT', { id: host.id, stake: ch });
+      try { await host.send(buildJoinFrame(ch), ctxA); } catch (e) { return { ok: false, result: 'HOST_JOIN_FAILED', error: { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }, observed }; }
+      host._joinedRid = ch; // A's room anchor (the rid A joined); becomes authoritative once ps[] confirms
+      const aSeated = await this._waitUntil(() => { const ts = host.ctx.tableState(); const uid = host.ctx.uid(); return !!(ts && uid && ts.uids.includes(uid)); }, gen, timeoutMs);
+      const s0 = stale(); if (s0) return { ok: false, result: s0, observed };
+      if (!aSeated) return { ok: false, result: 'TIMEOUT', timeoutStage: 'HOST_CONFIRM', observed };
+      this._mark('J1_HOST_CONFIRMED', { id: host.id, uid: shortUid(host.ctx.uid()), seat: host.ctx.seat() });
+      observed.push({ id: host.id, label: 'HOST', seated: true, seat: host.ctx.seat(), fingerprint: host.ctx.tableState().identity ? host.ctx.tableState().identity.value : null });
+
+      // ---- J2 — bind the host room anchor from authoritative evidence ----
+      const room = this._extractHostRoom(host);
+      if (!room.ok) return { ok: false, result: 'HOST_ROOM_ID_NOT_FOUND', error: room.error, observed };
+      const hostRoomId = room.roomId;
+      this._mark('J2_HOST_ROOM_BOUND', { id: host.id, roomId: hostRoomId, seat: room.seat });
+
+      // ---- J3/J4 — B joins the HOST ROOM id; confirm co-seated ----
+      const bRes = await this._anchorFollower(followers[0], hostRoomId, gen, timeoutMs, 'B', 'J3_B_JOIN_SENT', 'J4_B_SAME_ROOM_CONFIRMED', host, observed);
+      if (!bRes.ok) return { ok: false, result: bRes.result, timeoutStage: bRes.timeoutStage, roomId: hostRoomId, observed };
+
+      // ---- J5/J6 — C joins the HOST ROOM id; confirm co-seated ----
+      const cRes = await this._anchorFollower(followers[1], hostRoomId, gen, timeoutMs, 'C', 'J5_C_JOIN_SENT', 'J6_C_SAME_ROOM_CONFIRMED', host, observed);
+      if (!cRes.ok) return { ok: false, result: cRes.result, timeoutStage: cRes.timeoutStage, roomId: hostRoomId, observed };
+
+      // ---- J7 — final authoritative A+B+C co-membership ----
+      if (!this._coSeated(host, followers[0]) || !this._coSeated(host, followers[1])) return { ok: false, result: 'ROOM_CHANGED', roomId: hostRoomId, observed };
+      const members = [host.id, followers[0].id, followers[1].id];
+      this._mark('J7_FINAL_CLUSTER_CONFIRMED', { roomId: hostRoomId, members });
+      return { ok: true, result: 'HOST_ANCHORED_SAME_ROOM', roomId: hostRoomId, fingerprint: host.ctx.tableState().identity ? host.ctx.tableState().identity.value : null,
+        members, seats: { A: host.ctx.seat(), B: followers[0].ctx.seat(), C: followers[1].ctx.seat() }, observed };
+    } finally { if (this._gen === gen) this._running = false; }
+  }
+
+  // One follower joins the HOST ROOM id and is confirmed co-seated with A (from BOTH ps[] views). Emits
+  // the sent/confirmed milestones. Distinguishes: STALE_GENERATION / CANCELLED / <L>_JOIN_FAILED /
+  // ROOM_CHANGED (host left/room changed) / <L>_NOT_CONFIRMED_IN_PS (timeout, follower never seated) /
+  // <L>_JOIN_WRONG_ROOM (seated elsewhere).
+  async _anchorFollower(F, hostRoomId, gen, timeoutMs, label, sentM, confM, host, observed) {
+    if (this._stopped) return { ok: false, result: 'CANCELLED' };
+    if (this._gen !== gen) return { ok: false, result: 'STALE_GENERATION' };
+    const ctx = F.ctx.sendContext();
+    if (!ctx) { observed.push({ id: F.id, label, seated: false, error: 'PHOM_SOCKET_NOT_FOUND' }); return { ok: false, result: `${label}_JOIN_FAILED` }; }
+    this._mark(sentM, { id: F.id, roomId: hostRoomId });
+    try { await F.send(buildJoinFrame(hostRoomId), ctx); } catch (e) { observed.push({ id: F.id, label, seated: false, error: String(e && e.message || e) }); return { ok: false, result: `${label}_JOIN_FAILED` }; }
+    F._joinedRid = hostRoomId;
+    const seated = await this._waitUntil(() => { const ft = F.ctx.tableState(); const fu = F.ctx.uid(); return !!(ft && fu && ft.uids.includes(fu)); }, gen, timeoutMs);
+    if (this._stopped) return { ok: false, result: 'CANCELLED' };
+    if (this._gen !== gen) return { ok: false, result: 'STALE_GENERATION' };
+    // Host must still be authoritatively seated in the SAME bound room (A didn't leave / room didn't change).
+    if (!this._hostStillSeated(host, hostRoomId)) { observed.push({ id: F.id, label, seated, error: 'ROOM_CHANGED' }); return { ok: false, result: 'ROOM_CHANGED' }; }
+    if (!seated) return { ok: false, result: `${label}_NOT_CONFIRMED_IN_PS`, timeoutStage: `${label}_SAME_ROOM` };
+    if (!this._coSeated(host, F)) { observed.push({ id: F.id, label, seated: true, error: 'WRONG_ROOM', fingerprint: F.ctx.tableState().identity ? F.ctx.tableState().identity.value : null }); return { ok: false, result: `${label}_JOIN_WRONG_ROOM` }; }
+    this._mark(confM, { id: F.id, roomId: hostRoomId, hostSeat: host.ctx.seat(), followerSeat: F.ctx.seat() });
+    observed.push({ id: F.id, label, seated: true, seat: F.ctx.seat(), fingerprint: F.ctx.tableState().identity ? F.ctx.tableState().identity.value : null });
+    return { ok: true };
+  }
+
   // ---- Phase-3B FINAL: host-first discovery / validation / restart ----
   _log(event, data = {}) { this.emit('log', { tag: 'PHOM-3B', event, at: this._now(), ...data }); }
 

@@ -802,6 +802,10 @@ else {
     // PHASE-3 · PART B — observe-only native-JOIN experiment (A→B→C, same stake, no room forcing).
     // Authorized+licensed only; observes server matchmaking from ps[], never changes production flow.
     ipcMain.handle('phom:join-experiment', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.runJoinExperiment(cfg && cfg.channel, cfg && cfg.opts); }));
+    // PHASE-4 — HOST ROOM ANCHOR test (A→room→B/C). Authorized+licensed; observe-only, does not touch
+    // the production discovery flow. A native-joins, is confirmed in ps[], its room is bound, then B/C
+    // join THAT exact room id and are confirmed co-seated.
+    ipcMain.handle('phom:host-anchored-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.runHostAnchoredJoin(cfg && cfg.channel, cfg && cfg.opts); }));
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.
     ipcMain.handle('phom:cluster-create', guarded((_e, config) => {
       ensureStores();

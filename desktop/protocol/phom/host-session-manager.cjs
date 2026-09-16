@@ -108,6 +108,8 @@ class HostSessionManager extends EventEmitter {
   trace() { const c = this._c(); return c && typeof c.trace === 'function' ? c.trace() : []; }
   // PHASE-3 · PART B — observe-only native-JOIN experiment (A then B then C, same stake, no room forcing).
   runJoinExperiment(channel, opts) { return this._guarded((c) => c.runJoinExperiment(channel, opts)); }
+  // PHASE-4 — HOST ROOM ANCHOR test: A native-JOIN → confirm in ps[] → bind A's room → B/C JOIN that room.
+  runHostAnchoredJoin(channel, opts) { return this._guarded((c) => c.runHostAnchoredJoin(channel, opts)); }
 }
 
 module.exports = { HostSessionManager };
