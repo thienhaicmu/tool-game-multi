@@ -25,6 +25,13 @@ contextBridge.exposeInMainWorld('phomQA', {
   profileList: () => ipcRenderer.invoke('phom:profile-list'),
   profileUpsert: (slot, input) => ipcRenderer.invoke('phom:profile-upsert', slot, input),
   profileDelete: (slot) => ipcRenderer.invoke('phom:profile-delete', slot),
+  // PHASE 6.3.1 — flexible N-profile store CRUD + open-from-selection
+  profilesList: () => ipcRenderer.invoke('phom:profiles-list'),
+  profileCreate: (input) => ipcRenderer.invoke('phom:profile-create', input),
+  profileUpdateX: (id, patch) => ipcRenderer.invoke('phom:profile-update-x', id, patch),
+  profileDeleteX: (id) => ipcRenderer.invoke('phom:profile-delete-x', id),
+  profileSetProxy: (id, proxyInput) => ipcRenderer.invoke('phom:profile-set-proxy', id, proxyInput),
+  openSelected: (cfg) => ipcRenderer.invoke('phom:open-selected', cfg),
   onDeviceApplied: (cb) => ipcRenderer.on('phom:device-applied', (_e, p) => cb(p)),
   // browser + HOST/FOLLOWER controlled-table session
   openProfile: (cfg) => ipcRenderer.invoke('phom:open-profile', cfg),

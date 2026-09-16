@@ -67,6 +67,12 @@
   const manualJoining = {};  // browserId -> true while VÀO BÀN (join shared RID) is in flight (§4)
   const selectedStakeByBrowser = {}; // PHASE 6.2.3 — the finder's chosen REAL stake (from server bet options)
   let activeTab = 'SETUP';   // PHASE 6.2.2 — two tabs: SETUP (config/open) and PHOM (control)
+  // PHASE 6.3.1 — flexible N-profile SETUP: the profile LIST + the ordered selection (→ B1/B2/B3) + game URL.
+  const PS = (typeof window !== 'undefined' && window.ProfileSelection) ? window.ProfileSelection : null;
+  let profilesX = [];              // all saved device profiles (from phom:profiles-list)
+  let selectedProfileIds = [];     // ORDERED selection (max 3); selection order → B1/B2/B3
+  let gameUrlX = '';               // shared Game URL for the 3 browsers
+  let bulkProxyText = '';          // bulk-proxy textarea (one proxy per line)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
   let selectedClusterProfileId = null;
@@ -152,6 +158,7 @@
     try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
     await refreshClusterProfiles();
+    await refreshProfilesX(); // PHASE 6.3.1 — load the flexible profile list
     // Land in CONTROL if a cluster is already open (e.g. renderer reload), else SETUP.
     uiState = clusterIsOpen() ? UI.CONTROL : UI.SETUP;
     renderApp();
@@ -237,19 +244,161 @@
   //          (Local Runtime Test + the single RUN GAME CTA).
   // The right column is where proxies are CONFIGURED; the left rows only DISPLAY the
   // assigned proxy — never a second set of proxy controls.
+  // PHASE 6.3.1 — SETUP = a flexible device-profiles TABLE (manage + select), a Game URL, bulk proxy, and
+  // the RUN GAME CTA. The table checkbox is the ONLY selection UI (no B1/B2/B3 dropdowns, no selected-
+  // profile panel, no cluster/CỤM concept). Selection order → B1/B2/B3.
   function renderSetup(r) {
     const h = header('SETUP'); h.classList.add('s1-header'); r.appendChild(h);
     r.appendChild(el('div', { class: 'note s1-note', id: 'phq-note' }, ''));
+    r.appendChild(gamePanel());
+    r.appendChild(profileTablePanel());
+    r.appendChild(bulkProxyPanel());
+    r.appendChild(runGamePanel());
+  }
 
-    const grid = el('div', { class: 'setup', id: 'phq-setup-grid' });
-    const left = el('div', { class: 's1-col s1-left' });
-    left.appendChild(panelGeneral());
-    left.appendChild(panelAssigned());
-    const right = el('div', { class: 's1-col s1-right' });
-    right.appendChild(panelQuickProxy());
-    right.appendChild(footerRunGame());
-    grid.appendChild(left); grid.appendChild(right);
-    r.appendChild(grid);
+  // GAME URL (shared by the 3 browsers). Not a "cluster" — just the game address (§18/§19).
+  function gamePanel() {
+    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
+    panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title' }, 'GAME')));
+    panel.appendChild(el('div', { style: 'padding:0 12px 12px' },
+      el('input', { class: 'f mono', id: 'phq-gameurl', type: 'url', spellcheck: 'false', value: gameUrlX, placeholder: 'https://game.example.com/room', style: 'width:100%',
+        oninput: (e) => { gameUrlX = e.target.value; } })));
+    return panel;
+  }
+
+  // DEVICE PROFILES table — manage (add/edit/delete) + select (checkbox, max 3, order → B1/B2/B3).
+  function profileTablePanel() {
+    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
+    const n = selectedProfileIds.length;
+    panel.appendChild(el('div', { class: 'setup-section-h' },
+      el('span', { class: 'h-title' }, 'DEVICE PROFILES ', el('span', { class: 'faint sm' }, `· ĐÃ CHỌN ${n} / 3`)),
+      el('button', { class: 'btn primary sm', onclick: () => openProfileModal(null) }, icon('plus', { sm: true }), ' THÊM PROFILE')));
+    const table = el('table', { class: 'setup-table' });
+    table.appendChild(el('thead', null, el('tr', null,
+      el('th', null, ''), el('th', null, '#'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, ''))));
+    const tbody = el('tbody');
+    if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '8', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
+    for (const p of profilesX) tbody.appendChild(profileRow(p));
+    table.appendChild(tbody);
+    const scroll = el('div', { class: 'table-scroll' }, table);
+    panel.appendChild(scroll);
+    return panel;
+  }
+  function profileRow(p) {
+    const dev = p.device || {};
+    const sel = PS ? PS.isSelected(selectedProfileIds, p.id) : false;
+    const canSel = PS ? PS.canSelect(selectedProfileIds, p.id) : false;
+    const bLabel = PS ? PS.browserOf(selectedProfileIds, p.id) : null;
+    const cb = el('input', { type: 'checkbox', class: 'prof-cb', checked: sel ? 'checked' : null, disabled: canSel ? null : true,
+      onchange: () => { if (PS) { selectedProfileIds = PS.toggle(selectedProfileIds, p.id); renderApp(); } } });
+    const typeText = TYPE_LABEL[dev.profileType] || dev.profileType || '—';
+    const osText = dev.osWindow || (dev.osWindowWidth ? `${dev.osWindowWidth}×${dev.osWindowHeight}` : 'Desktop');
+    return el('tr', { class: 'prof-row' + (sel ? ' selected' : '') },
+      el('td', null, cb),
+      el('td', { class: 'col-tag' }, bLabel ? el('span', { class: 'b-badge' }, bLabel) : ''),
+      el('td', { class: 'col-name' }, p.name || '(no name)'),
+      el('td', null, typeText),
+      el('td', { class: 'num' }, osText),
+      el('td', { class: 'num' }, dev.resolution || '—'),
+      el('td', null, p.proxyRef ? el('span', { class: 'badge good' }, 'PROXY') : el('span', { class: 'badge faint' }, 'DIRECT')),
+      el('td', null, el('div', { style: 'display:flex;gap:4px;justify-content:flex-end' },
+        iconButton('edit', 'Sửa profile', () => openProfileModal(p.id)),
+        iconButton('trash', 'Xóa profile', () => deleteProfileX(p.id), 'danger'))),
+    );
+  }
+
+  // BULK PROXY — one proxy per line, mapped to the SELECTED profiles BY ORDER (§20/§21/§22).
+  function bulkProxyPanel() {
+    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
+    panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title' }, 'PROXY ', el('span', { class: 'faint sm' }, '· mỗi dòng một proxy, theo thứ tự chọn'))));
+    const body = el('div', { style: 'padding:0 12px 12px' });
+    // compact selection-order preview
+    if (selectedProfileIds.length) {
+      const prev = el('div', { class: 'faint sm', style: 'margin-bottom:6px' });
+      selectedProfileIds.forEach((id, i) => { const p = profilesX.find((x) => x.id === id); prev.appendChild(el('span', { style: 'margin-right:10px' }, `${i + 1} → ${p ? p.name : id}`)); });
+      body.appendChild(prev);
+    }
+    body.appendChild(el('textarea', { class: 'f mono', id: 'phq-bulkproxy', rows: '3', style: 'width:100%', placeholder: 'host:port:user:pass\nhost:port\n…', oninput: (e) => { bulkProxyText = e.target.value; } }, bulkProxyText));
+    body.appendChild(el('div', { style: 'margin-top:8px' }, el('button', { class: 'btn sm', onclick: applyBulkProxy }, 'ÁP DỤNG PROXY'), el('span', { class: 'note', id: 'phq-proxynote', style: 'margin-left:8px' }, '')));
+    panel.appendChild(body);
+    return panel;
+  }
+
+  // RUN GAME — enabled only with exactly 3 selected; opens each selected profile as B1/B2/B3.
+  function runGamePanel() {
+    const ready = selectedProfileIds.length === 3;
+    const footer = el('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px' });
+    footer.appendChild(el('span', { class: 'faint sm' }, `ĐÃ CHỌN ${selectedProfileIds.length} / 3`));
+    const right = el('div', { style: 'display:flex;align-items:center;gap:10px' });
+    if (caps.devBypass) right.appendChild(el('label', { class: 'faint sm' }, el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; } }), ' Local Test'));
+    right.appendChild(el('button', { class: 'btn primary', disabled: ready ? null : true, onclick: openCluster }, icon('monitor', { sm: true }), ' MỞ 3 TRÌNH DUYỆT'));
+    footer.appendChild(right);
+    return footer;
+  }
+
+  // ---- flexible-profile handlers ----
+  async function refreshProfilesX() {
+    try { const r = await api.profilesList(); profilesX = (r && r.profiles) || []; } catch { profilesX = []; }
+    if (PS) selectedProfileIds = PS.prune(selectedProfileIds, profilesX.map((p) => p.id));
+  }
+  async function deleteProfileX(id) {
+    const p = profilesX.find((x) => x.id === id);
+    if (!window.confirm(`Xóa profile "${p ? p.name : id}"?`)) return;
+    const res = await api.profileDeleteX(id);
+    if (res && res.ok === false) return note(errText(res), true);
+    if (PS) selectedProfileIds = selectedProfileIds.filter((x) => x !== id); // remove from selection (§11)
+    await refreshProfilesX(); renderApp(); note('Đã xóa profile.');
+  }
+  async function applyBulkProxy() {
+    const pn = $('phq-proxynote');
+    if (!PS) return;
+    const res = PS.mapProxies(selectedProfileIds, bulkProxyText);
+    if (!res.ok) { if (pn) { pn.textContent = res.error === 'PROXY_COUNT_MISMATCH' ? `Cần đúng ${res.expected} proxy (đang có ${res.got}).` : 'Chọn 3 profile trước.'; pn.className = 'note warn'; } return; }
+    for (const m of res.mapping) { const r = await api.profileSetProxy(m.profileId, m.proxy); if (r && r.ok === false) { if (pn) { pn.textContent = `${m.browser}: ${errText(r)}`; pn.className = 'note warn'; } return; } }
+    await refreshProfilesX(); renderApp();
+    const pn2 = $('phq-proxynote'); if (pn2) { pn2.textContent = 'Đã áp dụng proxy theo thứ tự chọn.'; pn2.className = 'note ok'; }
+  }
+  // Add/Edit profile modal (name · type preset · OS window w/h · viewport w/h · touch). OS window ⟂ viewport.
+  function openProfileModal(id) {
+    const existing = id ? profilesX.find((x) => x.id === id) : null;
+    const dev = existing && existing.device ? existing.device : {};
+    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
+    const ov = el('div', { class: 'phq-analyzer' });
+    const close = () => ov.remove();
+    const presetSel = el('select', { class: 'sel', id: 'pf-preset' }, el('option', { value: '' }, '— chọn preset (tùy chọn) —'));
+    for (const pr of presets) presetSel.appendChild(el('option', { value: pr.id, selected: dev.presetId === pr.id ? 'selected' : null }, `${pr.name} · ${(pr.profileType || '').replace('_', ' ')}`));
+    const f = (idv, ph, val) => el('input', { class: 'f', id: idv, placeholder: ph, value: val != null ? val : '' });
+    const applyPreset = () => { const pr = presets.find((x) => x.id === presetSel.value); if (!pr) return; $('pf-name').value = $('pf-name').value || pr.name; $('pf-osw').value = pr.osWindowWidth || ''; $('pf-osh').value = pr.osWindowHeight || ''; $('pf-vpw').value = pr.viewportWidth || ''; $('pf-vph').value = pr.viewportHeight || ''; };
+    presetSel.onchange = applyPreset;
+    const card = el('div', { class: 'anz-card' },
+      el('div', { class: 'section-t' }, existing ? 'SỬA PROFILE' : 'THÊM PROFILE'),
+      el('div', { class: 'phq-row' }, el('span', null, 'Tên'), f('pf-name', 'tên profile', existing ? existing.name : '')),
+      el('div', { class: 'phq-row' }, el('span', null, 'Preset'), presetSel),
+      el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'OS WINDOW (cửa sổ Chromium)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'W × H'), f('pf-osw', 'width', dev.osWindowWidth), f('pf-osh', 'height', dev.osWindowHeight)),
+      el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'VIEWPORT (game emulation)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'W × H'), f('pf-vpw', 'width', dev.viewportWidth), f('pf-vph', 'height', dev.viewportHeight)),
+      el('div', { class: 'phq-row' }, el('span', null, 'Touch'), el('label', { class: 'faint' }, el('input', { type: 'checkbox', id: 'pf-touch', checked: (dev.touch == null ? true : dev.touch) ? 'checked' : null }), ' bật cảm ứng')),
+      el('div', { class: 'note', id: 'pf-err' }, ''),
+      el('div', { class: 'phq-row' },
+        el('button', { class: 'btn primary', onclick: () => saveProfileModal(id, close) }, 'Lưu'),
+        el('button', { class: 'btn', onclick: close }, 'Hủy')));
+    ov.appendChild(card); document.body.appendChild(ov);
+  }
+  async function saveProfileModal(id, close) {
+    const num = (v) => { const n = Number(String(v || '').trim()); return Number.isFinite(n) && n > 0 ? n : null; };
+    const vpw = num($('pf-vpw').value), vph = num($('pf-vph').value);
+    const err = $('pf-err');
+    if (!vpw || !vph) { if (err) { err.textContent = 'Viewport width/height phải là số > 0.'; err.className = 'note warn'; } return; }
+    const osw = num($('pf-osw').value), osh = num($('pf-osh').value);
+    const touch = !!($('pf-touch') && $('pf-touch').checked);
+    const device = { viewportWidth: vpw, viewportHeight: vph, screenWidth: vpw, screenHeight: vph, deviceScaleFactor: 2, osWindowWidth: osw, osWindowHeight: osh, touch, mobile: touch, orientationType: 'landscapePrimary', profileType: (osw && osh) ? 'CUSTOM' : 'MOBILE_LANDSCAPE' };
+    const name = ($('pf-name').value || '').trim() || 'Profile';
+    let res;
+    if (id) res = await api.profileUpdateX(id, { name, device });
+    else res = await api.profileCreate({ name, device });
+    if (res && res.ok === false) { if (err) { err.textContent = errText(res); err.className = 'note warn'; } return; }
+    close(); await refreshProfilesX(); renderApp();
   }
 
   // LEFT panel 1 — CẤU HÌNH CHUNG: Cluster Profile + HOST on one row, shared Link below.
@@ -1577,12 +1726,11 @@
   // Cluster CTA: SETUP → OPENING_CLUSTER → CONTROL. create → open → connect → apply
   // devices → tile (restoreLayout) via PhomClusterCdpManager.
   async function openCluster() {
-    // §3 — the SAVED cluster profile drives the runtime. The renderer sends ONLY the
-    // selected profile id (+ the non-persisted localTest flag); host/stake/proxy/device
-    // all come authoritatively from the saved profile in the main process.
-    if (!selectedClusterProfileId) { note('Hãy chọn hoặc tạo một Cluster Profile trước khi mở cụm.', true); return; }
+    // PHASE 6.3.1 — open the 3 SELECTED profiles as B1/B2/B3 (selection order). No cluster profile.
+    if (selectedProfileIds.length !== 3) { note('Chọn đúng 3 profile trong bảng trước khi mở.', true); return; }
+    if (!localTest && !(gameUrlX || '').trim()) { note('Nhập Game URL trước khi mở.', true); return; }
     // §41 — a fast double-click must not open a second cluster / duplicate browser runs.
-    if (clusterOpBusy) { note('Đang mở cụm — vui lòng chờ…', true); return; }
+    if (clusterOpBusy) { note('Đang mở — vui lòng chờ…', true); return; }
     clusterOpBusy = true;
     try { await openClusterInner(); } finally { clusterOpBusy = false; }
   }
@@ -1598,10 +1746,10 @@
     }
     uiState = UI.OPENING_CLUSTER; renderApp();
     try {
-      const created = await api.clusterCreate({ clusterProfileId: selectedClusterProfileId, localTest });
+      // PHASE 6.3.1 — create the cluster from the SELECTED profiles (order → B1/B2/B3) + game URL.
+      const created = await api.openSelected({ profileIds: selectedProfileIds, gameUrl: gameUrlX, localTest });
       if (created && created.ok === false) throw created;
       if (created && created.localTest != null) localTest = created.localTest;
-      if (created && created.clusterProfileId) selectedClusterProfileId = created.clusterProfileId;
       const open = await api.clusterOpen();
       if (open && open.ok === false && !open.opened) throw open;
       // Sandbox-enabled Chromium needs a moment before its CDP endpoint answers, so the

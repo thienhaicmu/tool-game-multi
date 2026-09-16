@@ -36,14 +36,15 @@ test('exactly one primary RUN GAME CTA in Setup (Screen 1)', () => {
   assert.match(js, /RUN GAME — MỞ 3 TRÌNH DUYỆT/, 'RUN GAME CTA label');
 });
 
-test('Screen 1 has a single shared LINK GAME input (not three URLs) + HOST on the same row', () => {
-  assert.match(js, /phq-gameurl/);
-  assert.equal((js.match(/id: 'phq-gameurl'/g) || []).length, 1, 'exactly one game URL input');
-  // Cluster + HOST + shared Link live in the CẤU HÌNH CHUNG panel; no per-slot URLs.
-  assert.match(js, /function panelGeneral\(\)/);
-  assert.match(js, /CẤU HÌNH CHUNG/);
-  assert.match(js, /s1-host/);
-  assert.equal(/LINK GAME \(DÙNG CHUNG A\/B\/C\)/.test(js), false, 'old tall LINK GAME section removed');
+test('PHASE 6.3.1 — SETUP has a single GAME URL input and NO cluster/HOST concept (§18/§19)', () => {
+  assert.match(js, /id: 'phq-gameurl'/);
+  const setup = js.slice(js.indexOf('function renderSetup(r) {'), js.indexOf('function gamePanel('));
+  assert.match(setup, /gamePanel\(\)/);
+  assert.match(setup, /profileTablePanel\(\)/);
+  assert.match(setup, /bulkProxyPanel\(\)/);
+  assert.match(setup, /runGamePanel\(\)/);
+  // the RENDERED setup no longer wires the cluster/HOST panel
+  assert.equal(/panelGeneral\(\)|s1-host|CỤM/.test(setup), false, 'no cluster/host in the new SETUP render');
 });
 
 test('Setup renders the Quick 3-proxy panel as 3 labeled rows (no A=/B=/C= prefix)', () => {
@@ -58,17 +59,18 @@ test('Setup renders the Quick 3-proxy panel as 3 labeled rows (no A=/B=/C= prefi
   assert.match(js, /host\|port\|user\|password/);
 });
 
-test('Screen 1 is a TWO-COLUMN grid: left = general + assigned devices/proxy, right = quick proxy + RUN GAME', () => {
-  // CSS grid with two columns (1fr / 0.95fr) — NOT a single full-width column.
-  assert.match(css, /\.setup\s*\{[^}]*display:\s*grid/);
-  assert.match(css, /grid-template-columns:\s*1fr\s+0\.95fr/);
-  // left column has EXACTLY the two panels; right has quick-proxy + footer.
-  assert.match(js, /function panelAssigned\(\)/);
-  assert.match(js, /THIẾT BỊ VÀ PROXY ĐÃ GÁN/);
-  assert.match(js, /left\.appendChild\(panelGeneral\(\)\)/);
-  assert.match(js, /left\.appendChild\(panelAssigned\(\)\)/);
-  assert.match(js, /right\.appendChild\(panelQuickProxy\(\)\)/);
-  assert.match(js, /right\.appendChild\(footerRunGame\(\)\)/);
+test('PHASE 6.3.1 — SETUP is a device-profiles TABLE with in-row checkbox selection (§9/§10/§12/§13)', () => {
+  assert.match(js, /function profileTablePanel\(\)/);
+  assert.match(js, /function profileRow\(p\)/);
+  assert.match(js, /class: 'setup-table'/);
+  assert.match(js, /THÊM PROFILE/);
+  // the checkbox is the selection UI; order → B1/B2/B3 via ProfileSelection
+  assert.match(js, /PS\.toggle\(selectedProfileIds, p\.id\)/);
+  assert.match(js, /PS\.browserOf\(selectedProfileIds, p\.id\)/);
+  // no B1/B2/B3 dropdowns, no separate selected-profiles panel
+  assert.equal(/Browser 1.*dropdown|selected-profiles-panel|B1 \[dropdown\]/.test(js), false, 'no second selection UI');
+  // RUN GAME opens the SELECTED profiles (order → B1/B2/B3), not a fixed cluster
+  assert.match(js, /api\.openSelected\(\{ profileIds: selectedProfileIds/);
 });
 
 test('Screen 1 assigned rows are DISPLAY-only (no duplicate proxy selector/Test in each profile)', () => {

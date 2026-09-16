@@ -39,6 +39,7 @@ const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
 const { PhomProfileStore } = require('./browser-run/phom-profile-store.cjs');
+const { PhomDeviceProfilesStore } = require('./browser-run/phom-device-profiles-store.cjs');
 const { PhomClusterProfileStore } = require('./browser-run/phom-cluster-profile-store.cjs');
 const { runEnterGameViaSite } = require('./protocol/cocos-lobby-entry.cjs');
 const { GAME_ID: PHOM_GAME_ID } = require('./protocol/phom/phom-frame-classify.cjs');
@@ -92,6 +93,7 @@ else {
   var proxySecretStore = null;
   var proxyTester = null;
   var profileStore = null;
+  var deviceProfilesStore = null; // PHASE-6.3.1 flexible N-profile store
   var clusterProfileStore = null;
   var phomSessions = null;
   // Records which saved cluster profile id (if any) backs the live ClusterSession, so
@@ -135,6 +137,8 @@ else {
     proxySecretStore = new ProxySecretStore({ filePath: path.join(phomRoot(), 'proxy-secrets.dat'), safeStorage });
     proxyConfigStore = new ProxyConfigStore({ filePath: path.join(phomRoot(), 'proxies.json'), secretStore: proxySecretStore });
     profileStore = new PhomProfileStore({ filePath: path.join(phomRoot(), 'phom-profiles.json') });
+    // PHASE-6.3.1 — the canonical flexible profile LIST store (N profiles; add/edit/delete + selection).
+    deviceProfilesStore = new PhomDeviceProfilesStore({ filePath: path.join(phomRoot(), 'phom-device-profiles.json') });
     // Cluster profile store: MANY saved cluster configs (one shared game URL + three
     // browser/device/proxy slots). References are resolved against the existing per-slot
     // Phom profile store + proxy store (no second store stack); the active-session guard
@@ -339,6 +343,34 @@ else {
     });
   }
 
+  // PHASE-6.3.1 — is a flexible profile currently backing a LIVE Chromium? (guards delete/proxy-change §30)
+  function profileInUse(profileId) {
+    try { return runManager && runManager.list().some((r) => { if (r.status === RUN_STATUS.CLOSED) return false; const run = runManager.get(r.id); return run && String(run.profileId) === String(profileId); }); }
+    catch { return false; }
+  }
+  // Open 3 browsers from the SELECTED flexible profiles (selection order → B1/B2/B3 via internal slots
+  // A/B/C). Each browser gets ITS profile's own device + proxy; a shared Game URL is used for all three.
+  function openSelectedProfiles({ profileIds, gameUrl, localTest } = {}) {
+    ensureStores();
+    const ids = Array.isArray(profileIds) ? profileIds.map((x) => String(x)) : [];
+    if (ids.length !== 3 || new Set(ids).size !== 3) return { ok: false, error: { code: 'PHOM_SELECT_THREE', message: 'Chọn đúng 3 hồ sơ khác nhau.' } };
+    clusterLocalTest = !!(localTest && devBypass.allowed);
+    const url = localTestActive() ? 'about:blank' : (gameUrl != null ? String(gameUrl).trim() : '');
+    if (!localTestActive() && !url) return { ok: false, error: { code: 'PHOM_GAME_URL_REQUIRED', message: 'Nhập Game URL trước khi mở.' } };
+    const profiles = [];
+    for (let i = 0; i < 3; i++) {
+      const p = deviceProfilesStore.get(ids[i]);
+      if (!p) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_FOUND', message: `Hồ sơ ${ids[i]} không tồn tại.` } };
+      if (!p.device) return { ok: false, error: { code: 'PHOM_PROFILE_NO_DEVICE', message: `Hồ sơ "${p.name}" chưa có thiết bị.` } };
+      // slot A/B/C = the runtime B1/B2/B3 window; browserProfileId carries the flexible profile id.
+      profiles.push({ slot: SLOTS_ABC[i], browserProfileId: p.id, profileId: p.id, device: p.device, proxyRef: p.proxyRef || null, gameUrl: url, label: p.name });
+    }
+    const res = ensureCluster().createCluster({ clusterProfileId: null, hostSlot: 'A', selectedStake: null, gameUrl: url, profiles });
+    if (res && res.ok === false) return res;
+    activeClusterProfileId = null;
+    return res && res.ok ? { ...res, localTest: localTestActive(), gameUrl: url, mapping: ids.map((id, i) => ({ browser: 'B' + (i + 1), profileId: id })) } : res;
+  }
+
   function ensureCluster() {
     if (phomCluster) return phomCluster;
     ensureRunManager(); ensurePhomSessions(); ensureStores();
@@ -352,6 +384,9 @@ else {
       openProfile: (slot, cfg) => openProfile({
         slot,
         profileKey: (cfg && cfg.browserProfileId) || slot,
+        // PHASE-6.3.1 — a flexible selected profile carries its own id (as browserProfileId) + full device.
+        profileId: (cfg && (cfg.profileId || cfg.browserProfileId)) || null,
+        device: (cfg && cfg.device) || null,
         url: localTestActive() ? 'about:blank' : ((cfg && cfg.gameUrl) || 'about:blank'),
         // The cluster projection is AUTHORITATIVE for proxy: pass the resolved ref EXPLICITLY
         // (null = DIRECT). Never send `undefined`, which would make openProfile silently fall
@@ -641,7 +676,7 @@ else {
   // AND its saved mobile device profile (viewport emulation is separate from the
   // native 2×2 window size). The device belongs to the slot (browser profile), so the
   // same device is reapplied every time this slot's browser is (re)opened.
-  async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username }) {
+  async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username, device: deviceArg, profileId }) {
     // §6 — the pinned custom Chromium runtime must validate; never fall back to system Chrome.
     const rt = chromiumRuntime();
     if (!rt.ok) return rt;
@@ -658,7 +693,11 @@ else {
     // fallback). `proxyRequired` stays an explicit opt-IN (default optional).
     const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired === true }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
     if (!gate.ok) return gate; // PROXY_CONFIG_NOT_FOUND / DISABLED (bound proxy) — launch blocked; DIRECT is allowed
-    const device = profileStore.deviceFor(pk);
+    // PHASE-6.3.1 — a flexible selected profile passes its FULL device explicitly; otherwise fall back to
+    // the legacy per-slot device. The persistent user-data-dir is keyed by the profile identity so each
+    // profile keeps its own Chromium data + reopens the SAME identity.
+    const device = deviceArg || profileStore.deviceFor(pk);
+    const udKey = (profileId != null && String(profileId).trim()) ? String(profileId).trim() : pk;
     // Chromium sandbox policy for THIS launch (sandbox ON unless the fully-gated dev
     // diagnostic bypass applies). When the sandbox stays ON we self-heal the runtime's
     // AppContainer ACL so it launches WITHOUT --no-sandbox (the real 0x5 fix).
@@ -672,7 +711,7 @@ else {
     }
     // Per-profile persistent user-data-dir so reopening a slot reuses ITS profile's dir
     // (keyed by the authoritative browser profile, not the window slot) (§12).
-    const profileDir = path.join(phomRoot(), 'browser-profiles', pk || slot || 'X');
+    const profileDir = path.join(phomRoot(), 'browser-profiles', udKey || slot || 'X');
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
     // PHASE-6 — DETERMINISTIC multi-monitor placement. Browser slot A/B/C ⇒ window 1/2/3 (stable, never
     // by launch/PID order). Sizes each window to the profile's MOBILE-LANDSCAPE viewport + chrome (device
@@ -696,6 +735,7 @@ else {
     const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
+    run.profileId = udKey; // PHASE-6.3.1 — runtime browserRunId → profileId mapping (active-guard + reopen)
     run.deviceProfile = device || null; // reapplied on every attach/navigation
     run.proxyUsername = username || (gate.config && gate.config.username) || null;
     const launched = await run.launcher.open(String(url || ''));
@@ -787,6 +827,30 @@ else {
     ipcMain.handle('phom:profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: profileStore.list() }; }));
     ipcMain.handle('phom:profile-upsert', guarded((_e, slot, input) => { ensureStores(); return profileStore.upsert(String(slot), input || {}); }));
     ipcMain.handle('phom:profile-delete', guarded((_e, slot) => { ensureStores(); return profileStore.remove(String(slot)); }));
+    // ---- PHASE-6.3.1 — flexible N-profile CRUD + open-from-selection ----
+    ipcMain.handle('phom:profiles-list', guarded(() => { ensureStores(); return { ok: true, profiles: deviceProfilesStore.list() }; }));
+    ipcMain.handle('phom:profile-create', guarded((_e, input) => { ensureStores(); return deviceProfilesStore.create(input && typeof input === 'object' ? input : {}); }));
+    ipcMain.handle('phom:profile-update-x', guarded((_e, id, patch) => { ensureStores(); return deviceProfilesStore.update(String(id == null ? '' : id), patch && typeof patch === 'object' ? patch : {}); }));
+    // Delete blocked while the profile backs a LIVE Chromium (§11/§30) — close the browser first.
+    ipcMain.handle('phom:profile-delete-x', guarded((_e, id) => {
+      ensureStores();
+      const pid = String(id == null ? '' : id);
+      if (profileInUse(pid)) return { ok: false, error: { code: 'PHOM_PROFILE_IN_USE', message: 'Hồ sơ đang được một trình duyệt sử dụng. Hãy tắt trình duyệt đó trước.' } };
+      return deviceProfilesStore.remove(pid);
+    }));
+    // Bulk-proxy apply: bind one proxy config (created here) to a profile by its id.
+    ipcMain.handle('phom:profile-set-proxy', guarded((_e, id, proxyInput) => {
+      ensureStores();
+      const pid = String(id == null ? '' : id);
+      if (profileInUse(pid)) return { ok: false, error: { code: 'PHOM_PROFILE_IN_USE', message: 'Hồ sơ đang chạy — không đổi proxy giữa chừng.' } };
+      if (proxyInput == null || proxyInput === '') return deviceProfilesStore.setProxyRef(pid, null);
+      const created = proxyConfigStore.upsert(typeof proxyInput === 'string' ? { input: proxyInput } : (proxyInput || {}));
+      if (!created || created.ok === false) return created;
+      return deviceProfilesStore.setProxyRef(pid, created.id);
+    }));
+    // Open 3 browsers from the SELECTED profiles (selection order → B1/B2/B3). Builds the cluster config
+    // from each profile's own device + proxy; reuses the existing cluster manager (internal slots A/B/C).
+    ipcMain.handle('phom:open-selected', guarded((_e, cfg) => openSelectedProfiles(cfg || {})));
     ipcMain.handle('phom:proxy-test', guarded(async (_e, id) => {
       ensureStores();
       const cfg = proxyConfigStore.get(String(id));

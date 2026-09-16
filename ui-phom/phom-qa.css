@@ -426,3 +426,14 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .setup-panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
 .setup-section-h { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; }
 .setup-section-h .h-title { font-size: 13px; font-weight: 600; }
+
+/* PHASE 6.3.1 — profile table selection + bulk proxy */
+.table-scroll { max-height: 320px; overflow: auto; }
+.setup-table .prof-cb { width: 16px; height: 16px; cursor: pointer; }
+.setup-table .prof-cb:disabled { cursor: not-allowed; opacity: .4; }
+.setup-table tr.selected { background: #eef4ff; }
+.b-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 26px; padding: 1px 6px; border-radius: 6px; background: var(--primary); color: var(--primary-ink); font-size: 11px; font-weight: 700; }
+.setup-table .badge.faint { color: var(--text-faint); }
+.phq-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
+.phq-row > span:first-child { min-width: 60px; color: var(--text-2); font-size: 12px; }
+.phq-row .f { flex: 1; }
