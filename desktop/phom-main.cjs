@@ -47,7 +47,7 @@ const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
 const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
-const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows } = require('./protocol/phom/grid-layout.cjs');
+const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
 const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
@@ -385,18 +385,22 @@ else {
   // fits its mobile-landscape content. Pure geometry (grid-layout); the placement is applied via each
   // run's chrome --window-position/--window-size at launch.
   function allDisplayWorkAreas() { try { return screen.getAllDisplays().map((d) => d.workArea); } catch { return [currentWorkArea()]; } }
-  function clusterWindowArrangement() {
-    const devs = SLOTS_ABC.map((s) => { let d = null; try { d = profileStore && profileStore.deviceFor(s); } catch { d = null; } return d ? { viewportWidth: d.viewportWidth, viewportHeight: d.viewportHeight } : {}; });
-    return arrangeBrowserWindows(allDisplayWorkAreas(), devs, { gap: 8 });
-  }
+  function clusterDevices() { return SLOTS_ABC.map((s) => { let d = null; try { d = profileStore && profileStore.deviceFor(s); } catch { d = null; } return d ? { viewportWidth: d.viewportWidth, viewportHeight: d.viewportHeight } : {}; }); }
+  function clusterWindowArrangement() { return arrangeBrowserWindows(allDisplayWorkAreas(), clusterDevices(), { gap: 8 }); }
+  // PHASE-6.2 — the FOUR-window arrangement (3 desktop Chromium windows + the Tool window). Browsers use
+  // .slots[1..3]; the Tool window is placed at .tool.
+  function clusterFourWindowArrangement() { return arrangeClusterWindows(allDisplayWorkAreas(), clusterDevices(), { gap: 8 }); }
   // Re-tile all owned session runs into the 2×2 grid + place the control window BR.
   function restoreLayout() {
     try {
       const wa = currentWorkArea();
-      // §11/§12 — re-place the tool in the bottom-right quadrant (min-size aware), so
-      // Restore Layout recomputes against the CURRENT work area/display.
-      const control = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
-      if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: control.x, y: control.y, width: control.width, height: control.height });
+      // PHASE-6.2 — place the Tool as the 4th window of the deterministic cluster arrangement (its own
+      // monitor with ≥4 displays, else docked bottom-right of the last browser monitor / BR quadrant on
+      // one display). Falls back to the bottom-right quadrant if the arrangement is unavailable.
+      let control = null;
+      try { const arr = clusterFourWindowArrangement(); control = arr && arr.tool; } catch { control = null; }
+      if (!control) control = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
+      if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: Math.round(control.x), y: Math.round(control.y), width: Math.round(control.width), height: Math.round(control.height) });
       // Owned browser windows are external Chrome; re-applying geometry to a running
       // chrome.exe requires reopening. We report the target rects so the UI can guide
       // a reopen; we never move a window that is not one of our runs.
@@ -671,11 +675,13 @@ else {
     // metrics still applied over CDP — only the native window bounds change). Reads the live display
     // topology so the three windows are visible simultaneously across monitors. Falls back to the Phase-3
     // single-slot spread, then to the legacy quadrant (localTest / no device).
+    // PHASE-6.2 — a DESKTOP Chromium window (title bar / min-max-close / resizable), sized to fill its
+    // monitor region (NOT forced to a mobile size); the game viewport stays mobile-landscape via CDP.
     const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
     let windowRect;
     if (device) {
       try {
-        const arr = clusterWindowArrangement();
+        const arr = clusterFourWindowArrangement();
         windowRect = (arr && arr.slots && arr.slots[slotIndex]) || desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight });
       } catch { windowRect = desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight }); }
     } else { windowRect = gridRectForSlot(slot); }

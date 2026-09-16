@@ -294,3 +294,42 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .mon-live-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .mon-live-row .slot-tag { flex: 0 0 auto; }
 .ft-code { font-size: 10px; color: var(--text-faint); }
+
+/* PHASE 6.1 — manual per-browser control + Screen 2 remaining cards (light theme; reuses tokens) */
+.manual-cluster { margin-top: 10px; }
+.manual-stake { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
+.manual-stake .f { max-width: 120px; }
+.shared-room { background: var(--panel-2); border: 1px solid var(--success); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; font-size: 13px; }
+.shared-room .shared-rid { color: var(--success); }
+.manual-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.browser-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
+.browser-card.searching { border-color: var(--warning); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 25%, transparent); }
+.bc-head { display: flex; justify-content: space-between; align-items: center; }
+.bc-status { font-size: 11px; padding: 1px 6px; border-radius: 10px; }
+.bc-status.green { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
+.bc-status.yellow { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
+.bc-status.blue { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary); }
+.bc-status.red { background: color-mix(in srgb, var(--error) 20%, transparent); color: var(--error); }
+.bc-status.gray { background: var(--panel-2); color: var(--text-faint); }
+.bc-user { font-size: 12px; }
+.bc-find { width: 100%; }
+.bc-rid { display: flex; flex-direction: column; gap: 2px; }
+.bc-rid .f { width: 100%; }
+.bc-actions { display: flex; gap: 4px; }
+.bc-actions .btn { flex: 1; }
+.warnrow.sm { font-size: 11px; padding: 4px 6px; }
+.remaining-cards { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
+.remaining-cards .cards { flex-wrap: wrap; }
+
+/* PHASE 6.2 — compact final Tool UI (low header + one browser row) */
+.tool-header { display: flex; align-items: center; gap: 10px; padding: 4px 2px; border-bottom: 1px solid var(--border); font-size: 13px; }
+.tool-header .th-brand { font-size: 14px; }
+.tool-header .th-bet { display: flex; align-items: center; gap: 4px; color: var(--text-faint); }
+.tool-header .th-stake { width: 56px; padding: 2px 4px; }
+.tool-header .th-rid { margin-left: auto; }
+.tool-header .th-still { color: var(--text-faint); }
+.browser-row { display: flex; gap: 8px; margin: 8px 0; }
+.browser-cell { flex: 1; display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--panel); min-height: 34px; }
+.browser-cell .bl { font-weight: 600; white-space: nowrap; }
+.browser-cell .btn.sm { padding: 2px 8px; }
+.chip.sm { font-size: 11px; }

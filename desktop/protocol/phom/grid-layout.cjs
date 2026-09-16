@@ -161,10 +161,54 @@ function arrangeBrowserWindows(monitors, devices, opts = {}) {
   return { slots, monitors: mons.length, placement, insufficient, insufficientReason: insufficient ? 'LAYOUT_SPACE_INSUFFICIENT' : null };
 }
 
+// PHASE-6.2 — the FOUR-window desktop arrangement: three real Chromium browser windows (1/2/3) + the
+// Tool window, deterministic across the live monitor topology (slot i ALWAYS Browser i; the Tool is the
+// 4th region). The Chromium windows are DESKTOP windows (title bar / min-max-close / resizable — sized
+// to fill their monitor region, NOT forced to a mobile size); the game viewport stays mobile-landscape
+// via CDP device emulation (unchanged) — each slot carries its `viewport` for reference only.
+//   ≥4 monitors → B1..B3 fill mon0..2, Tool on mon3
+//   3 monitors  → B1..B3 fill mon0..2, Tool docks bottom-right of mon2
+//   2 monitors  → B1|B2 split mon0, B3 fills mon1, Tool docks bottom-right of mon1
+//   1 monitor   → 2×2 quadrants: B1 TL, B2 TR, B3 BL, Tool BR (no overlap)
+function _fill(m, frac) { const width = Math.round(m.width * frac); const height = Math.round(m.height * frac); return { x: m.x + Math.round((m.width - width) / 2), y: m.y + Math.round((m.height - height) / 2), width, height }; }
+function _toolDock(m, opts) { const w = Math.min(m.width, Number.isFinite(opts.toolWidth) ? opts.toolWidth : 560); const h = Math.min(m.height, Number.isFinite(opts.toolHeight) ? opts.toolHeight : 260); return { x: m.x + m.width - w, y: m.y + m.height - h, width: w, height: h }; }
+function arrangeClusterWindows(monitors, devices, opts = {}) {
+  const mons = (Array.isArray(monitors) && monitors.length ? monitors : [{ x: 0, y: 0, width: 1280, height: 800 }]).map(_normMon);
+  const dev = Array.isArray(devices) ? { 1: devices[0], 2: devices[1], 3: devices[2] } : (devices && typeof devices === 'object' ? devices : {});
+  const vp = (i) => { const d = dev[i] || {}; return { width: Math.max(320, Math.round(Number(d.viewportWidth) || 851)), height: Math.max(180, Math.round(Number(d.viewportHeight) || 393)) }; };
+  const withVp = (rect, i) => ({ ...rect, viewport: vp(i) });
+  const slots = { 1: null, 2: null, 3: null };
+  let tool = null, placement, insufficient = false;
+  if (mons.length >= 4) {
+    placement = 'PER_MONITOR_4';
+    for (let i = 1; i <= 3; i++) slots[i] = withVp(_fill(mons[i - 1], 0.9), i);
+    tool = _toolDock(mons[3], opts);
+  } else if (mons.length === 3) {
+    placement = 'PER_MONITOR_3';
+    slots[1] = withVp(_fill(mons[0], 0.9), 1); slots[2] = withVp(_fill(mons[1], 0.9), 2); slots[3] = withVp(_fill(mons[2], 0.78), 3);
+    tool = _toolDock(mons[2], opts);
+  } else if (mons.length === 2) {
+    placement = 'SPLIT_2';
+    const m0 = mons[0]; const halfW = Math.floor((m0.width - 8) / 2);
+    slots[1] = withVp({ x: m0.x, y: m0.y, width: halfW, height: m0.height }, 1);
+    slots[2] = withVp({ x: m0.x + halfW + 8, y: m0.y, width: halfW, height: m0.height }, 2);
+    slots[3] = withVp(_fill(mons[1], 0.82), 3);
+    tool = _toolDock(mons[1], opts);
+  } else {
+    placement = 'GRID_2x2';
+    const g = computeGridLayout(mons[0], { gap: Number.isFinite(opts.gap) ? opts.gap : 8 });
+    slots[1] = withVp(g.A, 1); slots[2] = withVp(g.B, 2); slots[3] = withVp(g.C, 3); tool = g.control;
+    // A quadrant can be smaller than the mobile-landscape viewport on low-res displays — the game
+    // viewport is CDP-emulated so it still renders, but flag the tight space honestly.
+    insufficient = [1, 2, 3].some((i) => slots[i].width < slots[i].viewport.width || slots[i].height < slots[i].viewport.height);
+  }
+  return { slots, tool, monitors: mons.length, placement, insufficient, insufficientReason: insufficient ? 'LAYOUT_SPACE_INSUFFICIENT' : null };
+}
+
 // Chrome CLI window flags for a rect (credential-free; geometry only).
 function chromeWindowArgs(rect) {
   if (!rect) return [];
   return [`--window-position=${Math.round(rect.x)},${Math.round(rect.y)}`, `--window-size=${Math.round(rect.width)},${Math.round(rect.height)}`];
 }
 
-module.exports = { SLOTS, computeGridLayout, rectForSlot, chromeWindowArgs, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, WINDOW_CHROME };
+module.exports = { SLOTS, computeGridLayout, rectForSlot, chromeWindowArgs, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows, WINDOW_CHROME };

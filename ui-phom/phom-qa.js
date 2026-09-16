@@ -54,6 +54,13 @@
   let monitorMode = MON.LIVE;
   let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
   let clusterOpBusy = false; // guards RUN GAME against a duplicate click opening a 2nd cluster (§41)
+  // PHASE-6.1 — manual per-browser control (Browser 1/2/3): search lock + shared Room/RID.
+  const MCS = (typeof window !== 'undefined' && window.ManualClusterState) ? window.ManualClusterState : null;
+  let manualCluster = MCS ? MCS.create() : { searchingBrowserId: null, sharedRid: null, sharedRidOwner: null };
+  let manualBrowsers = [];   // last manualBrowserSnapshot() (per-browser independent state)
+  let remaining = null;      // last remainingCards() view for Screen 2
+  let manualStake = '';      // shared stake/channel the finder uses (native find only)
+  const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
   let selectedClusterProfileId = null;
@@ -481,15 +488,67 @@
   // ================= SCREEN 2 — LIVE QA WORKSPACE =================
   // Compact status toolbar + minimal command toolbar + a LIVE QA MONITOR that fills
   // the rest. Followers/Ready/ReJoin run automatically (no manual buttons).
+  // PHASE 6.2 — compact final Tool UI. The Tool is its own (4th) window; the three real Chromium windows
+  // are separate. The main screen is a low header (BÀN/CÒN LẠI) + a SINGLE horizontal row of Browser
+  // 1/2/3 controls + remaining cards. No username, no Host/Follower, no legacy entry toolbars/monitor
+  // here (those functions stay defined for other flows/tests but are not rendered on the main screen).
   function renderControl(r) {
-    const s = session || {};
-    const cs = clusterSnap || {};
-    const entry = entryStatusBar();
-    if (entry) r.appendChild(entry);
-    r.appendChild(statusToolbar(s, cs));
-    r.appendChild(commandToolbar(s));
-    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, autoFlowLabel(s)));
-    r.appendChild(liveMonitor(s));
+    r.appendChild(compactHeader());
+    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
+    r.appendChild(compactBrowserRow());
+    r.appendChild(renderRemainingCards());
+  }
+
+  // Low header: product · stake · shared BÀN (RID) · CÒN LẠI · overflow menu · ready dot.
+  function compactHeader() {
+    const rid = manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : '—';
+    const anyOpen = SLOTS.some((s) => assign[s].runId);
+    return el('div', { class: 'tool-header' },
+      el('b', { class: 'th-brand' }, 'PHỎM QA'),
+      el('span', { class: 'th-bet' }, 'Cược ', el('input', { class: 'f mono th-stake', id: 'phq-manual-stake', value: manualStake, placeholder: '100', oninput: (e) => { manualStake = e.target.value; } })),
+      el('span', { class: 'th-rid' }, 'BÀN: ', el('b', null, rid)),
+      el('span', { class: 'th-still' }, 'CÒN LẠI: ', el('b', null, remaining ? (remaining.count + ' LÁ') : '—')),
+      moreMenuButton(),
+      el('span', { class: 'chip ' + (anyOpen ? 'green' : 'gray') }, anyOpen ? '● READY' : '○'),
+    );
+  }
+
+  // A single horizontal row: Browser 1 / 2 / 3. Before a browser is in game it shows [VÀO GAME]; once
+  // in game it shows [TÌM BÀN] [↻ rejoin] [× leave] (search-locked; shared-RID aware). Deterministic
+  // mapping slot A/B/C -> Browser 1/2/3 (never launch/PID order).
+  function compactBrowserRow() {
+    const row = el('div', { class: 'browser-row' });
+    SLOTS.forEach((slot, i) => row.appendChild(compactBrowserCell(i + 1, assign[slot].runId)));
+    return row;
+  }
+  function compactBrowserCell(index, runId) {
+    const cell = el('div', { class: 'browser-cell' });
+    const opened = !!runId;
+    const inGame = opened && slotInPhom(runId);
+    const mb = opened ? manualBrowserById(runId) : null;
+    const b = mb || { profileId: runId, manualState: opened ? 'READY' : 'CLOSED', canRejoin: false, rid: null };
+    const searching = b.manualState === 'SEARCHING';
+    const dot = !opened ? '⚪' : (searching ? '🟡' : (inGame ? '🟢' : '⚪'));
+    cell.appendChild(el('span', { class: 'bl' }, 'B' + index + ' ', dot));
+    if (!opened) { cell.appendChild(el('span', { class: 'faint sm' }, 'chưa mở')); return cell; }
+    if (!inGame) { cell.appendChild(el('button', { class: 'btn primary sm', onclick: () => manualEnterGame(runId) }, 'VÀO GAME')); return cell; }
+    if (searching) { cell.appendChild(el('span', { class: 'chip yellow sm' }, 'ĐANG TÌM…')); return cell; }
+    const canFind = !!MCS && MCS.canFind(manualCluster, b) && inGame; // §8 — FIND only after in-game
+    const canRejoin = !!MCS && MCS.canRejoin(manualCluster, b);
+    const canLeave = !!MCS && MCS.canLeave(manualCluster, b);
+    cell.appendChild(el('button', { class: 'btn primary sm', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, MCS ? MCS.findLabel(manualCluster, b) : 'TÌM BÀN'));
+    cell.appendChild(el('button', { class: 'btn sm', title: 'Rejoin', disabled: canRejoin ? null : true, onclick: () => onManualRejoin(b) }, '↻'));
+    cell.appendChild(el('button', { class: 'btn danger sm', title: 'Thoát', disabled: canLeave ? null : true, onclick: () => onManualLeave(b) }, '×'));
+    return cell;
+  }
+  // Per-browser VÀO GAME (fires the verified vgcg_8 entry on THAT run only, §8/§15).
+  async function manualEnterGame(runId) {
+    if (!runId) return;
+    note('Đang vào game Phỏm…');
+    if (!phomSessionStarted) { try { await ensurePassiveSession(); } catch {} }
+    try { const res = await api.enterGame(runId); if (res && res.ok === false) note(errText(res), true); }
+    catch (e) { note(String(e && e.message || e), true); }
+    await refreshManual(); renderApp();
   }
 
   // §16 — the entry gate's per-slot status (CHỜ LOGIN → ĐÃ LOGIN → ĐANG VÀO PHỎM → PHỎM READY),
@@ -1140,6 +1199,7 @@
       // read of the lobby's own list (not orchestration); harmless if it fails (typed, swallowed).
       const needChannels = SLOTS.some((sl) => { const p = slotProfile(assign[sl].runId); return p && p.socketReady && p.connected && !((p.channelCount || 0) > 0); });
       if (needChannels && phomSessionStarted) { try { await api.requestChannels(); } catch {} }
+      await refreshManual(); // PHASE 6.1 — keep the per-browser cards + Screen 2 + search-lock reconcile current
       reconcileEntryPhase();
       if (!$('workspace').hidden) renderApp();
     }, 2000);
@@ -1399,6 +1459,121 @@
     renderApp();
   }
 
+  // ================= PHASE 6.1 — MANUAL PER-BROWSER CONTROL (Browser 1/2/3) =================
+  // Consumes the tested Phase-6 backend (manualFind/Join/Rejoin/Leave/Snapshot + remainingCards) and the
+  // pure search-lock/shared-RID module (window.ManualClusterState). No Host/Follower role; no game DOM
+  // touch; usernames + cards come from authoritative snapshots only.
+
+  // Refresh the manual snapshot + remaining cards, then reconcile the shared-room lifecycle (§18).
+  async function refreshManual() {
+    try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; } catch { manualBrowsers = []; }
+    try { const rc = await api.remainingCards(); remaining = rc && rc.ok !== false ? rc : null; } catch { remaining = null; }
+    if (MCS) manualCluster = MCS.reconcile(manualCluster, manualBrowsers);
+  }
+  function manualBrowserById(id) { return manualBrowsers.find((b) => String(b.profileId) === String(id)) || null; }
+  function ownerIndex() { const o = manualCluster.sharedRidOwner; const b = o != null ? manualBrowserById(o) : null; return b ? b.browserIndex : null; }
+
+  // TÌM BÀN click: if a shared RID exists → JOIN it (never a new matchmaking, §31); else start a REAL
+  // search and lock the cluster immediately (§6). Terminal states always clear the lock (§13).
+  async function onManualFind(b) {
+    if (!MCS) return;
+    const dec = MCS.onFindStart(manualCluster, b.profileId);
+    if (dec.action === 'BLOCKED') { note('Một trình duyệt khác đang tìm bàn — vui lòng chờ.', true); return; }
+    manualCluster = dec.state; renderApp(); // immediate lock/label before any await (§4/§6)
+    let res;
+    if (dec.action === 'JOIN_SHARED') {
+      note(`Đang tham gia bàn ${dec.rid}…`);
+      try { res = await api.manualJoin(b.profileId, dec.rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+      manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
+    } else {
+      const stake = (manualStake || '').trim() || (selectedStake != null ? String(selectedStake) : '');
+      if (!stake) { manualCluster = MCS.onFindResult(manualCluster, b.profileId, { ok: false }); renderApp(); return note('Nhập mức cược/kênh để tìm bàn.', true); }
+      note('🔍 Đang tìm bàn…');
+      try { res = await api.manualFind(b.profileId, Number(stake)); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+      manualCluster = MCS.onFindResult(manualCluster, b.profileId, res && res.ok ? { ok: true, rid: res.rid } : { ok: false });
+    }
+    if (res && res.ok === false) note(errText(res), true);
+    await refreshManual(); renderApp();
+  }
+  async function onManualJoin(b) {
+    const rid = (ridDraft[b.profileId] != null ? ridDraft[b.profileId] : (MCS ? MCS.prefillRid(manualCluster, b) : '')).trim();
+    if (!rid) return note('Nhập Room/RID để vào bàn.', true);
+    note(`Đang vào bàn ${rid}…`);
+    let res; try { res = await api.manualJoin(b.profileId, rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (MCS) manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
+    if (res && res.ok === false) note(errText(res), true);
+    await refreshManual(); renderApp();
+  }
+  async function onManualRejoin(b) {
+    note('Đang vào lại bàn…');
+    let res; try { res = await api.manualRejoin(b.profileId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (res && res.ok === false) note(errText(res), true);
+    await refreshManual(); renderApp();
+  }
+  async function onManualLeave(b) {
+    note('Đang rời bàn…');
+    try { await api.manualLeave(b.profileId); } catch {}
+    await refreshManual(); renderApp();
+  }
+
+  // The 3-browser control grid + shared-room indicator + Screen 2 (remaining cards).
+  function manualControlPanel() {
+    const wrap = el('div', { class: 'manual-cluster', id: 'phq-manual' });
+    wrap.appendChild(el('div', { class: 'section-t' }, 'ĐIỀU KHIỂN THỦ CÔNG — BROWSER 1 / 2 / 3'));
+    // shared stake/channel used by a real FIND (join uses the RID directly).
+    wrap.appendChild(el('div', { class: 'manual-stake' },
+      el('span', { class: 'faint sm' }, 'Mức cược/kênh để TÌM BÀN: '),
+      el('input', { class: 'f mono', id: 'phq-manual-stake', value: manualStake, placeholder: 'vd 100', oninput: (e) => { manualStake = e.target.value; } })));
+    if (manualCluster.sharedRid != null) {
+      wrap.appendChild(el('div', { class: 'shared-room' },
+        el('b', null, 'SHARED ROOM'), ' · RID: ', el('b', { class: 'shared-rid' }, String(manualCluster.sharedRid)),
+        ownerIndex() != null ? el('span', { class: 'faint' }, ` · Found by: Browser ${ownerIndex()}`) : null));
+    }
+    const grid = el('div', { class: 'manual-grid' });
+    for (const b of manualBrowsers) grid.appendChild(manualBrowserCard(b));
+    if (!manualBrowsers.length) grid.appendChild(el('div', { class: 'faint' }, 'Chưa có phiên — mở 3 trình duyệt và đăng nhập.'));
+    wrap.appendChild(grid);
+    wrap.appendChild(renderRemainingCards());
+    return wrap;
+  }
+
+  function manualBrowserCard(b) {
+    const searching = b.manualState === 'SEARCHING';
+    const canFind = MCS ? MCS.canFind(manualCluster, b) : false;
+    const draft = ridDraft[b.profileId] != null ? ridDraft[b.profileId] : (MCS ? MCS.prefillRid(manualCluster, b) : '');
+    const canJoin = MCS ? MCS.canJoin(manualCluster, b, draft) : false;
+    const canRejoin = MCS ? MCS.canRejoin(manualCluster, b) : false;
+    const canLeave = MCS ? MCS.canLeave(manualCluster, b) : false;
+    const uname = b.username && b.username !== 'USER_UNKNOWN' ? b.username : 'Chưa đăng nhập';
+    return el('div', { class: 'browser-card' + (searching ? ' searching' : ''), id: 'bcard-' + b.profileId },
+      el('div', { class: 'bc-head' }, el('b', null, 'BROWSER ' + b.browserIndex), el('span', { class: 'bc-status ' + manualStatusCls(b.manualState) }, b.manualState || 'READY')),
+      el('div', { class: 'bc-user' }, 'User: ', el('b', null, uname)),
+      el('button', { class: 'btn primary bc-find', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, MCS ? MCS.findLabel(manualCluster, b) : 'TÌM BÀN'),
+      el('div', { class: 'bc-rid' }, el('span', { class: 'faint sm' }, 'Room/RID'),
+        el('input', { class: 'f mono', id: 'rid-' + b.profileId, value: draft, placeholder: manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : '—', oninput: (e) => { ridDraft[b.profileId] = e.target.value; } })),
+      el('div', { class: 'bc-actions' },
+        el('button', { class: 'btn', disabled: canJoin ? null : true, onclick: () => onManualJoin(b) }, 'JOIN BÀN'),
+        el('button', { class: 'btn', disabled: canRejoin ? null : true, onclick: () => onManualRejoin(b) }, 'REJOIN'),
+        el('button', { class: 'btn danger', disabled: canLeave ? null : true, onclick: () => onManualLeave(b) }, 'THOÁT')),
+      b.lastError ? el('div', { class: 'warnrow sm' }, errText({ error: b.lastError })) : null,
+    );
+  }
+  function manualStatusCls(s) { return ({ JOINED: 'green', SEARCHING: 'yellow', JOINING: 'blue', RECONNECTING: 'blue', LEAVING: 'yellow', LEFT: 'gray', ERROR: 'red', READY: 'gray', CLOSED: 'gray' })[s] || 'gray'; }
+
+  // Screen 2 — CARDS REMAINING (= full deck − Browser1 − Browser2 − Browser3). Renders the backend
+  // result only (never recomputes); NOT "player 4".
+  function renderRemainingCards() {
+    const box = el('div', { class: 'remaining-cards', id: 'phq-remaining' });
+    box.appendChild(el('div', { class: 'section-t' }, 'CARDS REMAINING'));
+    const cards = (remaining && Array.isArray(remaining.cards)) ? remaining.cards : [];
+    const row = el('div', { class: 'cards' });
+    if (!cards.length) row.appendChild(el('span', { class: 'faint' }, '—'));
+    for (const c of cards) row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
+    box.appendChild(row);
+    box.appendChild(el('div', { class: 'faint sm' }, 'Remaining: ' + (remaining ? remaining.count : 0)));
+    return box;
+  }
+
   // ---------- helpers ----------
   function browserCount() { return SLOTS.filter((s) => assign[s].runId).length; }
   // Proxy is OPTIONAL: TÌM BÀN only needs the 3 browsers open in an authorized env — a
@@ -1418,7 +1593,8 @@
 
   // ---------- boot ----------
   if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); advanceAutoFlow(snap); if (!$('workspace').hidden) renderApp(); });
-  if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) renderApp(); });
+  // PHASE 6.1 — card state changed: refresh Screen 2 remaining cards + per-browser membership, then re-render.
+  if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) renderApp(); }); else renderApp(); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) renderApp(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the

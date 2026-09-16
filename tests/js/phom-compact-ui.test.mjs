@@ -1,0 +1,82 @@
+// PHASE 6.2 — the compact final Tool UI (source-level assertions; no DOM runtime in CI). The main
+// CONTROL screen is a low header (BÀN/CÒN LẠI) + a single row of Browser 1/2/3 controls with a VÀO GAME
+// gate; no username, no Host/Follower, no legacy entry toolbars/monitor rendered on the main screen; the
+// Tool is the 4th window of the deterministic layout. Backend/protocol untouched.
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+const root = new URL('../../', import.meta.url);
+const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
+const js = read('ui-phom/phom-qa.js');
+const main = read('desktop/phom-main.cjs');
+
+function fn(src, name) {
+  const start = src.indexOf('function ' + name + '(');
+  if (start < 0) return '';
+  // next top-level "  function " at the same indent
+  const rest = src.slice(start + 1);
+  const nextIdx = rest.indexOf('\n  function ');
+  return rest.slice(0, nextIdx > 0 ? nextIdx : 4000);
+}
+
+test('renderControl renders the compact UI (header + browser row + remaining), not the legacy toolbars', () => {
+  const body = fn(js, 'renderControl');
+  assert.match(body, /compactHeader\(\)/);
+  assert.match(body, /compactBrowserRow\(\)/);
+  assert.match(body, /renderRemainingCards\(\)/);
+  // legacy host-first/entry toolbars + monitor are NOT called from the main screen
+  assert.equal(/statusToolbar\(|commandToolbar\(|entryStatusBar\(|liveMonitor\(/.test(body), false, 'no legacy toolbars/monitor on the main screen');
+});
+
+test('header shows the shared BÀN (RID) and CÒN LẠI from backend state (no hard-coded RID)', () => {
+  const body = fn(js, 'compactHeader');
+  assert.match(body, /BÀN:/);
+  assert.match(body, /manualCluster\.sharedRid/);
+  assert.match(body, /CÒN LẠI:/);
+  assert.match(body, /remaining\.count/);
+});
+
+test('one horizontal row maps slot A/B/C -> Browser 1/2/3 (deterministic, not launch order)', () => {
+  const row = fn(js, 'compactBrowserRow');
+  assert.match(row, /browser-row/);
+  assert.match(row, /SLOTS\.forEach\(\(slot, i\) => .*compactBrowserCell\(i \+ 1, assign\[slot\]\.runId\)/);
+});
+
+test('VÀO GAME gates TÌM BÀN: find only appears once the browser is in game', () => {
+  const cell = fn(js, 'compactBrowserCell');
+  assert.match(cell, /if \(!inGame\) \{[\s\S]*?VÀO GAME/);
+  assert.match(cell, /const canFind = [^;]*MCS\.canFind\(manualCluster, b\) && inGame/); // §8
+  assert.match(cell, /findLabel\(manualCluster, b\)/);
+});
+
+test('main screen shows NO username and NO Host/Follower/player-4 terminology', () => {
+  for (const name of ['renderControl', 'compactHeader', 'compactBrowserRow', 'compactBrowserCell']) {
+    const body = fn(js, name);
+    assert.equal(/username|USER_UNKNOWN|Chưa đăng nhập/.test(body), false, `${name} shows no username`);
+    assert.equal(/HOST|FOLLOWER|Follower|Player 4|player-4|Người thứ 4/.test(body), false, `${name} has no host/follower/player-4`);
+  }
+});
+
+test('VÀO GAME acts on ONE browser via the run-scoped entry IPC (no cross-browser action)', () => {
+  const body = fn(js, 'manualEnterGame');
+  assert.match(body, /api\.enterGame\(runId\)/);
+});
+
+test('the Tool is the 4th window of the deterministic cluster arrangement', () => {
+  assert.match(main, /arrangeClusterWindows/);
+  assert.match(main, /clusterFourWindowArrangement/);
+  // browsers use .slots; the Tool window (restoreLayout) uses .tool
+  assert.match(main, /clusterFourWindowArrangement\(\)[\s\S]*?arr\.slots\[slotIndex\]/);
+  assert.match(main, /clusterFourWindowArrangement\(\);\s*control = arr && arr\.tool/);
+});
+
+test('remaining cards on the main screen are backend-provided and not "player 4"', () => {
+  const body = fn(js, 'renderRemainingCards');
+  assert.match(body, /CARDS REMAINING/);
+  assert.match(body, /remaining\.cards/);
+  assert.equal(/Player 4|Opponent|Người thứ 4/.test(body), false);
+});
+
+test('renderer never writes document.title or injects game DOM (tool-side only)', () => {
+  assert.equal(/document\.title\s*=/.test(js), false);
+});
