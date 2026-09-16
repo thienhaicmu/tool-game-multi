@@ -8,7 +8,8 @@ const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 const js = read('ui-phom/phom-qa.js');
 const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
-function fn(src, name) { const s = src.indexOf('function ' + name + '('); if (s < 0) return ''; const rest = src.slice(s + 1); const n = rest.indexOf('\n  function '); return rest.slice(0, n > 0 ? n : 4000); }
+const main = read('desktop/phom-main.cjs');
+function fn(src, name) { const s = src.indexOf('function ' + name + '('); if (s < 0) return ''; const rest = src.slice(s + 1); const m = rest.search(/\n {2}(async )?function /); return rest.slice(0, m > 0 ? m : 4000); }
 
 test('the FIND action renders a bet selector + TÌM BÀN (not a plain button)', () => {
   const action = fn(js, 'actionButton');
@@ -27,7 +28,8 @@ test('bet options come from the browser betOptions (server stakes), not a hard-c
 test('FIND is enabled only after a stake is chosen (§11)', () => {
   const g = fn(js, 'betFindGroup');
   assert.match(g, /selectedStakeByBrowser\[runId\]/);
-  assert.match(g, /canFind = [^;]*MCS\.canFind\(manualCluster, b\) && inGame && selected != null/);
+  // enable/disable is gated on canFind && inGame && a chosen stake (val != null), toggled in place
+  assert.match(g, /findBtn\.disabled = \(!!MCS && MCS\.canFind\(manualCluster, b\) && inGame && val != null\)/);
 });
 
 test('no bet options yet => "đang tải" + refresh (never a default stake)', () => {
@@ -52,6 +54,35 @@ test('backend exposes per-browser betOptions = distinct server stakes (rs[].b), 
   // discovery filters by the selected stake and requires it
   assert.match(coord, /Number\(c\.b\) === wantStake/);
   assert.match(coord, /PHOM_NO_STAKE_SELECTED/);
+});
+
+test('picking a stake enables TÌM BÀN IN PLACE (no full renderApp that would close the dropdown)', () => {
+  const g = fn(js, 'betFindGroup');
+  // the select onchange sets the value + toggles the button via setEnabled — it must NOT call renderApp
+  assert.match(g, /onchange:[^}]*setEnabled\(v\)/);
+  assert.equal(/onchange:[^}]*renderApp\(\)/.test(g), false, 'selecting a stake must not trigger a full rebuild');
+  assert.match(g, /findBtn\.disabled/);
+});
+
+test('background re-renders (poll/pushes) skip while a bet dropdown is focused (bug fix)', () => {
+  assert.match(js, /function betSelectFocused\(\)/);
+  assert.match(js, /classList\.contains\('bet-sel'\)/);
+  assert.match(js, /function bgRender\(\)/);
+  // the 2s poll and the pushes use bgRender, not a raw renderApp
+  assert.match(js, /if \(!\$\('workspace'\)\.hidden\) bgRender\(\);\s*\n\s*}, 2000\)/);
+  assert.match(js, /onSession\([\s\S]*?bgRender\(\)/);
+  assert.match(js, /onCluster\([\s\S]*?bgRender\(\)/);
+});
+
+test('reload (↻ WEB) resets the browser so VÀO GAME returns; backend resets that Phỏm context', () => {
+  const h = fn(js, 'onReloadWeb');
+  assert.match(h, /delete manualEntering\[runId\]/);
+  assert.match(h, /delete selectedStakeByBrowser\[runId\]/);
+  assert.match(h, /VÀO GAME/);
+  // backend wiring: reload IPC resets the browser context; coordinator + session manager expose it
+  assert.match(main, /phom:reload-web[\s\S]*?resetBrowser\(String\(runId\)\)/);
+  assert.match(coord, /resetBrowser\(profileId\)/);
+  assert.match(coord, /rec\.ctx\.reset\(\)/);
 });
 
 test('B2/B3 (shared RID) show VÀO BÀN, not a bet selector (no re-selection, no discovery)', () => {

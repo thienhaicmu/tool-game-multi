@@ -385,7 +385,11 @@ else {
   // fits its mobile-landscape content. Pure geometry (grid-layout); the placement is applied via each
   // run's chrome --window-position/--window-size at launch.
   function allDisplayWorkAreas() { try { return screen.getAllDisplays().map((d) => d.workArea); } catch { return [currentWorkArea()]; } }
-  function clusterDevices() { return SLOTS_ABC.map((s) => { let d = null; try { d = profileStore && profileStore.deviceFor(s); } catch { d = null; } return d ? { viewportWidth: d.viewportWidth, viewportHeight: d.viewportHeight } : {}; }); }
+  // §7/§8 — carry BOTH the OS window size and the emulated viewport to grid-layout.
+  // A device may request an explicit desktop OS window (e.g. 960×540) that is
+  // independent from its game viewport (e.g. 851×393). Legacy mobile-only profiles
+  // carry osWindow=null; the geometry layer falls back to viewport + chrome.
+  function clusterDevices() { return SLOTS_ABC.map((s) => { let d = null; try { d = profileStore && profileStore.deviceFor(s); } catch { d = null; } return d ? { osWindowWidth: d.osWindowWidth, osWindowHeight: d.osWindowHeight, viewportWidth: d.viewportWidth, viewportHeight: d.viewportHeight } : {}; }); }
   function clusterWindowArrangement() { return arrangeBrowserWindows(allDisplayWorkAreas(), clusterDevices(), { gap: 8 }); }
   // PHASE-6.2 — the FOUR-window arrangement (3 desktop Chromium windows + the Tool window). Browsers use
   // .slots[1..3]; the Tool window is placed at .tool.
@@ -680,10 +684,14 @@ else {
     const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
     let windowRect;
     if (device) {
+      // §7/§8 — pass BOTH osWindow* and viewport* to the geometry layer so an
+      // explicit desktop OS window size (e.g. 960×540) is honored independently of
+      // the emulated viewport (which stays a CDP concern).
+      const geoDevice = { osWindowWidth: device.osWindowWidth, osWindowHeight: device.osWindowHeight, viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight };
       try {
         const arr = clusterFourWindowArrangement();
-        windowRect = (arr && arr.slots && arr.slots[slotIndex]) || desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight });
-      } catch { windowRect = desktopWindowRectForSlot(currentWorkArea(), slot, { viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight }); }
+        windowRect = (arr && arr.slots && arr.slots[slotIndex]) || desktopWindowRectForSlot(currentWorkArea(), slot, geoDevice);
+      } catch { windowRect = desktopWindowRectForSlot(currentWorkArea(), slot, geoDevice); }
     } else { windowRect = gridRectForSlot(slot); }
     const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
@@ -773,7 +781,9 @@ else {
     }));
     // Device presets + per-slot profile persistence (device belongs to the browser profile).
     ipcMain.handle('phom:chromium-status', () => { const r = chromiumRuntime(); return r.ok ? { ok: true, version: r.version, architecture: r.architecture, root: r.root, checksumVerified: r.checksumVerified } : r; });
-    ipcMain.handle('phom:device-presets', () => ({ ok: true, presets: deviceProfile.listPresets() }));
+    // §3/§4 — expose the FULL catalog (mobile + desktop + laptop + laptop-small +
+    // laptop-small + mobile-landscape). The UI groups them by profileType.
+    ipcMain.handle('phom:device-presets', () => ({ ok: true, presets: deviceProfile.listProfilePresets() }));
     ipcMain.handle('phom:profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: profileStore.list() }; }));
     ipcMain.handle('phom:profile-upsert', guarded((_e, slot, input) => { ensureStores(); return profileStore.upsert(String(slot), input || {}); }));
     ipcMain.handle('phom:profile-delete', guarded((_e, slot) => { ensureStores(); return profileStore.remove(String(slot)); }));
@@ -845,8 +855,11 @@ else {
       const run = runManager.get(String(runId));
       const url = run && run.launchUrl ? run.launchUrl : null;
       if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
-      try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); return { ok: true, action: 'RELOAD' }; }
-      catch (e) { if (url) { try { await client.Page.navigate({ url }); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
+      // The reloaded page leaves the Phỏm game, so reset this browser's Phỏm context — slotInPhom goes
+      // false and the tool shows VÀO GAME again (socket/channels rebind from the new page's own frames).
+      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } };
+      try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
+      catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
     }));
     // ⏻ TẮT CHROMIUM: close ONLY this run's Chromium window/process (Tool + other browsers untouched).
     ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => {

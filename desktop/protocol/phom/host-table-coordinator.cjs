@@ -795,6 +795,25 @@ class HostTableCoordinator extends EventEmitter {
     return { ok, id: rec.id, state: 'LEFT' };
   }
 
+  // PHASE 6.2.3-fix — reset ONE browser's Phỏm context after a web reload (↻ WEB). The reloaded page has
+  // left the Phỏm game, so its socket/channels/table are gone; clearing them makes slotInPhom correctly
+  // go false → the UI shows VÀO GAME again until the user re-enters. Only this browser is affected; the
+  // channel list + socket are rebound from the new page's own frames on re-entry. Cancels any in-flight
+  // manual op for this browser. Never touches the other browsers.
+  resetBrowser(profileId) {
+    const rec = this._rec(profileId);
+    if (!rec) return false;
+    rec._manualGen = (rec._manualGen || 0) + 1; // supersede any pending find/join for this browser
+    try { rec.ctx.reset(); } catch { /* best effort */ }
+    rec.confirmedInTable = false; rec._joinedRid = null; rec.missingStreak = 0; rec.lastError = null;
+    rec.state = PSTATE.IDLE; rec.manualState = 'READY';
+    this._mark('M_WEB_RELOAD_RESET', { id: rec.id });
+    this._evaluate();
+    this.emit('update', this.snapshot());
+    this.emit('hands', this.handsSnapshot());
+    return true;
+  }
+
   // Per-browser INDEPENDENT state for the manual UI (no host/follower; stable Browser 1/2/3 order).
   manualBrowserSnapshot() {
     const recs = [...this._profiles.values()];

@@ -117,6 +117,8 @@ class HostSessionManager extends EventEmitter {
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
   manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
+  // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).
+  resetBrowser(id) { const c = this._c(); return c && typeof c.resetBrowser === 'function' ? c.resetBrowser(String(id)) : false; }
   manualBrowserSnapshot() { const c = this._c(); return c && typeof c.manualBrowserSnapshot === 'function' ? c.manualBrowserSnapshot() : []; }
   remainingCards(opts) { const c = this._c(); return c && typeof c.remainingCards === 'function' ? c.remainingCards(opts) : { count: 0, codes: [], cards: [] }; }
 }

@@ -104,6 +104,26 @@ test('discovery REQUIRES a chosen stake (no positional stake arg; stake comes vi
   assert.equal(r.error.code, 'PHOM_NO_STAKE_SELECTED');
 });
 
+// 6.2.3-fix — reload resets ONE browser's Phỏm context so it is no longer "in game" (VÀO GAME returns)
+test('resetBrowser clears one browser context (left game); others untouched', async () => {
+  const { coord } = mk(MIXED);
+  // B1 finds + joins a table (in game / seated)
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500 });
+  assert.equal(r.ok, true);
+  const b1Before = coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1');
+  assert.ok(b1Before.socketReady && b1Before.rid != null, 'B1 seated before reload');
+  // reload B1 → reset its context
+  assert.equal(coord.resetBrowser('B1'), true);
+  const snap = coord.manualBrowserSnapshot();
+  const b1 = snap.find((b) => b.profileId === 'B1');
+  assert.equal(b1.socketReady, false, 'B1 socket cleared → slotInPhom would be false → VÀO GAME shows');
+  assert.equal(b1.rid, null, 'B1 room binding cleared');
+  assert.equal(b1.manualState, 'READY');
+  // resetting B1 must not affect B2/B3 records
+  assert.equal(coord.resetBrowser('B2'), true); // returns true for a known browser
+  assert.equal(coord.resetBrowser('NOPE'), false, 'unknown browser → false');
+});
+
 test('discovered RID+stake become the shared room for B2/B3 (no second discovery)', async () => {
   const { coord } = mk(MIXED);
   const first = await coord.manualDiscoverTable('B1', { selectedStake: 500 });

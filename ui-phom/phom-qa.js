@@ -170,6 +170,12 @@
     } else { renderSetup(content); }
   }
 
+  // A BACKGROUND re-render (2s poll / onSession / onHands / onCluster pushes) must NOT destroy an OPEN
+  // bet dropdown mid-selection — that was the "picked a stake but can't press TÌM BÀN" bug. Skip the
+  // rebuild while a bet <select> is focused; the next event re-renders once the user has committed.
+  function betSelectFocused() { const a = document.activeElement; return !!(a && a.classList && a.classList.contains('bet-sel')); }
+  function bgRender() { if (betSelectFocused()) return; renderApp(); }
+
   function banners(r) {
     if (licenseMode === 'DEVELOPMENT_BYPASS') r.appendChild(el('div', { class: 'dev-banner' }, 'DEV MODE — LICENSE BYPASS'));
     const sb = caps.chromiumSandbox;
@@ -261,14 +267,11 @@
     if (a.proxyRef == null && saved.proxyRef) a.proxyRef = saved.proxyRef;
     const dev = saved.device;
     const px = proxies.find((x) => x.id === a.proxyRef);
-    const pxText = px ? `${px.protocol}://${px.host}:${px.port}` : 'Trực tiếp (không proxy)'; // redacted (no password)
-    // Proxy is OPTIONAL: a slot with no proxyRef runs in DIRECT mode — a neutral, valid
-    // state (never an error). Only a slot WITH a proxy shows its test state.
+    const pxText = px ? `${px.protocol}://${px.host}:${px.port}` : 'Trực tiếp (không proxy)';
+    // Proxy is OPTIONAL — a slot with no proxyRef renders DIRECT (not an error).
     const status = !a.proxyRef ? 'DIRECT' : a.testState;
-    // §13 — surface BOTH the OS window size and the emulated viewport (never fold
-    // them into one field). A device with no explicit OS window shows "Desktop
-    // Window" as its OS surface (Chromium OS window sized to viewport + chrome).
-    const osTxt = dev ? (dev.osWindow || ((dev.osWindowWidth && dev.osWindowHeight) ? `${dev.osWindowWidth} × ${dev.osWindowHeight}` : 'Desktop Window')) : '';
+    // §8/§13 — surface BOTH OS window + game viewport independently.
+    const osTxt = dev ? (dev.osWindow || 'Desktop Window') : '';
     const devText = dev ? `${dev.name} · OS ${osTxt} · VP ${dev.resolution}` : '(chưa tạo)';
     return el('div', { class: 'prow s1', id: 'setup-' + slot },
       el('span', { class: 'slot-tag' }, slot),
@@ -683,12 +686,16 @@
       return group;
     }
     const selected = selectedStakeByBrowser[runId];
-    const sel = el('select', { class: 'sel sm bet-sel', onchange: (e) => { selectedStakeByBrowser[runId] = e.target.value ? Number(e.target.value) : null; renderApp(); } },
+    // The TÌM BÀN button is created up-front; picking a stake enables it IN PLACE (no renderApp), so a
+    // background re-render (2s poll / pushes) can never destroy the open dropdown mid-selection (bug fix).
+    const findBtn = el('button', { class: 'btn primary sm', onclick: () => onManualFind(b) }, 'TÌM BÀN');
+    const setEnabled = (val) => { findBtn.disabled = (!!MCS && MCS.canFind(manualCluster, b) && inGame && val != null) ? null : true; };
+    const sel = el('select', { class: 'sel sm bet-sel', onchange: (e) => { const v = e.target.value ? Number(e.target.value) : null; selectedStakeByBrowser[runId] = v; setEnabled(v); } },
       el('option', { value: '' }, 'CƯỢC…'));
     for (const s of options) { const o = el('option', { value: String(s) }, String(s)); if (selected != null && Number(selected) === Number(s)) o.setAttribute('selected', 'selected'); sel.appendChild(o); }
     group.appendChild(sel);
-    const canFind = !!MCS && MCS.canFind(manualCluster, b) && inGame && selected != null; // §11 — FIND needs a chosen stake
-    group.appendChild(el('button', { class: 'btn primary sm', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, 'TÌM BÀN'));
+    setEnabled(selected); // §11 — FIND needs a chosen stake
+    group.appendChild(findBtn);
     return group;
   }
   // Reload the real bet options (re-request the channel list; the server re-sends rs[]).
@@ -709,10 +716,16 @@
     await refreshManual(); renderApp();
   }
   // ↻ WEB — reload the page in the SAME Chromium; if the page is gone, re-navigate. Never a new window (§6).
+  // After reload the browser has LEFT the game, so we clear its local entry state + refresh: the tool
+  // shows VÀO GAME again (backend also resets that browser's Phỏm context so slotInPhom goes false).
   async function onReloadWeb(runId) {
     note('Đang tải lại web…');
     let res; try { res = await api.reloadWeb(runId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    if (res && res.ok === false) note(errText(res), true); else note('Đã tải lại web.');
+    delete manualEntering[runId]; delete manualEnterError[runId]; delete selectedStakeByBrowser[runId];
+    if (manualEnterTimers[runId]) { clearTimeout(manualEnterTimers[runId]); manualEnterTimers[runId] = null; }
+    await refreshManual();
+    if (res && res.ok === false) note(errText(res), true); else note('Đã tải lại web — bấm VÀO GAME để vào lại.');
+    renderApp();
   }
   // ⏻ — close ONLY this Chromium (Tool + other browsers untouched, §7).
   async function onCloseBrowser(slot, runId) {
@@ -1406,7 +1419,7 @@
       if (needChannels && phomSessionStarted) { try { await api.requestChannels(); } catch {} }
       await refreshManual(); // PHASE 6.1 — keep the per-browser cards + Screen 2 + search-lock reconcile current
       reconcileEntryPhase();
-      if (!$('workspace').hidden) renderApp();
+      if (!$('workspace').hidden) bgRender();
     }, 2000);
   }
   function stopEntryPolling() { if (entryPollTimer) { clearInterval(entryPollTimer); entryPollTimer = null; } }
@@ -1801,11 +1814,11 @@
   function note(msg, warn) { const n = $('phq-note'); if (n) { n.textContent = msg; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
 
   // ---------- boot ----------
-  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); advanceAutoFlow(snap); if (!$('workspace').hidden) renderApp(); });
+  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); advanceAutoFlow(snap); if (!$('workspace').hidden) bgRender(); });
   // PHASE 6.1 — card state changed: refresh Screen 2 remaining cards + per-browser membership, then re-render.
-  if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) renderApp(); }); else renderApp(); });
+  if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) bgRender(); }); else bgRender(); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
-  if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) renderApp(); });
+  if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the
   // coordinator enforces debounce/cooldown/bounded retry + round-active defer — §15).
   if (api.onKick) api.onKick(() => { if (uiState === UI.CONTROL) rejoinKicked(); });
