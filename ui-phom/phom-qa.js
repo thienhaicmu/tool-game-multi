@@ -817,11 +817,20 @@
   // are separate. The main screen is a low header (BÀN/CÒN LẠI) + a SINGLE horizontal row of Browser
   // 1/2/3 controls + remaining cards. No username, no Host/Follower, no legacy entry toolbars/monitor
   // here (those functions stay defined for other flows/tests but are not rendered on the main screen).
+  // PHASE 6.3.3 — Screen 2 priority is INVERTED: B1/B2/B3 shrink to a compact one-row status header at the
+  // TOP; the CARD WORKSPACE (LÁ BÀI AN TOÀN + LÁ BÀI CÒN LẠI) becomes the dominant flex-growing area.
   function renderControl(r) {
     r.appendChild(compactHeader());
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
     r.appendChild(compactBrowserRow());
-    r.appendChild(renderRemainingCards());
+    r.appendChild(renderCardWorkspace());
+  }
+  // The dominant content area: the two card sections, growing with the Tool window (§5).
+  function renderCardWorkspace() {
+    const ws = el('div', { class: 'card-workspace' });
+    ws.appendChild(renderSafeCards());
+    ws.appendChild(renderRemainingCards());
+    return ws;
   }
 
   // Low header: product · shared BÀN (RID) · CƯỢC (stake) · CÒN LẠI · overflow menu · ready dot. BÀN and
@@ -869,52 +878,48 @@
       : inGame ? { label: 'ĐÃ VÀO GAME', cls: 'ok' }
       : enterErr ? { label: 'LỖI VÀO GAME', cls: 'danger' }
       : { label: 'ONLINE', cls: 'info' };
+    // PHASE 6.3.3 — COMPACT read-only status chip (ONE row). Screen 2 stays read-only: game actions live in
+    // the in-Chromium header. The chip mirrors only essentials — B# · ACCOUNT (truncated) · STATE badge ·
+    // WS/CDP/HEADER mini-dots — plus browser lifecycle (↻ / ⏻ / MỞ CHROMIUM). RID is NOT repeated here (it is
+    // shared and shown ONCE in the tool header, §3). No game-control buttons.
     const cell = el('div', { class: 'browser-cell st-' + st.cls });
-    // header: B# + status badge
-    cell.appendChild(el('div', { class: 'bc-head' },
-      el('div', { class: 'bc-id' }, 'B' + index),
-      el('span', { class: 'bc-badge ' + st.cls }, el('span', { class: 'status-dot ' + st.cls }), st.label)));
-    // device metadata (name · resolution) — no account/login name is ever shown (§7)
-    cell.appendChild(el('div', { class: 'bc-meta' },
-      el('span', { class: 'bc-dev' }, cs.deviceName || 'Chưa gán thiết bị'),
-      cs.resolution ? el('span', { class: 'bc-res' }, cs.resolution) : null));
-
-    // PHASE 6.3.2 — Screen 2 is READ-ONLY. All game actions (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN /
-    // THOÁT PHÒNG) now live in the in-Chromium header injected into each browser page (game-header.cjs).
-    // This panel only MIRRORS the authoritative per-browser fields: ACCOUNT · RID · STATE · WS. The only
-    // buttons kept here are BROWSER lifecycle (↻ WEB / ⏻ / MỞ CHROMIUM), never game control.
-    const body = el('div', { class: 'bc-body bc-readonly' });
-    if (!runId) { body.appendChild(el('span', { class: 'faint sm' }, 'Mở 3 trình duyệt ở tab SETUP.')); cell.appendChild(body); return cell; }
+    cell.appendChild(el('span', { class: 'bc-id' }, 'B' + index));
+    if (!runId) { cell.appendChild(el('span', { class: 'faint sm bc-hint' }, 'Mở ở SETUP')); return cell; }
     if (chromiumClosed) {
-      body.appendChild(el('span', { class: 'faint sm' }, 'Chromium chưa mở.'));
-      body.appendChild(el('button', { class: 'btn primary bc-main', onclick: () => onReopenBrowser(slot) }, icon('monitor', { sm: true }), ' MỞ CHROMIUM'));
-      cell.appendChild(body); return cell;
+      cell.appendChild(el('span', { class: 'bc-badge off' }, el('span', { class: 'status-dot off' }), 'OFFLINE'));
+      cell.appendChild(el('div', { class: 'bc-life' }, iconButton('monitor', 'Mở lại Chromium này', () => onReopenBrowser(slot))));
+      return cell;
     }
     const account = (mb && mb.username && mb.username !== 'USER_UNKNOWN') ? mb.username : '—';
-    const ridText = b.rid != null ? String(b.rid) : (b.lastRid != null ? String(b.lastRid) : '—');
-    const wsOk = !!(mb && mb.connected && mb.socketReady);
-    const infoRow = (k, v, cls) => el('div', { class: 'bc-kv' }, el('span', { class: 'bc-k' }, k), el('span', { class: 'bc-v ' + (cls || '') }, v));
-    body.appendChild(infoRow('ACCOUNT', account));
-    body.appendChild(infoRow('RID', ridText));
-    body.appendChild(infoRow('STATE', st.label, st.cls));
-    body.appendChild(infoRow('WS', wsOk ? 'Kết nối' : 'Mất kết nối', wsOk ? 'ok' : 'off'));
-    // PHASE 6.3.2.2/6.3.2.7 — runtime diagnostics (read-only): engine, CDP link, and REAL header DOM state.
+    // RUNTIME kind (Chromium/Chrome) is diagnostic + rarely changes → kept compactly in the chip tooltip
+    // (not a visible row) so the compact header stays one line.
     const rtKind = mb && mb.runtimeKind ? (mb.runtimeKind === 'chrome' ? 'Chrome' : 'Chromium') : '—';
+    cell.appendChild(el('span', { class: 'bc-acc', title: 'ACCOUNT: ' + account + ' · RUNTIME: ' + rtKind }, account));
+    cell.appendChild(el('span', { class: 'bc-badge ' + st.cls }, el('span', { class: 'status-dot ' + st.cls }), st.label));
+    // WS / CDP / HEADER as compact mini-dots (title carries the full text) — essential connection status only.
+    const wsOk = !!(mb && mb.connected && mb.socketReady);
     const cdpOk = mb && mb.cdp === 'CONNECTED';
-    // HEADER reflects actual #__phom_header presence confirmed by the page: READY / Đang khôi phục / chưa.
     const hdr = mb && mb.header;
-    const hdrText = hdr === 'READY' ? 'Sẵn sàng' : hdr === 'RECOVERING' ? 'Đang khôi phục' : 'Chưa sẵn sàng';
     const hdrCls = hdr === 'READY' ? 'ok' : hdr === 'RECOVERING' ? 'warn' : 'off';
-    body.appendChild(infoRow('RUNTIME', rtKind));
-    body.appendChild(infoRow('CDP', cdpOk ? 'Kết nối' : 'Mất kết nối', cdpOk ? 'ok' : 'off'));
-    body.appendChild(infoRow('HEADER', hdrText, hdrCls));
-    body.appendChild(el('div', { class: 'bc-note faint xs' }, 'Điều khiển game nằm trên thanh tiêu đề trong Chromium.'));
-    cell.appendChild(body);
-    // footer: reload web (same Chromium) + power (close this Chromium only) — icon buttons + tooltips (§24).
+    const dot = (label, cls, title) => el('span', { class: 'mini-dot ' + cls, title }, label);
+    cell.appendChild(el('div', { class: 'bc-dots' },
+      dot('WS', wsOk ? 'ok' : 'off', 'WebSocket: ' + (wsOk ? 'Kết nối' : 'Mất kết nối')),
+      dot('CDP', cdpOk ? 'ok' : 'off', 'CDP: ' + (cdpOk ? 'Kết nối' : 'Mất kết nối')),
+      dot('HDR', hdrCls, 'Header: ' + (hdr === 'READY' ? 'Sẵn sàng' : hdr === 'RECOVERING' ? 'Đang khôi phục' : 'Chưa sẵn sàng'))));
+    // lifecycle only (never game control): ↻ WEB + ⏻ — compact icon buttons.
     cell.appendChild(el('div', { class: 'bc-life' },
       iconButton('refresh', 'Tải lại / mở lại web trong chính Chromium này (Reload web)', () => onReloadWeb(runId)),
       iconButton('power', 'Tắt Chromium này (không đóng Tool/các browser khác)', () => onCloseBrowser(slot, runId), 'danger')));
     return cell;
+  }
+  // PHASE 6.3.3 — LÁ BÀI AN TOÀN placeholder region (UI structure only; the analysis is a future Monitor
+  // feature — no card logic added here). It reserves the top of the card workspace so the future feature
+  // fills it. Empty state is explicit; nothing is fabricated.
+  function renderSafeCards() {
+    const box = el('div', { class: 'safe-cards', id: 'phq-safe' });
+    box.appendChild(el('div', { class: 'section-t' }, 'LÁ BÀI AN TOÀN'));
+    box.appendChild(el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, '— (sẽ bật ở bản Monitor/Analyze)')));
+    return box;
   }
   // Build the single business-action button from the browserAction decision.
   function actionButton(act, b, runId, inGame) {

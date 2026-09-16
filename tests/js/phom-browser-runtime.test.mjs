@@ -102,8 +102,10 @@ test('SETUP shows a BROWSER RUNTIME selector; Screen 2 shows read-only RUNTIME/C
   assert.match(js, /function browserRuntimePanel\(\)/);
   assert.match(js, /BROWSER RUNTIME/);
   assert.match(js, /api\.browserRuntimeSet\(/);
-  // read-only diagnostics on the cell (no new action buttons)
-  assert.match(js, /infoRow\('RUNTIME'/);
-  assert.match(js, /infoRow\('CDP'/);
-  assert.match(js, /infoRow\('HEADER'/);
+  // PHASE 6.3.3 — Screen 2 is now a COMPACT chip: CDP + HEADER are mini-dots, RUNTIME kind is in the chip
+  // tooltip. Still read-only diagnostics, no new action buttons.
+  const cell = js.slice(js.indexOf('function compactBrowserCell('), js.indexOf('function renderSafeCards('));
+  assert.match(cell, /dot\('CDP'/);
+  assert.match(cell, /dot\('HDR'/);
+  assert.match(cell, /mb\.runtimeKind/);
 });

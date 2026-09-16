@@ -19,11 +19,16 @@ function fn(src, name) {
   return rest.slice(0, nextIdx > 0 ? nextIdx : 4000);
 }
 
-test('renderControl renders the compact UI (header + browser row + remaining), not the legacy toolbars', () => {
+test('renderControl renders the compact UI (header + compact browser row + card workspace), not legacy toolbars', () => {
   const body = fn(js, 'renderControl');
   assert.match(body, /compactHeader\(\)/);
   assert.match(body, /compactBrowserRow\(\)/);
-  assert.match(body, /renderRemainingCards\(\)/);
+  // PHASE 6.3.3 — cards live in a flex-growing workspace (LÁ BÀI AN TOÀN + CÒN LẠI), not a bare remaining list
+  assert.match(body, /renderCardWorkspace\(\)/);
+  const ws = fn(js, 'renderCardWorkspace');
+  assert.match(ws, /renderSafeCards\(\)/);
+  assert.match(ws, /renderRemainingCards\(\)/);
+  assert.match(ws, /card-workspace/);
   // legacy host-first/entry toolbars + monitor are NOT called from the main screen
   assert.equal(/statusToolbar\(|commandToolbar\(|entryStatusBar\(|liveMonitor\(/.test(body), false, 'no legacy toolbars/monitor on the main screen');
 });
@@ -59,17 +64,19 @@ test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state
   assert.match(main, /if \(view\.inGame\) \{[\s\S]*?delete headerEntering\[rid\]/); // real in-game evidence clears ENTERING
 });
 
-test('Screen 2 cell is READ-ONLY: mirrors ACCOUNT/RID/STATE/WS, keeps only ↻/⏻ lifecycle (no game buttons)', () => {
+test('Screen 2 cell is a COMPACT read-only chip (B# · ACCOUNT · STATE badge · WS/CDP/HDR dots · ↻/⏻)', () => {
   const cell = fn(js, 'compactBrowserCell');
-  assert.match(cell, /bc-readonly/);
-  assert.match(cell, /ACCOUNT/);
-  assert.match(cell, /'RID'/);
-  assert.match(cell, /'STATE'/);
-  assert.match(cell, /'WS'/);
-  // browser lifecycle stays in the Tool (↻ WEB + ⏻)
+  // PHASE 6.3.3 — compact one-row chip: identity + account (truncated) + status badge + mini connection dots
+  assert.match(cell, /browser-cell/);
+  assert.match(cell, /bc-acc/);            // account (truncated) — no big blocks
+  assert.match(cell, /bc-badge/);          // STATE badge
+  assert.match(cell, /'WS'/); assert.match(cell, /'CDP'/); assert.match(cell, /'HDR'/); // mini dots
+  // RID is NOT repeated per browser — it is shared, shown once in the tool header (§3)
+  assert.equal(/infoRow\('RID'|'RID',/.test(cell), false, 'no per-browser RID');
+  // browser lifecycle stays in the Tool (↻ WEB + ⏻ + reopen), never game control
   assert.match(cell, /onReloadWeb\(runId\)/);
   assert.match(cell, /onCloseBrowser\(slot, runId\)/);
-  // NO game-control action is wired from the read-only cell (they live in the Chromium header)
+  assert.match(cell, /onReopenBrowser\(slot\)/);
   assert.equal(/actionButton\(|betFindGroup\(|manualEnterGame\(|onManualJoinShared\(|onManualLeave\(/.test(cell), false, 'no game action wired in the read-only cell');
 });
 

@@ -394,20 +394,31 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .tool-header .th-rid { margin-left: auto; }
 .tool-header .th-rid b, .tool-header .th-bet b, .tool-header .th-still b { font-size: 15px; font-weight: 600; color: var(--text); letter-spacing: 0; text-transform: none; }
 
-/* PHỎM tab: browser PANELS (cards) — the redesigned B1/B2/B3 */
-.browser-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 6px 0 4px; align-items: stretch; }
-.browser-cell { display: flex; flex-direction: column; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 12px; background: var(--panel); box-shadow: var(--shadow); min-height: 132px; }
+/* PHASE 6.3.3 — Screen 2 layout: compact browser status header on top, card workspace dominant below.
+   #phq-root.mode-control is a flex column (100% height); the card-workspace is the only growing/scrolling
+   region so B1/B2/B3 never squeeze the cards. */
+#phq-root.mode-control { overflow: hidden; }
+.card-workspace { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-top: 8px; }
+.card-workspace .safe-cards, .card-workspace .remaining-cards { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.card-workspace .remaining-cards { margin-top: 0; border-top: none; }
+.card-workspace .cards { flex: 1 1 auto; align-content: flex-start; overflow-y: auto; }
+
+/* PHỎM tab: browser STATUS chips — compact, ONE horizontal row (redesigned B1/B2/B3, §1/§8) */
+.browser-row { display: flex; gap: 8px; margin: 6px 0 2px; flex: 0 0 auto; align-items: stretch; }
+.browser-cell { flex: 1 1 0; min-width: 0; display: flex; flex-direction: row; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 9px; background: var(--panel); box-shadow: var(--shadow); min-height: 0; }
 .browser-cell.st-ok { border-color: #bfe3ca; }
 .browser-cell.st-warn { border-color: #f0d9ab; }
 .browser-cell.st-danger { border-color: #f0c4c4; }
-.bc-head { display: flex; align-items: center; justify-content: space-between; }
-.bc-id { font-size: 15px; font-weight: 700; letter-spacing: .5px; }
-.bc-meta { display: flex; flex-direction: column; gap: 1px; line-height: 1.35; }
-.bc-dev { font-size: 12px; font-weight: 500; color: var(--text); }
-.bc-res { font-size: 11px; color: var(--text-faint); font-variant-numeric: tabular-nums; }
-.bc-body { margin-top: auto; display: flex; flex-direction: column; gap: 6px; }
-.bc-main { width: 100%; justify-content: center; height: 34px; font-weight: 600; }
-.bc-life { display: flex; gap: 6px; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 8px; }
+.bc-id { font-size: 13px; font-weight: 700; letter-spacing: .5px; flex: 0 0 auto; }
+.bc-acc { font-size: 11px; color: var(--text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bc-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* WS / CDP / HEADER mini-dots — compact connection status */
+.bc-dots { display: flex; gap: 4px; margin-left: auto; flex: 0 0 auto; }
+.mini-dot { font-size: 9px; font-weight: 700; letter-spacing: .3px; padding: 1px 4px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text-faint); }
+.mini-dot.ok { color: var(--success); background: var(--success-bg); border-color: #bfe3ca; }
+.mini-dot.warn { color: var(--warning); background: var(--warning-bg); border-color: #f0d9ab; }
+.mini-dot.off { color: var(--text-faint); }
+.bc-life { display: flex; gap: 4px; flex: 0 0 auto; }
 .bc-life .btn { flex: none; }
 /* PHASE 6.3.2 — Screen 2 read-only mirror (ACCOUNT/RID/STATE/WS). Game actions live in the Chromium header. */
 .bc-readonly { gap: 3px; }
