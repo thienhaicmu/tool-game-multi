@@ -36,15 +36,18 @@ test('exactly one primary RUN GAME CTA in Setup (Screen 1)', () => {
   assert.match(js, /RUN GAME — MỞ 3 TRÌNH DUYỆT/, 'RUN GAME CTA label');
 });
 
-test('PHASE 6.3.1 — SETUP has a single GAME URL input and NO cluster/HOST concept (§18/§19)', () => {
-  assert.match(js, /id: 'phq-gameurl'/);
-  const setup = js.slice(js.indexOf('function renderSetup(r) {'), js.indexOf('function gamePanel('));
-  assert.match(setup, /gamePanel\(\)/);
+test('PHASE 6.3.2.1 — SETUP is a scroll page + sticky footer; Game URL is per-profile, NO global input', () => {
+  const setup = js.slice(js.indexOf('function renderSetup(r) {'), js.indexOf('function profileTablePanel('));
+  assert.match(setup, /class: 'setup-page'/);        // scrollable page (nothing clipped)
   assert.match(setup, /profileTablePanel\(\)/);
   assert.match(setup, /bulkProxyPanel\(\)/);
-  assert.match(setup, /runGamePanel\(\)/);
+  assert.match(setup, /runGameFooter\(\)/);           // sticky footer, not an in-flow panel
+  assert.equal(/gamePanel\(\)/.test(setup), false, 'no global Game URL panel in the render');
   // the RENDERED setup no longer wires the cluster/HOST panel
   assert.equal(/panelGeneral\(\)|s1-host|CỤM/.test(setup), false, 'no cluster/host in the new SETUP render');
+  // Game URL is a per-profile property: a table column + an Edit-Profile field (not a shared top input)
+  assert.match(js, /'GAME URL'/);
+  assert.match(js, /id: 'pf-url'/);
 });
 
 test('Setup renders the Quick 3-proxy panel as 3 labeled rows (no A=/B=/C= prefix)', () => {

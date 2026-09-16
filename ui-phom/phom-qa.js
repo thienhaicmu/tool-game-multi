@@ -71,7 +71,6 @@
   const PS = (typeof window !== 'undefined' && window.ProfileSelection) ? window.ProfileSelection : null;
   let profilesX = [];              // all saved device profiles (from phom:profiles-list)
   let selectedProfileIds = [];     // ORDERED selection (max 3); selection order → B1/B2/B3
-  let gameUrlX = '';               // shared Game URL for the 3 browsers
   let bulkProxyText = '';          // bulk-proxy textarea (one proxy per line)
   let clusterSnap = null;    // last PhomClusterCdpManager snapshot
   let clusterProfiles = [];  // saved cluster profiles (shared game URL + 3 slots)
@@ -247,23 +246,16 @@
   // PHASE 6.3.1 — SETUP = a flexible device-profiles TABLE (manage + select), a Game URL, bulk proxy, and
   // the RUN GAME CTA. The table checkbox is the ONLY selection UI (no B1/B2/B3 dropdowns, no selected-
   // profile panel, no cluster/CỤM concept). Selection order → B1/B2/B3.
+  // PHASE 6.3.2.1 — a header + a SINGLE scrollable page (all panels) + a sticky footer (count + MỞ 3
+   // TRÌNH DUYỆT). No global Game URL input: the URL is a per-profile property, edited in Edit Profile.
   function renderSetup(r) {
     const h = header('SETUP'); h.classList.add('s1-header'); r.appendChild(h);
     r.appendChild(el('div', { class: 'note s1-note', id: 'phq-note' }, ''));
-    r.appendChild(gamePanel());
-    r.appendChild(profileTablePanel());
-    r.appendChild(bulkProxyPanel());
-    r.appendChild(runGamePanel());
-  }
-
-  // GAME URL (shared by the 3 browsers). Not a "cluster" — just the game address (§18/§19).
-  function gamePanel() {
-    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
-    panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title' }, 'GAME')));
-    panel.appendChild(el('div', { style: 'padding:0 12px 12px' },
-      el('input', { class: 'f mono', id: 'phq-gameurl', type: 'url', spellcheck: 'false', value: gameUrlX, placeholder: 'https://game.example.com/room', style: 'width:100%',
-        oninput: (e) => { gameUrlX = e.target.value; } })));
-    return panel;
+    const page = el('div', { class: 'setup-page' });
+    page.appendChild(profileTablePanel());
+    page.appendChild(bulkProxyPanel());
+    r.appendChild(page);
+    r.appendChild(runGameFooter());
   }
 
   // DEVICE PROFILES table — manage (add/edit/delete) + select (checkbox, max 3, order → B1/B2/B3).
@@ -275,9 +267,9 @@
       el('button', { class: 'btn primary sm', onclick: () => openProfileModal(null) }, icon('plus', { sm: true }), ' THÊM PROFILE')));
     const table = el('table', { class: 'setup-table' });
     table.appendChild(el('thead', null, el('tr', null,
-      el('th', null, ''), el('th', null, '#'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, ''))));
+      el('th', null, ''), el('th', null, '#'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, 'GAME URL'), el('th', null, ''))));
     const tbody = el('tbody');
-    if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '8', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
+    if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '9', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
     for (const p of profilesX) tbody.appendChild(profileRow(p));
     table.appendChild(tbody);
     const scroll = el('div', { class: 'table-scroll' }, table);
@@ -301,6 +293,10 @@
       el('td', { class: 'num' }, osText),
       el('td', { class: 'num' }, dev.resolution || '—'),
       el('td', null, p.proxyRef ? el('span', { class: 'badge good' }, 'PROXY') : el('span', { class: 'badge faint' }, 'DIRECT')),
+      // GAME URL is a per-profile property; shown ellipsised with a full-URL tooltip, edited in Edit Profile.
+      el('td', { class: 'col-url' }, p.gameUrl
+        ? el('span', { class: 'url-ellipsis', title: p.gameUrl }, p.gameUrl)
+        : el('span', { class: 'faint sm', title: 'Chưa có Game URL — bấm Sửa để thêm' }, '— chưa có —')),
       el('td', null, el('div', { style: 'display:flex;gap:4px;justify-content:flex-end' },
         iconButton('edit', 'Sửa profile', () => openProfileModal(p.id)),
         iconButton('trash', 'Xóa profile', () => deleteProfileX(p.id), 'danger'))),
@@ -324,13 +320,19 @@
     return panel;
   }
 
-  // RUN GAME — enabled only with exactly 3 selected; opens each selected profile as B1/B2/B3.
-  function runGamePanel() {
-    const ready = selectedProfileIds.length === 3;
-    const footer = el('div', { style: 'display:flex;align-items:center;justify-content:space-between;gap:10px' });
-    footer.appendChild(el('span', { class: 'faint sm' }, `ĐÃ CHỌN ${selectedProfileIds.length} / 3`));
+  // RUN GAME — a STICKY footer (never scrolls out of view). Enabled only with exactly 3 selected AND, unless
+  // Local Test, every selected profile has its own Game URL (edited in Edit Profile — no URL prompt at RUN).
+  function runGameFooter() {
+    const n = selectedProfileIds.length;
+    const missingUrl = !localTest && selectedProfileIds.some((id) => { const p = profilesX.find((x) => x.id === id); return !(p && p.gameUrl && String(p.gameUrl).trim()); });
+    const ready = n === 3 && !missingUrl;
+    const footer = el('div', { class: 'setup-footer' });
+    const left = el('div', { style: 'display:flex;align-items:center;gap:10px' });
+    left.appendChild(el('span', { class: 'faint sm' }, `ĐÃ CHỌN ${n} / 3`));
+    if (n === 3 && missingUrl) left.appendChild(el('span', { class: 'chip red sm', title: 'Mỗi profile cần Game URL — mở Sửa profile để nhập' }, 'THIẾU GAME URL'));
+    footer.appendChild(left);
     const right = el('div', { style: 'display:flex;align-items:center;gap:10px' });
-    if (caps.devBypass) right.appendChild(el('label', { class: 'faint sm' }, el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; } }), ' Local Test'));
+    if (caps.devBypass) right.appendChild(el('label', { class: 'faint sm' }, el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; renderApp(); } }), ' Local Test'));
     right.appendChild(el('button', { class: 'btn primary', disabled: ready ? null : true, onclick: openCluster }, icon('monitor', { sm: true }), ' MỞ 3 TRÌNH DUYỆT'));
     footer.appendChild(right);
     return footer;
@@ -340,9 +342,8 @@
   async function refreshProfilesX() {
     try { const r = await api.profilesList(); profilesX = (r && r.profiles) || []; } catch { profilesX = []; }
     if (PS) selectedProfileIds = PS.prune(selectedProfileIds, profilesX.map((p) => p.id));
-    // Pre-fill the Game URL from a saved profile so it is never re-typed each launch (§6.3.2-fix). Only
-    // seed when empty — the user can still override, and openSelected re-saves whatever is used.
-    if (!(gameUrlX || '').trim()) { const withUrl = profilesX.find((p) => p.gameUrl); if (withUrl) gameUrlX = withUrl.gameUrl; }
+    // PHASE 6.3.2.1 — Game URL is now a per-profile property (edited in Edit Profile), not a global input,
+    // so there is nothing to pre-fill here; each profile carries + reuses its own saved URL.
   }
   async function deleteProfileX(id) {
     const p = profilesX.find((x) => x.id === id);
@@ -382,6 +383,8 @@
       el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'VIEWPORT (game emulation)'),
       el('div', { class: 'phq-row' }, el('span', null, 'W × H'), f('pf-vpw', 'width', dev.viewportWidth), f('pf-vph', 'height', dev.viewportHeight)),
       el('div', { class: 'phq-row' }, el('span', null, 'Touch'), el('label', { class: 'faint' }, el('input', { type: 'checkbox', id: 'pf-touch', checked: (dev.touch == null ? true : dev.touch) ? 'checked' : null }), ' bật cảm ứng')),
+      el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'GAME URL (lưu trong profile — không phải nhập lại khi mở)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'URL'), el('input', { class: 'f mono', id: 'pf-url', type: 'url', spellcheck: 'false', placeholder: 'https://game.example.com/room', value: existing && existing.gameUrl ? existing.gameUrl : '' })),
       el('div', { class: 'note', id: 'pf-err' }, ''),
       el('div', { class: 'phq-row' },
         el('button', { class: 'btn primary', onclick: () => saveProfileModal(id, close) }, 'Lưu'),
@@ -397,9 +400,10 @@
     const touch = !!($('pf-touch') && $('pf-touch').checked);
     const device = { viewportWidth: vpw, viewportHeight: vph, screenWidth: vpw, screenHeight: vph, deviceScaleFactor: 2, osWindowWidth: osw, osWindowHeight: osh, touch, mobile: touch, orientationType: 'landscapePrimary', profileType: (osw && osh) ? 'CUSTOM' : 'MOBILE_LANDSCAPE' };
     const name = ($('pf-name').value || '').trim() || 'Profile';
+    const gameUrl = ($('pf-url') && $('pf-url').value || '').trim() || null;
     let res;
-    if (id) res = await api.profileUpdateX(id, { name, device });
-    else res = await api.profileCreate({ name, device });
+    if (id) res = await api.profileUpdateX(id, { name, device, gameUrl });
+    else res = await api.profileCreate({ name, device, gameUrl });
     if (res && res.ok === false) { if (err) { err.textContent = errText(res); err.className = 'note warn'; } return; }
     close(); await refreshProfilesX(); renderApp();
   }
@@ -1736,7 +1740,11 @@
   async function openCluster() {
     // PHASE 6.3.1 — open the 3 SELECTED profiles as B1/B2/B3 (selection order). No cluster profile.
     if (selectedProfileIds.length !== 3) { note('Chọn đúng 3 profile trong bảng trước khi mở.', true); return; }
-    if (!localTest && !(gameUrlX || '').trim()) { note('Nhập Game URL trước khi mở.', true); return; }
+    // PHASE 6.3.2.1 — each profile carries its OWN Game URL (edited in Edit Profile). No RUN-time URL prompt.
+    if (!localTest) {
+      const missing = selectedProfileIds.filter((id) => { const p = profilesX.find((x) => x.id === id); return !(p && p.gameUrl && String(p.gameUrl).trim()); }).map((id) => { const p = profilesX.find((x) => x.id === id); return p ? p.name : id; });
+      if (missing.length) { note(`Thiếu Game URL cho: ${missing.join(', ')}. Mở Sửa profile để nhập.`, true); return; }
+    }
     // §41 — a fast double-click must not open a second cluster / duplicate browser runs.
     if (clusterOpBusy) { note('Đang mở — vui lòng chờ…', true); return; }
     clusterOpBusy = true;
@@ -1755,7 +1763,8 @@
     uiState = UI.OPENING_CLUSTER; renderApp();
     try {
       // PHASE 6.3.1 — create the cluster from the SELECTED profiles (order → B1/B2/B3) + game URL.
-      const created = await api.openSelected({ profileIds: selectedProfileIds, gameUrl: gameUrlX, localTest });
+      // No global gameUrl — each profile opens with its OWN saved gameUrl (main resolves per profileId).
+      const created = await api.openSelected({ profileIds: selectedProfileIds, localTest });
       if (created && created.ok === false) throw created;
       if (created && created.localTest != null) localTest = created.localTest;
       const open = await api.clusterOpen();

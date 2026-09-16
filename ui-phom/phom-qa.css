@@ -246,6 +246,17 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 /* ================= SCREEN 1 — TWO-COLUMN SETUP (locked design) ================= */
 #phq-root.mode-setup { display: flex; flex-direction: column; padding: 8px 10px; overflow: hidden; }
 .mode-setup .dev-banner { padding: 2px 8px; font-size: 11px; margin-bottom: 4px; border-radius: 6px; }
+/* PHASE 6.3.2.1 — SETUP must always be fully reachable by scroll. The tab-content fills the remaining
+   height; the scrollable .setup-page holds every panel and the sticky .setup-footer keeps MỞ 3 TRÌNH DUYỆT
+   in view. Only .setup-page scrolls vertically (no nested vertical scrollbars). */
+.mode-setup .tab-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.setup-page { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; display: flex; flex-direction: column; gap: 12px; padding: 2px 6px 8px 2px; }
+.setup-footer { flex: 0 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 10px; border-top: 1px solid var(--border); padding: 10px 2px 2px; margin-top: 6px; background: var(--bg); }
+/* a clearly visible scrollbar so the user knows there is more below (never hidden) */
+.setup-page::-webkit-scrollbar { width: 12px; }
+.setup-page::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid var(--bg); }
+.setup-page::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
+.setup-page::-webkit-scrollbar-track { background: transparent; }
 .s1-header { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .s1-note { flex: 0 0 auto; margin: 2px 0; } .s1-note:empty { display: none; }
 /* the two-column grid fills the remaining height; each column stacks its panels */
@@ -439,7 +450,11 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .setup-section-h .h-title { font-size: 13px; font-weight: 600; }
 
 /* PHASE 6.3.1 — profile table selection + bulk proxy */
-.table-scroll { max-height: 320px; overflow: auto; }
+/* PHASE 6.3.2.1 — the whole SETUP page scrolls vertically, so the table only scrolls HORIZONTALLY when
+   too wide (no inner vertical scrollbar competing with the page). */
+.table-scroll { overflow-x: auto; overflow-y: visible; }
+.setup-table .col-url { max-width: 200px; }
+.setup-table .col-url .url-ellipsis { display: block; max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-2); font-variant-numeric: tabular-nums; }
 .setup-table .prof-cb { width: 16px; height: 16px; cursor: pointer; }
 .setup-table .prof-cb:disabled { cursor: not-allowed; opacity: .4; }
 .setup-table tr.selected { background: #eef4ff; }

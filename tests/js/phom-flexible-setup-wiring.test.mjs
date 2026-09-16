@@ -56,21 +56,31 @@ test('renderer SETUP: profile list, ordered selection, bulk proxy by order, RUN 
   assert.match(js, /api\.profileSetProxy\(/);
   // bulk proxy maps to the selection order via the pure module
   assert.match(js, /PS\.mapProxies\(selectedProfileIds, bulkProxyText\)/);
-  // RUN GAME opens the ordered selection
-  assert.match(js, /api\.openSelected\(\{ profileIds: selectedProfileIds, gameUrl: gameUrlX, localTest \}\)/);
+  // RUN GAME opens the ordered selection — PHASE 6.3.2.1: NO global gameUrl (each profile carries its own)
+  assert.match(js, /api\.openSelected\(\{ profileIds: selectedProfileIds, localTest \}\)/);
+  assert.equal(/gameUrl: gameUrlX/.test(js), false, 'no global Game URL is sent at RUN time');
   // OS window ⟂ viewport in the modal (separate fields)
   assert.match(js, /pf-osw/); assert.match(js, /pf-vpw/);
 });
 
-// PHASE 6.3.2-fix — the game URL is remembered per profile so it is not re-typed each launch; a typed URL
-// overrides + is saved back, otherwise the profile's own saved URL is used.
-test('open-from-selection remembers + reuses the Game URL per profile (§6.3.2-fix)', () => {
+// PHASE 6.3.2.1 — Game URL is a per-profile property (edited in Edit Profile). openSelectedProfiles opens
+// each browser with ITS profile's own saved gameUrl (no global URL); the field is required per profile.
+test('open-from-selection uses each profile OWN Game URL (§6.3.2.1)', () => {
   const fn = main.slice(main.indexOf('function openSelectedProfiles('), main.indexOf('function ensureCluster()'));
-  assert.match(fn, /typedUrl \|\| \(p\.gameUrl/); // typed URL overrides, else the profile's saved URL
-  assert.match(fn, /deviceProfilesStore\.update\(ids\[i\], \{ gameUrl: profUrl \}\)/); // save it back for next launch
-  assert.match(fn, /PHOM_GAME_URL_REQUIRED/); // still required (typed or saved) unless local test
-  // the renderer seeds the URL field from a saved profile when empty
-  assert.match(js, /profilesX\.find\(\(p\) => p\.gameUrl\)/);
+  assert.match(fn, /p\.gameUrl/); // each profile's own saved URL is the source
+  assert.match(fn, /gameUrl: profUrl/); // carried per-profile into the cluster config
+  assert.match(fn, /PHOM_GAME_URL_REQUIRED/); // required per profile unless local test
+});
+
+test('renderer: Game URL is edited in Edit Profile (pf-url) + shown as a table column, not a global input', () => {
+  // per-profile URL field in the edit modal, saved via profileUpdateX/profileCreate
+  assert.match(js, /id: 'pf-url'/);
+  assert.match(js, /profileUpdateX\(id, \{ name, device, gameUrl \}\)/);
+  assert.match(js, /profileCreate\(\{ name, device, gameUrl \}\)/);
+  // the table shows a GAME URL column (ellipsised) and there is no global URL input any more
+  assert.match(js, /'GAME URL'/);
+  assert.match(js, /col-url/);
+  assert.equal(/id: 'phq-gameurl'[\s\S]*oninput[\s\S]*gameUrlX/.test(js), false, 'no global Game URL input in SETUP');
 });
 
 // PHASE 6.3.2-fix — a valid product license IS the authorization for manual QA control (no hidden env gate),
