@@ -115,6 +115,9 @@
     return el('button', { class: 'icon-btn2' + (variant ? ' ' + variant : ''), title, 'aria-label': title, onclick: onClick }, icon(name, { sm: true }));
   }
   const pill = (l, v, c) => el('span', { class: 'pill ' + (c || '') }, l + ' ', el('b', null, String(v)));
+  // PHASE 6.3.3.1 — USER-FACING browser naming. Internal slot ids stay B1/B2/B3 (stable, §14); only the
+  // displayed label becomes "Player N". browserOf()/mapProxies() are unchanged — this maps at render time.
+  const playerLabel = (b) => { const m = /^B(\d+)$/.exec(String(b == null ? '' : b)); return m ? 'Player ' + m[1] : String(b == null ? '' : b); };
 
   // ---------- boot / license ----------
   async function boot() {
@@ -265,7 +268,7 @@
   // packaged custom Chromium and falls back to Chrome. Persisted; per-profile user-data-dir/cookie/URL are
   // unaffected by the choice. Read-only availability hints come from the main resolver.
   function browserRuntimePanel() {
-    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
+    const panel = el('div', { class: 'setup-panel' });
     panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title' }, 'BROWSER RUNTIME ', el('span', { class: 'faint sm' }, '· engine chạy 3 trình duyệt'))));
     const body = el('div', { style: 'padding:0 12px 12px;display:flex;align-items:center;gap:10px;flex-wrap:wrap' });
     const rt = browserRuntimeInfo || {};
@@ -281,14 +284,16 @@
 
   // DEVICE PROFILES table — manage (add/edit/delete) + select (checkbox, max 3, order → B1/B2/B3).
   function profileTablePanel() {
-    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
+    // PHASE 6.3.3.1 — the profile table is the FLEXIBLE primary area (`profile-panel` → flex:1); it fills
+    // unused Tool height and scrolls INTERNALLY, so the proxy block + footer stay put (no page-level scroll).
+    const panel = el('div', { class: 'setup-panel profile-panel' });
     const n = selectedProfileIds.length;
     panel.appendChild(el('div', { class: 'setup-section-h' },
       el('span', { class: 'h-title' }, 'DEVICE PROFILES ', el('span', { class: 'faint sm' }, `· ĐÃ CHỌN ${n} / 3`)),
       el('button', { class: 'btn primary sm', onclick: () => openProfileModal(null) }, icon('plus', { sm: true }), ' THÊM PROFILE')));
     const table = el('table', { class: 'setup-table' });
     table.appendChild(el('thead', null, el('tr', null,
-      el('th', null, ''), el('th', null, '#'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, 'GAME URL'), el('th', null, ''))));
+      el('th', null, ''), el('th', null, 'PLAYER'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, 'GAME URL'), el('th', null, ''))));
     const tbody = el('tbody');
     if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '9', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
     for (const p of profilesX) tbody.appendChild(profileRow(p));
@@ -308,7 +313,7 @@
     const osText = dev.osWindow || (dev.osWindowWidth ? `${dev.osWindowWidth}×${dev.osWindowHeight}` : 'Desktop');
     return el('tr', { class: 'prof-row' + (sel ? ' selected' : '') },
       el('td', null, cb),
-      el('td', { class: 'col-tag' }, bLabel ? el('span', { class: 'b-badge' }, bLabel) : ''),
+      el('td', { class: 'col-tag' }, bLabel ? el('span', { class: 'b-badge' }, playerLabel(bLabel)) : ''),
       el('td', { class: 'col-name' }, p.name || '(no name)'),
       el('td', null, typeText),
       el('td', { class: 'num' }, osText),
@@ -326,13 +331,13 @@
 
   // BULK PROXY — one proxy per line, mapped to the SELECTED profiles BY ORDER (§20/§21/§22).
   function bulkProxyPanel() {
-    const panel = el('div', { class: 'setup-panel', style: 'margin-bottom:12px' });
+    const panel = el('div', { class: 'setup-panel' });
     panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title' }, 'PROXY ', el('span', { class: 'faint sm' }, '· mỗi dòng một proxy, theo thứ tự chọn'))));
     const body = el('div', { style: 'padding:0 12px 12px' });
     // compact selection-order preview
     if (selectedProfileIds.length) {
       const prev = el('div', { class: 'faint sm', style: 'margin-bottom:6px' });
-      selectedProfileIds.forEach((id, i) => { const p = profilesX.find((x) => x.id === id); prev.appendChild(el('span', { style: 'margin-right:10px' }, `${i + 1} → ${p ? p.name : id}`)); });
+      selectedProfileIds.forEach((id, i) => { const p = profilesX.find((x) => x.id === id); prev.appendChild(el('span', { style: 'margin-right:10px' }, `Player ${i + 1} → ${p ? p.name : id}`)); });
       body.appendChild(prev);
     }
     body.appendChild(el('textarea', { class: 'f mono', id: 'phq-bulkproxy', rows: '3', style: 'width:100%', placeholder: 'host:port:user:pass\nhost:port\n…', oninput: (e) => { bulkProxyText = e.target.value; } }, bulkProxyText));
@@ -383,7 +388,7 @@
     if (!PS) return;
     const res = PS.mapProxies(selectedProfileIds, bulkProxyText);
     if (!res.ok) { if (pn) { pn.textContent = res.error === 'PROXY_COUNT_MISMATCH' ? `Cần đúng ${res.expected} proxy (đang có ${res.got}).` : 'Chọn 3 profile trước.'; pn.className = 'note warn'; } return; }
-    for (const m of res.mapping) { const r = await api.profileSetProxy(m.profileId, m.proxy); if (r && r.ok === false) { if (pn) { pn.textContent = `${m.browser}: ${errText(r)}`; pn.className = 'note warn'; } return; } }
+    for (const m of res.mapping) { const r = await api.profileSetProxy(m.profileId, m.proxy); if (r && r.ok === false) { if (pn) { pn.textContent = `${playerLabel(m.browser)}: ${errText(r)}`; pn.className = 'note warn'; } return; } }
     await refreshProfilesX(); renderApp();
     const pn2 = $('phq-proxynote'); if (pn2) { pn2.textContent = 'Đã áp dụng proxy theo thứ tự chọn.'; pn2.className = 'note ok'; }
   }
@@ -883,7 +888,7 @@
     // WS/CDP/HEADER mini-dots — plus browser lifecycle (↻ / ⏻ / MỞ CHROMIUM). RID is NOT repeated here (it is
     // shared and shown ONCE in the tool header, §3). No game-control buttons.
     const cell = el('div', { class: 'browser-cell st-' + st.cls });
-    cell.appendChild(el('span', { class: 'bc-id' }, 'B' + index));
+    cell.appendChild(el('span', { class: 'bc-id' }, 'Player ' + index));
     if (!runId) { cell.appendChild(el('span', { class: 'faint sm bc-hint' }, 'Mở ở SETUP')); return cell; }
     if (chromiumClosed) {
       cell.appendChild(el('span', { class: 'bc-badge off' }, el('span', { class: 'status-dot off' }), 'OFFLINE'));
