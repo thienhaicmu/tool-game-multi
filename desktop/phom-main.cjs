@@ -49,6 +49,8 @@ const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
 const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
 const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
+const gameHeader = require('./protocol/phom/game-header.cjs');
+const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
 const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
@@ -239,7 +241,7 @@ else {
         return { displayName: (run && run.profileLabel) || runId, proxyRef: run && run.proxy ? run.proxy.id : null, uid: null };
       },
     });
-    phomSessions.on('update', (snap) => send('phom:session', snap));
+    phomSessions.on('update', (snap) => { send('phom:session', snap); pushHeaderStates(); });
     phomSessions.on('hands', (hands) => send('phom:hands', hands));
     phomSessions.on('kick', (k) => send('phom:kick', k));
     phomSessions.on('log', (l) => { try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
@@ -465,6 +467,95 @@ else {
     return { ok: false, gameId: PHOM_GAME_ID, error: (r && r.error) || { code: 'ENTRY_SITE_SEAM_UNAVAILABLE' } };
   }
 
+  // ---- PHASE 6.3.2 — IN-CHROMIUM GAME HEADER bridge ---------------------------------------------
+  // Each managed Chromium gets a tool-owned control bar (game-header.cjs) injected via CDP. Button
+  // clicks arrive here through the window.__phomAction binding; we route them to the SAME manual APIs
+  // the (now read-only) Tool screen used, and push a freshly-derived state back into every page. Main is
+  // pure glue: the button decision lives in the pure deriveHeaderState; the coordinator remains the only
+  // source of business truth (find/join/leave semantics unchanged).
+  const headerEntering = Object.create(null); // runId -> true while VÀO GAME is in flight (transient)
+  const headerError = Object.create(null);    // runId -> last action error message (transient, per browser)
+
+  // The cluster's shared RID = the RID of the first browser already JOINED to a table. Other in-game
+  // browsers then show VÀO BÀN (JOIN_SHARED) for that RID — no independent re-discovery (§ shared RID).
+  function headerSharedRid(browsers) {
+    const j = (browsers || []).find((b) => b && b.manualState === 'JOINED' && b.rid != null);
+    return j ? Number(j.rid) : null;
+  }
+
+  // Build the raw header view for ONE browser from authoritative snapshots (no button logic here — that
+  // is deriveHeaderState). opened = a live (non-closed) run; inGame mirrors the renderer's slotInPhom
+  // (socketReady + connected + channelList received). account = the logged-in display name (dn) or —.
+  function headerViewFor(runId, browsers, sharedRid) {
+    const run = runManager && runManager.get(String(runId));
+    const opened = !!(run && run.status !== RUN_STATUS.CLOSED);
+    const b = (browsers || []).find((x) => x && String(x.profileId) === String(runId)) || {};
+    const inGame = opened && !!b.socketReady && !!b.connected && (b.channelCount || 0) > 0;
+    const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : null;
+    return {
+      account, opened, inGame,
+      entering: opened && !inGame && !!headerEntering[String(runId)],
+      joining: false,
+      manualState: b.manualState || null,
+      rid: b.rid != null ? b.rid : null,
+      lastRid: b.lastRid != null ? b.lastRid : null,
+      sharedRid,
+      betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
+      error: headerError[String(runId)] || null,
+    };
+  }
+
+  // Recompute + push the header state into every open Chromium (best-effort). Called after every session
+  // update and after every header action so the bars stay live without a Tool screen.
+  function pushHeaderStates() {
+    if (!phomSessions || !runManager) return;
+    let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
+    const sharedRid = headerSharedRid(browsers);
+    for (const run of runManager.list()) {
+      if (run.status === RUN_STATUS.CLOSED) continue;
+      const client = runClientFor(run.id);
+      if (!client) continue;
+      const view = headerViewFor(run.id, browsers, sharedRid);
+      if (view.inGame) delete headerEntering[String(run.id)]; // real evidence clears the transient
+      headerBridge.pushHeaderState(client, gameHeader.deriveHeaderState(view));
+    }
+  }
+
+  // Route ONE header button click (from the in-page binding) to the coordinator's manual API. The action
+  // set mirrors the old Tool controls exactly; stake comes from the page's bet picker (server options).
+  async function phomHeaderAction(runId, payload) {
+    const rid = String(runId == null ? '' : runId);
+    const action = payload && payload.action;
+    delete headerError[rid];
+    let res = { ok: true };
+    try {
+      if (action === 'ENTER_GAME') {
+        headerEntering[rid] = true; pushHeaderStates();
+        res = await phomEnterGame(rid);
+        if (!res || res.ok === false) delete headerEntering[rid];
+      } else if (action === 'FIND') {
+        ensurePhomSessions();
+        const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
+        res = await phomSessions.manualDiscoverTable(rid, { selectedStake });
+      } else if (action === 'JOIN_SHARED' || action === 'JOIN') {
+        ensurePhomSessions();
+        const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
+        res = await phomSessions.manualJoinRoom(rid, joinRid, {});
+      } else if (action === 'REJOIN') {
+        ensurePhomSessions();
+        res = await phomSessions.manualRejoin(rid, {});
+      } else if (action === 'LEAVE') {
+        ensurePhomSessions();
+        res = await phomSessions.manualLeave(rid);
+      } else {
+        res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
+      }
+    } catch (e) { res = { ok: false, error: { code: 'PHOM_HEADER_ACTION_FAILED', message: safeMsg(e) } }; }
+    if (res && res.ok === false) headerError[rid] = (res.error && (res.error.message || res.error.code)) || 'LỖI';
+    pushHeaderStates();
+    return res;
+  }
+
   // Count non-terminal BrowserRuns — the analyzer is refused whenever ANY exist.
   function liveRunCount() { try { return runManager ? runManager.list().filter((r) => r.status !== RUN_STATUS.CLOSED).length : 0; } catch { return 0; } }
 
@@ -604,6 +695,10 @@ else {
       if (run.deviceProfile) applyDeviceEmulation(client, run.deviceProfile, run).catch(() => {});
       // Ensure the WS send-hook is present before the game opens its socket.
       wsReplay.injectSession(client, undefined).catch(() => {});
+      // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG)
+      // and route its clicks to the coordinator. Best-effort; a CDP hiccup never blocks attach (§6.3.2).
+      headerBridge.installHeader(client, { runId: run.id, boot: gameHeader.bootScript(), onAction: (rid, payload) => phomHeaderAction(rid, payload) })
+        .then(() => pushHeaderStates()).catch(() => {});
       // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).
       if (run.proxy && run.proxy.requiresAuth) {
         bindProxyAuth(client, {
@@ -921,7 +1016,7 @@ else {
       if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
       // The reloaded page leaves the Phỏm game, so reset this browser's Phỏm context — slotInPhom goes
       // false and the tool shows VÀO GAME again (socket/channels rebind from the new page's own frames).
-      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } };
+      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } delete headerEntering[String(runId)]; delete headerError[String(runId)]; pushHeaderStates(); };
       try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
       catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
     }));

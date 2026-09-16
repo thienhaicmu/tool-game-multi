@@ -847,21 +847,26 @@
       el('span', { class: 'bc-dev' }, cs.deviceName || 'Chưa gán thiết bị'),
       cs.resolution ? el('span', { class: 'bc-res' }, cs.resolution) : null));
 
-    const body = el('div', { class: 'bc-body' });
+    // PHASE 6.3.2 — Screen 2 is READ-ONLY. All game actions (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN /
+    // THOÁT PHÒNG) now live in the in-Chromium header injected into each browser page (game-header.cjs).
+    // This panel only MIRRORS the authoritative per-browser fields: ACCOUNT · RID · STATE · WS. The only
+    // buttons kept here are BROWSER lifecycle (↻ WEB / ⏻ / MỞ CHROMIUM), never game control.
+    const body = el('div', { class: 'bc-body bc-readonly' });
     if (!runId) { body.appendChild(el('span', { class: 'faint sm' }, 'Mở 3 trình duyệt ở tab SETUP.')); cell.appendChild(body); return cell; }
     if (chromiumClosed) {
       body.appendChild(el('span', { class: 'faint sm' }, 'Chromium chưa mở.'));
       body.appendChild(el('button', { class: 'btn primary bc-main', onclick: () => onReopenBrowser(slot) }, icon('monitor', { sm: true }), ' MỞ CHROMIUM'));
       cell.appendChild(body); return cell;
     }
-    if (entering) body.appendChild(el('span', { class: 'chip yellow sm busy bc-main' }, spinner(), ' ĐANG VÀO GAME…'));
-    else if (joining) body.appendChild(el('span', { class: 'chip yellow sm busy bc-main' }, spinner(), ' ĐANG VÀO BÀN…'));
-    else {
-      const act = MCS ? MCS.browserAction(manualCluster, b, { opened, inGame, entering: false }) : { action: 'ENTER_GAME', label: 'VÀO GAME' };
-      body.appendChild(actionButton(act, b, runId, inGame));
-    }
-    if (enterErr) body.appendChild(el('span', { class: 'chip red sm', title: enterErr }, 'VÀO GAME THẤT BẠI'));
-    if (inGame && b.manualState === 'ERROR' && manualCluster.sharedRid != null && b.lastError) body.appendChild(el('span', { class: 'chip red sm', title: errText({ error: b.lastError }) }, 'VÀO BÀN THẤT BẠI'));
+    const account = (mb && mb.username && mb.username !== 'USER_UNKNOWN') ? mb.username : '—';
+    const ridText = b.rid != null ? String(b.rid) : (b.lastRid != null ? String(b.lastRid) : '—');
+    const wsOk = !!(mb && mb.connected && mb.socketReady);
+    const infoRow = (k, v, cls) => el('div', { class: 'bc-kv' }, el('span', { class: 'bc-k' }, k), el('span', { class: 'bc-v ' + (cls || '') }, v));
+    body.appendChild(infoRow('ACCOUNT', account));
+    body.appendChild(infoRow('RID', ridText));
+    body.appendChild(infoRow('STATE', st.label, st.cls));
+    body.appendChild(infoRow('WS', wsOk ? 'Kết nối' : 'Mất kết nối', wsOk ? 'ok' : 'off'));
+    body.appendChild(el('div', { class: 'bc-note faint xs' }, 'Điều khiển game nằm trên thanh tiêu đề trong Chromium.'));
     cell.appendChild(body);
     // footer: reload web (same Chromium) + power (close this Chromium only) — icon buttons + tooltips (§24).
     cell.appendChild(el('div', { class: 'bc-life' },

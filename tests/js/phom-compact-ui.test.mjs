@@ -47,18 +47,30 @@ test('real FIND uses discovery with the CHOSEN server stake; stake flows from th
   assert.equal(/api\.manualFind\(|Number\(stake\)|type: 'number'/.test(body), false, 'no manual/user-typed stake path in FIND');
 });
 
-test('VÀO GAME has a real ENTERING state and a failure state (not a fake success)', () => {
+// PHASE 6.3.2 — Screen 2 is READ-ONLY. The game action (VÀO GAME) + its ENTERING/failure states now live
+// in the in-Chromium header (game-header.cjs); the Tool cell only mirrors ACCOUNT/RID/STATE/WS.
+test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state (deriveHeaderState)', () => {
+  const gh = read('desktop/protocol/phom/game-header.cjs');
+  assert.match(gh, /ENTER_GAME/);
+  assert.match(gh, /entering[\s\S]*?ĐANG VÀO GAME/); // busy ENTERING label
+  assert.match(gh, /error:/); // failure surfaced back into the header
+  // the main process tracks the transient entering flag + bounded evidence via slotInPhom-equivalent
+  assert.match(main, /headerEntering/);
+  assert.match(main, /view\.inGame\) delete headerEntering/); // real in-game evidence clears ENTERING
+});
+
+test('Screen 2 cell is READ-ONLY: mirrors ACCOUNT/RID/STATE/WS, keeps only ↻/⏻ lifecycle (no game buttons)', () => {
   const cell = fn(js, 'compactBrowserCell');
-  assert.match(cell, /manualEntering\[runId\]/);
-  assert.match(cell, /ĐANG VÀO GAME/);
-  assert.match(cell, /VÀO GAME THẤT BẠI|THỬ LẠI/);
-  const enter = fn(js, 'manualEnterGame');
-  assert.match(enter, /manualEntering\[runId\] = true/);
-  assert.match(enter, /api\.enterGame\(runId\)/);
-  assert.match(enter, /setTimeout/, 'bounded entry timeout (no infinite ĐANG VÀO GAME)');
-  // in-game flip is authoritative (slotInPhom), cleared in a reconcile
-  assert.match(js, /function reconcileEnterStates\(\)/);
-  assert.match(js, /slotInPhom\(runId\)/);
+  assert.match(cell, /bc-readonly/);
+  assert.match(cell, /ACCOUNT/);
+  assert.match(cell, /'RID'/);
+  assert.match(cell, /'STATE'/);
+  assert.match(cell, /'WS'/);
+  // browser lifecycle stays in the Tool (↻ WEB + ⏻)
+  assert.match(cell, /onReloadWeb\(runId\)/);
+  assert.match(cell, /onCloseBrowser\(slot, runId\)/);
+  // NO game-control action is wired from the read-only cell (they live in the Chromium header)
+  assert.equal(/actionButton\(|betFindGroup\(|manualEnterGame\(|onManualJoinShared\(|onManualLeave\(/.test(cell), false, 'no game action wired in the read-only cell');
 });
 
 test('one horizontal row maps slot A/B/C -> Browser 1/2/3 (deterministic, not launch order)', () => {
@@ -67,25 +79,35 @@ test('one horizontal row maps slot A/B/C -> Browser 1/2/3 (deterministic, not la
   assert.match(row, /SLOTS\.forEach\(\(slot, i\) => .*compactBrowserCell\(i \+ 1, slot, assign\[slot\]\.runId\)/);
 });
 
-test('VÀO GAME gates TÌM BÀN: FIND renders the bet selector (canFind gated in betFindGroup, §8/§11)', () => {
-  const action = fn(js, 'actionButton');
-  assert.match(action, /act\.action === 'FIND'[\s\S]*?betFindGroup\(b, runId, inGame\)/);
-  assert.match(action, /act\.action === 'ENTER_GAME'[\s\S]*?manualEnterGame\(runId\)/);
-  const g = fn(js, 'betFindGroup');
-  assert.match(g, /MCS\.canFind\(manualCluster, b\) && inGame/); // §8 — FIND only after in-game
+test('the header gates TÌM BÀN behind VÀO GAME and renders a REAL bet selector (game-header.cjs)', () => {
+  const gh = read('desktop/protocol/phom/game-header.cjs');
+  // not in game yet -> the only action is ENTER_GAME (VÀO GAME), never FIND
+  assert.match(gh, /!view\.inGame[\s\S]*?action: 'ENTER_GAME'/);
+  // in game + no shared room -> FIND needs a bet chosen from the server betOptions (no hard-coded stake)
+  assert.match(gh, /action: 'FIND'[\s\S]*?needsBet: true[\s\S]*?betOptions/);
+  // the injected bar sends FIND with the picked stake (Number), never a typed/hard-coded value
+  assert.match(gh, /emit\('FIND',\{ stake:Number\(sel\.value\) \}\)/);
 });
 
-test('main screen shows NO username and NO Host/Follower/player-4 terminology', () => {
+test('main screen shows NO Host/Follower/player-4 terminology (ACCOUNT is now shown read-only, §6.3.2)', () => {
   for (const name of ['renderControl', 'compactHeader', 'compactBrowserRow', 'compactBrowserCell']) {
     const body = fn(js, name);
-    assert.equal(/username|USER_UNKNOWN|Chưa đăng nhập/.test(body), false, `${name} shows no username`);
     assert.equal(/HOST|FOLLOWER|Follower|Player 4|player-4|Người thứ 4/.test(body), false, `${name} has no host/follower/player-4`);
   }
+  // the read-only cell DOES surface the logged-in ACCOUNT (display name), with USER_UNKNOWN mapped to —
+  const cell = fn(js, 'compactBrowserCell');
+  assert.match(cell, /mb\.username/);
+  assert.match(cell, /USER_UNKNOWN/);
 });
 
-test('VÀO GAME acts on ONE browser via the run-scoped entry IPC (no cross-browser action)', () => {
-  const body = fn(js, 'manualEnterGame');
-  assert.match(body, /api\.enterGame\(runId\)/);
+test('the header action router acts on ONE browser via the run-scoped coordinator API (no cross-browser)', () => {
+  // ENTER_GAME -> phomEnterGame(runId); FIND/JOIN/REJOIN/LEAVE -> the run-scoped manual* API, all keyed by
+  // the single runId the click came from (never a leave-all / cross-browser action).
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 1600);
+  assert.match(r, /ENTER_GAME'[\s\S]*?phomEnterGame\(rid\)/);
+  assert.match(r, /FIND'[\s\S]*?manualDiscoverTable\(rid, \{ selectedStake \}\)/);
+  assert.match(r, /manualRejoin\(rid/);
+  assert.match(r, /manualLeave\(rid\)/);
 });
 
 test('the Tool is the 4th window of the deterministic cluster arrangement', () => {

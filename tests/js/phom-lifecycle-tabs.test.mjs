@@ -63,10 +63,13 @@ test('close is browser-scoped: the close handler never closes the Tool or all br
   assert.equal(/closeBrowsers\(\)|clusterStop|api\.clusterStop/.test(close), false, 'never closes the whole cluster/Tool');
 });
 
-test('no manual stake input and no username anywhere in the main control surface', () => {
-  for (const name of ['compactHeader', 'compactBrowserCell', 'compactBrowserRow', 'actionButton']) {
+test('no manual stake input and no host/follower terminology on the main control surface (§6.3.2)', () => {
+  // PHASE 6.3.2 — ACCOUNT (the logged-in display name) is now shown READ-ONLY in the cell, so the old
+  // blanket "no username" ban no longer applies to compactBrowserCell; the manual stake input is still
+  // banned everywhere (stake is a server option picked in the Chromium header).
+  for (const name of ['compactHeader', 'compactBrowserCell', 'compactBrowserRow']) {
     const body = fn(js, name);
-    assert.equal(/phq-manual-stake|placeholder: '100'|username|USER_UNKNOWN/.test(body), false, `${name} must have no stake input / username`);
+    assert.equal(/phq-manual-stake|placeholder: '100'/.test(body), false, `${name} must have no manual stake input`);
     assert.equal(/HOST|FOLLOWER|Player 4|player-4/.test(body), false, `${name} must have no host/follower/player-4`);
   }
 });

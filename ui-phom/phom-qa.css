@@ -398,6 +398,17 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .bc-main { width: 100%; justify-content: center; height: 34px; font-weight: 600; }
 .bc-life { display: flex; gap: 6px; justify-content: flex-end; border-top: 1px solid var(--border); padding-top: 8px; }
 .bc-life .btn { flex: none; }
+/* PHASE 6.3.2 — Screen 2 read-only mirror (ACCOUNT/RID/STATE/WS). Game actions live in the Chromium header. */
+.bc-readonly { gap: 3px; }
+.bc-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; }
+.bc-k { color: var(--text-faint); font-weight: 500; letter-spacing: .02em; }
+.bc-v { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
+.bc-v.ok { color: var(--ok, #16a34a); }
+.bc-v.off { color: var(--text-faint); }
+.bc-v.warn { color: var(--warn, #d97706); }
+.bc-v.danger { color: var(--danger, #dc2626); }
+.bc-note { margin-top: 4px; }
+.xs { font-size: 10.5px; }
 .chip.busy { display: inline-flex; align-items: center; gap: 6px; }
 
 /* bet selector inside a panel */

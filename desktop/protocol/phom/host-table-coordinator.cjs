@@ -824,6 +824,9 @@ class HostTableCoordinator extends EventEmitter {
         browserIndex: i + 1, profileId: rec.id, displayName: rec.displayName,
         username: this._username(rec) || 'USER_UNKNOWN',
         connected: c.connected, socketReady: c.socketReady,
+        // channelCount > 0 == this browser received the Phỏm stake list, i.e. it is in the Phỏm lobby
+        // (mirrors snapshot().channelCount). The header uses it to decide "inGame" (§6.3.2).
+        channelCount: Array.isArray(c.channels) ? c.channels.length : 0,
         rid: rec._joinedRid != null ? rec._joinedRid : null,
         lastRid: rec._lastRid != null ? rec._lastRid : null,
         // §3/§4 — REAL bet options for THIS browser (distinct server stakes from its channel list). Empty

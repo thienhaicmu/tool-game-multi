@@ -62,6 +62,14 @@
       const anyJoined = list.some((x) => x.manualState === 'JOINED' && Number(x.rid) === Number(next.sharedRid));
       if (!anyJoined) { next.sharedRid = null; next.sharedRidOwner = null; next.sharedStake = null; }
     }
+    // PHASE 6.3.2 — the FIND now happens in the in-Chromium header (not a tool click), so adopt the shared
+    // RID straight from the authoritative snapshot: the first JOINED browser's RID becomes the cluster room
+    // (so the read-only Tool header shows BÀN, and B2/B3 headers show VÀO BÀN for it). Tool-driven FIND
+    // (onFindResult) still sets it first when present; this only fills a gap left by header-driven joins.
+    if (next.sharedRid == null && list.length) {
+      const joined = list.find((x) => x.manualState === 'JOINED' && x.rid != null);
+      if (joined) { next.sharedRid = Number(joined.rid); next.sharedRidOwner = sid(joined.profileId); }
+    }
     return next;
   }
 
