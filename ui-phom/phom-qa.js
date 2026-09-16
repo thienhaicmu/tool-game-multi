@@ -62,7 +62,11 @@
   // PHASE 6.3.3.2 — last card-observation snapshot (players/discards/melds/remaining/capabilities). Read-only
   // data binding for Screen 2; the analysis ANGLE (selectedAnalysisPlayer) never merges the three hands (§20).
   let cardsSnap = null;
+  // PHASE 6.3.3.3 — the SAFE CARD ANALYZER angle. `selectedAnalysisPlayer` is the CANONICAL target selection
+  // (a slot B1/B2/B3 = Player 1/2/3; presentation only). It resolves to an authoritative uid via
+  // cardsSnap.slotBinding and is passed to the read-only analyzer; the three hands are never merged (§5/§20).
   let selectedAnalysisPlayer = null;
+  let safeAnalysis = null;     // last read-only analyzer result for the selected target
   let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
   const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
   const manualEntering = {}; // browserId -> true while VÀO GAME is in flight (real ENTERING state, §5)
@@ -924,11 +928,52 @@
   // PHASE 6.3.3 — LÁ BÀI AN TOÀN placeholder region (UI structure only; the analysis is a future Monitor
   // feature — no card logic added here). It reserves the top of the card workspace so the future feature
   // fills it. Empty state is explicit; nothing is fabricated.
+  // PHASE 6.3.3.3 — LÁ BÀI AN TOÀN is now bound to the read-only SAFE CARD ANALYZER. The user picks ONE
+  // Player (1/2/3) as the analysis angle; the analyzer classifies THAT player's own cards from PUBLIC
+  // observed data. It only DISPLAYS — never plays, discards or clicks (§2/§18/§22). Nothing is shown SAFE
+  // without proof; insufficient evidence renders an explicit state, never a fake number (§13/§24).
   function renderSafeCards() {
     const box = el('div', { class: 'safe-cards', id: 'phq-safe' });
-    box.appendChild(el('div', { class: 'section-t' }, 'LÁ BÀI AN TOÀN'));
-    box.appendChild(el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, '— (sẽ bật ở bản Monitor/Analyze)')));
+    box.appendChild(el('div', { class: 'safe-head' },
+      el('span', { class: 'section-t' }, 'LÁ BÀI AN TOÀN'),
+      playerAnalysisSelector()));
+    box.appendChild(renderSafeBody());
+    box.appendChild(el('div', { class: 'faint xs safe-src' }, 'Phân tích từ dữ liệu công khai đã quan sát'));
     return box;
+  }
+  // A compact one-of-three selector (Player 1/2/3) — never "ALL"/"combine" (§20). Re-selecting clears it.
+  function playerAnalysisSelector() {
+    const wrap = el('div', { class: 'analysis-pick' }, el('span', { class: 'faint xs' }, 'PHÂN TÍCH:'));
+    ['B1', 'B2', 'B3'].forEach((slot, i) => {
+      const active = selectedAnalysisPlayer === slot;
+      wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => { selectedAnalysisPlayer = active ? null : slot; refreshSafeAnalysis().then(() => bgRender()); } }, 'Player ' + (i + 1)));
+    });
+    return wrap;
+  }
+  function renderSafeBody() {
+    if (!selectedAnalysisPlayer) return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'CHỌN PLAYER ĐỂ PHÂN TÍCH'));
+    const a = safeAnalysis;
+    if (!a || a.status === 'NO_HAND' || a.status === 'TARGET_NOT_FOUND' || a.status === 'NO_TARGET') return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'ĐANG CHỜ DỮ LIỆU BÀI…'));
+    const safe = a.safeCards || []; const likely = a.likelySafeCards || [];
+    if (!safe.length && !likely.length) return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'CHƯA ĐỦ DỮ LIỆU'));
+    const wrap = el('div');
+    if (safe.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'AN TOÀN')); wrap.appendChild(safeCardRow(safe, 'meld')); }
+    if (likely.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'CÓ THỂ AN TOÀN')); wrap.appendChild(safeCardRow(likely, '')); }
+    return wrap;
+  }
+  function safeCardRow(cards, extra) {
+    const row = el('div', { class: 'cards' });
+    for (const c of cards) row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') + (extra ? ' ' + extra : ''), title: (c.reasonCodes || []).join(', ') }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
+    return row;
+  }
+  // Resolve the selected slot → authoritative uid (via the observer's binding) and run the read-only
+  // analyzer in main. Event-driven: called on selection change + every card snapshot update (§21). No timers.
+  async function refreshSafeAnalysis() {
+    const slot = selectedAnalysisPlayer;
+    if (!slot || !api.analyzeSafeCards) { safeAnalysis = null; return; }
+    const uid = cardsSnap && cardsSnap.slotBinding ? cardsSnap.slotBinding[slot] : null;
+    if (!uid) { safeAnalysis = null; return; } // Player not yet bound to a uid (waiting for table data)
+    try { const r = await api.analyzeSafeCards(uid); safeAnalysis = r && r.ok !== false ? r : null; } catch { safeAnalysis = null; }
   }
   // Build the single business-action button from the browserAction decision.
   function actionButton(act, b, runId, inGame) {
@@ -1960,6 +2005,8 @@
     try { const rc = await api.remainingCards(); remaining = rc && rc.ok !== false ? rc : null; } catch { remaining = null; }
     // PHASE 6.3.3.2 — pull the card-observation snapshot (real observed data; empty/unknown when none).
     if (api.cardsSnapshot) { try { const cs = await api.cardsSnapshot(); cardsSnap = cs && cs.ok !== false ? cs : null; } catch { cardsSnap = null; } }
+    // PHASE 6.3.3.3 — re-run the read-only analyzer for the selected target off the fresh snapshot (§21).
+    await refreshSafeAnalysis();
     if (MCS) manualCluster = MCS.reconcile(manualCluster, manualBrowsers);
     reconcileEnterStates(); // clear ĐANG VÀO GAME once the browser is authoritatively in game
   }
@@ -2101,7 +2148,7 @@
   // PHASE 6.1 — card state changed: refresh Screen 2 remaining cards + per-browser membership, then re-render.
   if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) bgRender(); }); else bgRender(); });
   // PHASE 6.3.3.2 — a fresh card-observation snapshot arrived (push). Store it + re-render Screen 2.
-  if (api.onCards) api.onCards((c) => { cardsSnap = c || null; if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
+  if (api.onCards) api.onCards((c) => { cardsSnap = c || null; refreshSafeAnalysis().then(() => { if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); }); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the

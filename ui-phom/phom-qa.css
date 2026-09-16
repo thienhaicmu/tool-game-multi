@@ -411,6 +411,14 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .card-workspace .remaining-cards { margin-top: 0; border-top: none; }
 .card-workspace .cards { flex: 1 1 auto; align-content: flex-start; overflow-y: auto; }
 
+/* PHASE 6.3.3.3 — SAFE CARD ANALYZER: a compact one-of-three player selector in the LÁ BÀI AN TOÀN header
+   (presentation only; never enlarges the layout, §19/§20). Reuses the existing .btn/.card-face styles. */
+.safe-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
+.safe-head .section-t { margin: 0; }
+.analysis-pick { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
+.analysis-pick .btn.sm { padding: 2px 8px; }
+.safe-src { margin-top: 4px; }
+
 /* PHỎM tab: browser STATUS chips — compact, ONE horizontal row (redesigned B1/B2/B3, §1/§8) */
 .browser-row { display: flex; gap: 8px; margin: 6px 0 2px; flex: 0 0 auto; align-items: stretch; }
 .browser-cell { flex: 1 1 0; min-width: 0; display: flex; flex-direction: row; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 9px; background: var(--panel); box-shadow: var(--shadow); min-height: 0; }

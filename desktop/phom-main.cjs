@@ -31,6 +31,7 @@ const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
 const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs');
+const { createSafeCardAnalyzer } = require('./protocol/phom/phom-safe-card-analyzer.cjs'); // PHASE 6.3.3.3 — read-only analyzer
 const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-manager.cjs');
 const { projectRuntimeToManagerConfig } = require('./protocol/phom/cluster-runtime-projection.cjs');
 const { parseQuickProxies, parseQuickProxyRows } = require('./browser-run/phom-quick-proxy.cjs');
@@ -100,6 +101,9 @@ else {
   var deviceProfilesStore = null; // PHASE-6.3.1 flexible N-profile store
   var clusterProfileStore = null;
   var phomSessions = null;
+  // PHASE 6.3.3.3 — one read-only safe-card analyzer (deterministic, no state beyond a memo cache). The
+  // selected target uid is owned by the renderer and passed per analyze() call — no duplicate target state.
+  const safeCardAnalyzer = createSafeCardAnalyzer();
   // Records which saved cluster profile id (if any) backs the live ClusterSession, so
   // the store can block deleting a profile that is in use. Set on a profile-driven
   // create, cleared on stop/leave. This is provenance only — it never alters the Host
@@ -1200,6 +1204,13 @@ else {
     // PHASE 6.3.3.2 — the full card-observation snapshot (players/discards/melds/remaining/capabilities).
     // Empty/unknown shape when no session is active — never fabricated.
     ipcMain.handle('phom:cards', () => (phomSessions ? { ok: true, ...phomSessions.cardObserverSnapshot() } : { ok: true, players: {}, remaining: { count: 0, codes: [], cards: [] }, discardPile: [], capabilities: {} }));
+    // PHASE 6.3.3.3 — MONITOR / SAFE CARD ANALYZER (read-only). Runs the DETERMINISTIC analyzer over the
+    // CURRENT observer snapshot for ONE selected target uid (the renderer owns the selection). It never
+    // sends a game command / clicks / plays — it only classifies the target's cards for display.
+    ipcMain.handle('phom:analyze-safe-cards', (_e, targetPlayerUid) => {
+      const snapshot = phomSessions ? phomSessions.cardObserverSnapshot() : null;
+      return { ok: true, ...safeCardAnalyzer.analyze({ snapshot, targetPlayerUid }) };
+    });
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.
     ipcMain.handle('phom:cluster-create', guarded((_e, config) => {
       ensureStores();
