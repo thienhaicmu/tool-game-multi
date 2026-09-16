@@ -340,6 +340,9 @@
   async function refreshProfilesX() {
     try { const r = await api.profilesList(); profilesX = (r && r.profiles) || []; } catch { profilesX = []; }
     if (PS) selectedProfileIds = PS.prune(selectedProfileIds, profilesX.map((p) => p.id));
+    // Pre-fill the Game URL from a saved profile so it is never re-typed each launch (§6.3.2-fix). Only
+    // seed when empty — the user can still override, and openSelected re-saves whatever is used.
+    if (!(gameUrlX || '').trim()) { const withUrl = profilesX.find((p) => p.gameUrl); if (withUrl) gameUrlX = withUrl.gameUrl; }
   }
   async function deleteProfileX(id) {
     const p = profilesX.find((x) => x.id === id);

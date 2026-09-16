@@ -62,6 +62,29 @@ test('renderer SETUP: profile list, ordered selection, bulk proxy by order, RUN 
   assert.match(js, /pf-osw/); assert.match(js, /pf-vpw/);
 });
 
+// PHASE 6.3.2-fix — the game URL is remembered per profile so it is not re-typed each launch; a typed URL
+// overrides + is saved back, otherwise the profile's own saved URL is used.
+test('open-from-selection remembers + reuses the Game URL per profile (§6.3.2-fix)', () => {
+  const fn = main.slice(main.indexOf('function openSelectedProfiles('), main.indexOf('function ensureCluster()'));
+  assert.match(fn, /typedUrl \|\| \(p\.gameUrl/); // typed URL overrides, else the profile's saved URL
+  assert.match(fn, /deviceProfilesStore\.update\(ids\[i\], \{ gameUrl: profUrl \}\)/); // save it back for next launch
+  assert.match(fn, /PHOM_GAME_URL_REQUIRED/); // still required (typed or saved) unless local test
+  // the renderer seeds the URL field from a saved profile when empty
+  assert.match(js, /profilesX\.find\(\(p\) => p\.gameUrl\)/);
+});
+
+// PHASE 6.3.2-fix — a valid product license IS the authorization for manual QA control (no hidden env gate),
+// wired live so it reflects the current license regardless of when the coordinator was built.
+test('a licensed app authorizes manual control; authorization is a LIVE getter', () => {
+  const authFn = main.slice(main.indexOf('function phomAuthorizedEnv('), main.indexOf('function phomAuthorizedEnv(') + 400);
+  assert.match(authFn, /if \(licenseActive\(\)\) return true/);
+  const mgr = read('desktop/protocol/phom/host-session-manager.cjs');
+  assert.match(mgr, /environmentAuthorized: \(\) => this\.authorized\(\)/); // live, not a snapshot
+  const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
+  assert.match(coord, /this\._authorizedFn = typeof deps\.environmentAuthorized === 'function'/);
+  assert.match(coord, /_guard\(\) \{ return this\._authorizedFn\(\) && !this\._stopped; \}/);
+});
+
 test('index.html loads the profile-selection module before the renderer', () => {
   const html = read('ui-phom/index.html');
   assert.match(html, /profile-selection\.js/);

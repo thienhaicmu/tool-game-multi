@@ -249,6 +249,10 @@ else {
   }
 
   function phomAuthorizedEnv() {
+    // A valid product license (or the dev bypass) IS the authorization for manual QA control — that is the
+    // gate an end user passes by activating the app. The legacy env/IP opt-in stays for headless CI runs
+    // that have no license, but is no longer required for a normally licensed desktop app.
+    if (licenseActive()) return true;
     if (process.env.PHOM_QA_ENABLED !== '1') return false;
     return process.env.PHOM_QA_AUTHORIZED === '1' || IP_CHECK_ALLOWLIST.length > 0;
   }
@@ -357,20 +361,27 @@ else {
     const ids = Array.isArray(profileIds) ? profileIds.map((x) => String(x)) : [];
     if (ids.length !== 3 || new Set(ids).size !== 3) return { ok: false, error: { code: 'PHOM_SELECT_THREE', message: 'Chọn đúng 3 hồ sơ khác nhau.' } };
     clusterLocalTest = !!(localTest && devBypass.allowed);
-    const url = localTestActive() ? 'about:blank' : (gameUrl != null ? String(gameUrl).trim() : '');
-    if (!localTestActive() && !url) return { ok: false, error: { code: 'PHOM_GAME_URL_REQUIRED', message: 'Nhập Game URL trước khi mở.' } };
+    // A typed Game URL (if any) OVERRIDES + is REMEMBERED; otherwise each profile falls back to its own
+    // saved gameUrl so the URL never has to be re-typed on the next launch (§6.3.2-fix).
+    const typedUrl = !localTestActive() && gameUrl != null ? String(gameUrl).trim() : '';
     const profiles = [];
     for (let i = 0; i < 3; i++) {
       const p = deviceProfilesStore.get(ids[i]);
       if (!p) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_FOUND', message: `Hồ sơ ${ids[i]} không tồn tại.` } };
       if (!p.device) return { ok: false, error: { code: 'PHOM_PROFILE_NO_DEVICE', message: `Hồ sơ "${p.name}" chưa có thiết bị.` } };
+      const profUrl = localTestActive() ? 'about:blank' : (typedUrl || (p.gameUrl ? String(p.gameUrl).trim() : ''));
+      if (!localTestActive() && !profUrl) return { ok: false, error: { code: 'PHOM_GAME_URL_REQUIRED', message: 'Nhập Game URL (hoặc lưu URL trong hồ sơ) trước khi mở.' } };
+      // Remember the URL on the profile so the next app launch reuses it (with the persistent user-data-dir
+      // this returns straight to the logged-in game — no re-login).
+      if (!localTestActive() && profUrl && profUrl !== (p.gameUrl || '')) { try { deviceProfilesStore.update(ids[i], { gameUrl: profUrl }); } catch { /* best effort */ } }
       // slot A/B/C = the runtime B1/B2/B3 window; browserProfileId carries the flexible profile id.
-      profiles.push({ slot: SLOTS_ABC[i], browserProfileId: p.id, profileId: p.id, device: p.device, proxyRef: p.proxyRef || null, gameUrl: url, label: p.name });
+      profiles.push({ slot: SLOTS_ABC[i], browserProfileId: p.id, profileId: p.id, device: p.device, proxyRef: p.proxyRef || null, gameUrl: profUrl, label: p.name });
     }
-    const res = ensureCluster().createCluster({ clusterProfileId: null, hostSlot: 'A', selectedStake: null, gameUrl: url, profiles });
+    const clusterUrl = localTestActive() ? 'about:blank' : (profiles[0] ? profiles[0].gameUrl : typedUrl);
+    const res = ensureCluster().createCluster({ clusterProfileId: null, hostSlot: 'A', selectedStake: null, gameUrl: clusterUrl, profiles });
     if (res && res.ok === false) return res;
     activeClusterProfileId = null;
-    return res && res.ok ? { ...res, localTest: localTestActive(), gameUrl: url, mapping: ids.map((id, i) => ({ browser: 'B' + (i + 1), profileId: id })) } : res;
+    return res && res.ok ? { ...res, localTest: localTestActive(), gameUrl: clusterUrl, mapping: ids.map((id, i) => ({ browser: 'B' + (i + 1), profileId: id })) } : res;
   }
 
   function ensureCluster() {

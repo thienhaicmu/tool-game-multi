@@ -47,7 +47,7 @@ class HostSessionManager extends EventEmitter {
       };
     });
 
-    const coord = new HostTableCoordinator({ profiles, hostId: host, selectedStake, now: this._now, environmentAuthorized: this.authorized(), sessionId: `PHOMHOST-${this._now()}` });
+    const coord = new HostTableCoordinator({ profiles, hostId: host, selectedStake, now: this._now, environmentAuthorized: () => this.authorized(), sessionId: `PHOMHOST-${this._now()}` });
     coord.on('update', (snap) => this.emit('update', snap));
     coord.on('hands', (hands) => this.emit('hands', hands));
     coord.on('state', (s) => this.emit('state', s));

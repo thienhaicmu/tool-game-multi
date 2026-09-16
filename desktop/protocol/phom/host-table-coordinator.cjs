@@ -71,7 +71,9 @@ class HostTableCoordinator extends EventEmitter {
     super();
     this._now = deps.now || (() => Date.now());
     this._sessionId = deps.sessionId || `PHOMHOST-${this._now()}`;
-    this._authorized = deps.environmentAuthorized !== false;
+    // Authorization may be a boolean (legacy) OR a live getter. A live getter lets a licensed app grant
+    // authorization the moment its license is active, regardless of when the session/coordinator was built.
+    this._authorizedFn = typeof deps.environmentAuthorized === 'function' ? deps.environmentAuthorized : () => deps.environmentAuthorized !== false;
     this._selectedStake = deps.selectedStake != null ? deps.selectedStake : null;
     this._maxRejoin = deps.maxRejoinAttempts != null ? deps.maxRejoinAttempts : 3;
     this._rejoinCooldownMs = deps.rejoinCooldownMs != null ? deps.rejoinCooldownMs : 1000;
@@ -1176,8 +1178,8 @@ class HostTableCoordinator extends EventEmitter {
     return null;
   }
   _controlledUids() { return [...this._profiles.values()].map((r) => r.ctx.uid()).filter(Boolean); }
-  _guard() { return this._authorized && !this._stopped; }
-  _unauthorized() { if (!this._authorized) { this._setState(SESSION.UNAUTHORIZED); return { ok: false, error: { code: 'PHOM_UNAUTHORIZED_ENVIRONMENT', message: 'AUTHORIZED_ENVIRONMENT_REQUIRED' } }; } return { ok: false, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+  _guard() { return this._authorizedFn() && !this._stopped; }
+  _unauthorized() { if (!this._authorizedFn()) { this._setState(SESSION.UNAUTHORIZED); return { ok: false, error: { code: 'PHOM_UNAUTHORIZED_ENVIRONMENT', message: 'AUTHORIZED_ENVIRONMENT_REQUIRED' } }; } return { ok: false, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
   _setState(next) { if (this._state === next) return; this._state = next; this.emit('state', next); }
 
   // ---- snapshots ----
@@ -1200,7 +1202,7 @@ class HostTableCoordinator extends EventEmitter {
     });
     const readyCount = profiles.filter((p) => p.ready).length;
     return {
-      sessionId: this._sessionId, state: this._state, authorized: this._authorized, stopped: this._stopped,
+      sessionId: this._sessionId, state: this._state, authorized: this._authorizedFn(), stopped: this._stopped,
       hostId: this._hostId || null, selectedStake: this._selectedStake,
       hostTableIdentity: this._hostTableIdentity,
       sameTable: verdict.result === 'SAME_TABLE', tableVerdict: verdict.result,

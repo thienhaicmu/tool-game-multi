@@ -89,3 +89,21 @@ test('invalid device is refused typed (no partial write)', () => {
   assert.match(r.error.code, /PHOM_DEVICE/);
   assert.equal(s.count(), 0);
 });
+
+// PHASE 6.3.2-fix — the game URL is remembered per profile (never re-typed each launch) and survives reload.
+test('gameUrl is persisted per profile (create + update) and reloads from disk', () => {
+  const f = tmpFile();
+  let s = new PhomDeviceProfilesStore({ filePath: f });
+  const id = s.create({ name: 'HitClub', device: { ...DEV }, gameUrl: 'https://v.hitclub.maison/?a=hitclub' }).profile.id;
+  assert.equal(s.getPublic(id).gameUrl, 'https://v.hitclub.maison/?a=hitclub');
+  // blank gameUrl on create => null (not stored as empty string)
+  const id2 = s.create({ name: 'Blank', device: { ...DEV } }).profile.id;
+  assert.equal(s.getPublic(id2).gameUrl, null);
+  // update saves a new URL; clearing with '' sets null; unspecified preserves it
+  assert.equal(s.update(id2, { gameUrl: '  https://x.example/room  ' }).profile.gameUrl, 'https://x.example/room');
+  assert.equal(s.update(id2, { name: 'Renamed' }).profile.gameUrl, 'https://x.example/room', 'gameUrl preserved when not in patch');
+  assert.equal(s.update(id2, { gameUrl: '' }).profile.gameUrl, null, 'empty clears the URL');
+  // reload from disk keeps the saved URL
+  s = new PhomDeviceProfilesStore({ filePath: f });
+  assert.equal(s.getPublic(id).gameUrl, 'https://v.hitclub.maison/?a=hitclub');
+});

@@ -21,7 +21,7 @@ function genId() { return 'prof-' + Date.now().toString(36) + '-' + Math.random(
 
 function publicOf(p) {
   if (!p) return null;
-  return { id: p.id, name: p.name, proxyRef: p.proxyRef || null, device: p.device ? publicSnapshot(p.device) : null, createdAt: p.createdAt, updatedAt: p.updatedAt };
+  return { id: p.id, name: p.name, proxyRef: p.proxyRef || null, gameUrl: p.gameUrl || null, device: p.device ? publicSnapshot(p.device) : null, createdAt: p.createdAt, updatedAt: p.updatedAt };
 }
 
 class PhomDeviceProfilesStore {
@@ -70,6 +70,8 @@ class PhomDeviceProfilesStore {
     const profile = {
       id, name: input.name != null ? String(input.name) : norm.device.name,
       proxyRef: input.proxyRef != null ? String(input.proxyRef) : null,
+      // The game URL is remembered per profile so it is never re-typed on the next app launch (§6.3.2-fix).
+      gameUrl: input.gameUrl != null && String(input.gameUrl).trim() ? String(input.gameUrl).trim() : null,
       device: { ...norm.device, id }, createdAt: now, updatedAt: now,
     };
     this._map.set(id, profile);
@@ -92,6 +94,7 @@ class PhomDeviceProfilesStore {
       ...existing,
       name: patch.name != null ? String(patch.name) : existing.name,
       proxyRef: patch.proxyRef !== undefined ? (patch.proxyRef || null) : existing.proxyRef,
+      gameUrl: patch.gameUrl !== undefined ? (patch.gameUrl && String(patch.gameUrl).trim() ? String(patch.gameUrl).trim() : null) : (existing.gameUrl || null),
       device, updatedAt: new Date().toISOString(),
     };
     this._map.set(String(id), profile);
