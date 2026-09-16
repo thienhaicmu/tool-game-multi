@@ -59,6 +59,10 @@
   let manualCluster = MCS ? MCS.create() : { searchingBrowserId: null, sharedRid: null, sharedRidOwner: null };
   let manualBrowsers = [];   // last manualBrowserSnapshot() (per-browser independent state)
   let remaining = null;      // last remainingCards() view for Screen 2
+  // PHASE 6.3.3.2 — last card-observation snapshot (players/discards/melds/remaining/capabilities). Read-only
+  // data binding for Screen 2; the analysis ANGLE (selectedAnalysisPlayer) never merges the three hands (§20).
+  let cardsSnap = null;
+  let selectedAnalysisPlayer = null;
   let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
   const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
   const manualEntering = {}; // browserId -> true while VÀO GAME is in flight (real ENTERING state, §5)
@@ -1954,6 +1958,8 @@
   async function refreshManual() {
     try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; } catch { manualBrowsers = []; }
     try { const rc = await api.remainingCards(); remaining = rc && rc.ok !== false ? rc : null; } catch { remaining = null; }
+    // PHASE 6.3.3.2 — pull the card-observation snapshot (real observed data; empty/unknown when none).
+    if (api.cardsSnapshot) { try { const cs = await api.cardsSnapshot(); cardsSnap = cs && cs.ok !== false ? cs : null; } catch { cardsSnap = null; } }
     if (MCS) manualCluster = MCS.reconcile(manualCluster, manualBrowsers);
     reconcileEnterStates(); // clear ĐANG VÀO GAME once the browser is authoritatively in game
   }
@@ -2052,15 +2058,24 @@
 
   // Screen 2 — CARDS REMAINING (= full deck − Browser1 − Browser2 − Browser3). Renders the backend
   // result only (never recomputes); NOT "player 4".
+  // Screen 2 — LÁ BÀI CÒN LẠI (CARDS REMAINING). PHASE 6.3.3.2: prefer the card OBSERVER's remaining
+  // (canonical 52 − every card PROVEN out: hands + discards + melds); fall back to the 3-browser-hands
+  // backend view (remaining.cards / remaining.count). Both are REAL observed data — nothing fabricated.
+  // Until the observer has any evidence, show an explicit "Đang quan sát…" state (never a fake number).
   function renderRemainingCards() {
+    // CARDS REMAINING (= LÁ BÀI CÒN LẠI): observer remaining preferred, else the backend 3-hands view.
     const box = el('div', { class: 'remaining-cards', id: 'phq-remaining' });
-    box.appendChild(el('div', { class: 'section-t' }, 'CARDS REMAINING'));
-    const cards = (remaining && Array.isArray(remaining.cards)) ? remaining.cards : [];
+    box.appendChild(el('div', { class: 'section-t' }, 'LÁ BÀI CÒN LẠI'));
+    const obs = cardsSnap && cardsSnap.remaining ? cardsSnap.remaining : null;
+    const observing = !!(obs && obs.knownOutCount === 0);
+    const view = obs && !observing ? obs : (remaining && remaining.cards ? { cards: remaining.cards, count: remaining.count } : null);
+    if (!view) { box.appendChild(el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'Đang quan sát…'))); return box; }
+    const cards = Array.isArray(view.cards) ? view.cards : [];
     const row = el('div', { class: 'cards' });
     if (!cards.length) row.appendChild(el('span', { class: 'faint' }, '—'));
     for (const c of cards) row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
     box.appendChild(row);
-    box.appendChild(el('div', { class: 'faint sm' }, 'Remaining: ' + (remaining ? remaining.count : 0)));
+    box.appendChild(el('div', { class: 'faint sm' }, 'Còn lại: ' + view.count));
     return box;
   }
 
@@ -2085,6 +2100,8 @@
   if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); advanceAutoFlow(snap); if (!$('workspace').hidden) bgRender(); });
   // PHASE 6.1 — card state changed: refresh Screen 2 remaining cards + per-browser membership, then re-render.
   if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) bgRender(); }); else bgRender(); });
+  // PHASE 6.3.3.2 — a fresh card-observation snapshot arrived (push). Store it + re-render Screen 2.
+  if (api.onCards) api.onCards((c) => { cardsSnap = c || null; if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the

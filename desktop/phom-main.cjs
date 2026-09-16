@@ -266,6 +266,8 @@ else {
     // dedupes unchanged states so steady-state WS traffic costs ~0 CDP evaluates.
     phomSessions.on('update', (snap) => { scheduleSessionBroadcast(snap); });
     phomSessions.on('hands', (hands) => { scheduleHandsBroadcast(hands); });
+    phomSessions.on('cards', (cards) => { scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
+
     phomSessions.on('kick', (k) => send('phom:kick', k));
     phomSessions.on('log', (l) => { try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
     return phomSessions;
@@ -613,6 +615,14 @@ else {
     if (_handsTimer) return;
     const h = _handsPending; _handsPending = null; if (h) send('phom:hands', h); // leading edge
     _handsTimer = setTimeout(() => { _handsTimer = null; if (_handsPending) { const t = _handsPending; _handsPending = null; send('phom:hands', t); } }, BROADCAST_MS);
+  }
+  // PHASE 6.3.3.2 — coalesce the per-frame card-observation snapshot the same way (leading + trailing).
+  let _cardsTimer = null; let _cardsPending = null;
+  function scheduleCardsBroadcast(cards) {
+    _cardsPending = cards;
+    if (_cardsTimer) return;
+    const c = _cardsPending; _cardsPending = null; if (c) send('phom:cards', c); // leading edge
+    _cardsTimer = setTimeout(() => { _cardsTimer = null; if (_cardsPending) { const t = _cardsPending; _cardsPending = null; send('phom:cards', t); } }, BROADCAST_MS);
   }
 
   // Route ONE header button click (from the in-page binding) to the coordinator's manual API. The action
@@ -1187,6 +1197,9 @@ else {
     }));
     // Screen 2 — cards REMAINING after removing all cards held by the 3 browsers (never "player 4").
     ipcMain.handle('phom:remaining-cards', () => (phomSessions ? { ok: true, ...phomSessions.remainingCards() } : { ok: true, count: 0, codes: [], cards: [] }));
+    // PHASE 6.3.3.2 — the full card-observation snapshot (players/discards/melds/remaining/capabilities).
+    // Empty/unknown shape when no session is active — never fabricated.
+    ipcMain.handle('phom:cards', () => (phomSessions ? { ok: true, ...phomSessions.cardObserverSnapshot() } : { ok: true, players: {}, remaining: { count: 0, codes: [], cards: [] }, discardPile: [], capabilities: {} }));
     // PhomClusterCdpManager — control-plane over the three independent CDP clients.
     ipcMain.handle('phom:cluster-create', guarded((_e, config) => {
       ensureStores();

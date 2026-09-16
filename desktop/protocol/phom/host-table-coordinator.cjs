@@ -8,6 +8,7 @@ const { ZONE, GID } = require('./phom-frame-classify.cjs');
 const { buildChannelListFrame, buildJoinFrame, buildReadyFrame, buildLeaveFrame } = require('./phom-coordinator.cjs');
 const { remainingCardsView } = require('./remaining-cards.cjs');
 const { pickQualifiedCandidate } = require('./table-qualify.cjs');
+const { createCardObserver } = require('./phom-card-observer.cjs');
 
 // ---------------------------------------------------------------------------
 // HostTableCoordinator (§10–20) — the HOST/FOLLOWER controlled-table orchestration.
@@ -105,6 +106,11 @@ class HostTableCoordinator extends EventEmitter {
     this._mono = typeof deps.mono === 'function' ? deps.mono : (() => performance.now());
     this._markedThisGen = new Set(); // one-shot milestones per discovery generation
 
+    // PHASE 6.3.3.2 — one table-level CARD OBSERVER, fed from the SAME classified frames this
+    // coordinator already ingests (no second WS listener / no second CDP connection). It records
+    // only what the protocol proves and never sends. Its round lifecycle is self-detected (DEAL/END).
+    this._cardObserver = createCardObserver({ runId: this._sessionId, now: this._now });
+
     const list = Array.isArray(deps.profiles) ? deps.profiles : [];
     for (const p of list) this._addProfile(p);
     if (deps.hostId != null) this.setHost(deps.hostId);
@@ -171,6 +177,13 @@ class HostTableCoordinator extends EventEmitter {
     if (cls && cls.isHandEvent) {
       rec.hand = reduceHand(rec.hand, cls, { profileId: rec.id, profileUid: rec.ctx.uid(), seq: Number.isFinite(meta.seq) ? meta.seq : null, now });
     }
+    // PHASE 6.3.3.2 — feed the table-level card observer with the SAME classified frame. The browser SLOT
+    // (B1/B2/B3, by profile order) + this run's AUTHORITATIVE own uid (ctx.uid(), never the index) let the
+    // observer attribute own hands + bind slot→uid. Public discards/melds are deduped across the 3 echoes.
+    if (cls && (cls.isHandEvent || cls.type === 'TABLE_STATE')) {
+      const idx = [...this._profiles.keys()].indexOf(String(profileId));
+      this._cardObserver.ingestFrame({ slot: idx >= 0 ? 'B' + (idx + 1) : null, browserIndex: idx + 1, ownUid: rec.ctx.uid(), cls, seq: Number.isFinite(meta.seq) ? meta.seq : null, now });
+    }
     // PHASE-2 trace: authoritative server-evidence arrival (from the HOST run — the run driving discovery).
     if (cls && this._hostId && rec.id === this._hostId) {
       if (cls.type === 'CHANNEL_LIST') this._markOnce('channel-list', 'T2_CHANNEL_LIST_RECEIVED');
@@ -180,8 +193,12 @@ class HostTableCoordinator extends EventEmitter {
     if (cls && cls.type === 'ROUND_END') { this._roundRunning = false; this._setState(SESSION.ROUND_ENDED); this._mark('ROUND_END'); }
     this._evaluate();
     this.emit('hands', this.handsSnapshot());
+    if (cls && (cls.isHandEvent || cls.type === 'TABLE_STATE')) this.emit('cards', this.cardObserverSnapshot());
     return cls;
   }
+
+  // PHASE 6.3.3.2 — the deep-cloned, immutable card-observation snapshot for the renderer (Screen 2).
+  cardObserverSnapshot() { return this._cardObserver.getSnapshot(); }
 
   markDisconnected(profileId) {
     const rec = this._profiles.get(String(profileId));

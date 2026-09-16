@@ -67,8 +67,11 @@ contextBridge.exposeInMainWorld('phomQA', {
   manualLeave: (browserId) => ipcRenderer.invoke('phom:manual-leave', { browserId }),
   manualSnapshot: () => ipcRenderer.invoke('phom:manual-snapshot'),
   remainingCards: () => ipcRenderer.invoke('phom:remaining-cards'),
+  // PHASE 6.3.3.2 — card observation engine snapshot (pull + push).
+  cardsSnapshot: () => ipcRenderer.invoke('phom:cards'),
   onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
   onHands: (cb) => ipcRenderer.on('phom:hands', (_e, hands) => cb(hands)),
+  onCards: (cb) => ipcRenderer.on('phom:cards', (_e, cards) => cb(cards)),
   onKick: (cb) => ipcRenderer.on('phom:kick', (_e, k) => cb(k)),
   onLog: (cb) => ipcRenderer.on('phom:log', (_e, l) => cb(l)),
   // custom Chromium runtime + cluster control-plane

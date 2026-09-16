@@ -50,6 +50,7 @@ class HostSessionManager extends EventEmitter {
     const coord = new HostTableCoordinator({ profiles, hostId: host, selectedStake, now: this._now, environmentAuthorized: () => this.authorized(), sessionId: `PHOMHOST-${this._now()}` });
     coord.on('update', (snap) => this.emit('update', snap));
     coord.on('hands', (hands) => this.emit('hands', hands));
+    coord.on('cards', (cards) => this.emit('cards', cards)); // PHASE 6.3.3.2 — card observation snapshot
     coord.on('state', (s) => this.emit('state', s));
     coord.on('kick', (k) => this.emit('kick', k));
     coord.on('log', (l) => this.emit('log', l));
@@ -121,6 +122,9 @@ class HostSessionManager extends EventEmitter {
   resetBrowser(id) { const c = this._c(); return c && typeof c.resetBrowser === 'function' ? c.resetBrowser(String(id)) : false; }
   manualBrowserSnapshot() { const c = this._c(); return c && typeof c.manualBrowserSnapshot === 'function' ? c.manualBrowserSnapshot() : []; }
   remainingCards(opts) { const c = this._c(); return c && typeof c.remainingCards === 'function' ? c.remainingCards(opts) : { count: 0, codes: [], cards: [] }; }
+  // PHASE 6.3.3.2 — the card-observation snapshot (players/discards/melds/remaining/capabilities), or an
+  // empty/unknown shape when there is no active session (never fabricated).
+  cardObserverSnapshot() { const c = this._c(); return c && typeof c.cardObserverSnapshot === 'function' ? c.cardObserverSnapshot() : { players: {}, remaining: { count: 0, codes: [], cards: [] }, discardPile: [], capabilities: {} }; }
 }
 
 module.exports = { HostSessionManager };
