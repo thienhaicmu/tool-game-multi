@@ -171,6 +171,8 @@ class PhomContext extends EventEmitter {
   aid() { return this._aid; }
   uid() { return this._uid; }
   channels() { return this._channels.slice(); }
+  // PHASE 6.3.7 — when the authoritative channel list (CMD 300 rs[]) was last received, for FIND freshness.
+  channelsAt() { return this._channelsAt; }
   tableState() { return this._tableState; }
 
   // The seat this profile occupies at the current table (own uid within ps[]).

@@ -113,12 +113,13 @@ test('FIND-03/23: duplicate concurrent FIND is single-flight (one CMD 300, secon
 });
 test('FIND-24: with a fresh qualifying channel list already cached, FIND reuses it (no new CMD 300)', async () => {
   const { coord, sim } = mk(EMPTY500());
-  // Pre-load the authoritative channel list (as if a recent CMD 300 already populated it).
-  coord.ingest('B1', { raw: JSON.stringify([5, { rs: [{ rid: 700100, b: 500, uC: 0, Mu: 4, zn: 'Simms', gid: 8 }], cmd: 300 }]), direction: 'recv', targetId: 'B1', url: 'wss://sim', now: 2 });
+  // Pre-load the authoritative channel list as if a RECENT CMD 300 just populated it (fresh timestamp).
+  // PHASE 6.3.7 — reuse is gated on freshness, so the cache must be recent for the reuse fast-path to apply.
+  coord.ingest('B1', { raw: JSON.stringify([5, { rs: [{ rid: 700100, b: 500, uC: 0, Mu: 4, zn: 'Simms', gid: 8 }], cmd: 300 }]), direction: 'recv', targetId: 'B1', url: 'wss://sim', now: Date.now() });
   const before = sim.channelReqs;
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500 });
   assert.equal(r.ok, true);
-  assert.equal(sim.channelReqs, before, 'reused the cached list — no redundant CMD 300');
+  assert.equal(sim.channelReqs, before, 'reused the FRESH cached list — no redundant CMD 300');
 });
 
 // ================= FIND-13/22/25 — cancellation / generation / session dead =================

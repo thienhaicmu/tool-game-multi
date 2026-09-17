@@ -27,11 +27,13 @@ test('header: a follower (isFinder:false, no shared RID) is gated out of FIND (W
   assert.match(header, /action: 'WAIT_ANCHOR'/);
 });
 
-test('coordinator: FIND is single-flight (no duplicate CMD 300) + reuses a fresh cached list', () => {
+test('coordinator: FIND is single-flight (no duplicate CMD 300) + reuses a cached list only while FRESH', () => {
   assert.match(coord, /if \(rec\._discovering\)/);
   assert.match(coord, /PHOM_FIND_IN_FLIGHT/);
-  // reuse: pick a cached candidate BEFORE requesting CMD 300 (first pass); only request when none qualifies
-  assert.match(coord, /let candidate = recovery === 0 \? this\._pickManualCandidate\(rec, need, selectedStake\) : null;/);
+  // PHASE 6.3.7 — reuse a cached candidate on the first pass ONLY while the list is fresh; a stale cache falls
+  // through to a fresh CMD 300 (a user FIND is live discovery). Recovery passes always request fresh.
+  assert.match(coord, /let candidate = \(recovery === 0 && cacheFresh\) \? this\._pickManualCandidate\(rec, need, selectedStake\) : null;/);
+  assert.match(coord, /cacheFresh = at != null && \(this\._now\(\) - Number\(at\)\) < freshMs;/);
   assert.match(coord, /buildChannelListFrame\(aid\)/);
   // the single-flight flag is released on the finally + on leave/reset
   assert.match(coord, /finally \{ rec\._discovering = false; \}/);

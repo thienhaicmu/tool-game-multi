@@ -206,3 +206,73 @@ test('RES-28/29/30: the V2 resilience code emits NO game command / no restart / 
   assert.match(coord, /buildJoinFrame\(r\)/);
   assert.match(coord, /buildLeaveFrame\(\)/);
 });
+
+// ================= PHASE 6.3.7 — LIVE DISCOVERY CORRECTNESS (FIND-LIVE) =================
+// A user FIND is a LIVE discovery: fresh table-list evidence, whole-rs[] evaluation, blacklist a RID that
+// fails to JOIN and re-discover a different real table, and a precise reason when nothing qualifies.
+
+test('FIND-LIVE-01: fresh CMD 300 → a qualifying candidate → FIND_SUCCESS', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 100 });
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, 700);
+  assert.ok(sim.channelReqs >= 1, 'a fresh CMD 300 was requested (empty cache)');
+});
+
+test('FIND-LIVE-02: a STALE cache never hides the live list — a user FIND forces a fresh CMD 300', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [] }]);
+  coord.ingest('B1', { raw: sim._channelList(), direction: 'recv', targetId: 'B1', url: 'wss://sim', now: 1 }); // ancient cache
+  const before = sim.channelReqs;
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 100 });
+  assert.equal(r.ok, true);
+  assert.ok(sim.channelReqs > before, 'stale cache → a fresh CMD 300 was sent');
+});
+
+test('FIND-LIVE-02b: a FRESH cache is reused (no redundant CMD 300)', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [] }]);
+  coord.ingest('B1', { raw: sim._channelList(), direction: 'recv', targetId: 'B1', url: 'wss://sim', now: Date.now() });
+  const before = sim.channelReqs;
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 100, cacheFreshMs: 60000 });
+  assert.equal(r.ok, true);
+  assert.equal(sim.channelReqs, before, 'fresh cache reused → no new CMD 300');
+});
+
+test('FIND-LIVE-03: among many rows, pick the one valid candidate (wrong stake / not-enough-slots skipped)', async () => {
+  const { coord } = mk([
+    { rid: 700, b: 999, seats: [] },                                          // wrong stake
+    { rid: 701, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }, // freeSlots 2 < 3
+    { rid: 702, b: 500, seats: [] },                                          // valid
+  ]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 100 });
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, 702);
+});
+
+test('FIND-LIVE-04/05: a JOIN failure blacklists the RID and re-discovers a DIFFERENT real table', async () => {
+  const { coord, sim } = mk([
+    { rid: 700, b: 500, seats: [], failJoins: { B1: 1 } }, // ps[] never lands own uid once → JOIN_FAILED
+    { rid: 701, b: 500, seats: [] },                       // the real table
+  ]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60 });
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, 701, 'joined the SECOND table after the first failed');
+  assert.equal(sim.attemptsFor(700, 'B1'), 1, 'the failed RID was tried once and never retried (blacklisted)');
+});
+
+test('FIND-LIVE-10: a JOIN that never lands own uid in ps[] is NOT success', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r.ok, false); // own uid never in ps[] → never FIND_SUCCESS
+});
+
+test('FIND-LIVE: NO_TABLE carries a precise, debuggable reason', async () => {
+  const wrongStake = mk([{ rid: 700, b: 999, seats: [] }]);
+  const r1 = await wrongStake.coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r1.ok, false);
+  assert.equal(r1.reason, 'NO_MATCHING_STAKE');
+
+  const full = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // freeSlots 2 < 3
+  const r2 = await full.coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r2.ok, false);
+  assert.equal(r2.reason, 'NOT_ENOUGH_FREE_SLOTS');
+});
