@@ -8,7 +8,7 @@ const { resolveExpiresAt, formatUtcPlus7 } = require('./duration.cjs');
 const { publicGameConfigs, gameConfig, GAME_ORDER } = require('./game-configs.cjs');
 const { issueLicense, assertKeyForGame } = require('./license-signer.cjs');
 const { diagnoseLicense } = require('./license-diagnostics.cjs');
-const { resolveSellerResources, privateKeyPathForProduct, sheetTitleForProduct } = require('./seller-resources.cjs');
+const { resolveSellerResources, privateKeyPathForProduct, sheetTitleForProduct, GOOGLE_CREDENTIAL_FILE } = require('./seller-resources.cjs');
 const sellerRes = { privateKeyPathForProduct, sheetTitleForProduct };
 const { loadServiceAccount, GoogleSheetClient, trySaveRecord } = require('./google-sheet.cjs');
 
@@ -54,11 +54,36 @@ function signingReadyForProduct(gameProduct) { return signingStateForProduct(gam
 let sheetClient = null;
 let sheetClientCredPath = null;
 
-function resolveCred() {
+// Seller drop-in location: a stable, writable folder NEXT TO the installed .exe where the
+// operator can place google-service-account.json AFTER install without a rebuild. In dev this
+// is the generator source dir. This is what makes the PACKAGED app able to find the credential
+// (process.cwd() is unreliable when launched from a shortcut, so a bare relative path fails).
+function credentialDropInDir() {
+  try { if (app && app.isPackaged) return path.dirname(app.getPath('exe')); } catch { /* fall through */ }
+  return __dirname;
+}
+
+// Ordered, ABSOLUTE credential candidates (first existing wins). Covers: env override /
+// bundled resources/private (dev+packaged), a drop-in beside the installed exe, the app
+// userData dir, and the gitignored dev local fallback resolved from the repo root (never CWD).
+function credentialCandidates() {
   const res = sellerResources();
-  // §13 credential resolver: bundled/env path, else the gitignored local fallback if present.
-  if (res.googleCredentialPath && fs.existsSync(res.googleCredentialPath)) return res.googleCredentialPath;
-  if (res.localCredentialPath && fs.existsSync(res.localCredentialPath)) return res.localCredentialPath;
+  const out = [];
+  if (res.googleCredentialPath) out.push(res.googleCredentialPath);
+  const fname = GOOGLE_CREDENTIAL_FILE || 'google-service-account.json';
+  out.push(path.join(credentialDropInDir(), fname));
+  try { out.push(path.join(app.getPath('userData'), fname)); } catch { /* userData unavailable */ }
+  if (res.localCredentialPath) {
+    out.push(path.isAbsolute(res.localCredentialPath)
+      ? res.localCredentialPath
+      : path.resolve(__dirname, '..', '..', res.localCredentialPath)); // repo-root relative, CWD-independent
+  }
+  // De-dupe while preserving order.
+  return out.filter((p, i) => p && out.indexOf(p) === i);
+}
+
+function resolveCred() {
+  for (const c of credentialCandidates()) { if (fs.existsSync(c)) return c; }
   return null;
 }
 // Returns a ready client or null (not configured). Throws only on a bad credential file.
@@ -198,7 +223,9 @@ ipcMain.handle('preview-expiry', (_event, input) => {
 // Google Sheet connection status (auto-resolved; no private_key ever leaves main).
 ipcMain.handle('sheet-status', async () => {
   const p = resolveCred();
-  if (!p) return { configured: false, state: 'disconnected' };
+  // When no credential is found, tell the operator EXACTLY where to drop the JSON file
+  // (beside the installed .exe). The file name/path are non-secret; the key never crosses IPC.
+  if (!p) return { configured: false, state: 'disconnected', expectedPath: path.join(credentialDropInDir(), GOOGLE_CREDENTIAL_FILE || 'google-service-account.json') };
   let client;
   try { client = getSheetClient(); }
   catch (e) { return { configured: true, state: 'error', error: { code: e.code || 'GOOGLE_CREDENTIAL_ERROR', message: e.message } }; }

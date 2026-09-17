@@ -205,7 +205,10 @@
     if (!s || !s.configured) set('warn', 'Sheet Off');
     else if (s.state === 'connected') set('ok', 'Sheet Ready');
     else set('bad', 'Sheet Error');
-    if (s && s.error) chip.title = s.error.message || s.error.code; else chip.removeAttribute('title');
+    // Actionable tooltip: on error show the message; when unconfigured show WHERE to drop the credential file.
+    if (s && s.error) chip.title = s.error.message || s.error.code;
+    else if (s && !s.configured && s.expectedPath) chip.title = `Chưa có Google Service Account. Đặt tệp google-service-account.json tại:\n${s.expectedPath}`;
+    else chip.removeAttribute('title');
   }
   async function refreshSigning() {
     let s; try { s = await api.signingStatus(); } catch { s = null; }
