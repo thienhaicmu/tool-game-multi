@@ -259,3 +259,163 @@ test('REJOIN uses lastRid and LEAVE (THOÁT PHÒNG) preserves it (coordinator, u
   assert.match(leave, /rec\._joinedRid = null/);
   assert.equal(/_lastRid = null/.test(leave), false, 'LEAVE must preserve _lastRid for REJOIN');
 });
+
+// ---- PHASE 6.3.6 — HEADER STATE SYNCHRONIZATION (bounded ENTERING; transport/CDP/header ≠ IN_GAME) ----
+// The bug: the tile click is INVOKED != ENTERED, so a fired-but-never-entered ENTER left the header stuck on
+// "ĐANG VÀO GAME…" forever. The fix bounds the ENTERING state so it reverts to NOT_IN_GAME ("VÀO GAME").
+
+test('STATE-01 initial lobby (opened, not in game) -> VÀO GAME', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: false, entering: false });
+  assert.equal(s.primary.action, 'ENTER_GAME');
+  assert.equal(s.primary.label, 'VÀO GAME');
+  assert.equal(s.primary.disabled, undefined);
+});
+
+test('STATE-02 during ENTER (entering) -> ĐANG VÀO GAME… (busy, disabled)', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: false, entering: true });
+  assert.match(s.statusLabel, /ĐANG VÀO GAME/);
+  assert.equal(s.primary.busy, true);
+  assert.equal(s.primary.disabled, true);
+});
+
+test('STATE-03 authoritative IN_GAME (no manualState) -> TÌM BÀN', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: true });
+  assert.equal(s.primary.action, 'FIND');
+  assert.equal(s.primary.label, 'TÌM BÀN');
+});
+
+test('STATE-04 authoritative non-game/lobby (entering cleared) -> VÀO GAME (never stuck)', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: false, entering: false });
+  assert.equal(s.primary.action, 'ENTER_GAME');
+  assert.equal(s.primary.label, 'VÀO GAME');
+});
+
+test('STATE-05 enteringActive is BOUNDED: within window active, past window reverts (not stuck)', () => {
+  const T = gh.ENTER_GAME_TIMEOUT_MS;
+  assert.equal(typeof T, 'number'); assert.ok(T > 0);
+  assert.equal(gh.enteringActive({ pending: true, inGame: false, startedAt: 0, now: 1000, timeoutMs: T }), true);   // in flight
+  assert.equal(gh.enteringActive({ pending: true, inGame: false, startedAt: 0, now: T + 1, timeoutMs: T }), false); // timed out → NOT_IN_GAME
+  assert.equal(gh.enteringActive({ pending: true, inGame: false, startedAt: null, now: 9e9 }), true);               // just clicked, no clock yet
+});
+
+test('STATE-06/09 a fresh ENTER re-arms the bounded timeout, and ↻ WEB reset clears the ENTERING transient', () => {
+  // ↻ WEB reload path resets entering + cancels the timer (raw F5 also loses the page-local optimistic overlay).
+  assert.match(main, /delete headerEntering\[String\(runId\)\]; clearHeaderEnterTimer\(String\(runId\)\)/);
+  // a fresh ENTER cancels any prior timer before re-arming (no leaked/overlapping timers).
+  assert.match(main, /function armEnterTimeout\(rid\) \{\s*clearHeaderEnterTimer\(rid\);\s*headerEnterTimer\[rid\] = setTimeout\(/);
+  assert.match(main, /headerEntering\[rid\] = true;\s*armEnterTimeout\(rid\);/);
+});
+
+test('STATE-07 pending flag is main-side + guarded (late/stale ENTER cannot resurrect a newer state)', () => {
+  // headerEntering is keyed by rid and only set inside the single-flight guarded ENTER branch; the pure
+  // enteringActive gate + inGame evidence always win, so an old ENTER cannot override newer authoritative state.
+  assert.match(main, /const headerEntering = Object\.create\(null\)/);
+  assert.match(main, /gameHeader\.enteringActive\(\{ pending: !!headerEntering\[String\(runId\)\]/);
+});
+
+test('STATE-08 transport/CDP/header health is NOT treated as IN_GAME', () => {
+  // inGame requires authoritative game evidence (channelCount > 0), never merely socket/CDP connected.
+  assert.match(main, /const inGame = opened && !!b\.socketReady && !!b\.connected && \(b\.channelCount \|\| 0\) > 0/);
+  // pure gate: authoritative inGame (or nothing pending) always wins over the optimistic ENTERING flag.
+  assert.equal(gh.enteringActive({ pending: true, inGame: true, startedAt: 0, now: 0 }), false);
+  assert.equal(gh.enteringActive({ pending: false }), false);
+});
+
+test('STATE-10/11/12 IN_GAME still exposes existing FIND / VÀO BÀN / THOÁT PHÒNG unchanged', () => {
+  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', betOptions: [100] }).primary.action, 'FIND'); // TÌM BÀN
+  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', sharedRid: 700100 }).primary.action, 'JOIN_SHARED'); // VÀO BÀN
+  const joined = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 700100, sharedRid: 700100 });
+  assert.equal(joined.primary.action, 'REJOIN');
+  assert.equal(joined.secondary[0].action, 'LEAVE'); // THOÁT PHÒNG
+});
+
+test('main: bounded ENTERING timeout is armed on ENTER and cancelled on authoritative evidence / failure', () => {
+  assert.match(main, /const headerEnterTimer = Object\.create\(null\)/);
+  assert.match(main, /function clearHeaderEnterTimer\(rid\)/);
+  // armed on ENTER accept, and the callback reverts the header (delete entering + re-push) if still pending.
+  assert.match(main, /if \(headerEntering\[rid\]\) \{ delete headerEntering\[rid\]; delete headerEnterStartedAt\[rid\];[\s\S]*?pushHeaderStates\(\); \}/);
+  // cancelled the instant authoritative in-game evidence arrives.
+  assert.match(main, /delete headerEntering\[rid\]; clearHeaderEnterTimer\(rid\);/);
+  // cancelled on an immediate ENTER send failure.
+  assert.match(main, /delete headerEntering\[rid\]; delete headerEnterStartedAt\[rid\]; clearHeaderEnterTimer\(rid\); \}/);
+});
+
+// ---- PHASE 6.3.6 — USER-SELECTED FINDER (room anchor), never defaulted to Player 1 ----
+// isFinder is a PROP of the derived view (true = may FIND). No finder chosen → true for every browser; a
+// finder chosen → true only for that browser. finderIndex drives the dynamic "CHỜ PLAYER N TÌM BÀN" label.
+
+test('FINDER-01 no finder chosen -> every Player may FIND (TÌM BÀN, not WAIT)', () => {
+  for (const idx of [1, 2, 3]) {
+    const s = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: null });
+    assert.equal(s.primary.action, 'FIND');
+    assert.equal(s.primary.label, 'TÌM BÀN');
+  }
+});
+
+test('FINDER-02 finder = Player 1 -> P1 FIND, P2/P3 WAIT "CHỜ PLAYER 1 TÌM BÀN"', () => {
+  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: 1 }).primary.action, 'FIND');
+  for (const p of [2, 3]) {
+    const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 1 });
+    assert.equal(w.primary.action, 'WAIT_ANCHOR');
+    assert.equal(w.primary.label, 'CHỜ PLAYER 1 TÌM BÀN');
+    assert.equal(w.primary.disabled, true);
+  }
+});
+
+test('FINDER-03 finder = Player 2 -> P2 FIND, P1/P3 WAIT "CHỜ PLAYER 2 TÌM BÀN"', () => {
+  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: 2 }).primary.action, 'FIND');
+  const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 2 });
+  assert.equal(w.primary.action, 'WAIT_ANCHOR');
+  assert.equal(w.primary.label, 'CHỜ PLAYER 2 TÌM BÀN');
+});
+
+test('FINDER-04 finder = Player 3 -> P3 FIND, P1/P2 WAIT "CHỜ PLAYER 3 TÌM BÀN"', () => {
+  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: 3 }).primary.action, 'FIND');
+  const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 3 });
+  assert.equal(w.primary.label, 'CHỜ PLAYER 3 TÌM BÀN');
+});
+
+test('FINDER-08 with no finder, NO browser is ever put in WAIT_ANCHOR', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: null });
+  assert.notEqual(s.primary.action, 'WAIT_ANCHOR');
+});
+
+test('FINDER-09 once the finder has a shared RID, followers show VÀO BÀN (JOIN_SHARED), not WAIT', () => {
+  // sharedRid resolves BEFORE the isFinder gate, so a non-finder with the anchor RID joins it.
+  const s = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 2, sharedRid: 700100 });
+  assert.equal(s.primary.action, 'JOIN_SHARED');
+  assert.equal(s.primary.label, 'VÀO BÀN');
+  assert.equal(s.primary.rid, 700100);
+});
+
+test('FINDER-10 a non-finder WAIT_ANCHOR is DISABLED (it can never send CMD 300 / self-FIND)', () => {
+  const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 1 });
+  assert.equal(w.primary.disabled, true);
+  assert.equal(w.primary.needsBet, undefined); // no bet picker → no FIND path for a follower
+});
+
+test('main: FIND gating + shared RID + WAIT label follow selectedFinderIndex, NEVER browserIndex 1', () => {
+  // isFinder is derived from the user choice, not the browser index.
+  assert.match(main, /isFinder: selectedFinderIndex == null \? true : \(b\.browserIndex === selectedFinderIndex\)/);
+  assert.match(main, /finderIndex: selectedFinderIndex/);
+  // the old hard-coded Player-1 finder is GONE.
+  assert.equal(/isFinder: b\.browserIndex === 1/.test(main), false, 'must not hard-code finder = browserIndex 1');
+  // shared RID anchor = the selected finder (or first valid JOINED when none), never browserIndex 1.
+  assert.match(main, /if \(selectedFinderIndex != null\) \{ const f = list\.find\(\(b\) => b\.browserIndex === selectedFinderIndex && valid\(b\)\); return f \? Number\(f\.rid\) : null; \}/);
+  assert.equal(/list\.find\(\(b\) => b\.browserIndex === 1 && valid\(b\)\)/.test(main), false, 'shared RID must not be keyed on browserIndex 1');
+  // the set-finder IPC syncs the coordinator anchor + re-pushes every header immediately.
+  assert.match(main, /ipcMain\.handle\('phom:set-finder'/);
+  assert.match(main, /applyFinderToCoordinator\(\);[\s\S]*?pushHeaderStates\(\);/);
+});
+
+test('FINDER-05/06 Finder ownership is SEPARATE from the analyzer target (Finder ≠ Analysis is valid)', () => {
+  // main owns the finder; the analyzer takes a target uid independently — the two never share state.
+  assert.match(main, /let selectedFinderIndex = null/);
+  assert.match(main, /ipcMain\.handle\('phom:analyze-safe-cards', \(_e, targetPlayerUid\)/);
+  // renderer keeps two DISTINCT selections.
+  const ui = read('ui-phom/phom-qa.js');
+  assert.match(ui, /let selectedFinderPlayer = null/);
+  assert.match(ui, /let selectedAnalysisPlayer = null/);
+  assert.match(ui, /function finderSelector\(\)/);
+  assert.match(ui, /api\.setFinder/);
+});

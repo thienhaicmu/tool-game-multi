@@ -1,6 +1,7 @@
-// PHASE 6.3.4 — FIND wiring (source-level, no GUI). The in-Chromium header is the SOLE finder surface:
-// main marks Player 1 (browserIndex 1) as the finder + anchor; the coordinator has a gated FIND trace and
-// single-flight; and the phase adds NO game-action (no PLAY/DRAW/MELD/CDP click / browser restart).
+// PHASE 6.3.4/6.3.6 — FIND wiring (source-level, no GUI). The in-Chromium header is the SOLE finder surface;
+// the finder + room anchor is the USER's explicit choice (selectedFinderIndex), NOT defaulted to Player 1. The
+// coordinator has a gated FIND trace and single-flight; the phase adds NO game-action (no PLAY/DRAW/MELD/CDP
+// click / browser restart).
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -10,10 +11,15 @@ const main = read('desktop/phom-main.cjs');
 const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
 const header = read('desktop/protocol/phom/game-header.cjs');
 
-test('main: Player 1 (browserIndex 1) is the SINGLE room anchor + the only finder', () => {
-  assert.match(main, /const anchor = list\.find\(\(b\) => b\.browserIndex === 1 && valid\(b\)\)/);
+// PHASE 6.3.6 — the finder/anchor is now the USER's explicit choice (selectedFinderIndex), NOT Player 1.
+test('main: the finder + shared-RID anchor follow the USER-selected finder, never browserIndex 1', () => {
+  // shared RID anchor = the selected finder's validated joined rid (or first valid JOINED when none chosen).
+  assert.match(main, /if \(selectedFinderIndex != null\) \{ const f = list\.find\(\(b\) => b\.browserIndex === selectedFinderIndex && valid\(b\)\); return f \? Number\(f\.rid\) : null; \}/);
   assert.match(main, /b\.manualState === 'JOINED' && b\.rid != null && b\.anchorValid !== false/); // §7 only a validated anchor is published
-  assert.match(main, /isFinder: b\.browserIndex === 1/);
+  // FIND gating follows the user choice; the old browserIndex-1 hard-codes are gone.
+  assert.match(main, /isFinder: selectedFinderIndex == null \? true : \(b\.browserIndex === selectedFinderIndex\)/);
+  assert.equal(/isFinder: b\.browserIndex === 1/.test(main), false, 'finder must not be hard-coded to Player 1');
+  assert.equal(/const anchor = list\.find\(\(b\) => b\.browserIndex === 1 && valid\(b\)\)/.test(main), false, 'anchor must not be hard-coded to Player 1');
 });
 
 test('header: a follower (isFinder:false, no shared RID) is gated out of FIND (WAIT_ANCHOR)', () => {

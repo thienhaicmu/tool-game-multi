@@ -521,7 +521,33 @@ else {
   const headerDomPresent = Object.create(null); // runId -> true when the PAGE confirmed #__phom_header exists
   const headerLastPushed = Object.create(null); // runId -> last pushed state JSON (skip unchanged evaluates)
   const headerEnterStartedAt = Object.create(null); // runId -> monotonic ms at ENTER_GAME accept (latency)
+  const headerEnterTimer = Object.create(null);     // runId -> bounded ENTERING timeout handle (§10 not-stuck)
+  // PHASE 6.3.6 — the USER-selected FINDER (room anchor), by Player index 1/2/3; null = none chosen yet (every
+  // browser may FIND). NEVER defaulted to Player 1. Independent of the analyzer's selected player.
+  let selectedFinderIndex = null;
+  // Push the current finder choice into the live coordinator (its same-room-proof anchor). Best-effort: header
+  // derivation already uses selectedFinderIndex directly, so this only keeps the coordinator's anchor in sync.
+  function applyFinderToCoordinator() {
+    try {
+      if (!phomSessions) return;
+      let profileId = null;
+      if (selectedFinderIndex != null) { const b = (phomSessions.manualBrowserSnapshot() || []).find((x) => x.browserIndex === selectedFinderIndex); profileId = b ? b.profileId : null; }
+      phomSessions.setFinder(profileId);
+    } catch { /* best effort */ }
+  }
   const nowMs = () => { try { return require('node:perf_hooks').performance.now(); } catch { return Date.now(); } };
+  // PHASE 6.3.6 — cancel a run's bounded ENTERING timeout (evidence arrived / failed / reset / re-enter).
+  function clearHeaderEnterTimer(rid) { const t = headerEnterTimer[rid]; if (t) { try { clearTimeout(t); } catch { /* ignore */ } delete headerEnterTimer[rid]; } }
+  // PHASE 6.3.6 §10 — arm the BOUNDED ENTERING timeout. The tile click is INVOKED != ENTERED, so if no
+  // authoritative inGame evidence arrives within the window we clear the transient and re-push, reverting the
+  // header to NOT_IN_GAME ("VÀO GAME") instead of a permanent "ĐANG VÀO GAME…". Re-arming cancels any prior.
+  function armEnterTimeout(rid) {
+    clearHeaderEnterTimer(rid);
+    headerEnterTimer[rid] = setTimeout(() => {
+      delete headerEnterTimer[rid];
+      if (headerEntering[rid]) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; headerLog('ENTER_GAME_TIMEOUT', { runId: rid, elapsedMs: gameHeader.ENTER_GAME_TIMEOUT_MS }); pushHeaderStates(); }
+    }, gameHeader.ENTER_GAME_TIMEOUT_MS);
+  }
 
   // Per-browser RUNTIME status for the READ-ONLY Screen 2 (browser kind · CDP · header). No actions.
   // §2/§12 — HEADER distinguishes three facts: CDP connected, binding installed, and the header DOM actually
@@ -552,9 +578,10 @@ else {
     // PHASE 6.3.5 §7 — but ONLY once the anchor is validated (post-anchor capacity check passed). A
     // provisional/invalid anchor (anchorValid === false) is never published to the followers.
     const valid = (b) => b && b.manualState === 'JOINED' && b.rid != null && b.anchorValid !== false;
-    const anchor = list.find((b) => b.browserIndex === 1 && valid(b));
-    if (anchor) return Number(anchor.rid);
-    // resilience fallback: the first VALID JOINED browser (covers edge cases where P1 index is unknown)
+    // PHASE 6.3.6 — the shared anchor RID is the USER-selected finder's OWN validated joined rid. When a finder
+    // is chosen, ONLY that Player can be the anchor (others are WAIT/JOIN_SHARED, never a second anchor). When
+    // NO finder is chosen, the shared RID is simply whichever browser actually found+joined. Never browserIndex 1.
+    if (selectedFinderIndex != null) { const f = list.find((b) => b.browserIndex === selectedFinderIndex && valid(b)); return f ? Number(f.rid) : null; }
     const j = list.find(valid);
     return j ? Number(j.rid) : null;
   }
@@ -570,13 +597,17 @@ else {
     const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : null;
     return {
       account, opened, inGame,
-      entering: opened && !inGame && !!headerEntering[String(runId)],
+      // PHASE 6.3.6 — ENTERING is BOUNDED: shown only while pending + not authoritatively inGame + within the
+      // timeout window since the click. A fired-but-never-entered click reverts to NOT_IN_GAME (never stuck).
+      entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),
       joining: false,
       manualState: b.manualState || null,
       rid: b.rid != null ? b.rid : null,
       lastRid: b.lastRid != null ? b.lastRid : null,
-      // PHASE 6.3.4 §3 — only Player 1 (browserIndex 1) may FIND; followers wait for the anchor's shared RID.
-      isFinder: b.browserIndex === 1,
+      // PHASE 6.3.6 — FIND gating follows the USER's finder choice (selectedFinderIndex), NEVER browserIndex.
+      // No finder chosen → every browser may FIND; a finder chosen → only that Player, others show WAIT_ANCHOR.
+      isFinder: selectedFinderIndex == null ? true : (b.browserIndex === selectedFinderIndex),
+      finderIndex: selectedFinderIndex, // drives the dynamic "CHỜ PLAYER N TÌM BÀN" label
       sharedRid,
       betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
       error: headerError[String(runId)] || null,
@@ -598,7 +629,7 @@ else {
       if (view.inGame) {
         // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
         // and log the click→ENTERED latency once, then stop timing this run.
-        delete headerEntering[rid];
+        delete headerEntering[rid]; clearHeaderEnterTimer(rid); // §10 — evidence arrived → cancel the bounded timeout
         if (headerEnterStartedAt[rid] != null) { headerLog('ENTER_GAME_EVIDENCE', { runId: rid, slotId: run.slot, elapsedMs: Math.round(nowMs() - headerEnterStartedAt[rid]) }); delete headerEnterStartedAt[rid]; }
       }
       // §5/§14 lag fix — the coordinator emits 'update' on EVERY observed WS frame; deriving is cheap but a
@@ -673,10 +704,12 @@ else {
     try {
       if (action === 'ENTER_GAME') {
         headerEnterStartedAt[rid] = nowMs(); // T6 — start the click→ENTERED latency clock (§2/§17)
-        headerEntering[rid] = true; pushHeaderStates();
+        headerEntering[rid] = true;
+        armEnterTimeout(rid); // §10 — bounded ENTERING (INVOKED != ENTERED): reverts to NOT_IN_GAME if no evidence
+        pushHeaderStates();
         headerLog('ENTER_GAME_START', { runId: rid, slotId: payload && payload.slotId, actionId, elapsedMs: 0 });
         res = await phomEnterGame(rid); // T8 — the in-engine tile click was fired (INVOKED != ENTERED)
-        if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; }
+        if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; clearHeaderEnterTimer(rid); }
         headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, actionId, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
       } else if (action === 'FIND') {
         ensurePhomSessions();
@@ -1142,7 +1175,7 @@ else {
     // Browser + session lifecycle.
     ipcMain.handle('phom:open-profile', guarded((_e, cfg) => openProfile(cfg || {})));
     // HOST/FOLLOWER controlled-table flow.
-    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
+    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); const r = phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); applyFinderToCoordinator(); return r; }));
     ipcMain.handle('phom:set-host', guarded((_e, hostId) => ensurePhomSessions().setHost(hostId)));
     ipcMain.handle('phom:select-stake', guarded((_e, stake) => ensurePhomSessions().selectStake(stake)));
     // §13 — Find-Table stake source: request the server channel list + read the
@@ -1158,6 +1191,17 @@ else {
     ipcMain.handle('phom:recover-host', guarded(() => ensurePhomSessions().recoverHost()));
     ipcMain.handle('phom:leave-all', guarded(() => ensurePhomSessions().leaveAll()));
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
+    // PHASE 6.3.6 — USER selects which Player is the FINDER (room anchor). index null clears (every browser may
+    // FIND); 1/2/3 selects. It re-derives + re-pushes every in-Chromium header immediately, and syncs the choice
+    // to the coordinator (same-room proof anchor). It NEVER discovers/joins here — only ownership of the finder.
+    ipcMain.handle('phom:set-finder', (_e, index) => {
+      const idx = index == null ? null : Number(index);
+      selectedFinderIndex = (idx === 1 || idx === 2 || idx === 3) ? idx : null;
+      applyFinderToCoordinator(); // sync same-room-proof anchor (header derivation uses selectedFinderIndex directly)
+      pushHeaderStates();
+      return { ok: true, finderIndex: selectedFinderIndex };
+    });
+    ipcMain.handle('phom:get-finder', () => ({ ok: true, finderIndex: selectedFinderIndex }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
     ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
     // PHASE-2 — read the monotonic discovery/sync milestone timeline (telemetry for latency inspection).
@@ -1205,7 +1249,7 @@ else {
       // §9 — on reload (F5) the document is torn down: the header DOM is gone until the new document's boot
       // re-mounts it and re-reports __HEADER_STATUS. Mark it not-present so the Tool shows RECOVERING (not a
       // stale Sẵn sàng), and clear the push cache so the fresh document is re-filled with LOBBY state.
-      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } delete headerEntering[String(runId)]; delete headerError[String(runId)]; headerDomPresent[String(runId)] = false; delete headerLastPushed[String(runId)]; delete headerEnterStartedAt[String(runId)]; pushHeaderStates(); };
+      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } delete headerEntering[String(runId)]; clearHeaderEnterTimer(String(runId)); delete headerError[String(runId)]; headerDomPresent[String(runId)] = false; delete headerLastPushed[String(runId)]; delete headerEnterStartedAt[String(runId)]; pushHeaderStates(); };
       try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
       catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
     }));

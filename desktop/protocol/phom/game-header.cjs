@@ -31,10 +31,11 @@ function deriveHeaderState(view = {}) {
   else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
   else if (joined) { statusLabel = 'ĐÃ VÀO BÀN'; statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }]; }
   else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_SHARED', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }
-  // PHASE 6.3.4 §3 — Player 1 is the SINGLE finder / room anchor. A FOLLOWER (isFinder === false) with no
-  // shared RID yet must NOT discover: it shows a waiting state (disabled) so it can never send CMD 300 / JOIN
-  // a self-found table. isFinder defaults to allowed (undefined ⇒ finder) for backward compatibility.
-  else if (view.isFinder === false) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'WAIT_ANCHOR', label: 'CHỜ PLAYER 1 TÌM BÀN', disabled: true }; }
+  // PHASE 6.3.6 — the finder is the USER's explicit choice (view.finderIndex), NEVER defaulted to Player 1.
+  // A non-finder (isFinder === false, i.e. a finder WAS chosen and it isn't this browser) with no shared RID
+  // yet must NOT discover: it shows a waiting state (disabled) so it can never send CMD 300 / JOIN a self-found
+  // table. isFinder defaults to allowed (undefined ⇒ every browser may FIND until a finder is chosen).
+  else if (view.isFinder === false) { const fno = view.finderIndex != null ? view.finderIndex : '?'; statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'WAIT_ANCHOR', label: 'CHỜ PLAYER ' + fno + ' TÌM BÀN', disabled: true }; }
   else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND', label: 'TÌM BÀN', needsBet: true, betOptions }; }
   return { account, rid, statusLabel, statusClass, primary, secondary, error: view.error || null, joinedShared };
 }
@@ -188,4 +189,18 @@ function deriveEffectiveHeaderState({ authState = null, optAction = null } = {})
   return optAction ? optimisticState(optAction, authState) : authState;
 }
 
-module.exports = { deriveHeaderState, bootScript, optimisticLabel, optimisticState, deriveEffectiveHeaderState };
+// PHASE 6.3.6 — BOUNDED ENTER ("VÀO GAME") state. The in-engine tile click is INVOKED != ENTERED (the click
+// firing is NOT proof the game was entered — readiness is only the authoritative Simms session evidence
+// socketReady+connected+channelList → inGame). So the ENTERING flag MUST be temporary: it is shown only while
+// the enter is genuinely in flight — pending AND not yet authoritatively inGame AND within a bounded window
+// since the click. A click that fired but never entered (page stayed/returned to lobby) therefore reverts to
+// NOT_IN_GAME ("VÀO GAME") instead of a permanent "ĐANG VÀO GAME…" (§10/§11). Transport/CDP/header health is
+// NEVER treated as IN_GAME. Pure + deterministic (clock injected) so it is unit-testable without a browser.
+const ENTER_GAME_TIMEOUT_MS = 15000;
+function enteringActive({ pending = false, inGame = false, startedAt = null, now = 0, timeoutMs = ENTER_GAME_TIMEOUT_MS } = {}) {
+  if (!pending || inGame) return false;          // authoritative IN_GAME (or nothing pending) always wins
+  if (startedAt == null) return true;            // pending but no clock yet → just-clicked, still active
+  return (Number(now) - Number(startedAt)) < Number(timeoutMs); // bounded: stale ENTER reverts to NOT_IN_GAME
+}
+
+module.exports = { deriveHeaderState, bootScript, optimisticLabel, optimisticState, deriveEffectiveHeaderState, enteringActive, ENTER_GAME_TIMEOUT_MS };

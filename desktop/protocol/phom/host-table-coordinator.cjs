@@ -83,6 +83,9 @@ class HostTableCoordinator extends EventEmitter {
     // authorization the moment its license is active, regardless of when the session/coordinator was built.
     this._authorizedFn = typeof deps.environmentAuthorized === 'function' ? deps.environmentAuthorized : () => deps.environmentAuthorized !== false;
     this._selectedStake = deps.selectedStake != null ? deps.selectedStake : null;
+    // PHASE 6.3.6 — the FINDER (room anchor) is the USER's explicit choice, NOT defaulted to the first profile.
+    // null = no finder chosen yet (every browser may FIND); a valid profileId = that browser is the sole finder.
+    this._finderId = deps.finderId != null ? String(deps.finderId) : null;
     this._maxRejoin = deps.maxRejoinAttempts != null ? deps.maxRejoinAttempts : 3;
     this._rejoinCooldownMs = deps.rejoinCooldownMs != null ? deps.rejoinCooldownMs : 1000;
     this._kickDebounce = deps.kickDebounce != null ? deps.kickDebounce : 2; // consecutive confirmations
@@ -852,9 +855,24 @@ class HostTableCoordinator extends EventEmitter {
     } finally { rec._discovering = false; }
   }
 
-  // PHASE 6.3.5 — Player 1 is the anchor (browserIndex 1 = first profile, insertion order). Followers read
-  // the anchor's OWN _joinedRid / uid from authoritative state — never a cached/UI value.
-  _anchor() { const it = this._profiles.values().next(); return it && !it.done ? it.value : null; }
+  // PHASE 6.3.6 — the FINDER/room anchor is the USER-selected profile when set; only when NO finder has been
+  // chosen does it fall back to the first profile (unchanged 6.3.5 default), so existing single-finder flows
+  // behave identically. Followers read the anchor's OWN _joinedRid / uid from authoritative state (§7 same-room
+  // proof) — never a cached/UI value. Set/clear via setFinder (user choice); the finder itself NEVER discovers
+  // on behalf of another browser and a follower NEVER becomes a finder (manualJoinShared, unchanged).
+  setFinder(profileId) {
+    if (profileId == null) { this._finderId = null; return { ok: true, finderId: null }; }
+    const id = String(profileId);
+    if (!this._profiles.has(id)) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'unknown finder profile' } };
+    this._finderId = id; return { ok: true, finderId: id };
+  }
+  finderId() { return this._finderId; }
+  // True when THIS profile is allowed to FIND: no finder chosen yet (every browser may FIND) OR it IS the finder.
+  isFinder(profileId) { return this._finderId == null ? true : String(profileId) === this._finderId; }
+  _anchor() {
+    if (this._finderId && this._profiles.has(this._finderId)) return this._profiles.get(this._finderId);
+    const it = this._profiles.values().next(); return it && !it.done ? it.value : null;
+  }
   _anchorRid() { const a = this._anchor(); return a && a._joinedRid != null ? a._joinedRid : null; }
   _anchorUid() { const a = this._anchor(); return a ? a.ctx.uid() : null; }
   // Which follower-JOIN failures are worth a same-RID retry (§12). A transient room race / not-yet-confirmed
@@ -978,6 +996,10 @@ class HostTableCoordinator extends EventEmitter {
       const ts = rec.ctx.tableState();
       return {
         browserIndex: i + 1, profileId: rec.id, displayName: rec.displayName,
+        // PHASE 6.3.6 — FIND gating is the USER's finder choice, never browserIndex. isFinder is true for EVERY
+        // browser until a finder is chosen; then only the chosen profile is finder (others show WAIT_ANCHOR).
+        isFinder: this._finderId == null ? true : (rec.id === this._finderId),
+        isSelectedFinder: this._finderId != null && rec.id === this._finderId,
         username: this._username(rec) || 'USER_UNKNOWN',
         connected: c.connected, socketReady: c.socketReady,
         // channelCount > 0 == this browser received the Phỏm stake list, i.e. it is in the Phỏm lobby

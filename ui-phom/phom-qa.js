@@ -67,6 +67,9 @@
   // cardsSnap.slotBinding and is passed to the read-only analyzer; the three hands are never merged (§5/§20).
   let selectedAnalysisPlayer = null;
   let safeAnalysis = null;     // last read-only analyzer result for the selected target
+  // PHASE 6.3.6 — the USER-selected FINDER (room anchor) slot (B1/B2/B3), or null = none chosen (every browser
+  // may FIND). SEPARATE from selectedAnalysisPlayer: Finder ≠ Analysis is fully valid (e.g. Finder B2, Analysis B3).
+  let selectedFinderPlayer = null;
   let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
   const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
   const manualEntering = {}; // browserId -> true while VÀO GAME is in flight (real ENTERING state, §5)
@@ -836,7 +839,26 @@
     r.appendChild(compactHeader());
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
     r.appendChild(compactBrowserRow());
+    r.appendChild(finderSelector());
     r.appendChild(renderCardWorkspace());
+  }
+  // PHASE 6.3.6 — USER picks which Player is the FINDER (room anchor). No finder → every Player may TÌM BÀN;
+  // pick one → only that Player finds, the others show "CHỜ PLAYER N TÌM BÀN". Re-clicking clears (back to all).
+  // SEPARATE from PHÂN TÍCH (analysis): a Finder ≠ Analysis player is fully valid. Reuses the analysis-pick style.
+  function finderSelector() {
+    const wrap = el('div', { class: 'analysis-pick finder-pick' }, el('span', { class: 'faint xs' }, 'FINDER:'));
+    ['B1', 'B2', 'B3'].forEach((slot, i) => {
+      const active = selectedFinderPlayer === slot;
+      wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => onSelectFinder(active ? null : slot) }, 'Player ' + (i + 1)));
+    });
+    wrap.appendChild(el('span', { class: 'faint xs' }, selectedFinderPlayer ? '' : ' (chưa chọn — mọi Player đều TÌM BÀN)'));
+    return wrap;
+  }
+  function onSelectFinder(slot) {
+    selectedFinderPlayer = slot; // 'B1'/'B2'/'B3' or null (toggle off)
+    const index = slot ? Number(slot.slice(1)) : null;
+    if (api.setFinder) { try { api.setFinder(index); } catch (e) { /* header derivation still updates on next push */ } }
+    bgRender();
   }
   // The dominant content area: the two card sections, growing with the Tool window (§5).
   function renderCardWorkspace() {
@@ -897,6 +919,8 @@
     // shared and shown ONCE in the tool header, §3). No game-control buttons.
     const cell = el('div', { class: 'browser-cell st-' + st.cls });
     cell.appendChild(el('span', { class: 'bc-id' }, 'Player ' + index));
+    // PHASE 6.3.6 — mark which Player the USER chose as FINDER (room anchor); never defaulted to Player 1.
+    if (selectedFinderPlayer === slot) cell.appendChild(el('span', { class: 'gbadge good', title: 'Player này là FINDER (tìm bàn / room anchor)' }, 'FINDER'));
     if (!runId) { cell.appendChild(el('span', { class: 'faint sm bc-hint' }, 'Mở ở SETUP')); return cell; }
     if (chromiumClosed) {
       cell.appendChild(el('span', { class: 'bc-badge off' }, el('span', { class: 'status-dot off' }), 'OFFLINE'));
@@ -2149,6 +2173,8 @@
   if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) bgRender(); }); else bgRender(); });
   // PHASE 6.3.3.2 — a fresh card-observation snapshot arrived (push). Store it + re-render Screen 2.
   if (api.onCards) api.onCards((c) => { cardsSnap = c || null; refreshSafeAnalysis().then(() => { if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); }); });
+  // PHASE 6.3.6 — reflect the current finder choice on load (main owns it; renderer mirrors for the selector UI).
+  if (api.getFinder) { api.getFinder().then((r) => { if (r && r.ok && r.finderIndex != null) { selectedFinderPlayer = 'B' + r.finderIndex; if (!$('workspace').hidden) bgRender(); } }).catch(() => {}); }
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the
