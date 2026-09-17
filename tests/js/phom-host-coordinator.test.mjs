@@ -207,3 +207,28 @@ test('unauthorized environment blocks acquireHost', async () => {
   assert.equal(res.ok, false);
   assert.equal(res.error.code, 'PHOM_UNAUTHORIZED_ENVIRONMENT');
 });
+
+// PHASE 6.3.6 — USER-selected FINDER (room anchor), never defaulted to the first profile.
+test('FINDER: no finder chosen -> every browser isFinder=true; choosing one narrows it; clearing restores', () => {
+  const { coord } = makeSession();
+  assert.equal(coord.finderId(), null);
+  assert.deepEqual(coord.manualBrowserSnapshot().map((b) => b.isFinder), [true, true, true]);
+  assert.deepEqual(coord.setFinder('B'), { ok: true, finderId: 'B' });
+  const snap = coord.manualBrowserSnapshot();
+  assert.deepEqual(snap.map((b) => b.isFinder), [false, true, false]);
+  assert.deepEqual(snap.map((b) => b.isSelectedFinder), [false, true, false]);
+  assert.equal(coord.finderId(), 'B');
+  assert.equal(coord.isFinder('B'), true);
+  assert.equal(coord.isFinder('A'), false);
+  coord.setFinder(null);
+  assert.equal(coord.finderId(), null);
+  assert.deepEqual(coord.manualBrowserSnapshot().map((b) => b.isFinder), [true, true, true]);
+});
+
+test('FINDER: unknown profile rejected; the same-room-proof anchor follows the selected finder (not always P1)', () => {
+  const { coord } = makeSession();
+  assert.equal(coord.setFinder('Z').ok, false); // unknown profile is typed-rejected
+  assert.equal(coord._anchor().id, 'A');         // default (no finder) = first profile, unchanged 6.3.5 behavior
+  coord.setFinder('C');
+  assert.equal(coord._anchor().id, 'C');         // explicit finder = C → follower proof checks C's uid, not A's
+});

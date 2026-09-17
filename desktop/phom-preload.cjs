@@ -71,6 +71,9 @@ contextBridge.exposeInMainWorld('phomQA', {
   cardsSnapshot: () => ipcRenderer.invoke('phom:cards'),
   // PHASE 6.3.3.3 — read-only safe-card analysis for ONE selected target uid.
   analyzeSafeCards: (targetPlayerUid) => ipcRenderer.invoke('phom:analyze-safe-cards', targetPlayerUid),
+  // PHASE 6.3.6 — USER-selected FINDER (room anchor), by Player index 1/2/3; null clears (every browser may FIND).
+  setFinder: (index) => ipcRenderer.invoke('phom:set-finder', index),
+  getFinder: () => ipcRenderer.invoke('phom:get-finder'),
   onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
   onHands: (cb) => ipcRenderer.on('phom:hands', (_e, hands) => cb(hands)),
   onCards: (cb) => ipcRenderer.on('phom:cards', (_e, cards) => cb(cards)),

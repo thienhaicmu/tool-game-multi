@@ -11,6 +11,12 @@
 //   - Development: the same layout under the generator source dir, with optional
 //     env overrides (WVPT_PRIVATE_KEY_PATH / WVPT_GOOGLE_SERVICE_ACCOUNT).
 //
+// TRUST MODEL (internal-only): the Generator .exe bundles BOTH per-game private keys
+// (wvpt-ed25519-private.pem = AVIATOR_V1, phom-ed25519-private.pem = PHOM_V1). That is
+// NOT secure secret storage — anyone holding the Generator build can mint licenses for
+// both games. It is acceptable only because the Generator is a single-operator internal
+// tool that is never distributed. Customer apps ship public keys only.
+//
 // It is PURE (no fs, no electron): given inputs it returns absolute paths, so the
 // packaged-vs-dev resolution is unit-testable with fixtures. The main process does
 // the actual (secret) file reads; the renderer only ever sees ready/not-ready.

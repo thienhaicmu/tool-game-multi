@@ -7,8 +7,10 @@
 //   - AVIATOR_V1 : the ORIGINAL Aviator key. It also verifies LEGACY keys (which carry
 //                  no signingKeyId / no gameProduct) so already-sold Aviator licenses
 //                  keep working unchanged.
-//   - PHOM_V1    : a NEW keypair dedicated to Phỏm QA. Its private half lives ONLY on
-//                  the generator machine (gitignored, never packaged).
+//   - PHOM_V1    : a NEW keypair dedicated to Phỏm QA.
+// Private halves live only in the gitignored tools/license-generator/private/ dir and
+// the INTERNAL seller Generator package — never in any customer app (see
+// tools/license-generator/seller-resources.cjs for that trust model).
 //
 // Verification resolves the license's signed `signingKeyId` to a public key here, then
 // checks that key id is ALLOWED for the license's gameProduct (PRODUCT_KEY_IDS).

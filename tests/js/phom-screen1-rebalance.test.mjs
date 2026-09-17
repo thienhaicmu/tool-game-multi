@@ -37,10 +37,11 @@ test('the bulk-proxy selection preview + error use the Player label (not B#)', (
   assert.match(ab, /playerLabel\(m\.browser\)/);
 });
 
-test('Screen 2 compact browser chip is labelled "Player N" (was "B" + index)', () => {
+// PHASE 6.3.9 — the compact chip now shows BOTH a colored B# badge AND "Player N" (matches the mockup row).
+test('Screen 2 compact browser chip shows a colored B# badge + "Player N"', () => {
   const cell = fn('compactBrowserCell');
-  assert.match(cell, /'Player ' \+ index/);
-  assert.equal(/'B' \+ index/.test(cell), false, 'Screen 2 no longer shows raw B#');
+  assert.match(cell, /'Player ' \+ index/);          // user-facing name kept
+  assert.match(cell, /'b-badge'[\s\S]*?'B' \+ index/); // colored B1/B2/B3 badge (accent by index)
 });
 
 // ---- OBJECTIVE A — layout rebalance: table is the flexible primary area, no page-scroll dependency ----

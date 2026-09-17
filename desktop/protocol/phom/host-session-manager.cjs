@@ -92,6 +92,9 @@ class HostSessionManager extends EventEmitter {
   _guarded(fn) { const c = this._c(); if (!c) return Promise.resolve({ ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }); return Promise.resolve(fn(c)); }
 
   setHost(hostId) { const c = this._c(); return c ? c.setHost(hostId) : { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no session' } }; }
+  // PHASE 6.3.6 — USER-selected FINDER (room anchor). Passive config (no auth guard), like setHost/selectStake.
+  setFinder(profileId) { const c = this._c(); return c ? c.setFinder(profileId == null ? null : String(profileId)) : { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no session' } }; }
+  finderId() { const c = this._c(); return c && typeof c.finderId === 'function' ? c.finderId() : null; }
   selectStake(stake) { const c = this._c(); return c ? { ok: true, selected: c.selectStake(stake) } : { ok: false }; }
   requestChannels() { return this._guarded((c) => c.requestChannels()); }
   availableStakes() { const c = this._c(); return c && typeof c.availableStakes === 'function' ? c.availableStakes() : []; }

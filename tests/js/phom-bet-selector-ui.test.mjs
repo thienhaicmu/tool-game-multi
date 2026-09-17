@@ -81,8 +81,9 @@ test('reload (↻ WEB) resets the browser so VÀO GAME returns; backend resets t
   assert.match(h, /delete manualEntering\[runId\]/);
   assert.match(h, /delete selectedStakeByBrowser\[runId\]/);
   assert.match(h, /VÀO GAME/);
-  // backend wiring: reload IPC resets the browser context; coordinator + session manager expose it
-  assert.match(main, /phom:reload-web[\s\S]*?resetBrowser\(String\(runId\)\)/);
+  // backend wiring: the reload IPC (and the header ⟳ button) reset the browser context via reloadWebRun.
+  assert.match(main, /ipcMain\.handle\('phom:reload-web', guarded\(async \(_e, cfg\) => reloadWebRun/);
+  assert.match(main, /async function reloadWebRun\(runId\)[\s\S]*?resetBrowser\(rid\)/);
   assert.match(coord, /resetBrowser\(profileId\)/);
   assert.match(coord, /rec\.ctx\.reset\(\)/);
 });

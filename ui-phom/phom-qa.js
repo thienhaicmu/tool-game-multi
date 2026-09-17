@@ -24,10 +24,12 @@
   let errorMsg = '';
   let caps = {};
   let licenseMode = 'LICENSED';
+  let licenseInfo = null; // PHASE 6.3.9 — full license status (expiresAt) for the compact header chip
   let session = null;
   let hands = [];
   let proxies = [];
   let presets = [];          // mobile device presets
+  const DEFAULT_PROFILE_PRESET_ID = 'desktop-22-24-16x9'; // §6.3.13 — default display for NEW profiles (600×338 · 16:9)
   let profiles = {};         // slot -> saved profile (device + proxyRef)
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
@@ -67,6 +69,9 @@
   // cardsSnap.slotBinding and is passed to the read-only analyzer; the three hands are never merged (§5/§20).
   let selectedAnalysisPlayer = null;
   let safeAnalysis = null;     // last read-only analyzer result for the selected target
+  // PHASE 6.3.6 — the USER-selected FINDER (room anchor) slot (B1/B2/B3), or null = none chosen (every browser
+  // may FIND). SEPARATE from selectedAnalysisPlayer: Finder ≠ Analysis is fully valid (e.g. Finder B2, Analysis B3).
+  let selectedFinderPlayer = null;
   let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
   const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
   const manualEntering = {}; // browserId -> true while VÀO GAME is in flight (real ENTERING state, §5)
@@ -77,6 +82,7 @@
   let activeTab = 'SETUP';   // PHASE 6.2.2 — two tabs: SETUP (config/open) and PHOM (control)
   // PHASE 6.3.1 — flexible N-profile SETUP: the profile LIST + the ordered selection (→ B1/B2/B3) + game URL.
   const PS = (typeof window !== 'undefined' && window.ProfileSelection) ? window.ProfileSelection : null;
+  const BP = (typeof window !== 'undefined' && window.BulkProxy) ? window.BulkProxy : null; // PHASE 6.3.10 — bulk proxy parser
   let profilesX = [];              // all saved device profiles (from phom:profiles-list)
   let browserRuntimeInfo = null;   // PHASE 6.3.2.2 — { preference, customAvailable, chromeAvailable, resolved }
   let selectedProfileIds = [];     // ORDERED selection (max 3); selection order → B1/B2/B3
@@ -111,6 +117,7 @@
     play: '<path d="m7 4 13 8-13 8Z"/>',
     logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><path d="m16 17 5-5-5-5"/><path d="M21 12H9"/>',
     monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
+    copy: '<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>',
   };
   function icon(name, opts) {
     const span = document.createElement('span');
@@ -132,6 +139,7 @@
     let status = {};
     try { status = await api.licenseStatus(); } catch { status = {}; }
     licenseMode = (status && status.mode) || 'LICENSED';
+    licenseInfo = status || null;
     if (status && status.active) return showWorkspace();
     return showActivation(status);
   }
@@ -188,9 +196,32 @@
   function renderTabBar() {
     const bar = el('div', { class: 'tab-bar' });
     const tab = (id, label) => el('button', { class: 'tab' + (activeTab === id ? ' active' : ''), onclick: () => { activeTab = id; renderApp(); } }, label);
-    bar.appendChild(tab('SETUP', 'SETUP'));
+    // PHASE 6.3.9 — one unified header: brand · [PROFILE] [PHỎM] · compact license chip (no separate panel).
+    bar.appendChild(el('span', { class: 'tb-brand' }, '♠ PHỎM QA'));
+    bar.appendChild(tab('SETUP', 'PROFILE'));
     bar.appendChild(tab('PHOM', 'PHỎM'));
+    bar.appendChild(licenseChip());
     return bar;
+  }
+  // Compact license status for the header (never a separate License page; no long key shown).
+  function licenseChip() {
+    const wrap = el('span', { class: 'tb-license' });
+    if (licenseMode === 'DEVELOPMENT_BYPASS') { wrap.appendChild(el('span', { class: 'chip yellow sm' }, '● DEV BYPASS')); return wrap; }
+    wrap.appendChild(el('span', { class: 'chip green sm' }, '● Đã kích hoạt'));
+    // PHASE 6.3.9-fix — the real license status carries expiry at payload.expiresAt (unix SECONDS) + a trusted
+    // nowSeconds. (Top-level expiresAt was wrong — it never populated, so the days/HSD went missing in the
+    // packaged app.) Always show "Còn X ngày · HSD: DD/MM/YYYY" from the authoritative signed expiry.
+    const li = licenseInfo || {};
+    const expSec = (li.payload && li.payload.expiresAt != null) ? Number(li.payload.expiresAt)
+      : (li.expiresAt != null ? Number(li.expiresAt) : null);
+    if (expSec && Number.isFinite(expSec)) {
+      const nowMs = (li.nowSeconds != null && Number.isFinite(Number(li.nowSeconds))) ? Number(li.nowSeconds) * 1000 : Date.now();
+      const d = new Date(expSec * 1000);
+      const days = Math.max(0, Math.ceil((d.getTime() - nowMs) / 86400000));
+      const p2 = (n) => String(n).padStart(2, '0');
+      wrap.appendChild(el('span', { class: 'faint sm tb-hsd' }, `Còn ${days} ngày · HSD: ${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()}`));
+    }
+    return wrap;
   }
 
   // ---------- top-level dispatch ----------
@@ -262,12 +293,13 @@
   // PHASE 6.3.2.1 — a header + a SINGLE scrollable page (all panels) + a sticky footer (count + MỞ 3
    // TRÌNH DUYỆT). No global Game URL input: the URL is a per-profile property, edited in Edit Profile.
   function renderSetup(r) {
-    const h = header('SETUP'); h.classList.add('s1-header'); r.appendChild(h);
+    // PHASE 6.3.9 — the unified tab bar already carries brand + license; no redundant SETUP sub-header here.
     r.appendChild(el('div', { class: 'note s1-note', id: 'phq-note' }, ''));
     const page = el('div', { class: 'setup-page' });
+    // PHASE 6.3.9/6.3.10 — Profile is the compact table + a COMPACT quick bulk-proxy import (one line = one
+    // proxy, mapped B1→B2→B3 by profile order). Per-profile proxy still edits in the row's Edit modal.
     page.appendChild(profileTablePanel());
-    page.appendChild(bulkProxyPanel());
-    page.appendChild(browserRuntimePanel());
+    page.appendChild(bulkProxyQuickPanel());
     r.appendChild(page);
     r.appendChild(runGameFooter());
   }
@@ -300,16 +332,27 @@
       el('span', { class: 'h-title' }, 'DEVICE PROFILES ', el('span', { class: 'faint sm' }, `· ĐÃ CHỌN ${n} / 3`)),
       el('button', { class: 'btn primary sm', onclick: () => openProfileModal(null) }, icon('plus', { sm: true }), ' THÊM PROFILE')));
     const table = el('table', { class: 'setup-table' });
+    // PHASE 6.3.9 — a header checkbox = Select All / Unselect All (picks up to 3 in order → B1/B2/B3).
+    const allSel = profilesX.length > 0 && selectedProfileIds.length === Math.min(3, profilesX.length);
+    const headCb = el('input', { type: 'checkbox', class: 'prof-cb', checked: allSel ? 'checked' : null, title: 'Chọn / bỏ chọn tất cả', onchange: () => { if (allSel) clearAllProfiles(); else selectAllProfiles(); } });
     table.appendChild(el('thead', null, el('tr', null,
-      el('th', null, ''), el('th', null, 'PLAYER'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, 'GAME URL'), el('th', null, ''))));
+      el('th', null, headCb), el('th', null, 'PLAYER'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, 'GAME URL'), el('th', null, 'TRẠNG THÁI'), el('th', null, ''))));
     const tbody = el('tbody');
-    if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '9', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
+    if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '10', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
     for (const p of profilesX) tbody.appendChild(profileRow(p));
     table.appendChild(tbody);
     const scroll = el('div', { class: 'table-scroll' }, table);
     panel.appendChild(scroll);
+    // Below the table: Select-All / Unselect-All + the selection count (mockup layout).
+    panel.appendChild(el('div', { class: 'table-actions' },
+      el('button', { class: 'btn sm', onclick: selectAllProfiles }, 'Chọn tất cả'),
+      el('button', { class: 'btn sm', onclick: clearAllProfiles }, 'Bỏ chọn tất cả'),
+      el('span', { class: 'faint sm', style: 'margin-left:auto' }, `Đã chọn: ${n} / 3 profile`)));
     return panel;
   }
+  // PHASE 6.3.9 — Select All picks the first 3 profiles (selection order → B1/B2/B3); Unselect clears.
+  function selectAllProfiles() { selectedProfileIds = profilesX.slice(0, 3).map((p) => p.id); renderApp(); }
+  function clearAllProfiles() { selectedProfileIds = []; renderApp(); }
   function profileRow(p) {
     const dev = p.device || {};
     const sel = PS ? PS.isSelected(selectedProfileIds, p.id) : false;
@@ -326,13 +369,24 @@
       el('td', null, typeText),
       el('td', { class: 'num' }, osText),
       el('td', { class: 'num' }, dev.resolution || '—'),
-      el('td', null, p.proxyRef ? el('span', { class: 'badge good' }, 'PROXY') : el('span', { class: 'badge faint' }, 'DIRECT')),
+      // PHASE 6.3.10 — compact proxy display: TYPE host:port · auth (credential is never shown, §10). DIRECT if none.
+      el('td', null, (() => {
+        if (!p.proxyRef) return el('span', { class: 'badge faint' }, 'DIRECT');
+        const px = proxies.find((x) => x.id === p.proxyRef);
+        const label = px ? ((px.protocol ? px.protocol.toUpperCase() : 'PROXY') + ' ' + (px.endpoint || (px.host + ':' + px.port)) + (px.hasAuth ? ' · auth' : '')) : 'PROXY';
+        return el('span', { class: 'badge good', title: 'Proxy đã gán (mật khẩu ẩn)' }, label);
+      })()),
       // GAME URL is a per-profile property; shown ellipsised with a full-URL tooltip, edited in Edit Profile.
       el('td', { class: 'col-url' }, p.gameUrl
         ? el('span', { class: 'url-ellipsis', title: p.gameUrl }, p.gameUrl)
         : el('span', { class: 'faint sm', title: 'Chưa có Game URL — bấm Sửa để thêm' }, '— chưa có —')),
+      // TRẠNG THÁI: selected (in this run) → Sẵn sàng; otherwise not chosen yet (presentation only).
+      el('td', null, sel
+        ? el('span', { class: 'badge good' }, '● Sẵn sàng')
+        : el('span', { class: 'badge faint' }, '○ Chưa chọn')),
       el('td', null, el('div', { style: 'display:flex;gap:4px;justify-content:flex-end' },
         iconButton('edit', 'Sửa profile', () => openProfileModal(p.id)),
+        iconButton('copy', 'Nhân bản profile', () => duplicateProfileX(p.id)),
         iconButton('trash', 'Xóa profile', () => deleteProfileX(p.id), 'danger'))),
     );
   }
@@ -354,6 +408,45 @@
     return panel;
   }
 
+  // PHASE 6.3.10 — COMPACT quick bulk-proxy import. ONE LINE = ONE proxy (TYPE|host|port|user|pass); NEWLINE
+  // maps to the NEXT profile BY ORDER (line 1 → B1, line 2 → B2, …). Reuses the existing proxy schema +
+  // profileSetProxy (no new storage/IPC). This is SEPARATE from the per-row ⚡ Quick Proxy in Edit Profile.
+  function bulkProxyQuickPanel() {
+    const panel = el('div', { class: 'setup-panel bulk-proxy-quick' });
+    panel.appendChild(el('div', { class: 'setup-section-h' },
+      el('span', { class: 'h-title' }, 'THÊM NHANH PROXY ', el('span', { class: 'faint sm' }, '· mỗi dòng = 1 proxy · theo thứ tự B1 → B2 → B3'))));
+    const body = el('div', { style: 'padding:0 12px 12px' });
+    const ta = el('textarea', { class: 'f mono', id: 'phq-bulkproxy-quick', rows: '3', style: 'width:100%', placeholder: 'HTTP|host|port|user|pass\nHTTP|host|port|user|pass\nSOCKS5|host|port|user|pass', oninput: (e) => { bulkProxyText = e.target.value; } }, bulkProxyText);
+    body.appendChild(ta);
+    body.appendChild(el('div', { style: 'margin-top:8px;display:flex;gap:8px;align-items:center' },
+      el('button', { class: 'btn sm', title: 'Chèn mẫu định dạng', onclick: () => { ta.value = (BP ? BP.TEMPLATE : ''); bulkProxyText = ta.value; ta.focus(); } }, 'MẪU'),
+      el('button', { class: 'btn primary sm', onclick: applyBulkProxyQuick }, '⚡ ÁP DỤNG'),
+      el('span', { class: 'note', id: 'phq-bulkproxy-note' }, '')));
+    panel.appendChild(body);
+    return panel;
+  }
+  async function applyBulkProxyQuick() {
+    const note = $('phq-bulkproxy-note');
+    const setNote = (msg, warn) => { const n = $('phq-bulkproxy-note'); if (n) { n.textContent = msg; n.className = 'note ' + (warn ? 'warn' : 'ok'); } };
+    if (!BP) return;
+    // 1) Parse + validate EVERY line first (all-or-nothing — nothing is applied until all pass, §6).
+    const parsed = BP.parse(bulkProxyText);
+    if (!parsed.ok) return setNote(parsed.error.message, true);
+    if (!parsed.proxies.length) return setNote('Chưa có proxy nào để áp dụng.', true);
+    // 2) Map to profiles BY ORDER (not selection); MORE proxies than profiles is rejected (§3/§7).
+    const ids = profilesX.map((p) => p.id);
+    const mapped = BP.mapToProfiles(parsed.proxies, ids);
+    if (!mapped.ok) return setNote(mapped.error.message, true);
+    // 3) Apply via the EXISTING profileSetProxy (per profile, in order). Passwords are never logged/echoed.
+    for (const m of mapped.mapping) {
+      const r = await api.profileSetProxy(m.profileId, m.proxy);
+      if (r && r.ok === false) { await refreshProfilesX(); await refreshProxies(); renderApp(); return setNote(`Proxy dòng ${m.index + 1}: ${errText(r)}`, true); }
+    }
+    await refreshProfilesX(); await refreshProxies(); renderApp();
+    setNote(`Đã áp dụng ${mapped.mapping.length} proxy theo thứ tự B1 → B2 → B3.`, false);
+  }
+  async function refreshProxies() { try { const p = await api.proxyList(); proxies = (p && p.proxies) || []; } catch { /* keep last */ } }
+
   // RUN GAME — a STICKY footer (never scrolls out of view). Enabled only with exactly 3 selected AND, unless
   // Local Test, every selected profile has its own Game URL (edited in Edit Profile — no URL prompt at RUN).
   function runGameFooter() {
@@ -361,13 +454,22 @@
     const missingUrl = !localTest && selectedProfileIds.some((id) => { const p = profilesX.find((x) => x.id === id); return !(p && p.gameUrl && String(p.gameUrl).trim()); });
     const ready = n === 3 && !missingUrl;
     const footer = el('div', { class: 'setup-footer' });
-    const left = el('div', { style: 'display:flex;align-items:center;gap:10px' });
-    left.appendChild(el('span', { class: 'faint sm' }, `ĐÃ CHỌN ${n} / 3`));
+    // PHASE 6.3.9 — compact footer-left: Môi trường (QA) · Window mode (Landscape) · the REAL browser-runtime
+    // engine selector (moved here from the big BROWSER RUNTIME panel — same api.browserRuntimeSet, no new logic).
+    const left = el('div', { style: 'display:flex;align-items:center;gap:14px;flex-wrap:wrap' });
+    left.appendChild(el('span', { class: 'faint sm' }, 'Môi trường: ', el('b', null, 'QA')));
+    left.appendChild(el('span', { class: 'faint sm' }, 'Window mode: ', el('b', null, 'Landscape (điện thoại ngang)')));
+    const rt = browserRuntimeInfo || {};
+    const opt = (val, label) => el('option', { value: val, selected: (rt.preference || 'AUTO') === val ? 'selected' : null }, label);
+    left.appendChild(el('label', { class: 'faint sm' }, 'Trình duyệt: ',
+      el('select', { class: 'sel sm', onchange: async (e) => { const res = await api.browserRuntimeSet({ preference: e.target.value }); if (res && res.ok) { await refreshBrowserRuntime(); renderApp(); } } },
+        opt('AUTO', 'AUTO'), opt('CUSTOM_CHROMIUM', 'Chromium'), opt('GOOGLE_CHROME', 'Chrome'))));
     if (n === 3 && missingUrl) left.appendChild(el('span', { class: 'chip red sm', title: 'Mỗi profile cần Game URL — mở Sửa profile để nhập' }, 'THIẾU GAME URL'));
     footer.appendChild(left);
     const right = el('div', { style: 'display:flex;align-items:center;gap:10px' });
+    right.appendChild(el('span', { class: 'faint sm' }, `Đã chọn: ${n} / 3`));
     if (caps.devBypass) right.appendChild(el('label', { class: 'faint sm' }, el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; renderApp(); } }), ' Local Test'));
-    right.appendChild(el('button', { class: 'btn primary', disabled: ready ? null : true, onclick: openCluster }, icon('monitor', { sm: true }), ' MỞ 3 TRÌNH DUYỆT'));
+    right.appendChild(el('button', { class: 'btn primary', disabled: ready ? null : true, onclick: openCluster }, icon('play', { sm: true }), ' MỞ TRÌNH DUYỆT ĐÃ CHỌN'));
     footer.appendChild(right);
     return footer;
   }
@@ -391,6 +493,15 @@
     if (PS) selectedProfileIds = selectedProfileIds.filter((x) => x !== id); // remove from selection (§11)
     await refreshProfilesX(); renderApp(); note('Đã xóa profile.');
   }
+  // PHASE 6.3.9 — DUPLICATE a profile by COMPOSING the existing create IPC (device + Game URL cloned under a
+  // "(copy)" name). No new business logic / no new IPC; proxy is set per-profile in Edit on the copy.
+  async function duplicateProfileX(id) {
+    const p = profilesX.find((x) => x.id === id);
+    if (!p) return;
+    const res = await api.profileCreate({ name: (p.name || 'Profile') + ' (copy)', device: p.device || {}, gameUrl: p.gameUrl || null });
+    if (res && res.ok === false) return note(errText(res), true);
+    await refreshProfilesX(); renderApp(); note('Đã nhân bản profile.');
+  }
   async function applyBulkProxy() {
     const pn = $('phq-proxynote');
     if (!PS) return;
@@ -403,14 +514,18 @@
   // Add/Edit profile modal (name · type preset · OS window w/h · viewport w/h · touch). OS window ⟂ viewport.
   function openProfileModal(id) {
     const existing = id ? profilesX.find((x) => x.id === id) : null;
-    const dev = existing && existing.device ? existing.device : {};
+    // §6.3.13 — a NEW profile defaults to the standard 22/24" 16:9 preset (600×338) so three
+    // browsers tile on one 1920×1080 monitor without the user configuring width/height. EXISTING
+    // profiles keep their saved viewport untouched (§4/§11); Duplicate preserves the source (§10).
+    const defPreset = !existing ? (presets.find((p) => p.id === DEFAULT_PROFILE_PRESET_ID) || null) : null;
+    const dev = existing && existing.device ? existing.device : (defPreset ? { ...defPreset, presetId: defPreset.id } : {});
     document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
     const ov = el('div', { class: 'phq-analyzer' });
     const close = () => ov.remove();
     const presetSel = el('select', { class: 'sel', id: 'pf-preset' }, el('option', { value: '' }, '— chọn preset (tùy chọn) —'));
     for (const pr of presets) presetSel.appendChild(el('option', { value: pr.id, selected: dev.presetId === pr.id ? 'selected' : null }, `${pr.name} · ${(pr.profileType || '').replace('_', ' ')}`));
     const f = (idv, ph, val) => el('input', { class: 'f', id: idv, placeholder: ph, value: val != null ? val : '' });
-    const applyPreset = () => { const pr = presets.find((x) => x.id === presetSel.value); if (!pr) return; $('pf-name').value = $('pf-name').value || pr.name; $('pf-osw').value = pr.osWindowWidth || ''; $('pf-osh').value = pr.osWindowHeight || ''; $('pf-vpw').value = pr.viewportWidth || ''; $('pf-vph').value = pr.viewportHeight || ''; };
+    const applyPreset = () => { const pr = presets.find((x) => x.id === presetSel.value); if (!pr) return; $('pf-name').value = $('pf-name').value || pr.name; $('pf-osw').value = pr.osWindowWidth || ''; $('pf-osh').value = pr.osWindowHeight || ''; $('pf-vpw').value = pr.viewportWidth || ''; $('pf-vph').value = pr.viewportHeight || ''; if ($('pf-touch')) $('pf-touch').checked = !!pr.touch; };
     presetSel.onchange = applyPreset;
     const card = el('div', { class: 'anz-card' },
       el('div', { class: 'section-t' }, existing ? 'SỬA PROFILE' : 'THÊM PROFILE'),
@@ -423,6 +538,13 @@
       el('div', { class: 'phq-row' }, el('span', null, 'Touch'), el('label', { class: 'faint' }, el('input', { type: 'checkbox', id: 'pf-touch', checked: (dev.touch == null ? true : dev.touch) ? 'checked' : null }), ' bật cảm ứng')),
       el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'GAME URL (lưu trong profile — không phải nhập lại khi mở)'),
       el('div', { class: 'phq-row' }, el('span', null, 'URL'), el('input', { class: 'f mono', id: 'pf-url', type: 'url', spellcheck: 'false', placeholder: 'https://game.example.com/room', value: existing && existing.gameUrl ? existing.gameUrl : '' })),
+      // PHASE 6.3.9 — PROXY is now configured HERE (per-profile), replacing the bulk-proxy panel. Optional:
+      // empty = DIRECT. Reuses api.profileSetProxy (same IPC the bulk panel used) — no new proxy logic.
+      el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'PROXY (tùy chọn — để trống = DIRECT)'),
+      el('div', { class: 'phq-row' }, el('span', null, 'Proxy'), el('input', { class: 'f mono', id: 'pf-proxy', placeholder: 'host:port  hoặc  host:port:user:pass', value: '' })),
+      (existing && existing.proxyRef)
+        ? el('div', { class: 'phq-row' }, el('span', null, ''), el('label', { class: 'faint sm' }, el('input', { type: 'checkbox', id: 'pf-proxy-remove' }), ' Đang có proxy — tick để xóa (DIRECT), hoặc nhập proxy mới để đổi'))
+        : el('span', { style: 'display:none' }),
       el('div', { class: 'note', id: 'pf-err' }, ''),
       el('div', { class: 'phq-row' },
         el('button', { class: 'btn primary', onclick: () => saveProfileModal(id, close) }, 'Lưu'),
@@ -436,13 +558,31 @@
     if (!vpw || !vph) { if (err) { err.textContent = 'Viewport width/height phải là số > 0.'; err.className = 'note warn'; } return; }
     const osw = num($('pf-osw').value), osh = num($('pf-osh').value);
     const touch = !!($('pf-touch') && $('pf-touch').checked);
-    const device = { viewportWidth: vpw, viewportHeight: vph, screenWidth: vpw, screenHeight: vph, deviceScaleFactor: 2, osWindowWidth: osw, osWindowHeight: osh, touch, mobile: touch, orientationType: 'landscapePrimary', profileType: (osw && osh) ? 'CUSTOM' : 'MOBILE_LANDSCAPE' };
+    // §6.3.13 — when a preset is selected (NEW profiles default to Desktop 22/24"), carry its
+    // profileType / scale / emulation so the display tag + device emulation stick. Editing an
+    // existing profile with no preset selected keeps the legacy CUSTOM/MOBILE_LANDSCAPE logic (§11).
+    const presetId = ($('pf-preset') && $('pf-preset').value) || null;
+    const preset = presetId ? presets.find((p) => p.id === presetId) : null;
+    const device = { viewportWidth: vpw, viewportHeight: vph, screenWidth: vpw, screenHeight: vph,
+      deviceScaleFactor: preset ? preset.deviceScaleFactor : 2, osWindowWidth: osw, osWindowHeight: osh,
+      touch, mobile: preset ? preset.mobile : touch, maxTouchPoints: preset ? preset.maxTouchPoints : (touch ? 5 : 0),
+      orientationType: 'landscapePrimary', presetId: preset ? preset.id : null,
+      profileType: preset ? preset.profileType : ((osw && osh) ? 'CUSTOM' : 'MOBILE_LANDSCAPE') };
     const name = ($('pf-name').value || '').trim() || 'Profile';
     const gameUrl = ($('pf-url') && $('pf-url').value || '').trim() || null;
     let res;
     if (id) res = await api.profileUpdateX(id, { name, device, gameUrl });
     else res = await api.profileCreate({ name, device, gameUrl });
     if (res && res.ok === false) { if (err) { err.textContent = errText(res); err.className = 'note warn'; } return; }
+    // PHASE 6.3.9 — per-profile PROXY (optional), reusing the existing api.profileSetProxy IPC. Non-destructive:
+    // a new proxy string changes it, the remove checkbox clears it (DIRECT), an untouched field leaves it alone.
+    const pid = id || (res && res.profile && res.profile.id) || null;
+    if (pid) {
+      const proxyStr = ($('pf-proxy') && $('pf-proxy').value || '').trim();
+      const removeProxy = !!($('pf-proxy-remove') && $('pf-proxy-remove').checked);
+      if (proxyStr) { const pr = await api.profileSetProxy(pid, proxyStr); if (pr && pr.ok === false) { if (err) { err.textContent = errText(pr); err.className = 'note warn'; } return; } }
+      else if (removeProxy) { await api.profileSetProxy(pid, null); }
+    }
     close(); await refreshProfilesX(); renderApp();
   }
 
@@ -477,7 +617,7 @@
   // browser (B1/B2/B3) with Type / OS Window / Viewport / Proxy columns + an Edit icon. No proxy
   // selector/Test here (Quick Proxy is the config surface). Data model unchanged (still the 3 slots).
   const SLOT_INDEX = { A: '1', B: '2', C: '3' };
-  const TYPE_LABEL = { DESKTOP: 'Desktop', LAPTOP: 'Laptop', LAPTOP_SMALL: 'Laptop Small', MOBILE_LANDSCAPE: 'Mobile Ngang', CUSTOM: 'Custom' };
+  const TYPE_LABEL = { DESKTOP: 'Desktop', LAPTOP: 'Laptop', LAPTOP_SMALL: 'Laptop Small', MOBILE_LANDSCAPE: 'Mobile Ngang', DESKTOP_16_9: 'Desktop 22/24"', CUSTOM: 'Custom' };
   function panelAssigned() {
     const panel = el('div', { class: 's1-panel setup-panel' });
     panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title s1-panel-t' }, 'THIẾT BỊ VÀ PROXY ĐÃ GÁN')));
@@ -836,7 +976,26 @@
     r.appendChild(compactHeader());
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
     r.appendChild(compactBrowserRow());
+    r.appendChild(finderSelector());
     r.appendChild(renderCardWorkspace());
+  }
+  // PHASE 6.3.6 — USER picks which Player is the FINDER (room anchor). No finder → every Player may TÌM BÀN;
+  // pick one → only that Player finds, the others show "CHỜ PLAYER N TÌM BÀN". Re-clicking clears (back to all).
+  // SEPARATE from PHÂN TÍCH (analysis): a Finder ≠ Analysis player is fully valid. Reuses the analysis-pick style.
+  function finderSelector() {
+    const wrap = el('div', { class: 'analysis-pick finder-pick' }, el('span', { class: 'faint xs' }, 'FINDER:'));
+    ['B1', 'B2', 'B3'].forEach((slot, i) => {
+      const active = selectedFinderPlayer === slot;
+      wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => onSelectFinder(active ? null : slot) }, 'Player ' + (i + 1)));
+    });
+    wrap.appendChild(el('span', { class: 'faint xs' }, selectedFinderPlayer ? '' : ' (chưa chọn — mọi Player đều TÌM BÀN)'));
+    return wrap;
+  }
+  function onSelectFinder(slot) {
+    selectedFinderPlayer = slot; // 'B1'/'B2'/'B3' or null (toggle off)
+    const index = slot ? Number(slot.slice(1)) : null;
+    if (api.setFinder) { try { api.setFinder(index); } catch (e) { /* header derivation still updates on next push */ } }
+    bgRender();
   }
   // The dominant content area: the two card sections, growing with the Tool window (§5).
   function renderCardWorkspace() {
@@ -852,11 +1011,12 @@
     const rid = manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : '—';
     const stake = manualCluster.sharedStake != null ? String(manualCluster.sharedStake) : '—';
     const anyOpen = SLOTS.some((s) => assign[s].runId);
+    // PHASE 6.3.9 — compact top line: BÀN (RID) · CƯỢC · 🂠 TỔNG LÁ ẨN. Brand lives in the header tab bar now.
+    // The ⋯ overflow is kept ONLY as the sole home of ĐÓNG 3 TRÌNH DUYỆT / Rời bàn / offline QA (no duplicate).
     return el('div', { class: 'tool-header' },
-      el('b', { class: 'th-brand' }, 'PHỎM QA'),
       el('span', { class: 'th-rid' }, 'BÀN: ', el('b', null, rid)),
       el('span', { class: 'th-bet' }, 'CƯỢC: ', el('b', null, stake)),
-      el('span', { class: 'th-still' }, 'CÒN LẠI: ', el('b', null, remaining ? (remaining.count + ' LÁ') : '—')),
+      el('span', { class: 'th-still' }, '🂠 TỔNG LÁ ẨN: ', el('b', null, remaining ? String(remaining.count) : '—')),
       moreMenuButton(),
       el('span', { class: 'chip ' + (anyOpen ? 'green' : 'gray') }, anyOpen ? '● READY' : '○'),
     );
@@ -896,7 +1056,14 @@
     // WS/CDP/HEADER mini-dots — plus browser lifecycle (↻ / ⏻ / MỞ CHROMIUM). RID is NOT repeated here (it is
     // shared and shown ONCE in the tool header, §3). No game-control buttons.
     const cell = el('div', { class: 'browser-cell st-' + st.cls });
+    // PHASE 6.3.9 — compact identity: [open?] · colored B# badge · Player N (matches the mockup player row).
+    // Accent is by browser INDEX (1/2/3), not the internal slot id (A/B/C).
+    const ACC = index === 1 ? '#2563eb' : index === 2 ? '#16a34a' : index === 3 ? '#ea580c' : '#6b7280';
+    cell.appendChild(el('input', { type: 'checkbox', class: 'bc-cb', checked: opened ? 'checked' : null, disabled: true, title: opened ? 'Đang mở' : 'Chưa mở' }));
+    cell.appendChild(el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'B' + index));
     cell.appendChild(el('span', { class: 'bc-id' }, 'Player ' + index));
+    // PHASE 6.3.6 — mark which Player the USER chose as FINDER (room anchor); never defaulted to Player 1.
+    if (selectedFinderPlayer === slot) cell.appendChild(el('span', { class: 'gbadge good', title: 'Player này là FINDER (tìm bàn / room anchor)' }, 'FINDER'));
     if (!runId) { cell.appendChild(el('span', { class: 'faint sm bc-hint' }, 'Mở ở SETUP')); return cell; }
     if (chromiumClosed) {
       cell.appendChild(el('span', { class: 'bc-badge off' }, el('span', { class: 'status-dot off' }), 'OFFLINE'));
@@ -934,24 +1101,31 @@
   // without proof; insufficient evidence renders an explicit state, never a fake number (§13/§24).
   function renderSafeCards() {
     const box = el('div', { class: 'safe-cards', id: 'phq-safe' });
+    // PHASE 6.3.9 — title + subtitle ("Không ăn gà") + count · a subtle green-accent section (not a full green bg).
+    const a = safeAnalysis;
+    const safeCount = (selectedAnalysisPlayer && a) ? ((a.safeCards || []).length + (a.likelySafeCards || []).length) : 0;
     box.appendChild(el('div', { class: 'safe-head' },
-      el('span', { class: 'section-t' }, 'LÁ BÀI AN TOÀN'),
+      el('div', { class: 'sc-title' },
+        el('span', { class: 'section-t' }, '🛡 LÁ BÀI AN TOÀN'),
+        el('span', { class: 'faint xs sc-sub' }, selectedAnalysisPlayer ? ('Không ăn gà · ' + safeCount + ' lá') : 'Không ăn gà')),
       playerAnalysisSelector()));
     box.appendChild(renderSafeBody());
     box.appendChild(el('div', { class: 'faint xs safe-src' }, 'Phân tích từ dữ liệu công khai đã quan sát'));
     return box;
   }
-  // A compact one-of-three selector (Player 1/2/3) — never "ALL"/"combine" (§20). Re-selecting clears it.
+  // PHÂN TÍCH CHO: [Tất cả] [B1] [B2] [B3]. "Tất cả" = no single player (aggregate remaining view; the SAFE
+  // analysis stays per-player — never merged, §20). SEPARATE from the finder selector.
   function playerAnalysisSelector() {
-    const wrap = el('div', { class: 'analysis-pick' }, el('span', { class: 'faint xs' }, 'PHÂN TÍCH:'));
+    const wrap = el('div', { class: 'analysis-pick' }, el('span', { class: 'faint xs' }, 'PHÂN TÍCH CHO:'));
+    wrap.appendChild(el('button', { class: 'btn sm' + (!selectedAnalysisPlayer ? ' primary' : ''), onclick: () => { selectedAnalysisPlayer = null; refreshSafeAnalysis().then(() => bgRender()); } }, 'Tất cả'));
     ['B1', 'B2', 'B3'].forEach((slot, i) => {
       const active = selectedAnalysisPlayer === slot;
-      wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => { selectedAnalysisPlayer = active ? null : slot; refreshSafeAnalysis().then(() => bgRender()); } }, 'Player ' + (i + 1)));
+      wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => { selectedAnalysisPlayer = active ? null : slot; refreshSafeAnalysis().then(() => bgRender()); } }, 'B' + (i + 1)));
     });
     return wrap;
   }
   function renderSafeBody() {
-    if (!selectedAnalysisPlayer) return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'CHỌN PLAYER ĐỂ PHÂN TÍCH'));
+    if (!selectedAnalysisPlayer) return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'Chọn B1 / B2 / B3 để xem lá an toàn của player đó'));
     const a = safeAnalysis;
     if (!a || a.status === 'NO_HAND' || a.status === 'TARGET_NOT_FOUND' || a.status === 'NO_TARGET') return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'ĐANG CHỜ DỮ LIỆU BÀI…'));
     const safe = a.safeCards || []; const likely = a.likelySafeCards || [];
@@ -2112,17 +2286,20 @@
   function renderRemainingCards() {
     // CARDS REMAINING (= LÁ BÀI CÒN LẠI): observer remaining preferred, else the backend 3-hands view.
     const box = el('div', { class: 'remaining-cards', id: 'phq-remaining' });
-    box.appendChild(el('div', { class: 'section-t' }, 'LÁ BÀI CÒN LẠI'));
     const obs = cardsSnap && cardsSnap.remaining ? cardsSnap.remaining : null;
     const observing = !!(obs && obs.knownOutCount === 0);
     const view = obs && !observing ? obs : (remaining && remaining.cards ? { cards: remaining.cards, count: remaining.count } : null);
+    // PHASE 6.3.9 — title + subtitle ("Chưa an toàn") + count · a NEUTRAL panel (never a negative label, §9.2).
+    box.appendChild(el('div', { class: 'safe-head' },
+      el('div', { class: 'sc-title' },
+        el('span', { class: 'section-t' }, '🂠 CÁC LÁ BÀI CÒN LẠI'),
+        el('span', { class: 'faint xs sc-sub' }, 'Chưa an toàn' + (view ? (' · ' + view.count + ' lá') : '')))));
     if (!view) { box.appendChild(el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'Đang quan sát…'))); return box; }
     const cards = Array.isArray(view.cards) ? view.cards : [];
     const row = el('div', { class: 'cards' });
     if (!cards.length) row.appendChild(el('span', { class: 'faint' }, '—'));
     for (const c of cards) row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
     box.appendChild(row);
-    box.appendChild(el('div', { class: 'faint sm' }, 'Còn lại: ' + view.count));
     return box;
   }
 
@@ -2149,6 +2326,8 @@
   if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) bgRender(); }); else bgRender(); });
   // PHASE 6.3.3.2 — a fresh card-observation snapshot arrived (push). Store it + re-render Screen 2.
   if (api.onCards) api.onCards((c) => { cardsSnap = c || null; refreshSafeAnalysis().then(() => { if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); }); });
+  // PHASE 6.3.6 — reflect the current finder choice on load (main owns it; renderer mirrors for the selector UI).
+  if (api.getFinder) { api.getFinder().then((r) => { if (r && r.ok && r.finderIndex != null) { selectedFinderPlayer = 'B' + r.finderIndex; if (!$('workspace').hidden) bgRender(); } }).catch(() => {}); }
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the

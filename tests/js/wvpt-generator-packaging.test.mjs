@@ -73,7 +73,7 @@ test('no spreadsheet/sheet-id config inputs are exposed in the UI', () => {
 // ---- IPC security: renderer bridge exposes only safe operations/state ----
 test('preload exposes a safe allowlist with no secret-reading APIs', () => {
   const preload = read('tools/license-generator/ui-preload.cjs');
-  const allowed = new Set(['signingStatus', 'generateLicense', 'inspectLicense', 'planPresets', 'planDefaults', 'previewExpiry', 'copy', 'sheetStatus', 'syncLicense']);
+  const allowed = new Set(['signingStatus', 'gameConfigs', 'productInfo', 'generateLicense', 'diagnoseLicense', 'previewExpiry', 'copy', 'sheetStatus', 'syncLicense']);
   const exposed = [...preload.matchAll(/^\s*([a-zA-Z]+):\s*(?:record|input|license|text)?\s*=>/gm)].map((m) => m[1]);
   assert.ok(exposed.length > 0, 'parsed some exposed methods');
   for (const name of exposed) assert.ok(allowed.has(name), `exposed method "${name}" is on the safe allowlist`);

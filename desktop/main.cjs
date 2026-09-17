@@ -378,7 +378,9 @@ function createWindow() {
   // Compact by default (Protocol Test tool, not an IDE); restore saved bounds if valid.
   if (!licenseGuard) {
     migrateLegacyInstanceLicense();
-    licenseGuard = new LicenseGuard({ userDataPath: baseUserDataPath, safeStorage });
+    // Explicit game scope: this app is AVIATOR. A PHOM license (even validly signed by the
+    // PHOM key) is rejected here; legacy no-game licenses stay AVIATOR-only (verifier policy).
+    licenseGuard = new LicenseGuard({ userDataPath: baseUserDataPath, safeStorage, expectedGameProduct: 'AVIATOR' });
     ensureProtocolSubsystem(licenseGuard.initialize());
     licenseGuard.initializeAsync().then((status) => {
       ensureProtocolSubsystem(status);

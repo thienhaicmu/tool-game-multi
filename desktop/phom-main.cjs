@@ -521,7 +521,33 @@ else {
   const headerDomPresent = Object.create(null); // runId -> true when the PAGE confirmed #__phom_header exists
   const headerLastPushed = Object.create(null); // runId -> last pushed state JSON (skip unchanged evaluates)
   const headerEnterStartedAt = Object.create(null); // runId -> monotonic ms at ENTER_GAME accept (latency)
+  const headerEnterTimer = Object.create(null);     // runId -> bounded ENTERING timeout handle (§10 not-stuck)
+  // PHASE 6.3.6 — the USER-selected FINDER (room anchor), by Player index 1/2/3; null = none chosen yet (every
+  // browser may FIND). NEVER defaulted to Player 1. Independent of the analyzer's selected player.
+  let selectedFinderIndex = null;
+  // Push the current finder choice into the live coordinator (its same-room-proof anchor). Best-effort: header
+  // derivation already uses selectedFinderIndex directly, so this only keeps the coordinator's anchor in sync.
+  function applyFinderToCoordinator() {
+    try {
+      if (!phomSessions) return;
+      let profileId = null;
+      if (selectedFinderIndex != null) { const b = (phomSessions.manualBrowserSnapshot() || []).find((x) => x.browserIndex === selectedFinderIndex); profileId = b ? b.profileId : null; }
+      phomSessions.setFinder(profileId);
+    } catch { /* best effort */ }
+  }
   const nowMs = () => { try { return require('node:perf_hooks').performance.now(); } catch { return Date.now(); } };
+  // PHASE 6.3.6 — cancel a run's bounded ENTERING timeout (evidence arrived / failed / reset / re-enter).
+  function clearHeaderEnterTimer(rid) { const t = headerEnterTimer[rid]; if (t) { try { clearTimeout(t); } catch { /* ignore */ } delete headerEnterTimer[rid]; } }
+  // PHASE 6.3.6 §10 — arm the BOUNDED ENTERING timeout. The tile click is INVOKED != ENTERED, so if no
+  // authoritative inGame evidence arrives within the window we clear the transient and re-push, reverting the
+  // header to NOT_IN_GAME ("VÀO GAME") instead of a permanent "ĐANG VÀO GAME…". Re-arming cancels any prior.
+  function armEnterTimeout(rid) {
+    clearHeaderEnterTimer(rid);
+    headerEnterTimer[rid] = setTimeout(() => {
+      delete headerEnterTimer[rid];
+      if (headerEntering[rid]) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; headerLog('ENTER_GAME_TIMEOUT', { runId: rid, elapsedMs: gameHeader.ENTER_GAME_TIMEOUT_MS }); pushHeaderStates(); }
+    }, gameHeader.ENTER_GAME_TIMEOUT_MS);
+  }
 
   // Per-browser RUNTIME status for the READ-ONLY Screen 2 (browser kind · CDP · header). No actions.
   // §2/§12 — HEADER distinguishes three facts: CDP connected, binding installed, and the header DOM actually
@@ -552,9 +578,10 @@ else {
     // PHASE 6.3.5 §7 — but ONLY once the anchor is validated (post-anchor capacity check passed). A
     // provisional/invalid anchor (anchorValid === false) is never published to the followers.
     const valid = (b) => b && b.manualState === 'JOINED' && b.rid != null && b.anchorValid !== false;
-    const anchor = list.find((b) => b.browserIndex === 1 && valid(b));
-    if (anchor) return Number(anchor.rid);
-    // resilience fallback: the first VALID JOINED browser (covers edge cases where P1 index is unknown)
+    // PHASE 6.3.6 — the shared anchor RID is the USER-selected finder's OWN validated joined rid. When a finder
+    // is chosen, ONLY that Player can be the anchor (others are WAIT/JOIN_SHARED, never a second anchor). When
+    // NO finder is chosen, the shared RID is simply whichever browser actually found+joined. Never browserIndex 1.
+    if (selectedFinderIndex != null) { const f = list.find((b) => b.browserIndex === selectedFinderIndex && valid(b)); return f ? Number(f.rid) : null; }
     const j = list.find(valid);
     return j ? Number(j.rid) : null;
   }
@@ -570,13 +597,17 @@ else {
     const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : null;
     return {
       account, opened, inGame,
-      entering: opened && !inGame && !!headerEntering[String(runId)],
+      // PHASE 6.3.6 — ENTERING is BOUNDED: shown only while pending + not authoritatively inGame + within the
+      // timeout window since the click. A fired-but-never-entered click reverts to NOT_IN_GAME (never stuck).
+      entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),
       joining: false,
       manualState: b.manualState || null,
       rid: b.rid != null ? b.rid : null,
       lastRid: b.lastRid != null ? b.lastRid : null,
-      // PHASE 6.3.4 §3 — only Player 1 (browserIndex 1) may FIND; followers wait for the anchor's shared RID.
-      isFinder: b.browserIndex === 1,
+      // PHASE 6.3.6 — FIND gating follows the USER's finder choice (selectedFinderIndex), NEVER browserIndex.
+      // No finder chosen → every browser may FIND; a finder chosen → only that Player, others show WAIT_ANCHOR.
+      isFinder: selectedFinderIndex == null ? true : (b.browserIndex === selectedFinderIndex),
+      finderIndex: selectedFinderIndex, // drives the dynamic "CHỜ PLAYER N TÌM BÀN" label
       sharedRid,
       betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
       error: headerError[String(runId)] || null,
@@ -598,7 +629,7 @@ else {
       if (view.inGame) {
         // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
         // and log the click→ENTERED latency once, then stop timing this run.
-        delete headerEntering[rid];
+        delete headerEntering[rid]; clearHeaderEnterTimer(rid); // §10 — evidence arrived → cancel the bounded timeout
         if (headerEnterStartedAt[rid] != null) { headerLog('ENTER_GAME_EVIDENCE', { runId: rid, slotId: run.slot, elapsedMs: Math.round(nowMs() - headerEnterStartedAt[rid]) }); delete headerEnterStartedAt[rid]; }
       }
       // §5/§14 lag fix — the coordinator emits 'update' on EVERY observed WS frame; deriving is cheap but a
@@ -640,6 +671,27 @@ else {
     _cardsTimer = setTimeout(() => { _cardsTimer = null; if (_cardsPending) { const t = _cardsPending; _cardsPending = null; send('phom:cards', t); } }, BROADCAST_MS);
   }
 
+  // PHASE 6.3.8 — shared RELOAD / CLOSE run helpers, reused by BOTH the IPC handlers (phom:reload-web /
+  // phom:close-browser) AND the in-Chromium header's ⟳/⏻ buttons. Pure extraction of the existing logic —
+  // no behavior change, no new IPC contract. The header routes RELOAD/STOP/FOCUS through phomHeaderAction.
+  async function reloadWebRun(runId) {
+    const rid = String(runId == null ? '' : runId);
+    if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
+    const client = runClientFor(rid);
+    const run = runManager.get(rid);
+    const url = run && run.launchUrl ? run.launchUrl : null;
+    if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
+    const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ } delete headerEntering[rid]; clearHeaderEnterTimer(rid); delete headerError[rid]; headerDomPresent[rid] = false; delete headerLastPushed[rid]; delete headerEnterStartedAt[rid]; pushHeaderStates(); };
+    try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
+    catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
+  }
+  async function closeBrowserRun(runId) {
+    const rid = String(runId == null ? '' : runId);
+    if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
+    try { await runManager.closeRun(rid); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(rid, 'USER_CLOSED_WINDOW'); return { ok: true }; }
+    catch (e) { return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
+  }
+
   // Route ONE header button click (from the in-page binding) to the coordinator's manual API. The action
   // set mirrors the old Tool controls exactly; stake comes from the page's bet picker (server options).
   async function phomHeaderAction(runId, payload) {
@@ -673,10 +725,12 @@ else {
     try {
       if (action === 'ENTER_GAME') {
         headerEnterStartedAt[rid] = nowMs(); // T6 — start the click→ENTERED latency clock (§2/§17)
-        headerEntering[rid] = true; pushHeaderStates();
+        headerEntering[rid] = true;
+        armEnterTimeout(rid); // §10 — bounded ENTERING (INVOKED != ENTERED): reverts to NOT_IN_GAME if no evidence
+        pushHeaderStates();
         headerLog('ENTER_GAME_START', { runId: rid, slotId: payload && payload.slotId, actionId, elapsedMs: 0 });
         res = await phomEnterGame(rid); // T8 — the in-engine tile click was fired (INVOKED != ENTERED)
-        if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; }
+        if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; clearHeaderEnterTimer(rid); }
         headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, actionId, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
       } else if (action === 'FIND') {
         ensurePhomSessions();
@@ -697,6 +751,15 @@ else {
       } else if (action === 'LEAVE') {
         ensurePhomSessions();
         res = await phomSessions.manualLeave(rid);
+      } else if (action === 'RELOAD') {
+        // PHASE 6.3.8 — the header's ⟳ button reuses the SAME reload logic as phom:reload-web (no new action).
+        res = await reloadWebRun(rid);
+      } else if (action === 'STOP') {
+        // PHASE 6.3.8 — the header's ⏻ button reuses the SAME close logic as phom:close-browser.
+        res = await closeBrowserRun(rid);
+      } else if (action === 'FOCUS') {
+        // PHASE 6.3.8 — bring this Chromium OS window to the front (reuses the existing focusBrowser).
+        res = focusBrowser(rid) || { ok: true };
       } else {
         res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
       }
@@ -1142,7 +1205,7 @@ else {
     // Browser + session lifecycle.
     ipcMain.handle('phom:open-profile', guarded((_e, cfg) => openProfile(cfg || {})));
     // HOST/FOLLOWER controlled-table flow.
-    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
+    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); const r = phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); applyFinderToCoordinator(); return r; }));
     ipcMain.handle('phom:set-host', guarded((_e, hostId) => ensurePhomSessions().setHost(hostId)));
     ipcMain.handle('phom:select-stake', guarded((_e, stake) => ensurePhomSessions().selectStake(stake)));
     // §13 — Find-Table stake source: request the server channel list + read the
@@ -1158,6 +1221,17 @@ else {
     ipcMain.handle('phom:recover-host', guarded(() => ensurePhomSessions().recoverHost()));
     ipcMain.handle('phom:leave-all', guarded(() => ensurePhomSessions().leaveAll()));
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
+    // PHASE 6.3.6 — USER selects which Player is the FINDER (room anchor). index null clears (every browser may
+    // FIND); 1/2/3 selects. It re-derives + re-pushes every in-Chromium header immediately, and syncs the choice
+    // to the coordinator (same-room proof anchor). It NEVER discovers/joins here — only ownership of the finder.
+    ipcMain.handle('phom:set-finder', (_e, index) => {
+      const idx = index == null ? null : Number(index);
+      selectedFinderIndex = (idx === 1 || idx === 2 || idx === 3) ? idx : null;
+      applyFinderToCoordinator(); // sync same-room-proof anchor (header derivation uses selectedFinderIndex directly)
+      pushHeaderStates();
+      return { ok: true, finderIndex: selectedFinderIndex };
+    });
+    ipcMain.handle('phom:get-finder', () => ({ ok: true, finderIndex: selectedFinderIndex }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
     ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
     // PHASE-2 — read the monotonic discovery/sync milestone timeline (telemetry for latency inspection).
@@ -1194,27 +1268,11 @@ else {
     // PHASE-6.2.2 — browser lifecycle, all scoped to ONE run (never touches the Tool or the other browsers).
     // ↻ WEB: reload the page in the SAME Chromium; if the page is gone, re-navigate to the game URL — never
     // launches a second Chromium OS window.
-    ipcMain.handle('phom:reload-web', guarded(async (_e, cfg) => {
-      const runId = cfg && cfg.browserId; if (!runId || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
-      const client = runClientFor(String(runId));
-      const run = runManager.get(String(runId));
-      const url = run && run.launchUrl ? run.launchUrl : null;
-      if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
-      // The reloaded page leaves the Phỏm game, so reset this browser's Phỏm context — slotInPhom goes
-      // false and the tool shows VÀO GAME again (socket/channels rebind from the new page's own frames).
-      // §9 — on reload (F5) the document is torn down: the header DOM is gone until the new document's boot
-      // re-mounts it and re-reports __HEADER_STATUS. Mark it not-present so the Tool shows RECOVERING (not a
-      // stale Sẵn sàng), and clear the push cache so the fresh document is re-filled with LOBBY state.
-      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } delete headerEntering[String(runId)]; delete headerError[String(runId)]; headerDomPresent[String(runId)] = false; delete headerLastPushed[String(runId)]; delete headerEnterStartedAt[String(runId)]; pushHeaderStates(); };
-      try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
-      catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
-    }));
+    // ↻ WEB: reload the page in the SAME Chromium (re-navigates to the game URL if the page is gone). Shared
+    // logic with the in-Chromium header's ⟳ button (reloadWebRun) — unchanged behavior, same IPC contract.
+    ipcMain.handle('phom:reload-web', guarded(async (_e, cfg) => reloadWebRun(cfg && cfg.browserId)));
     // ⏻ TẮT CHROMIUM: close ONLY this run's Chromium window/process (Tool + other browsers untouched).
-    ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => {
-      const runId = cfg && cfg.browserId; if (!runId || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
-      try { await runManager.closeRun(String(runId)); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(String(runId), 'USER_CLOSED_WINDOW'); return { ok: true }; }
-      catch (e) { return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
-    }));
+    ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => closeBrowserRun(cfg && cfg.browserId)));
     // Screen 2 — cards REMAINING after removing all cards held by the 3 browsers (never "player 4").
     ipcMain.handle('phom:remaining-cards', () => (phomSessions ? { ok: true, ...phomSessions.remainingCards() } : { ok: true, count: 0, codes: [], cards: [] }));
     // PHASE 6.3.3.2 — the full card-observation snapshot (players/discards/melds/remaining/capabilities).

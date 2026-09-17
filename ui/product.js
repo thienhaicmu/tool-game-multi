@@ -68,6 +68,8 @@ function licenseFriendly(status) {
   if (code === 'LICENSE_LAUNCH_LIMIT_REACHED') return `ĐÃ ĐẠT GIỚI HẠN SỐ LẦN CHẠY\nĐã dùng ${status.error.usedLaunches || 0} / ${status.error.maxLaunches || 0} lần.\nLiên hệ nhà cung cấp để gia hạn.`;
   if (code === 'MACHINE_ID_UNAVAILABLE') return 'Không lấy được Mã máy trên máy tính này.';
   if (code === 'LICENSE_WRONG_PRODUCT') return 'Khóa này dành cho sản phẩm khác.';
+  if (code === 'LICENSE_GAME_PRODUCT_MISMATCH') return 'Key này dành cho Phỏm QA, không dùng được cho Aviator.';
+  if (code === 'LICENSE_GAME_PRODUCT_INVALID' || code === 'LICENSE_SIGNING_KEY_PRODUCT_MISMATCH' || code === 'LICENSE_SIGNING_KEY_ID_INVALID') return 'Khóa kích hoạt không hợp lệ cho Aviator.';
   if (code === 'LICENSE_INVALID_FORMAT') return 'Khóa kích hoạt không hợp lệ.';
   return 'Bản quyền không hợp lệ.';
 }
@@ -94,7 +96,7 @@ function renderLicenseStatus(status) {
   const licenseInput = $('activation-license');
   const licenseLabel = licenseInput && licenseInput.closest ? licenseInput.closest('label') : null;
   const submit = $('activation-submit');
-  const storedNeedsNewKey = licenseState.error && ['LICENSE_EXPIRED', 'LICENSE_MACHINE_MISMATCH', 'LICENSE_BAD_SIGNATURE', 'LICENSE_WRONG_PRODUCT', 'LICENSE_LAUNCH_LIMIT_REACHED'].includes(licenseState.error.code);
+  const storedNeedsNewKey = licenseState.error && ['LICENSE_EXPIRED', 'LICENSE_MACHINE_MISMATCH', 'LICENSE_BAD_SIGNATURE', 'LICENSE_WRONG_PRODUCT', 'LICENSE_LAUNCH_LIMIT_REACHED', 'LICENSE_GAME_PRODUCT_MISMATCH', 'LICENSE_GAME_PRODUCT_INVALID', 'LICENSE_SIGNING_KEY_PRODUCT_MISMATCH', 'LICENSE_SIGNING_KEY_ID_INVALID'].includes(licenseState.error.code);
   const hideKeyEntry = hasStoredLicense && !licenseState.active && !storedNeedsNewKey;
   if (licenseLabel) licenseLabel.hidden = hideKeyEntry;
   if (submit) submit.hidden = hideKeyEntry;

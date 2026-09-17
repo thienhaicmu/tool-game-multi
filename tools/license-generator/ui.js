@@ -1,254 +1,264 @@
 (function () {
   const api = window.licenseGenerator;
   const $ = (id) => document.getElementById(id);
-  const FEATURE_LABELS = { autoRun: 'Chạy tự động', jackpotLive: 'Jackpot trực tiếp', jackpotGate: 'Chờ Jackpot', roundHistory: 'Lịch sử vòng chơi' };
-  let presets = null;      // desktop entitlements PLAN_PRESETS (features authority)
-  let planDefaults = null; // generator UI defaults (duration + capacity + features)
+  const DAY = 86400;
+  const UTC_PLUS_7 = 7 * 3600;
 
-  // The last successfully generated record, kept for Copy + retry-sync. Retry MUST
-  // reuse this exact record (same licenseId / issuedAt / expiresAt / signature).
-  let lastRecord = null;
+  let configs = null;   // { order, games } from main (game-configs.cjs)
+  let game = null;      // selected game config
+  let lastRecord = null; // exact generated record — reused for retry-sync (same licenseId)
 
-  // ---- signing readiness (auto-resolved bundled key; no selector) ----
-  async function refreshSigning() {
-    let s; try { s = await api.signingStatus(); } catch { s = null; }
-    const ready = !!(s && s.ready);
-    setChip($('signing-chip'), ready ? 'on' : 'err', ready ? 'Sẵn sàng' : 'Chưa sẵn sàng');
+  function fmtDate(s) {
+    if (!Number.isFinite(Number(s))) return '—';
+    const d = new Date((Number(s) + UTC_PLUS_7) * 1000);
+    return `${String(d.getUTCDate()).padStart(2, '0')}/${String(d.getUTCMonth() + 1).padStart(2, '0')}/${d.getUTCFullYear()}`;
+  }
+  function option(value, label) { const o = document.createElement('option'); o.value = value; o.textContent = label; return o; }
+  function fillSelect(sel, items, selected) {
+    sel.replaceChildren(...items.map((it) => option(it.value, it.label)));
+    if (selected != null && items.some((it) => it.value === selected)) sel.value = selected;
   }
 
-  // ---- selection state ----
-  function selectedPlan() {
-    const el = document.querySelector('.plan-card.selected');
-    return el ? el.dataset.plan : 'STANDARD';
+  // ---- game-scoped form ----
+  function durationSpec() {
+    const d = game.durations.find((x) => x.id === $('duration').value) || game.durations[0];
+    if (d.unit === 'custom') return { unit: 'custom', expires: $('custom-expiry').value };
+    return { unit: d.unit, value: d.value };
   }
-  function selectedDurationSpec() {
-    const el = document.querySelector('.dur-chip.selected');
-    if (!el) return { unit: 'months', value: 1 };
-    if (el.dataset.unit === 'custom') return { unit: 'custom', expires: $('custom-expiry').value };
-    if (el.dataset.unit === 'days') return { unit: 'days', value: Number(el.dataset.value) };
-    return { unit: 'months', value: Number(el.dataset.value) };
+  function currentPlan() { return game.plans.find((p) => p.id === $('plan').value) || game.plans[0]; }
+
+  // Switching game REBUILDS every game-specific control from that game's config. Only
+  // common values (machine id, customer info, a duration both games offer) are kept.
+  function selectGame(id) {
+    const keepDuration = $('duration').value;
+    game = configs.games[id];
+    $('game').value = game.game;
+    $('game-title').textContent = `${game.label} LICENSE`;
+    fillSelect($('plan'), game.plans.map((p) => ({ value: p.id, label: p.label })), game.defaultPlan);
+    fillSelect($('duration'), game.durations.map((d) => ({ value: d.id, label: d.label })), null);
+    $('capacities').replaceChildren(...game.capacities.map((c) => {
+      const wrap = document.createElement('label'); wrap.className = 'field';
+      wrap.innerHTML = `<span class="lbl"></span><input class="mono" type="number" step="1">`;
+      wrap.firstChild.textContent = c.label;
+      const input = wrap.querySelector('input'); input.id = `cap-${c.key}`; input.min = c.min; input.max = c.max;
+      return wrap;
+    }));
+    $('features').replaceChildren(...game.features.map((f) => {
+      const wrap = document.createElement('label');
+      const box = document.createElement('input'); box.type = 'checkbox'; box.dataset.feature = f.key; box.onchange = applyDependencies;
+      wrap.append(box, document.createTextNode(f.label));
+      return wrap;
+    }));
+    $('features-wrap').hidden = game.features.length === 0;
+    applyPlan(keepDuration);
+    refreshProductInfo();
   }
-  function selectDurationEl(el) {
-    document.querySelectorAll('.dur-chip').forEach((c) => c.classList.toggle('selected', c === el));
-    $('custom-wrap').hidden = el.dataset.unit !== 'custom';
+
+  // Plan -> this game's defaults (capacities, features, duration). A duration the user had
+  // picked is kept only if this game offers it.
+  function applyPlan(keepDuration) {
+    const plan = currentPlan();
+    for (const c of game.capacities) $(`cap-${c.key}`).value = plan.capacities[c.key];
+    document.querySelectorAll('#features input[data-feature]').forEach((box) => { box.checked = plan.features[box.dataset.feature] === true; });
+    const durationIds = game.durations.map((d) => d.id);
+    $('duration').value = keepDuration && durationIds.includes(keepDuration) ? keepDuration : plan.defaultDuration;
+    applyDependencies();
+    onDurationChange();
+  }
+
+  function applyDependencies() {
+    const notes = [];
+    for (const f of game.features) {
+      if (!f.requires) continue;
+      const box = document.querySelector(`#features input[data-feature="${f.key}"]`);
+      const dep = document.querySelector(`#features input[data-feature="${f.requires}"]`);
+      box.disabled = !dep.checked;
+      if (!dep.checked) { box.checked = false; notes.push(`“${f.label}” cần bật “${game.features.find((x) => x.key === f.requires).label}”.`); }
+    }
+    $('feature-note').textContent = notes.join(' ');
+  }
+
+  function features() {
+    const out = {};
+    document.querySelectorAll('#features input[data-feature]').forEach((box) => { out[box.dataset.feature] = box.checked; });
+    return out;
+  }
+
+  function onDurationChange() {
+    $('custom-wrap').hidden = durationSpec().unit !== 'custom';
     updatePreview();
   }
-  function selectDurationBySpec(spec) {
-    const match = Array.from(document.querySelectorAll('.dur-chip')).find((c) => {
-      if (spec.unit === 'days') return c.dataset.unit === 'days' && Number(c.dataset.value) === Number(spec.value);
-      if (spec.unit === 'months') return c.dataset.unit === 'months' && Number(c.dataset.value) === Number(spec.value);
-      return false;
-    });
-    if (match) selectDurationEl(match);
-  }
 
-  // ---- features ----
-  function features() {
-    return {
-      autoRun: $('f-auto-run').checked,
-      jackpotLive: $('f-jackpot-live').checked,
-      jackpotGate: $('f-jackpot-gate').checked,
-      roundHistory: $('f-round-history').checked,
-    };
-  }
-  function applyDependency() {
-    const live = $('f-jackpot-live').checked;
-    const gate = $('f-jackpot-gate');
-    gate.disabled = !live;
-    if (!live) gate.checked = false;
-    $('feature-note').textContent = live ? '' : '“Chờ Jackpot” cần bật “Jackpot trực tiếp”.';
-  }
-
-  // ---- plan -> defaults (duration + capacity + features) ----
-  function applyPlan(plan) {
-    document.querySelectorAll('.plan-card').forEach((c) => c.classList.toggle('selected', c.dataset.plan === plan));
-    const d = planDefaults && planDefaults[plan];
-    if (!d) return;
-    $('max-browsers').value = d.maxBrowsers;
-    $('max-concurrent').value = d.maxConcurrentBrowsers;
-    const f = d.features || {};
-    $('f-auto-run').checked = !!f.autoRun;
-    $('f-jackpot-live').checked = !!f.jackpotLive;
-    $('f-jackpot-gate').checked = !!f.jackpotGate;
-    $('f-round-history').checked = !!f.roundHistory;
-    applyDependency();
-    if (d.duration) selectDurationBySpec(d.duration);
-    else updatePreview();
-  }
-
-  // ---- expiry preview ----
   let previewSeq = 0;
   async function updatePreview() {
     const seq = ++previewSeq;
-    const spec = selectedDurationSpec();
-    if (spec.unit === 'custom' && !spec.expires) {
-      $('preview-issued').textContent = '—'; $('preview-expires').textContent = '—'; $('preview-note').textContent = '';
-      return;
-    }
-    let res;
-    try { res = await api.previewExpiry({ duration: spec }); } catch { res = null; }
-    if (seq !== previewSeq) return; // a newer request superseded this one
-    if (!res || !res.ok) {
-      $('preview-issued').textContent = '—';
-      $('preview-expires').textContent = '—';
-      $('preview-note').textContent = res && res.error ? res.error.message : '';
-      return;
-    }
-    $('preview-issued').textContent = res.issuedText;
-    $('preview-expires').textContent = res.expiresText;
-    $('preview-note').textContent = res.estimated ? 'Xem trước theo giờ máy (giá trị ký chính thức dùng giờ tin cậy khi tạo khóa).' : '';
+    const spec = durationSpec();
+    if (spec.unit === 'custom' && !spec.expires) { $('preview-expires').textContent = '—'; $('preview-note').textContent = ''; return; }
+    let res; try { res = await api.previewExpiry({ duration: spec }); } catch { res = null; }
+    if (seq !== previewSeq) return;
+    $('preview-expires').textContent = res && res.ok ? res.expiresText : '—';
+    $('preview-note').textContent = res && res.ok ? (res.estimated ? 'ước tính theo giờ máy' : '') : (res && res.error ? res.error.message : '');
   }
 
-  // ---- google sheet status ----
-  function setChip(el, cls, text) { el.className = 'dot-chip ' + cls; el.textContent = text; }
-  async function refreshSheetStatus() {
-    setChip($('sheet-chip'), '', 'Đang kiểm tra…');
-    let s; try { s = await api.sheetStatus(); } catch { s = null; }
-    if (!s || !s.configured) { setChip($('sheet-chip'), 'off', 'Không kết nối được'); return; }
-    if (s.state === 'connected') { setChip($('sheet-chip'), 'on', 'Đã kết nối'); return; }
-    setChip($('sheet-chip'), 'err', 'Không kết nối được');
+  async function refreshProductInfo() {
+    const gp = game.game;
+    let info; try { info = await api.productInfo(gp); } catch { info = null; }
+    if (!game || game.game !== gp) return;
+    const meta = $('game-meta');
+    if (info && info.ok) {
+      meta.textContent = `Khóa ${info.signingKeyId} · Sheet ${info.targetSheet || '—'}` + (info.signingReady ? '' : ` · thiếu private key (${info.signingCode})`);
+      meta.className = 'meta' + (info.signingReady ? '' : ' bad');
+      $('generate').disabled = !info.signingReady;
+    } else { meta.textContent = ''; }
   }
 
   // ---- generate ----
   let generating = false;
   async function generate() {
-    if (generating) return; // re-entrancy guard: double-click cannot double-sign
+    if (generating) return; // double-click cannot double-sign
     generating = true;
-    $('error').hidden = true; $('generate-ok').hidden = true; $('sync-warn').hidden = true;
     $('generate').disabled = true;
     let result;
     try {
+      const caps = {};
+      for (const c of game.capacities) caps[c.key] = Number($(`cap-${c.key}`).value);
       result = await api.generateLicense({
+        game: game.game,
+        plan: currentPlan().id,
+        duration: durationSpec(),
         machineId: $('machine-id').value,
-        schema: 2,
-        gameProduct: $('game-product').value,
-        plan: selectedPlan(),
-        duration: selectedDurationSpec(),
-        maxBrowsers: Number($('max-browsers').value),
-        maxConcurrentBrowsers: Number($('max-concurrent').value),
+        ...caps,
         features: features(),
         customerName: $('customer-name').value.trim(),
         phone: $('customer-phone').value.trim(),
         note: $('note').value.trim(),
       });
+    } catch (e) {
+      result = { ok: false, error: { code: 'IPC_FAILED', message: 'Không gọi được tiến trình ký.' } };
     } finally {
-      $('generate').disabled = false;
       generating = false;
+      refreshProductInfo();
     }
+    $('result-empty').hidden = true;
     if (!result || !result.ok) {
+      $('result').hidden = true;
       $('error').hidden = false;
-      $('error').textContent = (result && result.error && (result.error.message || result.error.code)) || 'Tạo khóa thất bại.';
+      const err = (result && result.error) || {};
+      $('error-reason').textContent = err.message || err.code || 'Lỗi không xác định';
+      $('error-detail').textContent = [err.code, err.detail].filter(Boolean).join(' · ');
       return;
     }
-    const p = result.payload;
-    lastRecord = { payload: p, license: result.license, metadata: result.metadata };
-    $('license-output').value = result.license;
-    $('license-id').textContent = p.licenseId;
-    if ($('license-game')) $('license-game').textContent = p.gameProduct || 'AVIATOR';
-    $('license-plan').textContent = p.plan || '—';
-    $('license-maxbrowsers').textContent = p.maxBrowsers != null ? p.maxBrowsers : '—';
-    $('license-maxconcurrent').textContent = p.maxConcurrentBrowsers != null ? p.maxConcurrentBrowsers : '—';
-    $('expires').textContent = fmt(p.expiresAt);
-    $('copy-license').disabled = false;
-    renderSyncOutcome(result.sheet);
+    $('error').hidden = true;
+    renderResult(result);
   }
 
-  function renderSyncOutcome(sheet) {
+  function renderResult(result) {
+    const p = result.payload;
+    const cfg = configs.games[p.gameProduct];
+    lastRecord = { payload: p, license: result.license, metadata: result.metadata };
+    $('r-game').textContent = cfg ? cfg.label : p.gameProduct;
+    $('r-plan').textContent = (cfg && (cfg.plans.find((x) => x.id === p.plan) || {}).label) || p.plan;
+    $('r-machine').textContent = p.machineId;
+    $('r-expires').textContent = fmtDate(p.expiresAt);
+    $('r-remaining').textContent = `${Math.ceil((p.expiresAt - p.issuedAt) / DAY)} ngày`;
+    $('r-caps').textContent = `${p.maxBrowsers} profiles · ${p.maxConcurrentBrowsers} browsers`;
+    $('r-license-id').textContent = p.licenseId;
+    $('license-output').value = result.license;
+    $('copy-ok').hidden = true;
+    $('result').hidden = false;
+    renderSheet(result.sheet);
+  }
+
+  function renderSheet(sheet) {
+    const line = $('sheet-line');
     if (sheet && sheet.synced) {
-      $('generate-ok').hidden = false;
-      $('generate-ok').textContent = 'Đã tạo key và lưu Google Sheet.';
-      $('sync-warn').hidden = true;
+      line.textContent = `✓ Đã lưu Sheet ${sheet.sheetTitle || ''}`.trim();
+      line.className = 'sheet-line ok';
+      $('retry-sync').hidden = true;
     } else {
-      $('generate-ok').hidden = false;
-      $('generate-ok').textContent = 'Key đã tạo thành công.';
-      $('sync-warn').hidden = false;
-      const reason = sheet && sheet.error ? ` (${sheet.error.message})` : '';
-      $('sync-warn-text').textContent = 'Chưa lưu được Google Sheet.' + reason;
+      line.textContent = 'Chưa lưu Sheet' + (sheet && sheet.error ? ` — ${sheet.error.message}` : '') + ' (license vẫn dùng được)';
+      line.className = 'sheet-line warn';
+      $('retry-sync').hidden = false;
     }
   }
 
   async function retrySync() {
     if (!lastRecord) return;
     $('retry-sync').disabled = true;
-    $('sync-warn-text').textContent = 'Đang đồng bộ lại…';
     let res; try { res = await api.syncLicense(lastRecord); } catch { res = null; }
     $('retry-sync').disabled = false;
-    if (res && res.synced) { $('generate-ok').textContent = 'Đã tạo key và lưu Google Sheet.'; $('sync-warn').hidden = true; }
-    else { $('sync-warn-text').textContent = 'Chưa lưu được Google Sheet.' + (res && res.error ? ` (${res.error.message})` : ''); }
+    renderSheet(res);
     refreshSheetStatus();
   }
 
-  const UTC_PLUS_7 = 7 * 60 * 60;
-  function fmt(s) {
-    if (!Number.isFinite(Number(s))) return '—';
-    const d = new Date((Number(s) + UTC_PLUS_7) * 1000);
-    const dd = String(d.getUTCDate()).padStart(2, '0');
-    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
-    return `${dd}/${mm}/${d.getUTCFullYear()}`;
+  async function copyKey() {
+    if (!lastRecord) return;
+    await api.copy(lastRecord.license);
+    $('copy-ok').hidden = false;
   }
 
-  // ---- inspect tab ----
+  // ---- header status ----
+  async function refreshSheetStatus() {
+    const chip = $('sheet-chip');
+    let s; try { s = await api.sheetStatus(); } catch { s = null; }
+    const set = (cls, text) => { chip.className = `chip ${cls}`; chip.innerHTML = '<i class="dot"></i>'; chip.append(text); };
+    if (!s || !s.configured) set('warn', 'Sheet Off');
+    else if (s.state === 'connected') set('ok', 'Sheet Ready');
+    else set('bad', 'Sheet Error');
+    if (s && s.error) chip.title = s.error.message || s.error.code; else chip.removeAttribute('title');
+  }
+  async function refreshSigning() {
+    let s; try { s = await api.signingStatus(); } catch { s = null; }
+    const chip = $('signing-chip');
+    if (!s || !s.games) { chip.className = 'chip bad'; chip.textContent = 'Ký: lỗi'; return; }
+    chip.textContent = 'Ký: ' + configs.order.map((g) => `${configs.games[g].label} ${s.games[g] && s.games[g].ready ? '✓' : '✕'}`).join(' · ');
+    chip.className = 'chip ' + (s.ready ? 'ok' : 'bad');
+  }
+
+  // ---- diagnostics ----
   async function inspect() {
-    $('inspect-error').hidden = true; $('inspect-body').hidden = true;
-    const res = await api.inspectLicense($('inspect-input').value.trim());
-    if (!res || !res.ok) { $('inspect-error').hidden = false; $('inspect-error').textContent = (res && res.error) || 'Không đọc được khóa.'; $('inspect-sig').textContent = '—'; $('inspect-sig').className = 'chip off'; return; }
-    $('inspect-sig').textContent = res.signatureValid ? 'CHỮ KÝ HỢP LỆ' : 'CHỮ KÝ KHÔNG HỢP LỆ';
-    $('inspect-sig').className = 'chip ' + (res.signatureValid ? 'on' : 'off');
-    const ent = res.entitlement || {};
-    const p = res.payload || {};
+    const res = await api.diagnoseLicense({ license: $('inspect-input').value, game: $('inspect-game').value, machineId: $('inspect-machine').value });
+    $('inspect-empty').hidden = true;
     $('inspect-body').hidden = false;
-    $('i-license-id').textContent = p.licenseId || '—';
-    $('i-machine').textContent = p.machineId || '—';
-    if ($('i-game')) $('i-game').textContent = ent.gameProduct || 'AVIATOR';
-    $('i-plan').textContent = ent.plan || (p.v === 1 ? 'LEGACY' : '—');
-    $('i-expires').textContent = p.expiresAt ? fmt(p.expiresAt) : '—';
-    $('i-maxbrowsers').textContent = ent.maxBrowsers == null ? 'Không giới hạn' : ent.maxBrowsers;
-    $('i-maxconcurrent').textContent = ent.maxConcurrentBrowsers == null ? 'Không giới hạn' : ent.maxConcurrentBrowsers;
-    const f = ent.features || {};
-    $('i-features').innerHTML = Object.keys(FEATURE_LABELS).map((k) =>
-      `<div class="feat ${f[k] ? 'on' : 'off'}">${f[k] ? '✓' : '✕'} ${FEATURE_LABELS[k]}</div>`).join('');
+    const head = $('inspect-head');
+    const target = configs.games[res.expectedGame] ? configs.games[res.expectedGame].label : $('inspect-game').value;
+    head.textContent = res.ok ? `✓ VALID trong ${target}` : `✕ INVALID trong ${target}${res.code ? ` — ${res.code}` : ''}`;
+    head.className = 'slip-head' + (res.ok ? '' : ' bad');
+    $('inspect-steps').replaceChildren(...(res.steps || []).flatMap((st) => {
+      const dt = document.createElement('dt'); dt.textContent = st.label;
+      const dd = document.createElement('dd'); dd.textContent = st.detail; dd.className = st.ok === true ? 'ok' : st.ok === false ? 'no' : 'skip';
+      return [dt, dd];
+    }));
+    $('inspect-note').textContent = res.estimatedTime ? 'Hạn dùng tính theo giờ máy (chưa có giờ tin cậy).' : '';
   }
 
-  // ---- tabs ----
   function showTab(which) {
     $('view-create').hidden = which !== 'create';
     $('view-inspect').hidden = which !== 'inspect';
     $('tab-create').classList.toggle('active', which === 'create');
     $('tab-inspect').classList.toggle('active', which === 'inspect');
+    if (which === 'inspect' && game) $('inspect-game').value = game.game;
   }
 
   // ---- wire ----
-  document.querySelectorAll('.plan-card').forEach((c) => { c.onclick = () => applyPlan(c.dataset.plan); });
-  document.querySelectorAll('.dur-chip').forEach((c) => { c.onclick = () => selectDurationEl(c); });
+  $('game').onchange = () => selectGame($('game').value);
+  $('plan').onchange = () => applyPlan(null);
+  $('duration').onchange = onDurationChange;
   $('custom-expiry').onchange = updatePreview;
-  $('f-jackpot-live').onchange = applyDependency;
   $('generate').onclick = generate;
   $('retry-sync').onclick = retrySync;
-  $('copy-license').onclick = () => api.copy($('license-output').value);
+  $('copy-license').onclick = copyKey;
   $('inspect').onclick = inspect;
   $('tab-create').onclick = () => showTab('create');
   $('tab-inspect').onclick = () => showTab('inspect');
 
-  // Show the destination worksheet + signing key id for the selected product (§8/§19).
-  // Never shows a private key or path.
-  async function refreshProductInfo() {
-    const gp = $('game-product') ? $('game-product').value : '';
-    const box = $('target-sheet'); if (!box) return;
-    if (!gp) { box.textContent = 'Hãy chọn sản phẩm.'; return; }
-    let info; try { info = await api.productInfo(gp); } catch { info = null; }
-    if (info && info.ok) {
-      box.textContent = `Sheet: ${info.targetSheet} · Khóa ký: ${info.signingKeyId}` + (info.signingReady ? '' : ' · (thiếu private key)');
-      if ($('generate')) $('generate').disabled = !info.signingReady;
-    } else { box.textContent = ''; }
-  }
-  if ($('game-product')) $('game-product').addEventListener('change', refreshProductInfo);
-
   (async () => {
-    try { presets = await api.planPresets(); } catch { presets = null; }
-    try { planDefaults = await api.planDefaults(); } catch { planDefaults = null; }
-    applyPlan(selectedPlan());
+    configs = await api.gameConfigs();
+    const games = configs.order.map((g) => ({ value: g, label: configs.games[g].label }));
+    fillSelect($('game'), games, configs.order[0]);
+    fillSelect($('inspect-game'), games, configs.order[0]);
+    selectGame(configs.order[0]);
     refreshSigning();
     refreshSheetStatus();
-    refreshProductInfo();
   })();
 })();
