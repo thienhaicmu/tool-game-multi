@@ -81,6 +81,7 @@
   let activeTab = 'SETUP';   // PHASE 6.2.2 — two tabs: SETUP (config/open) and PHOM (control)
   // PHASE 6.3.1 — flexible N-profile SETUP: the profile LIST + the ordered selection (→ B1/B2/B3) + game URL.
   const PS = (typeof window !== 'undefined' && window.ProfileSelection) ? window.ProfileSelection : null;
+  const BP = (typeof window !== 'undefined' && window.BulkProxy) ? window.BulkProxy : null; // PHASE 6.3.10 — bulk proxy parser
   let profilesX = [];              // all saved device profiles (from phom:profiles-list)
   let browserRuntimeInfo = null;   // PHASE 6.3.2.2 — { preference, customAvailable, chromeAvailable, resolved }
   let selectedProfileIds = [];     // ORDERED selection (max 3); selection order → B1/B2/B3
@@ -288,9 +289,10 @@
     // PHASE 6.3.9 — the unified tab bar already carries brand + license; no redundant SETUP sub-header here.
     r.appendChild(el('div', { class: 'note s1-note', id: 'phq-note' }, ''));
     const page = el('div', { class: 'setup-page' });
-    // PHASE 6.3.9 — Profile is the compact table ONLY (proxy is per-profile in Edit; the browser-runtime engine
-    // moved into the footer selector; no bulk-proxy / big runtime panels in the main screen).
+    // PHASE 6.3.9/6.3.10 — Profile is the compact table + a COMPACT quick bulk-proxy import (one line = one
+    // proxy, mapped B1→B2→B3 by profile order). Per-profile proxy still edits in the row's Edit modal.
     page.appendChild(profileTablePanel());
+    page.appendChild(bulkProxyQuickPanel());
     r.appendChild(page);
     r.appendChild(runGameFooter());
   }
@@ -360,7 +362,13 @@
       el('td', null, typeText),
       el('td', { class: 'num' }, osText),
       el('td', { class: 'num' }, dev.resolution || '—'),
-      el('td', null, p.proxyRef ? el('span', { class: 'badge good' }, 'PROXY') : el('span', { class: 'badge faint' }, 'DIRECT')),
+      // PHASE 6.3.10 — compact proxy display: TYPE host:port · auth (credential is never shown, §10). DIRECT if none.
+      el('td', null, (() => {
+        if (!p.proxyRef) return el('span', { class: 'badge faint' }, 'DIRECT');
+        const px = proxies.find((x) => x.id === p.proxyRef);
+        const label = px ? ((px.protocol ? px.protocol.toUpperCase() : 'PROXY') + ' ' + (px.endpoint || (px.host + ':' + px.port)) + (px.hasAuth ? ' · auth' : '')) : 'PROXY';
+        return el('span', { class: 'badge good', title: 'Proxy đã gán (mật khẩu ẩn)' }, label);
+      })()),
       // GAME URL is a per-profile property; shown ellipsised with a full-URL tooltip, edited in Edit Profile.
       el('td', { class: 'col-url' }, p.gameUrl
         ? el('span', { class: 'url-ellipsis', title: p.gameUrl }, p.gameUrl)
@@ -392,6 +400,45 @@
     panel.appendChild(body);
     return panel;
   }
+
+  // PHASE 6.3.10 — COMPACT quick bulk-proxy import. ONE LINE = ONE proxy (TYPE|host|port|user|pass); NEWLINE
+  // maps to the NEXT profile BY ORDER (line 1 → B1, line 2 → B2, …). Reuses the existing proxy schema +
+  // profileSetProxy (no new storage/IPC). This is SEPARATE from the per-row ⚡ Quick Proxy in Edit Profile.
+  function bulkProxyQuickPanel() {
+    const panel = el('div', { class: 'setup-panel bulk-proxy-quick' });
+    panel.appendChild(el('div', { class: 'setup-section-h' },
+      el('span', { class: 'h-title' }, 'THÊM NHANH PROXY ', el('span', { class: 'faint sm' }, '· mỗi dòng = 1 proxy · theo thứ tự B1 → B2 → B3'))));
+    const body = el('div', { style: 'padding:0 12px 12px' });
+    const ta = el('textarea', { class: 'f mono', id: 'phq-bulkproxy-quick', rows: '3', style: 'width:100%', placeholder: 'HTTP|host|port|user|pass\nHTTP|host|port|user|pass\nSOCKS5|host|port|user|pass', oninput: (e) => { bulkProxyText = e.target.value; } }, bulkProxyText);
+    body.appendChild(ta);
+    body.appendChild(el('div', { style: 'margin-top:8px;display:flex;gap:8px;align-items:center' },
+      el('button', { class: 'btn sm', title: 'Chèn mẫu định dạng', onclick: () => { ta.value = (BP ? BP.TEMPLATE : ''); bulkProxyText = ta.value; ta.focus(); } }, 'MẪU'),
+      el('button', { class: 'btn primary sm', onclick: applyBulkProxyQuick }, '⚡ ÁP DỤNG'),
+      el('span', { class: 'note', id: 'phq-bulkproxy-note' }, '')));
+    panel.appendChild(body);
+    return panel;
+  }
+  async function applyBulkProxyQuick() {
+    const note = $('phq-bulkproxy-note');
+    const setNote = (msg, warn) => { const n = $('phq-bulkproxy-note'); if (n) { n.textContent = msg; n.className = 'note ' + (warn ? 'warn' : 'ok'); } };
+    if (!BP) return;
+    // 1) Parse + validate EVERY line first (all-or-nothing — nothing is applied until all pass, §6).
+    const parsed = BP.parse(bulkProxyText);
+    if (!parsed.ok) return setNote(parsed.error.message, true);
+    if (!parsed.proxies.length) return setNote('Chưa có proxy nào để áp dụng.', true);
+    // 2) Map to profiles BY ORDER (not selection); MORE proxies than profiles is rejected (§3/§7).
+    const ids = profilesX.map((p) => p.id);
+    const mapped = BP.mapToProfiles(parsed.proxies, ids);
+    if (!mapped.ok) return setNote(mapped.error.message, true);
+    // 3) Apply via the EXISTING profileSetProxy (per profile, in order). Passwords are never logged/echoed.
+    for (const m of mapped.mapping) {
+      const r = await api.profileSetProxy(m.profileId, m.proxy);
+      if (r && r.ok === false) { await refreshProfilesX(); await refreshProxies(); renderApp(); return setNote(`Proxy dòng ${m.index + 1}: ${errText(r)}`, true); }
+    }
+    await refreshProfilesX(); await refreshProxies(); renderApp();
+    setNote(`Đã áp dụng ${mapped.mapping.length} proxy theo thứ tự B1 → B2 → B3.`, false);
+  }
+  async function refreshProxies() { try { const p = await api.proxyList(); proxies = (p && p.proxies) || []; } catch { /* keep last */ } }
 
   // RUN GAME — a STICKY footer (never scrolls out of view). Enabled only with exactly 3 selected AND, unless
   // Local Test, every selected profile has its own Game URL (edited in Edit Profile — no URL prompt at RUN).

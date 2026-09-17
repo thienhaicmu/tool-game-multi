@@ -217,3 +217,47 @@ test('Phỏm: the compact player cell has an open-state checkbox + a colored B# 
   assert.match(cell, /'b-badge'[\s\S]*?'B' \+ index/); // badge shows B1/B2/B3
   assert.match(cell, /onReloadWeb\(runId\)/); assert.match(cell, /onCloseBrowser\(slot, runId\)/); // ↻ / ⏻ per cell
 });
+
+// ================= PHASE 6.3.10 — QUICK BULK PROXY IMPORT (by profile order) =================
+test('index.html loads the bulk-proxy parser before the renderer', () => {
+  const html = read('ui-phom/index.html');
+  assert.match(html, /bulk-proxy\.js/);
+  assert.ok(html.indexOf('bulk-proxy.js') < html.indexOf('phom-qa.js'));
+});
+
+test('SETUP renders a COMPACT bulk-proxy import (THÊM NHANH PROXY), separate from the old big panel', () => {
+  const setup = fn(js, 'renderSetup');
+  assert.match(setup, /bulkProxyQuickPanel\(\)/);
+  const panel = fn(js, 'bulkProxyQuickPanel');
+  assert.match(panel, /THÊM NHANH PROXY/);
+  assert.match(panel, /mỗi dòng = 1 proxy · theo thứ tự B1 → B2 → B3/);
+  assert.match(panel, /'MẪU'/); assert.match(panel, /⚡ ÁP DỤNG/);
+  assert.match(panel, /HTTP\|host\|port\|user\|pass/); // placeholder shows the field format
+  assert.equal(/bulkProxyPanel\(\)/.test(setup), false, 'the OLD large bulk-proxy panel is not rendered');
+});
+
+test('bulk apply is all-or-nothing, maps by PROFILE ORDER (not selection), reuses profileSetProxy, no new IPC', () => {
+  const apply = fn(js, 'applyBulkProxyQuick');
+  assert.match(apply, /BP\.parse\(bulkProxyText\)/);              // validate EVERY line first
+  assert.match(apply, /if \(!parsed\.ok\) return setNote/);       // reject before applying anything
+  assert.match(apply, /const ids = profilesX\.map\(\(p\) => p\.id\)/); // PROFILE order, not selectedProfileIds
+  assert.match(apply, /BP\.mapToProfiles\(parsed\.proxies, ids\)/);
+  assert.match(apply, /api\.profileSetProxy\(m\.profileId, m\.proxy\)/); // existing IPC, per profile in order
+  // SECURITY: the apply path never logs / echoes a password.
+  assert.equal(/console\.(log|error|warn)/.test(apply), false, 'no logging in the bulk apply path');
+});
+
+test('the per-row ⚡ Quick Proxy (Edit Profile) remains available alongside the bulk importer', () => {
+  assert.match(js, /id: 'pf-proxy'/);            // per-profile proxy in the Edit modal
+  assert.match(js, /api\.profileSetProxy\(pid/); // still wired
+});
+
+test('the profile table shows a COMPACT proxy (TYPE host:port · auth) — never the password', () => {
+  assert.match(js, /px\.protocol \? px\.protocol\.toUpperCase\(\)/);
+  assert.match(js, /px\.endpoint/);
+  assert.match(js, /px\.hasAuth \? ' · auth' : ''/);
+  // the proxy CELL block itself never references a password/secret (scoped to the cell, not the whole file).
+  const at = js.indexOf('// PHASE 6.3.10 — compact proxy display');
+  const cellBlock = js.slice(at, at + 500);
+  assert.equal(/password|passwordSecretRef/.test(cellBlock), false, 'the proxy cell never references a password');
+});
