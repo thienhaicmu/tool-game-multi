@@ -24,7 +24,7 @@ const ORIENTATIONS = Object.freeze(['landscapePrimary', 'landscapeSecondary', 'p
 // Profile TYPE classifies the profile shape (§3). It is a display/categorization
 // label; the numeric OS Window + Viewport fields are what actually drive geometry
 // and CDP. CUSTOM is the free-form combination (any OS window + any viewport).
-const PROFILE_TYPES = Object.freeze(['DESKTOP', 'LAPTOP', 'LAPTOP_SMALL', 'MOBILE_LANDSCAPE', 'CUSTOM']);
+const PROFILE_TYPES = Object.freeze(['DESKTOP', 'LAPTOP', 'LAPTOP_SMALL', 'MOBILE_LANDSCAPE', 'DESKTOP_16_9', 'CUSTOM']);
 
 // Mobile-landscape presets. These predate the OS-Window/Viewport split (§11 —
 // existing profiles must keep working); they carry ONLY viewport dimensions, so
@@ -55,6 +55,17 @@ const MOBILE_PRESETS = Object.freeze([
 // landscape viewport (touch on) inside — exactly the "small laptop but game
 // renders landscape like a phone" scenario in the spec.
 const DESKTOP_PRESETS = Object.freeze([
+  // §6.3.13 — STANDARD DISPLAY PRESET for 22"/24" monitors. This is the DEFAULT for
+  // NEW profiles (§3). Game viewport = 600×338 (16:9). OS window is DERIVED (null
+  // osWindow → viewport + chrome allowance = 616×458), so three B1/B2/B3 windows tile
+  // side-by-side on a single 1920×1080 monitor (3×616 + gaps = 1864 ≤ 1920). Mobile +
+  // touch emulation stays ON (§8) — the Cocos game needs it; the "Desktop 22/24"" tag
+  // describes the DISPLAY, not the emulation.
+  Object.freeze({ id: 'desktop-22-24-16x9', name: 'Desktop 22/24" — 16:9', profileType: 'DESKTOP_16_9', deviceFamily: 'Desktop 22/24"', platform: 'Windows',
+    userAgent: 'Mozilla/5.0 (Linux; Android 13; Pixel 5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
+    osWindowWidth: null, osWindowHeight: null,
+    viewportWidth: 600, viewportHeight: 338, screenWidth: 600, screenHeight: 338, deviceScaleFactor: 2, mobile: true, touch: true, maxTouchPoints: 5,
+    orientationType: 'landscapePrimary', orientationAngle: 90 }),
   Object.freeze({ id: 'desktop-1920x1080', name: 'Desktop 1920×1080', profileType: 'DESKTOP', deviceFamily: 'Desktop', platform: 'Windows',
     userAgent: '',
     osWindowWidth: 1920, osWindowHeight: 1080,

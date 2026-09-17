@@ -29,6 +29,7 @@
   let hands = [];
   let proxies = [];
   let presets = [];          // mobile device presets
+  const DEFAULT_PROFILE_PRESET_ID = 'desktop-22-24-16x9'; // §6.3.13 — default display for NEW profiles (600×338 · 16:9)
   let profiles = {};         // slot -> saved profile (device + proxyRef)
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
@@ -513,14 +514,18 @@
   // Add/Edit profile modal (name · type preset · OS window w/h · viewport w/h · touch). OS window ⟂ viewport.
   function openProfileModal(id) {
     const existing = id ? profilesX.find((x) => x.id === id) : null;
-    const dev = existing && existing.device ? existing.device : {};
+    // §6.3.13 — a NEW profile defaults to the standard 22/24" 16:9 preset (600×338) so three
+    // browsers tile on one 1920×1080 monitor without the user configuring width/height. EXISTING
+    // profiles keep their saved viewport untouched (§4/§11); Duplicate preserves the source (§10).
+    const defPreset = !existing ? (presets.find((p) => p.id === DEFAULT_PROFILE_PRESET_ID) || null) : null;
+    const dev = existing && existing.device ? existing.device : (defPreset ? { ...defPreset, presetId: defPreset.id } : {});
     document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
     const ov = el('div', { class: 'phq-analyzer' });
     const close = () => ov.remove();
     const presetSel = el('select', { class: 'sel', id: 'pf-preset' }, el('option', { value: '' }, '— chọn preset (tùy chọn) —'));
     for (const pr of presets) presetSel.appendChild(el('option', { value: pr.id, selected: dev.presetId === pr.id ? 'selected' : null }, `${pr.name} · ${(pr.profileType || '').replace('_', ' ')}`));
     const f = (idv, ph, val) => el('input', { class: 'f', id: idv, placeholder: ph, value: val != null ? val : '' });
-    const applyPreset = () => { const pr = presets.find((x) => x.id === presetSel.value); if (!pr) return; $('pf-name').value = $('pf-name').value || pr.name; $('pf-osw').value = pr.osWindowWidth || ''; $('pf-osh').value = pr.osWindowHeight || ''; $('pf-vpw').value = pr.viewportWidth || ''; $('pf-vph').value = pr.viewportHeight || ''; };
+    const applyPreset = () => { const pr = presets.find((x) => x.id === presetSel.value); if (!pr) return; $('pf-name').value = $('pf-name').value || pr.name; $('pf-osw').value = pr.osWindowWidth || ''; $('pf-osh').value = pr.osWindowHeight || ''; $('pf-vpw').value = pr.viewportWidth || ''; $('pf-vph').value = pr.viewportHeight || ''; if ($('pf-touch')) $('pf-touch').checked = !!pr.touch; };
     presetSel.onchange = applyPreset;
     const card = el('div', { class: 'anz-card' },
       el('div', { class: 'section-t' }, existing ? 'SỬA PROFILE' : 'THÊM PROFILE'),
@@ -553,7 +558,16 @@
     if (!vpw || !vph) { if (err) { err.textContent = 'Viewport width/height phải là số > 0.'; err.className = 'note warn'; } return; }
     const osw = num($('pf-osw').value), osh = num($('pf-osh').value);
     const touch = !!($('pf-touch') && $('pf-touch').checked);
-    const device = { viewportWidth: vpw, viewportHeight: vph, screenWidth: vpw, screenHeight: vph, deviceScaleFactor: 2, osWindowWidth: osw, osWindowHeight: osh, touch, mobile: touch, orientationType: 'landscapePrimary', profileType: (osw && osh) ? 'CUSTOM' : 'MOBILE_LANDSCAPE' };
+    // §6.3.13 — when a preset is selected (NEW profiles default to Desktop 22/24"), carry its
+    // profileType / scale / emulation so the display tag + device emulation stick. Editing an
+    // existing profile with no preset selected keeps the legacy CUSTOM/MOBILE_LANDSCAPE logic (§11).
+    const presetId = ($('pf-preset') && $('pf-preset').value) || null;
+    const preset = presetId ? presets.find((p) => p.id === presetId) : null;
+    const device = { viewportWidth: vpw, viewportHeight: vph, screenWidth: vpw, screenHeight: vph,
+      deviceScaleFactor: preset ? preset.deviceScaleFactor : 2, osWindowWidth: osw, osWindowHeight: osh,
+      touch, mobile: preset ? preset.mobile : touch, maxTouchPoints: preset ? preset.maxTouchPoints : (touch ? 5 : 0),
+      orientationType: 'landscapePrimary', presetId: preset ? preset.id : null,
+      profileType: preset ? preset.profileType : ((osw && osh) ? 'CUSTOM' : 'MOBILE_LANDSCAPE') };
     const name = ($('pf-name').value || '').trim() || 'Profile';
     const gameUrl = ($('pf-url') && $('pf-url').value || '').trim() || null;
     let res;
@@ -603,7 +617,7 @@
   // browser (B1/B2/B3) with Type / OS Window / Viewport / Proxy columns + an Edit icon. No proxy
   // selector/Test here (Quick Proxy is the config surface). Data model unchanged (still the 3 slots).
   const SLOT_INDEX = { A: '1', B: '2', C: '3' };
-  const TYPE_LABEL = { DESKTOP: 'Desktop', LAPTOP: 'Laptop', LAPTOP_SMALL: 'Laptop Small', MOBILE_LANDSCAPE: 'Mobile Ngang', CUSTOM: 'Custom' };
+  const TYPE_LABEL = { DESKTOP: 'Desktop', LAPTOP: 'Laptop', LAPTOP_SMALL: 'Laptop Small', MOBILE_LANDSCAPE: 'Mobile Ngang', DESKTOP_16_9: 'Desktop 22/24"', CUSTOM: 'Custom' };
   function panelAssigned() {
     const panel = el('div', { class: 's1-panel setup-panel' });
     panel.appendChild(el('div', { class: 'setup-section-h' }, el('span', { class: 'h-title s1-panel-t' }, 'THIẾT BỊ VÀ PROXY ĐÃ GÁN')));
