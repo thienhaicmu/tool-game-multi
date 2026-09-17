@@ -13,7 +13,7 @@ function fn(src, name) { const s = src.indexOf('function ' + name + '('); if (s 
 
 test('two tabs: SETUP and PHỎM, switchable', () => {
   assert.match(js, /function renderTabBar\(/);
-  assert.match(js, /tab\('SETUP', 'SETUP'\)/);
+  assert.match(js, /tab\('SETUP', 'PROFILE'\)/); // PHASE 6.3.9 — tab id 'SETUP' (internal), label 'PROFILE'
   assert.match(js, /tab\('PHOM', 'PHỎM'\)/);
   assert.match(js, /let activeTab = 'SETUP'/);
   assert.match(js, /activeTab = id; renderApp\(\)/);

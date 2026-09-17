@@ -468,6 +468,15 @@ test('BC: bootScript is a compact draggable single-row header with per-slot acce
   assert.equal(/emit\('HOST'\)|emit\('READY'\)|emit\('KICK'\)/.test(src), false);
 });
 
+test('BC: the bet-picker FIND button always carries its onclick (picking a stake actually fires FIND)', () => {
+  const src = gh.bootScript();
+  // REGRESSION: it must NOT be created disabled — iconBtn drops the handler when disabled, which left FIND dead.
+  assert.equal(/'Tìm Bàn', true, !sel\.value/.test(src), false, 'FIND must not be created disabled');
+  // always clickable; the click guards on a chosen stake; the empty state is shown by style only.
+  assert.match(src, /iconBtn\(a\.icon\|\|'🔍','Tìm Bàn', true, false, false, function\(\)\{ if\(sel\.value\) emit\('FIND',\{ stake:Number\(sel\.value\) \}\); \}/);
+  assert.match(src, /var syncFb=function\(\)\{ var ok=!!sel\.value;/);
+});
+
 test('BC: the header router handles RELOAD/STOP/FOCUS by REUSING existing run helpers (no new IPC)', () => {
   assert.match(main, /async function reloadWebRun\(runId\)/);
   assert.match(main, /async function closeBrowserRun\(runId\)/);

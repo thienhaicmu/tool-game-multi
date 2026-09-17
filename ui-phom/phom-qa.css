@@ -356,10 +356,16 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .browser-cell .btn.sm { padding: 2px 8px; }
 .chip.sm { font-size: 11px; }
 /* PHASE 6.2.2 — two tabs + per-browser lifecycle row */
-.tab-bar { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.tab-bar { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--border); margin-bottom: 6px; }
+.tab-bar .tb-brand { font-weight: 800; color: var(--text); margin-right: 6px; white-space: nowrap; }
 .tab-bar .tab { border: 1px solid var(--border); border-bottom: none; background: var(--panel-2); color: var(--text-faint); padding: 4px 14px; border-radius: 8px 8px 0 0; cursor: pointer; font-weight: 600; }
 .tab-bar .tab.active { background: var(--panel); color: var(--text); border-color: var(--primary); }
+.tab-bar .tb-license { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; white-space: nowrap; }
+.tab-bar .tb-hsd { font-size: 11px; }
 .tab-content { min-height: 40px; }
+/* PHASE 6.3.9 — Select-All / Unselect-All + count row under the profile table; compact open-state checkbox. */
+.table-actions { display: flex; align-items: center; gap: 8px; padding: 8px 2px 2px; }
+.browser-cell .bc-cb { margin-right: 2px; }
 .browser-cell { flex-direction: column; align-items: stretch; gap: 4px; }
 .bc-line { display: flex; align-items: center; justify-content: space-between; }
 .bc-life { display: flex; gap: 4px; }
@@ -406,15 +412,21 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
    #phq-root.mode-control is a flex column (100% height); the card-workspace is the only growing/scrolling
    region so B1/B2/B3 never squeeze the cards. */
 #phq-root.mode-control { overflow: hidden; }
-.card-workspace { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 10px; padding-top: 8px; }
-.card-workspace .safe-cards, .card-workspace .remaining-cards { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
-.card-workspace .remaining-cards { margin-top: 0; border-top: none; }
+/* PHASE 6.3.9 — the two card panels sit SIDE-BY-SIDE (LÁ BÀI AN TOÀN | CÁC LÁ BÀI CÒN LẠI); each is a bordered
+   panel. They only stack vertically when the Tool window is genuinely too narrow (§26). */
+.card-workspace { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: row; gap: 10px; padding-top: 8px; }
+.card-workspace .safe-cards, .card-workspace .remaining-cards { flex: 1 1 0; min-width: 0; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; overflow: hidden; }
+.card-workspace .safe-cards { border-left: 3px solid var(--success); background: rgba(22,163,74,.04); } /* subtle green accent, not a full green panel */
+.card-workspace .remaining-cards { margin-top: 0; border-top: 1px solid var(--border); } /* neutral */
 .card-workspace .cards { flex: 1 1 auto; align-content: flex-start; overflow-y: auto; }
+@media (max-width: 680px) { .card-workspace { flex-direction: column; } }
 
-/* PHASE 6.3.3.3 — SAFE CARD ANALYZER: a compact one-of-three player selector in the LÁ BÀI AN TOÀN header
+/* PHASE 6.3.3.3 / 6.3.9 — SAFE CARD ANALYZER: a compact [Tất cả][B1][B2][B3] selector + a title/subtitle
    (presentation only; never enlarges the layout, §19/§20). Reuses the existing .btn/.card-face styles. */
 .safe-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 4px; }
 .safe-head .section-t { margin: 0; }
+.sc-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+.sc-sub { font-weight: 500; }
 .analysis-pick { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .analysis-pick .btn.sm { padding: 2px 8px; }
 .safe-src { margin-top: 4px; }

@@ -37,7 +37,8 @@ test('4. the card workspace is flex-growing and holds both card sections', () =>
   assert.match(ws, /card-workspace/);
   assert.match(ws, /renderSafeCards\(\)/);
   assert.match(ws, /renderRemainingCards\(\)/);
-  assert.match(css, /\.card-workspace \{[^}]*flex: 1 1 auto[^}]*overflow-y: auto/);
+  // PHASE 6.3.9 — the two card panels are SIDE-BY-SIDE (row); each panel scrolls its own cards.
+  assert.match(css, /\.card-workspace \{[^}]*flex: 1 1 auto[^}]*flex-direction: row/);
   // control mode is a flex column so the workspace can grow; root doesn't double-scroll
   assert.match(css, /#phq-root\.mode-control \{[^}]*overflow: hidden/);
 });

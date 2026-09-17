@@ -23,7 +23,9 @@ test('SETUP renders a scrollable page + sticky footer (no clipped content)', () 
   const s = fn(js, 'renderSetup');
   assert.match(s, /class: 'setup-page'/);        // the single vertical scroll container
   assert.match(s, /profileTablePanel\(\)/);
-  assert.match(s, /bulkProxyPanel\(\)/);
+  // PHASE 6.3.9 — the bulk-proxy panel is gone; proxy is configured per-profile in the Edit modal (pf-proxy).
+  assert.equal(/bulkProxyPanel\(\)/.test(s), false, 'no bulk-proxy panel in the Profile render');
+  assert.match(js, /id: 'pf-proxy'/);            // per-profile proxy lives in Edit Profile now
   assert.match(s, /runGameFooter\(\)/);           // footer OUTSIDE the scroll page (sticky)
   // the global Game URL panel is gone
   assert.equal(/gamePanel\(\)/.test(js), false, 'no global Game URL panel');

@@ -46,10 +46,11 @@ test('Screen 2 consumes the snapshot read-only: LÁ BÀI CÒN LẠI uses observe
   const rem = rfn('renderRemainingCards');
   assert.match(rem, /cardsSnap && cardsSnap\.remaining/);
   assert.match(rem, /Đang quan sát/);
-  // LÁ BÀI AN TOÀN is still a placeholder — NO recommendation/analysis added this phase
+  // PHASE 6.3.9 — the renderer READS the analyzer result (safeAnalysis) for the count/subtitle; the algorithm
+  // itself lives in main (safeCardAnalyzer). The renderer never RUNS a safe-card algorithm here.
   const safe = rfn('renderSafeCards');
   assert.match(safe, /LÁ BÀI AN TOÀN/);
-  assert.equal(/safeCard|recommend|analyze|findMelds/.test(safe), false, 'no safe-card algorithm yet');
+  assert.equal(/recommend|findMelds|safeCardsCompute/.test(safe), false, 'no safe-card algorithm in the renderer');
 });
 
 test('the three hands are never merged; an analysis angle is only PREPARED (§19/§20)', () => {

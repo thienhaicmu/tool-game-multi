@@ -40,7 +40,8 @@ test('PHASE 6.3.2.1 — SETUP is a scroll page + sticky footer; Game URL is per-
   const setup = js.slice(js.indexOf('function renderSetup(r) {'), js.indexOf('function profileTablePanel('));
   assert.match(setup, /class: 'setup-page'/);        // scrollable page (nothing clipped)
   assert.match(setup, /profileTablePanel\(\)/);
-  assert.match(setup, /bulkProxyPanel\(\)/);
+  // PHASE 6.3.9 — proxy is per-profile (Edit modal), not a bulk panel in the render
+  assert.equal(/bulkProxyPanel\(\)/.test(setup), false, 'no bulk-proxy panel in the Profile render');
   assert.match(setup, /runGameFooter\(\)/);           // sticky footer, not an in-flow panel
   assert.equal(/gamePanel\(\)/.test(setup), false, 'no global Game URL panel in the render');
   // the RENDERED setup no longer wires the cluster/HOST panel

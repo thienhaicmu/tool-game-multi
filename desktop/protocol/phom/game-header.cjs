@@ -203,9 +203,13 @@ function bootScript(opts = {}) {
           var o0=mk('option'); o0.value=''; o0.textContent='CƯỢC…'; sel.appendChild(o0);
           a.betOptions.forEach(function(v){ var o=mk('option'); o.value=String(v); o.textContent=String(v); sel.appendChild(o); });
           act.appendChild(sel);
-          var fb=iconBtn(a.icon||'🔍','Tìm Bàn', true, !sel.value, false, function(){ if(sel.value) emit('FIND',{ stake:Number(sel.value) }); }, a.tip);
+          // BUGFIX (6.3.9) — the FIND button must ALWAYS carry its onclick (the click guards on a chosen stake).
+          // Creating it "disabled" dropped the handler, so picking a stake left FIND dead. Now it is always
+          // clickable; the empty-stake state is shown by style only, and the click is a no-op until a stake is set.
+          var fb=iconBtn(a.icon||'🔍','Tìm Bàn', true, false, false, function(){ if(sel.value) emit('FIND',{ stake:Number(sel.value) }); }, a.tip);
+          var syncFb=function(){ var ok=!!sel.value; fb.style.opacity=ok?'1':'.5'; fb.style.cursor=ok?'pointer':'not-allowed'; };
+          syncFb(); sel.onchange=syncFb;
           act.appendChild(fb);
-          sel.onchange=function(){ fb.disabled=!sel.value; fb.style.opacity=sel.value?'1':'.5'; fb.style.cursor=sel.value?'pointer':'not-allowed'; };
         } else {
           act.appendChild(iconBtn(a.icon||'•', a.short||a.label||a.action, showLabel, !!a.disabled, !!a.danger, (function(ac){ return function(){ emit(ac.action, ac.rid!=null?{ rid:ac.rid }:null); }; })(a), a.tip));
         }
