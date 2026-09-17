@@ -207,7 +207,7 @@ test('main installs the header on attach with per-run identity + logging, routes
 // PHASE 6.3.2.2 / 6.3.2.3 — reliability guards in the action router (single-flight via the pure guard,
 // identity cross-check, and dead-session guard). PHOM_HEADER_BUSY now lives in header-action-guard.cjs.
 test('router has a per-browser single-flight + identity guard and a dead-session guard', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 5200);
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 6500);
   assert.match(r, /evaluateHeaderAction\(/);             // pure single-flight + identity guard
   assert.match(r, /busy: !!headerActionBusy\[rid\]/);    // one op per browser
   assert.match(r, /if \(!runClientFor\(rid\)\)/);        // never route into a dead CDP session
@@ -299,8 +299,8 @@ test('STATE-05 enteringActive is BOUNDED: within window active, past window reve
 });
 
 test('STATE-06/09 a fresh ENTER re-arms the bounded timeout, and ↻ WEB reset clears the ENTERING transient', () => {
-  // ↻ WEB reload path resets entering + cancels the timer (raw F5 also loses the page-local optimistic overlay).
-  assert.match(main, /delete headerEntering\[String\(runId\)\]; clearHeaderEnterTimer\(String\(runId\)\)/);
+  // ↻ WEB reload path (reloadWebRun.resetPhom, shared by the header ⟳ button) resets entering + cancels the timer.
+  assert.match(main, /delete headerEntering\[rid\]; clearHeaderEnterTimer\(rid\); delete headerError\[rid\]/);
   // a fresh ENTER cancels any prior timer before re-arming (no leaked/overlapping timers).
   assert.match(main, /function armEnterTimeout\(rid\) \{\s*clearHeaderEnterTimer\(rid\);\s*headerEnterTimer\[rid\] = setTimeout\(/);
   assert.match(main, /headerEntering\[rid\] = true;\s*armEnterTimeout\(rid\);/);
@@ -418,4 +418,64 @@ test('FINDER-05/06 Finder ownership is SEPARATE from the analyzer target (Finder
   assert.match(ui, /let selectedAnalysisPlayer = null/);
   assert.match(ui, /function finderSelector\(\)/);
   assert.match(ui, /api\.setFinder/);
+});
+
+// ---- PHASE 6.3.8 — BROWSER CONTROL redesign (compact single-row floating header; state-dependent icons) ----
+
+test('BC: HEADER_ACTIONS exposes ONLY existing actions (no HOST/READY/KICK/DevTools invented)', () => {
+  const a = gh.HEADER_ACTIONS;
+  for (const k of ['ENTER_GAME', 'FIND', 'JOIN_SHARED', 'JOIN', 'REJOIN', 'LEAVE', 'WAIT_ANCHOR', 'RELOAD', 'STOP', 'FOCUS']) {
+    assert.ok(a[k] && a[k].icon && a[k].tip, 'has meta for ' + k);
+  }
+  for (const forbidden of ['HOST', 'READY', 'KICK', 'DEVTOOLS', 'SCREENSHOT', 'RESIZE', 'CLEAR_CACHE']) {
+    assert.equal(a[forbidden], undefined, 'must NOT invent action ' + forbidden);
+  }
+});
+
+test('BC: deriveHeaderState exposes an ordered GAME/TABLE icon set (actions), state-dependent', () => {
+  // not in game → [ENTER_GAME]
+  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: false }).actions.map((x) => x.action), ['ENTER_GAME']);
+  // finder in game, no shared rid → [FIND]
+  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: true }).actions.map((x) => x.action), ['FIND']);
+  // shared rid available (follower) → [JOIN_SHARED]
+  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 2, sharedRid: 700 }).actions.map((x) => x.action), ['JOIN_SHARED']);
+  // joined → [REJOIN, LEAVE]
+  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 700, sharedRid: 700 }).actions.map((x) => x.action), ['REJOIN', 'LEAVE']);
+  // each action carries an icon + tooltip
+  const find = gh.deriveHeaderState({ opened: true, inGame: true }).actions[0];
+  assert.equal(find.icon, '🔍'); assert.ok(find.tip);
+});
+
+test('BC: bootScript is a compact draggable single-row header with per-slot accent, collapse + quick menu', () => {
+  const src = gh.bootScript({ slotId: 'B2', profileId: 'p', runId: 'r' });
+  // per-player accent (B1 blue / B2 green / B3 orange) + "Player N" badge from the slot id
+  assert.match(src, /SLOTN===1\?'#2563eb':SLOTN===2\?'#16a34a':SLOTN===3\?'#ea580c'/);
+  // single FLOATING row (fixed, not a full-width bar; no body margin push)
+  assert.match(src, /position:fixed;top:8px;right:8px/);
+  assert.equal(/marginTop\s*=\s*'34px'/.test(src), false, 'no longer pushes the game with a full-width bar');
+  // draggable (page-local; clamped inside the viewport). No storage → F5-safe like the optimistic overlay.
+  assert.match(src, /handle\.addEventListener\('mousedown'/);
+  assert.match(src, /bar\.style\.left=x\+'px'/);
+  assert.equal(/localStorage|sessionStorage/.test(src), false, 'no persistent storage in the injected header');
+  // collapse toggle (page-local)
+  assert.match(src, /__collapsed/);
+  assert.match(src, /collapseBtn\.onclick/);
+  // lifecycle actions are always available; FOCUS lives in the quick menu — all map to existing actions
+  assert.match(src, /emit\('RELOAD'\)/);
+  assert.match(src, /emit\('STOP'\)/);
+  assert.match(src, /emit\('FOCUS'\)/);
+  // no invented game actions in the page
+  assert.equal(/emit\('HOST'\)|emit\('READY'\)|emit\('KICK'\)/.test(src), false);
+});
+
+test('BC: the header router handles RELOAD/STOP/FOCUS by REUSING existing run helpers (no new IPC)', () => {
+  assert.match(main, /async function reloadWebRun\(runId\)/);
+  assert.match(main, /async function closeBrowserRun\(runId\)/);
+  // the header binding routes the lifecycle actions to the shared helpers / existing focus
+  assert.match(main, /action === 'RELOAD'\) \{[\s\S]*?res = await reloadWebRun\(rid\);/);
+  assert.match(main, /action === 'STOP'\) \{[\s\S]*?res = await closeBrowserRun\(rid\);/);
+  assert.match(main, /action === 'FOCUS'\) \{[\s\S]*?res = focusBrowser\(rid\)/);
+  // the IPC handlers reuse the SAME helpers (unchanged contract)
+  assert.match(main, /ipcMain\.handle\('phom:reload-web', guarded\(async \(_e, cfg\) => reloadWebRun\(cfg && cfg\.browserId\)\)\)/);
+  assert.match(main, /ipcMain\.handle\('phom:close-browser', guarded\(async \(_e, cfg\) => closeBrowserRun\(cfg && cfg\.browserId\)\)\)/);
 });

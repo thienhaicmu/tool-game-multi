@@ -41,8 +41,8 @@ test('click→ENTERED latency is instrumented with a monotonic clock (T6 start �
 test('caches are cleared on CDP detach AND on reload so a fresh document is always re-pushed (no stale skip)', () => {
   // detach
   assert.match(main, /delete headerLastPushed\[String\(run\.id\)\]; delete headerEnterStartedAt\[String\(run\.id\)\]/);
-  // reload reset
-  assert.match(main, /resetPhom = \(\) =>[\s\S]*?delete headerLastPushed\[String\(runId\)\]; delete headerEnterStartedAt\[String\(runId\)\]/);
+  // reload reset (reloadWebRun.resetPhom, shared by the header ⟳ button)
+  assert.match(main, /resetPhom = \(\) =>[\s\S]*?delete headerLastPushed\[rid\]; delete headerEnterStartedAt\[rid\]/);
 });
 
 test('the ENTER path itself has no fixed sleeps (event-driven; evidence is authoritative)', () => {

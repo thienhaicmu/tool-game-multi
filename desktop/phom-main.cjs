@@ -671,6 +671,27 @@ else {
     _cardsTimer = setTimeout(() => { _cardsTimer = null; if (_cardsPending) { const t = _cardsPending; _cardsPending = null; send('phom:cards', t); } }, BROADCAST_MS);
   }
 
+  // PHASE 6.3.8 — shared RELOAD / CLOSE run helpers, reused by BOTH the IPC handlers (phom:reload-web /
+  // phom:close-browser) AND the in-Chromium header's ⟳/⏻ buttons. Pure extraction of the existing logic —
+  // no behavior change, no new IPC contract. The header routes RELOAD/STOP/FOCUS through phomHeaderAction.
+  async function reloadWebRun(runId) {
+    const rid = String(runId == null ? '' : runId);
+    if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
+    const client = runClientFor(rid);
+    const run = runManager.get(rid);
+    const url = run && run.launchUrl ? run.launchUrl : null;
+    if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
+    const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ } delete headerEntering[rid]; clearHeaderEnterTimer(rid); delete headerError[rid]; headerDomPresent[rid] = false; delete headerLastPushed[rid]; delete headerEnterStartedAt[rid]; pushHeaderStates(); };
+    try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
+    catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
+  }
+  async function closeBrowserRun(runId) {
+    const rid = String(runId == null ? '' : runId);
+    if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
+    try { await runManager.closeRun(rid); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(rid, 'USER_CLOSED_WINDOW'); return { ok: true }; }
+    catch (e) { return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
+  }
+
   // Route ONE header button click (from the in-page binding) to the coordinator's manual API. The action
   // set mirrors the old Tool controls exactly; stake comes from the page's bet picker (server options).
   async function phomHeaderAction(runId, payload) {
@@ -730,6 +751,15 @@ else {
       } else if (action === 'LEAVE') {
         ensurePhomSessions();
         res = await phomSessions.manualLeave(rid);
+      } else if (action === 'RELOAD') {
+        // PHASE 6.3.8 — the header's ⟳ button reuses the SAME reload logic as phom:reload-web (no new action).
+        res = await reloadWebRun(rid);
+      } else if (action === 'STOP') {
+        // PHASE 6.3.8 — the header's ⏻ button reuses the SAME close logic as phom:close-browser.
+        res = await closeBrowserRun(rid);
+      } else if (action === 'FOCUS') {
+        // PHASE 6.3.8 — bring this Chromium OS window to the front (reuses the existing focusBrowser).
+        res = focusBrowser(rid) || { ok: true };
       } else {
         res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
       }
@@ -1238,27 +1268,11 @@ else {
     // PHASE-6.2.2 — browser lifecycle, all scoped to ONE run (never touches the Tool or the other browsers).
     // ↻ WEB: reload the page in the SAME Chromium; if the page is gone, re-navigate to the game URL — never
     // launches a second Chromium OS window.
-    ipcMain.handle('phom:reload-web', guarded(async (_e, cfg) => {
-      const runId = cfg && cfg.browserId; if (!runId || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
-      const client = runClientFor(String(runId));
-      const run = runManager.get(String(runId));
-      const url = run && run.launchUrl ? run.launchUrl : null;
-      if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
-      // The reloaded page leaves the Phỏm game, so reset this browser's Phỏm context — slotInPhom goes
-      // false and the tool shows VÀO GAME again (socket/channels rebind from the new page's own frames).
-      // §9 — on reload (F5) the document is torn down: the header DOM is gone until the new document's boot
-      // re-mounts it and re-reports __HEADER_STATUS. Mark it not-present so the Tool shows RECOVERING (not a
-      // stale Sẵn sàng), and clear the push cache so the fresh document is re-filled with LOBBY state.
-      const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(String(runId)); } catch { /* best effort */ } delete headerEntering[String(runId)]; clearHeaderEnterTimer(String(runId)); delete headerError[String(runId)]; headerDomPresent[String(runId)] = false; delete headerLastPushed[String(runId)]; delete headerEnterStartedAt[String(runId)]; pushHeaderStates(); };
-      try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
-      catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
-    }));
+    // ↻ WEB: reload the page in the SAME Chromium (re-navigates to the game URL if the page is gone). Shared
+    // logic with the in-Chromium header's ⟳ button (reloadWebRun) — unchanged behavior, same IPC contract.
+    ipcMain.handle('phom:reload-web', guarded(async (_e, cfg) => reloadWebRun(cfg && cfg.browserId)));
     // ⏻ TẮT CHROMIUM: close ONLY this run's Chromium window/process (Tool + other browsers untouched).
-    ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => {
-      const runId = cfg && cfg.browserId; if (!runId || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
-      try { await runManager.closeRun(String(runId)); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(String(runId), 'USER_CLOSED_WINDOW'); return { ok: true }; }
-      catch (e) { return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
-    }));
+    ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => closeBrowserRun(cfg && cfg.browserId)));
     // Screen 2 — cards REMAINING after removing all cards held by the 3 browsers (never "player 4").
     ipcMain.handle('phom:remaining-cards', () => (phomSessions ? { ok: true, ...phomSessions.remainingCards() } : { ok: true, count: 0, codes: [], cards: [] }));
     // PHASE 6.3.3.2 — the full card-observation snapshot (players/discards/melds/remaining/capabilities).

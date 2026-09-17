@@ -51,7 +51,7 @@ test('⏻ closes ONLY that run; MỞ CHROMIUM reopens the closed browser', () =>
   assert.match(close, /api\.closeBrowser\(runId\)/);
   assert.match(preload, /closeBrowser:/);
   assert.match(main, /phom:close-browser/);
-  assert.match(main, /runManager\.closeRun\(String\(runId\)\)/);
+  assert.match(main, /async function closeBrowserRun\(runId\)[\s\S]*?runManager\.closeRun\(rid\)/);
   const reopen = fn(js, 'onReopenBrowser');
   assert.match(reopen, /api\.clusterOpen\(\)/); // reopens closed slots only; live untouched
   // no auto-rejoin after reopen (§16)

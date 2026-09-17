@@ -41,13 +41,15 @@ test('bootScript exposes DEBUG-only observer counters (no per-mutation productio
   assert.match(main, /observerLog: process\.env\.PHOM_HEADER_OBSERVER_LOG === '1'/);
 });
 
-test('§13 header layout is a stable 3-column grid with the ACTION centered inside the bar', () => {
+// PHASE 6.3.8 — the header is a COMPACT, FLOATING, single-row control (not a full-width 3-column bar): a
+// draggable identity handle (badge+name+status), the state-dependent action row, then the ⋮/─ controls.
+test('§13 header layout is a compact floating single row (badge/handle · actions · menu)', () => {
   const src = gh.bootScript();
-  assert.match(src, /grid-template-columns:1fr auto 1fr/);       // LEFT | CENTER | RIGHT
-  assert.match(src, /act = mk\('div','justify-self:center/);      // ACTION centered in the bar
-  assert.match(src, /left = mk\('div','justify-self:start/);      // ACCOUNT · STATE left
-  assert.match(src, /right = mk\('div','justify-self:end/);       // RID right
-  assert.match(src, /bar\.appendChild\(left\); bar\.appendChild\(act\); bar\.appendChild\(right\)/);
+  assert.match(src, /position:fixed;top:8px;right:8px/);          // floating top-right (not full-width)
+  assert.match(src, /display:flex;align-items:center/);           // single flex row
+  assert.match(src, /const handle = mk\('div','display:flex;align-items:center;gap:7px;cursor:move/); // draggable identity area
+  assert.match(src, /const act = mk\('div',/);                    // state-dependent action row
+  assert.match(src, /bar\.appendChild\(handle\); bar\.appendChild\(act\); bar\.appendChild\(menuWrap\)/);
 });
 
 test('bootScript reports REAL DOM presence to main on mount/remount (__HEADER_STATUS), not per frame', () => {
@@ -77,7 +79,7 @@ test('Tool HEADER indicator is DOM-truthful: READY needs cdp+binding+DOM; RECOVE
   assert.match(main, /if \(cdp && headerReady\[rid\]\) header = headerDomPresent\[rid\] \? 'READY' : 'RECOVERING'/);
   // presence is cleared on detach AND reload so the indicator can never stay a stale Sẵn sàng
   assert.match(main, /headerDomPresent\[String\(run\.id\)\] = false/);        // detach
-  assert.match(main, /headerDomPresent\[String\(runId\)\] = false/);          // reload reset
+  assert.match(main, /headerDomPresent\[rid\] = false/);                      // reload reset (reloadWebRun)
 });
 
 test('NO CDP-storm regression: header DOM is NOT verified per WS frame (event-driven signal only)', () => {
