@@ -412,12 +412,11 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
    #phq-root.mode-control is a flex column (100% height); the card-workspace is the only growing/scrolling
    region so B1/B2/B3 never squeeze the cards. */
 #phq-root.mode-control { overflow: hidden; }
-/* PHASE 6.3.9 fix — the PROFILE (SETUP) surface is reachable while the cluster is OPEN (uiState=control):
-   switch to the PROFILE tab after opening browsers. There the .mode-setup flex rule doesn't apply, so the
-   sticky footer floated mid-window. Apply the setup flex layout whenever the tab-content holds the setup
-   footer, regardless of mode — so .setup-page grows/scrolls and .setup-footer sticks to the bottom. Layout
-   containment only (no JS / no logic). */
-#phq-root.mode-control .tab-content:has(> .setup-footer) { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+/* PHASE 6.3.9/6.3.10 fix — under mode-control the tab-content MUST be a bounded flex column so the growing
+   region (the card-workspace on PHỎM, or the setup-page on the PROFILE tab viewed while open) fills the
+   remaining height and scrolls INTERNALLY. Without this the tab-content took natural height, so a full
+   52-card "CÁC LÁ BÀI CÒN LẠI" grid overflowed the window and the sticky footer floated. Layout only. */
+#phq-root.mode-control .tab-content { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
 /* PHASE 6.3.9 — the two card panels sit SIDE-BY-SIDE (LÁ BÀI AN TOÀN | CÁC LÁ BÀI CÒN LẠI); each is a bordered
    panel. They only stack vertically when the Tool window is genuinely too narrow (§26). */
 .card-workspace { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: row; gap: 10px; padding-top: 8px; }

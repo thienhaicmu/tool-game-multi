@@ -207,10 +207,16 @@
     const wrap = el('span', { class: 'tb-license' });
     if (licenseMode === 'DEVELOPMENT_BYPASS') { wrap.appendChild(el('span', { class: 'chip yellow sm' }, '● DEV BYPASS')); return wrap; }
     wrap.appendChild(el('span', { class: 'chip green sm' }, '● Đã kích hoạt'));
-    const exp = licenseInfo && licenseInfo.expiresAt != null ? Number(licenseInfo.expiresAt) : null;
-    if (exp && Number.isFinite(exp)) {
-      const d = new Date(exp * 1000);
-      const days = Math.max(0, Math.ceil((d.getTime() - Date.now()) / 86400000));
+    // PHASE 6.3.9-fix — the real license status carries expiry at payload.expiresAt (unix SECONDS) + a trusted
+    // nowSeconds. (Top-level expiresAt was wrong — it never populated, so the days/HSD went missing in the
+    // packaged app.) Always show "Còn X ngày · HSD: DD/MM/YYYY" from the authoritative signed expiry.
+    const li = licenseInfo || {};
+    const expSec = (li.payload && li.payload.expiresAt != null) ? Number(li.payload.expiresAt)
+      : (li.expiresAt != null ? Number(li.expiresAt) : null);
+    if (expSec && Number.isFinite(expSec)) {
+      const nowMs = (li.nowSeconds != null && Number.isFinite(Number(li.nowSeconds))) ? Number(li.nowSeconds) * 1000 : Date.now();
+      const d = new Date(expSec * 1000);
+      const days = Math.max(0, Math.ceil((d.getTime() - nowMs) / 86400000));
       const p2 = (n) => String(n).padStart(2, '0');
       wrap.appendChild(el('span', { class: 'faint sm tb-hsd' }, `Còn ${days} ngày · HSD: ${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()}`));
     }
