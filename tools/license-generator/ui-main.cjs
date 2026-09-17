@@ -3,18 +3,14 @@
 const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const crypto = require('node:crypto');
-const { randomBytes, sign } = crypto;
-const { canonicalJson, base64url } = require('../../desktop/licensing/canonical-json.cjs');
 const { TrustedTimeProvider } = require('../../desktop/licensing/trusted-time.cjs');
-const { parseLicense, effectiveSigningKeyId } = require('../../desktop/licensing/license-verifier.cjs');
-const { PLAN_PRESETS, PLANS, GAME_PRODUCTS, buildLicensePayloadV2, validateEntitlementInput, normalizeEntitlement } = require('../../desktop/licensing/entitlements.cjs');
 const { resolveExpiresAt, formatUtcPlus7 } = require('./duration.cjs');
-const { PLAN_UI_DEFAULTS } = require('./plan-ui-defaults.cjs');
+const { publicGameConfigs, gameConfig, GAME_ORDER } = require('./game-configs.cjs');
+const { issueLicense, assertKeyForGame } = require('./license-signer.cjs');
+const { diagnoseLicense } = require('./license-diagnostics.cjs');
 const { resolveSellerResources, privateKeyPathForProduct, sheetTitleForProduct } = require('./seller-resources.cjs');
 const sellerRes = { privateKeyPathForProduct, sheetTitleForProduct };
 const { loadServiceAccount, GoogleSheetClient, trySaveRecord } = require('./google-sheet.cjs');
-const { PUBLIC_KEY_PEM, publicKeyForId, PRODUCT_DEFAULT_KEY_ID } = require('../../desktop/licensing/public-key.cjs');
 
 let win;
 const trustedTime = new TrustedTimeProvider();
@@ -33,21 +29,26 @@ function sellerResources() {
 
 // Per-product private key (§5/§8). PHOM signs with the PHOM key, AVIATOR with the
 // Aviator key — the wrong product NEVER falls back to the other's key. Typed errors.
+// No implicit default game: an unknown game has no key.
 function readPrivateKeyForProduct(gameProduct) {
-  const gp = String(gameProduct || 'AVIATOR').toUpperCase();
-  if (gp === 'AVIATOR') { const direct = process.env.AVIATOR_LICENSE_PRIVATE_KEY || process.env.WVPT_PRIVATE_KEY; if (direct) return direct.replace(/\\n/g, '\n'); }
+  const cfg = gameConfig(gameProduct);
+  if (!cfg) { const e = new Error('Game không hợp lệ.'); e.code = 'LICENSE_GAME_PRODUCT_INVALID'; throw e; }
+  const gp = cfg.game;
+  if (gp === 'AVIATOR' && !app.isPackaged) { const direct = process.env.AVIATOR_LICENSE_PRIVATE_KEY || process.env.WVPT_PRIVATE_KEY; if (direct) return direct.replace(/\\n/g, '\n'); }
   const res = sellerResources();
   const p = sellerRes.privateKeyPathForProduct(res, gp);
-  if (!p || !fs.existsSync(p)) { const e = new Error(`LICENSE_SIGNING_KEY_NOT_CONFIGURED: ${gp} private key not found`); e.code = 'LICENSE_SIGNING_KEY_NOT_CONFIGURED'; throw e; }
-  try { return fs.readFileSync(p, 'utf8'); } catch { const e = new Error('LICENSE_PRIVATE_KEY_LOAD_FAILED'); e.code = 'LICENSE_PRIVATE_KEY_LOAD_FAILED'; throw e; }
+  if (!p || !fs.existsSync(p)) { const e = new Error(`Chưa có private key ${cfg.signingKeyId} cho ${cfg.label} trong gói Generator.`); e.code = 'LICENSE_SIGNING_KEY_NOT_CONFIGURED'; throw e; }
+  try { return fs.readFileSync(p, 'utf8'); } catch { const e = new Error(`Không đọc được private key của ${cfg.label}.`); e.code = 'LICENSE_PRIVATE_KEY_LOAD_FAILED'; throw e; }
 }
 
-function signingReadyForProduct(gameProduct) {
-  const gp = String(gameProduct || 'AVIATOR').toUpperCase();
-  if (gp === 'AVIATOR' && (process.env.AVIATOR_LICENSE_PRIVATE_KEY || process.env.WVPT_PRIVATE_KEY)) return true;
-  const p = sellerRes.privateKeyPathForProduct(sellerResources(), gp);
-  return !!(p && fs.existsSync(p));
+// Per-game signing readiness: the key must exist AND be the private half of that game's
+// registry public key (a stray/misplaced key is reported, never used). Code only — no path.
+function signingStateForProduct(gameProduct) {
+  const gp = String(gameProduct || '').toUpperCase();
+  try { assertKeyForGame(gp, readPrivateKeyForProduct(gp)); return { ready: true, code: null }; }
+  catch (e) { return { ready: false, code: e.code || 'LICENSE_SIGNING_KEY_NOT_CONFIGURED' }; }
 }
+function signingReadyForProduct(gameProduct) { return signingStateForProduct(gameProduct).ready; }
 
 // ---- Google Sheet client (seller-side; lazy; credentials never cross IPC) ----
 let sheetClient = null;
@@ -75,83 +76,20 @@ function credentialEmail(p) {
   try { return loadServiceAccount(p).client_email || null; } catch { return null; }
 }
 
-function normalizeMachineId(input) {
-  const machineId = String(input || '').trim().toUpperCase();
-  if (!/^WVPT-PC-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(machineId)) {
-    throw new Error('Machine ID format must be WVPT-PC-XXXX-XXXX-XXXX-XXXX');
-  }
-  return machineId;
-}
-
 async function trustedIssuedAt() {
   if (process.env.WVPT_TRUSTED_TIME_MS && Number.isFinite(Number(process.env.WVPT_TRUSTED_TIME_MS))) {
     return Math.floor(Number(process.env.WVPT_TRUSTED_TIME_MS) / 1000);
   }
   const result = await trustedTime.now();
-  if (!result.ok) throw new Error('Cannot verify trusted UTC+7 time. Check internet connection and try again.');
+  if (!result.ok) { const e = new Error('Không xác minh được giờ tin cậy UTC+7. Kiểm tra kết nối mạng rồi thử lại.'); e.code = 'TRUSTED_TIME_UNAVAILABLE'; throw e; }
   return Math.floor(result.nowMs / 1000);
 }
 
-// Accept the GUI duration spec ({ unit:'days'|'months'|'custom', value/expires }).
-// Falls back to the legacy { mode, durationDays, expires } shape for safety.
-function durationSpecFrom(input) {
-  if (input && input.duration && typeof input.duration === 'object') return input.duration;
-  if (input && input.mode === 'custom') return { unit: 'custom', expires: input.expires };
-  return { unit: 'days', value: Number(input && input.durationDays || 30) };
-}
-
-async function buildPayload(input) {
-  const issuedAt = await trustedIssuedAt();
-  const expiresAt = resolveExpiresAt(issuedAt, durationSpecFrom(input));
-  if (!Number.isInteger(expiresAt) || expiresAt <= issuedAt) throw new Error('Ngày hết hạn phải ở tương lai.');
-  const machineId = normalizeMachineId(input.machineId);
-  const licenseId = 'LIC-' + randomBytes(4).toString('hex').toUpperCase();
-
-  // Legacy schema v1 (kept for compatibility).
-  if (Number(input.schema) === 1) {
-    const maxLaunches = input.maxLaunches ? Number(input.maxLaunches) : null;
-    if (maxLaunches != null && (!Number.isInteger(maxLaunches) || maxLaunches < 1 || maxLaunches > 1000000)) throw new Error('Số lần chạy phải từ 1 đến 1000000.');
-    return { v: 1, product: 'WVPT', machineId, issuedAt, expiresAt, ...(maxLaunches ? { maxLaunches } : {}), licenseId };
-  }
-
-  // Schema v2 — signed plan / capacities / features. Plan is a preset only; the seller
-  // may override before signing. validateEntitlementInput enforces the dependency.
-  const plan = String(input.plan || 'STANDARD').toUpperCase();
-  if (!PLANS.includes(plan)) throw new Error('Gói bản quyền không hợp lệ.');
-  const preset = PLAN_PRESETS[plan];
-  const maxBrowsers = Number(input.maxBrowsers != null ? input.maxBrowsers : preset.maxBrowsers);
-  const maxConcurrentBrowsers = Number(input.maxConcurrentBrowsers != null ? input.maxConcurrentBrowsers : preset.maxConcurrentBrowsers);
-  const features = input.features && typeof input.features === 'object' ? input.features : preset.features;
-  const check = validateEntitlementInput({ plan, maxBrowsers, maxConcurrentBrowsers, features });
-  if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
-  // Signed game entitlement (§5). The seller must pick a game; default AVIATOR keeps
-  // existing UX but every NEW v2 key now carries a signed gameProduct.
-  const gameProduct = String(input.gameProduct || '').toUpperCase();
-  if (!gameProduct) throw new Error('LICENSE_GAME_PRODUCT_REQUIRED: hãy chọn sản phẩm (Aviator hoặc Phỏm).');
-  if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('LICENSE_GAME_PRODUCT_INVALID: chỉ chấp nhận AVIATOR hoặc PHOM.');
-  return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct });
-}
-
-function createLicense(payload) {
-  const canonical = canonicalJson(payload);
-  // Sign with the PRODUCT's OWN private key (§5) — resolved from the signed gameProduct.
-  const signature = sign(null, Buffer.from(canonical, 'utf8'), readPrivateKeyForProduct(payload.gameProduct || 'AVIATOR'));
-  return `WVPT1.${base64url(canonical)}.${base64url(signature)}`;
-}
-
-// Signature-verifying inspector. Verifies with the public key that matches the loaded
-// signing key (round-trip), falling back to the bundled Control public key. Requires
-// NO manual key selection — resolved automatically from bundled resources.
-function inspectLicense(license) {
-  let parsed;
-  try { parsed = parseLicense(license); } catch { return { ok: false, error: 'Định dạng khóa không hợp lệ.' }; }
-  // Resolve the public key from the license's SIGNED signingKeyId (legacy => Aviator key).
-  const publicKey = publicKeyForId(effectiveSigningKeyId(parsed.payload)) || PUBLIC_KEY_PEM;
-  const canonical = canonicalJson(parsed.payload);
-  const canonicalOk = parsed.payloadRaw.toString('utf8') === canonical;
-  let signatureValid = false;
-  try { signatureValid = canonicalOk && !!publicKey && crypto.verify(null, Buffer.from(canonical, 'utf8'), publicKey, parsed.signature); } catch { signatureValid = false; }
-  return { ok: true, signatureValid, payload: parsed.payload, entitlement: normalizeEntitlement(parsed.payload) };
+// Best available "now" for diagnostics (trusted when cached; flagged otherwise).
+function diagnosticNow() {
+  if (process.env.WVPT_TRUSTED_TIME_MS && Number.isFinite(Number(process.env.WVPT_TRUSTED_TIME_MS))) return { nowMs: Number(process.env.WVPT_TRUSTED_TIME_MS), estimated: false };
+  const cached = trustedTime.cachedNowMs();
+  return cached != null ? { nowMs: cached, estimated: false } : { nowMs: Date.now(), estimated: true };
 }
 
 // ---- Google Sheet save (idempotent by licenseId). Never throws to the caller;
@@ -161,18 +99,19 @@ async function saveRecordToSheet(record) {
   try { client = getSheetClient(); }
   catch (e) { return { synced: false, error: { code: e.code || 'GOOGLE_CREDENTIAL_ERROR', message: e.message } }; }
   // Route by the license's signed gameProduct (§16): AVIATOR -> Aviator sheet, PHOM -> PHOM sheet.
-  const gp = (record && record.payload && record.payload.gameProduct) || 'AVIATOR';
+  const gp = record && record.payload && record.payload.gameProduct;
+  if (!gameConfig(gp)) return { synced: false, error: { code: 'LICENSE_GAME_PRODUCT_INVALID', message: 'Bản ghi không có game hợp lệ — không lưu Sheet.' } };
   const sheetTitle = sellerRes.sheetTitleForProduct(sellerResources(), gp);
   return trySaveRecord(client, record, sheetTitle);
 }
 
 function createWindow() {
   win = new BrowserWindow({
-    width: 780,
-    height: 860,
-    minWidth: 720,
-    minHeight: 620,
-    backgroundColor: '#f6f7fb',
+    width: 1040,
+    height: 720,
+    minWidth: 760,
+    minHeight: 560,
+    backgroundColor: '#eef1f7',
     webPreferences: {
       preload: path.join(__dirname, 'ui-preload.cjs'),
       contextIsolation: true,
@@ -183,47 +122,56 @@ function createWindow() {
 }
 
 // ---- IPC: only SAFE state/operations. No secret paths or key material cross here. ----
-ipcMain.handle('signing-status', () => ({ ready: signingReadyForProduct('AVIATOR') || signingReadyForProduct('PHOM'), aviator: signingReadyForProduct('AVIATOR'), phom: signingReadyForProduct('PHOM') }));
+ipcMain.handle('signing-status', () => ({ ready: GAME_ORDER.every(signingReadyForProduct), games: Object.fromEntries(GAME_ORDER.map((g) => [g, signingStateForProduct(g)])) }));
+
+// Game-scoped option model for the single form renderer (no keys, no paths).
+ipcMain.handle('game-configs', () => publicGameConfigs());
 
 // Per-product public info for the UI (§8/§19): destination worksheet + signing key id +
 // whether that product's private key is available. NEVER returns a private key or a path.
 ipcMain.handle('product-info', (_event, gameProduct) => {
-  const gp = String(gameProduct || '').toUpperCase();
-  if (gp !== 'AVIATOR' && gp !== 'PHOM') return { ok: false, error: { code: 'LICENSE_GAME_PRODUCT_INVALID' } };
-  const res = sellerResources();
-  return { ok: true, gameProduct: gp, targetSheet: sellerRes.sheetTitleForProduct(res, gp), signingKeyId: PRODUCT_DEFAULT_KEY_ID[gp], signingReady: signingReadyForProduct(gp) };
+  const cfg = gameConfig(gameProduct);
+  if (!cfg) return { ok: false, error: { code: 'LICENSE_GAME_PRODUCT_INVALID' } };
+  const state = signingStateForProduct(cfg.game);
+  return { ok: true, gameProduct: cfg.game, targetSheet: sellerRes.sheetTitleForProduct(sellerResources(), cfg.game), signingKeyId: cfg.signingKeyId, signingReady: state.ready, signingCode: state.code };
 });
 
 ipcMain.handle('generate-license', async (_event, input) => {
+  let issued;
   try {
-    const payload = await buildPayload(input || {});
-    const license = createLicense(payload);
-    const metadata = {
-      customerName: (input && input.customerName) || '',
-      phone: (input && input.phone) || '',
-      note: (input && input.note) || '',
-      createdAt: new Date().toISOString(), // management timestamp; fixed for retries
-    };
-    const record = { payload, license, metadata };
-    // License is CREATED regardless of Google outcome. Attempt the ledger save now.
-    const sheet = await saveRecordToSheet(record);
-    return { ok: true, payload, license, metadata, sheet };
+    const issuedAt = await trustedIssuedAt();
+    issued = issueLicense(input || {}, { issuedAt, privateKeyForGame: readPrivateKeyForProduct });
   } catch (error) {
-    return { ok: false, error: { code: 'LICENSE_GENERATE_FAILED', message: String(error && error.message || error) } };
+    // Typed, key-free error. No stack trace crosses IPC.
+    return { ok: false, error: { code: (error && error.code) || 'LICENSE_GENERATE_FAILED', message: String(error && error.message || error), detail: (error && error.detail) || null } };
   }
+  const { payload, license } = issued;
+  const metadata = {
+    customerName: (input && input.customerName) || '',
+    phone: (input && input.phone) || '',
+    note: (input && input.note) || '',
+    createdAt: new Date().toISOString(), // management timestamp; fixed for retries
+  };
+  const record = { payload, license, metadata };
+  // License is CREATED regardless of Google outcome. Attempt the ledger save now.
+  const sheet = await saveRecordToSheet(record);
+  return { ok: true, payload, license, metadata, sheet };
 });
 
 // Retry / explicit sync of an ALREADY-generated license — no regeneration. Same
 // licenseId => idempotent upsert => never a duplicate row.
 ipcMain.handle('sheet-sync', async (_event, record) => saveRecordToSheet(record));
 
-ipcMain.handle('inspect-license', (_event, license) => {
-  try { return inspectLicense(String(license || '')); }
-  catch (error) { return { ok: false, error: String(error && error.message || error) }; }
+// Operator activation diagnostics for a target game (final verdict = runtime verifier).
+ipcMain.handle('diagnose-license', (_event, input) => {
+  const { nowMs, estimated } = diagnosticNow();
+  try {
+    return { ...diagnoseLicense(String((input && input.license) || '').trim(), { expectedGame: input && input.game, machineId: input && input.machineId, nowMs }), estimatedTime: estimated };
+  } catch (error) {
+    return { ok: false, result: 'INVALID', code: 'DIAGNOSE_FAILED', steps: [], estimatedTime: estimated };
+  }
 });
 
-ipcMain.handle('plan-presets', () => PLAN_PRESETS);
-ipcMain.handle('plan-defaults', () => PLAN_UI_DEFAULTS);
 
 // Expiry preview: exact when trusted time is cached, otherwise a clearly-flagged
 // estimate from local time (the SIGNED value always uses trusted time at generate).

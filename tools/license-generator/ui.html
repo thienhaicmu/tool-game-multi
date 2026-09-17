@@ -3,161 +3,122 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>WVPT — Trình tạo khóa bản quyền</title>
+  <title>License Generator</title>
   <link rel="stylesheet" href="ui.css">
 </head>
 <body>
-  <main class="shell">
-    <header>
-      <div>
-        <h1>TRÌNH TẠO KHÓA BẢN QUYỀN</h1>
-        <p>Công cụ ký khóa ngoại tuyến cho Aviator Control Studio (WVPT).</p>
-      </div>
-    </header>
+  <header class="appbar">
+    <div class="brand">🔑 LICENSE GENERATOR</div>
+    <nav class="tabs" role="tablist">
+      <button id="tab-create" class="tab active" type="button" role="tab">Tạo license</button>
+      <button id="tab-inspect" class="tab" type="button" role="tab">Kiểm tra kích hoạt</button>
+    </nav>
+    <div class="status">
+      <span id="signing-chip" class="chip" title="Private key theo từng game">Ký: …</span>
+      <span id="sheet-chip" class="chip"><i class="dot"></i>Sheet …</span>
+    </div>
+  </header>
 
-    <section class="panel readiness">
-      <div class="ready-item"><span>Ký license:</span><span id="signing-chip" class="dot-chip">Đang kiểm tra…</span></div>
-      <div class="ready-item"><span>Google Sheet:</span><span id="sheet-chip" class="dot-chip">Đang kiểm tra…</span></div>
+  <!-- ============ TẠO LICENSE ============ -->
+  <main id="view-create" class="panes">
+    <section class="pane form-pane">
+      <label class="field game-field">
+        <span class="lbl">GAME</span>
+        <select id="game"></select>
+      </label>
+
+      <div class="card">
+        <div class="card-head">
+          <b id="game-title">—</b>
+          <span id="game-meta" class="meta"></span>
+        </div>
+
+        <div class="row2">
+          <label class="field"><span class="lbl">Plan</span><select id="plan"></select></label>
+          <label class="field"><span class="lbl">Duration</span><select id="duration"></select></label>
+        </div>
+        <label id="custom-wrap" class="field" hidden><span class="lbl">Ngày hết hạn</span><input id="custom-expiry" type="date"></label>
+
+        <label class="field"><span class="lbl">Machine ID</span>
+          <input id="machine-id" class="mono" placeholder="WVPT-PC-XXXX-XXXX-XXXX-XXXX" spellcheck="false" autocomplete="off">
+        </label>
+
+        <div id="capacities" class="row2"></div>
+        <div id="features-wrap" class="field" hidden>
+          <span class="lbl">Features</span>
+          <div id="features" class="features"></div>
+          <div id="feature-note" class="hint"></div>
+        </div>
+
+        <div class="expiry-line"><span>HSD dự kiến</span><b id="preview-expires" class="mono">—</b><span id="preview-note" class="hint"></span></div>
+
+        <details class="extra">
+          <summary>Thông tin khách (tùy chọn)</summary>
+          <div class="row2">
+            <label class="field"><span class="lbl">Khách hàng</span><input id="customer-name"></label>
+            <label class="field"><span class="lbl">Số điện thoại</span><input id="customer-phone"></label>
+          </div>
+          <label class="field"><span class="lbl">Ghi chú</span><textarea id="note" rows="2"></textarea></label>
+        </details>
+      </div>
+
+      <button id="generate" class="primary" type="button">🔑 TẠO LICENSE</button>
     </section>
 
-    <div class="tabs">
-      <button id="tab-create" class="tab active" type="button">Tạo khóa</button>
-      <button id="tab-inspect" class="tab" type="button">Kiểm tra khóa</button>
-    </div>
+    <section class="pane result-pane" aria-live="polite">
+      <div id="result-empty" class="empty">Chọn game, nhập Machine ID rồi bấm <b>Tạo license</b>.</div>
 
-    <!-- ============ TẠO KHÓA ============ -->
-    <div id="view-create">
-      <section class="panel form">
-        <label>Mã máy
-          <input id="machine-id" class="mono" placeholder="WVPT-PC-9F4C-7A18-2D0E-C631">
+      <div id="error" class="error-box" hidden>
+        <div class="error-title">🔴 Không tạo được license</div>
+        <div class="error-reason"><span>Reason:</span> <b id="error-reason"></b></div>
+        <details><summary>Chi tiết</summary><div id="error-detail" class="mono hint"></div></details>
+      </div>
+
+      <div id="result" class="slip" hidden>
+        <div class="slip-head">✓ LICENSE CREATED</div>
+        <dl class="slip-body">
+          <dt>Game</dt><dd id="r-game"></dd>
+          <dt>Plan</dt><dd id="r-plan"></dd>
+          <dt>Machine</dt><dd id="r-machine" class="mono"></dd>
+          <dt>HSD</dt><dd id="r-expires" class="mono"></dd>
+          <dt>Còn</dt><dd id="r-remaining"></dd>
+          <dt>Giới hạn</dt><dd id="r-caps"></dd>
+          <dt>License ID</dt><dd id="r-license-id" class="mono"></dd>
+        </dl>
+        <div class="slip-actions">
+          <button id="copy-license" class="primary" type="button">COPY KEY</button>
+          <span id="copy-ok" class="hint" hidden>Đã copy</span>
+        </div>
+        <details class="token"><summary>Xem key</summary><textarea id="license-output" class="mono" rows="4" readonly></textarea></details>
+        <div id="sheet-line" class="sheet-line"></div>
+        <button id="retry-sync" class="ghost" type="button" hidden>Thử lưu Sheet lại</button>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ KIỂM TRA KÍCH HOẠT ============ -->
+  <main id="view-inspect" class="panes" hidden>
+    <section class="pane form-pane">
+      <div class="card">
+        <div class="card-head"><b>Kiểm tra kích hoạt</b><span class="meta">như app sẽ kiểm tra</span></div>
+        <label class="field"><span class="lbl">License key</span>
+          <textarea id="inspect-input" class="mono" rows="5" placeholder="WVPT1...." spellcheck="false"></textarea>
         </label>
-
-        <div class="grid">
-          <label>Khách hàng <span class="opt">(không bắt buộc)</span>
-            <input id="customer-name" placeholder="Tên khách hàng">
-          </label>
-          <label>Sản phẩm game
-            <select id="game-product">
-              <option value="AVIATOR" selected>Aviator</option>
-              <option value="PHOM">Phỏm QA</option>
-            </select>
-            <div id="target-sheet" class="faint" style="margin-top:4px"></div>
-          </label>
-          <label>Số điện thoại <span class="opt">(không bắt buộc)</span>
-            <input id="customer-phone" placeholder="09xx xxx xxx">
-          </label>
+        <div class="row2">
+          <label class="field"><span class="lbl">Kích hoạt trong game</span><select id="inspect-game"></select></label>
+          <label class="field"><span class="lbl">Machine ID khách (tùy chọn)</span><input id="inspect-machine" class="mono" spellcheck="false"></label>
         </div>
-
-        <div class="section-title">GÓI BẢN QUYỀN</div>
-        <div id="plan-cards" class="plan-cards">
-          <button type="button" class="plan-card" data-plan="TRIAL">
-            <span class="pc-name">TRIAL</span><span class="pc-sub">7 ngày</span>
-          </button>
-          <button type="button" class="plan-card selected" data-plan="STANDARD">
-            <span class="pc-name">STANDARD</span><span class="pc-sub">1 tháng</span>
-          </button>
-          <button type="button" class="plan-card" data-plan="PRO">
-            <span class="pc-name">PRO</span><span class="pc-sub">1 tháng</span>
-          </button>
-        </div>
-
-        <div class="section-title">THỜI HẠN</div>
-        <div id="duration-options" class="chips-row">
-          <button type="button" class="dur-chip" data-unit="days" data-value="7">7 ngày</button>
-          <button type="button" class="dur-chip selected" data-unit="months" data-value="1">1 tháng</button>
-          <button type="button" class="dur-chip" data-unit="months" data-value="3">3 tháng</button>
-          <button type="button" class="dur-chip" data-unit="months" data-value="6">6 tháng</button>
-          <button type="button" class="dur-chip" data-unit="months" data-value="12">1 năm</button>
-          <button type="button" class="dur-chip" data-unit="custom">Tùy chỉnh</button>
-        </div>
-        <label id="custom-wrap" hidden>Ngày hết hạn
-          <input id="custom-expiry" type="date">
-        </label>
-
-        <div class="preview">
-          <div class="stat"><span>Ngày cấp</span><b id="preview-issued">—</b></div>
-          <div class="stat"><span>Hết hạn</span><b id="preview-expires">—</b></div>
-        </div>
-        <div id="preview-note" class="hint"></div>
-
-        <div class="section-title">GIỚI HẠN</div>
-        <div class="grid">
-          <label>Số Profile tối đa
-            <input id="max-browsers" class="mono" type="number" min="1" max="100000" step="1" value="5">
-          </label>
-          <label>Browser mở cùng lúc
-            <input id="max-concurrent" class="mono" type="number" min="1" max="100000" step="1" value="2">
-          </label>
-        </div>
-
-        <div class="section-title">TÍNH NĂNG</div>
-        <div class="features">
-          <label><input type="checkbox" id="f-auto-run" checked> Chạy tự động</label>
-          <label><input type="checkbox" id="f-jackpot-live" checked> Jackpot trực tiếp</label>
-          <label><input type="checkbox" id="f-jackpot-gate" checked> Chờ Jackpot</label>
-          <label><input type="checkbox" id="f-round-history" checked> Lịch sử vòng chơi</label>
-        </div>
-        <div id="feature-note" class="hint"></div>
-
-        <label>Ghi chú <span class="opt">(không bắt buộc)</span>
-          <textarea id="note" rows="2" placeholder="Ghi chú nội bộ cho khách hàng này"></textarea>
-        </label>
-
-        <button id="generate" class="primary" type="button">TẠO KEY</button>
-        <div id="error" class="error" hidden></div>
-      </section>
-
-      <section class="panel result">
-        <div class="panel-head">
-          <b>Khóa kích hoạt</b>
-          <button id="copy-license" type="button" disabled>SAO CHÉP KHÓA</button>
-        </div>
-        <textarea id="license-output" class="mono" rows="6" readonly></textarea>
-        <div id="generate-ok" class="ok" hidden></div>
-        <div id="sync-warn" class="warn" hidden>
-          <span id="sync-warn-text">Chưa lưu được Google Sheet.</span>
-          <button id="retry-sync" type="button">Thử đồng bộ lại</button>
-        </div>
-        <div class="grid">
-          <div class="stat"><span>Mã giấy phép</span><b id="license-id">—</b></div>
-          <div class="stat"><span>Quyền game</span><b id="license-game">—</b></div>
-          <div class="stat"><span>Gói</span><b id="license-plan">—</b></div>
-        </div>
-        <div class="grid">
-          <div class="stat"><span>Số Profile tối đa</span><b id="license-maxbrowsers">—</b></div>
-          <div class="stat"><span>Browser mở cùng lúc</span><b id="license-maxconcurrent">—</b></div>
-        </div>
-        <div class="grid">
-          <div class="stat"><span>Ngày hết hạn</span><b id="expires">—</b></div>
-          <div class="stat"><span></span><b></b></div>
-        </div>
-      </section>
-    </div>
-
-    <!-- ============ KIỂM TRA KHÓA ============ -->
-    <div id="view-inspect" hidden>
-      <section class="panel form">
-        <label>Dán khóa cần kiểm tra
-          <textarea id="inspect-input" class="mono" rows="5" placeholder="WVPT1...."></textarea>
-        </label>
-        <button id="inspect" class="primary" type="button">KIỂM TRA KHÓA</button>
-      </section>
-      <section class="panel result">
-        <div class="panel-head"><b>Kết quả</b><span id="inspect-sig" class="chip off">—</span></div>
-        <div id="inspect-error" class="error" hidden></div>
-        <div id="inspect-body" class="inspect-body" hidden>
-          <div class="stat"><span>Mã giấy phép</span><b id="i-license-id">—</b></div>
-          <div class="stat"><span>Mã máy</span><b id="i-machine">—</b></div>
-          <div class="stat"><span>Quyền game</span><b id="i-game">—</b></div>
-          <div class="stat"><span>Gói</span><b id="i-plan">—</b></div>
-          <div class="stat"><span>Ngày hết hạn</span><b id="i-expires">—</b></div>
-          <div class="stat"><span>Số Profile tối đa</span><b id="i-maxbrowsers">—</b></div>
-          <div class="stat"><span>Browser mở cùng lúc</span><b id="i-maxconcurrent">—</b></div>
-          <div class="section-title">Tính năng</div>
-          <div id="i-features" class="features-view"></div>
-        </div>
-      </section>
-    </div>
+      </div>
+      <button id="inspect" class="primary" type="button">KIỂM TRA</button>
+    </section>
+    <section class="pane result-pane" aria-live="polite">
+      <div id="inspect-empty" class="empty">Dán key và chọn game cần kích hoạt.</div>
+      <div id="inspect-body" class="slip" hidden>
+        <div id="inspect-head" class="slip-head"></div>
+        <dl id="inspect-steps" class="slip-body steps"></dl>
+        <div id="inspect-note" class="hint"></div>
+      </div>
+    </section>
   </main>
   <script src="ui.js"></script>
 </body>

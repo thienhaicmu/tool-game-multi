@@ -27,7 +27,8 @@ const SHEETS_SCOPE = 'https://www.googleapis.com/auth/spreadsheets';
 
 // Stable header row (management columns + ALL signed v2 fields + exact token).
 // Order is deterministic; rawPayloadJson is an audit convenience, NOT a substitute
-// for the individual columns.
+// for the individual columns. New columns are only ever APPENDED (gameProduct) so rows
+// already in a production sheet keep their column positions.
 const SHEET_HEADERS = Object.freeze([
   'licenseId',
   'machineId',
@@ -48,6 +49,7 @@ const SHEET_HEADERS = Object.freeze([
   'note',
   'createdAt',
   'rawPayloadJson',
+  'gameProduct',
 ]);
 
 // Date columns are written as real Google Sheets date values (not raw epochs) and
@@ -96,6 +98,7 @@ function licenseToSheetRow({ payload, license, metadata = {} } = {}) {
     note: metadata.note != null ? String(metadata.note) : '',
     createdAt: epochToSheetSerial(toEpochSeconds(metadata.createdAt)),
     rawPayloadJson: JSON.stringify(payload),
+    gameProduct: payload.gameProduct || '',
   };
 }
 
@@ -288,7 +291,18 @@ class GoogleSheetClient {
     const firstRow = await this._readRange('1:1', title);
     const existing = firstRow[0] || [];
     if (existing.length && existing.some((c) => String(c || '').trim())) {
-      return { created: false, headers: existing };
+      // An older sheet whose header row is a strict PREFIX of the current headers gets only
+      // the missing trailing header cells written (e.g. gameProduct). Anything else is left
+      // untouched — never rewrite a header row we don't recognise.
+      const isPrefix = existing.length < SHEET_HEADERS.length && existing.every((c, i) => String(c || '') === SHEET_HEADERS[i]);
+      if (!isPrefix) return { created: false, headers: existing };
+      const missing = SHEET_HEADERS.slice(existing.length);
+      await this._api(`/values/${encodeURIComponent(`${title}!${columnLetter(existing.length + 1)}1`)}`, {
+        method: 'PUT',
+        query: '?valueInputOption=RAW',
+        body: { values: [missing] },
+      });
+      return { created: false, extended: missing, headers: SHEET_HEADERS.slice() };
     }
     await this._api(`/values/${encodeURIComponent(`${title}!A1`)}`, {
       method: 'PUT',
