@@ -18,7 +18,7 @@
 // Aviator UI/coordinator, or any Control/Analytics singleton.
 // ===========================================================================
 
-const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session, shell: electronShell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 
@@ -36,6 +36,7 @@ const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-mana
 const { projectRuntimeToManagerConfig } = require('./protocol/phom/cluster-runtime-projection.cjs');
 const { parseQuickProxies, parseQuickProxyRows } = require('./browser-run/phom-quick-proxy.cjs');
 const { applyQuickProxies } = require('./protocol/phom/quick-proxy-apply.cjs');
+const { createFrameRecorder } = require('./protocol/phom/frame-recorder.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
@@ -118,6 +119,8 @@ else {
   // ---- capture + send seam (shared, target-keyed) ----
   const capture = new CaptureCorrelator({ resolveClient: (tid) => resolveTargetClient(tid) });
   const wsReplay = new WsReplay({ resolveClient: (tid) => resolveTargetClient(tid), getCaptured: (id) => capture.get(id) });
+  // TEST D — passive recorder of the game's own frames between a user START/STOP (see frame-recorder.cjs).
+  const frameRecorder = createFrameRecorder();
   // Resolve + validate the pinned custom Chromium runtime once (dev vs packaged). No
   // system-Chrome fallback: an invalid runtime blocks browser launches with a typed error.
   var _chromiumRuntime = null;
@@ -881,6 +884,9 @@ else {
     if (!req || !req.isWebSocket || !req.wsDirection || !runManager) return;
     const run = runManager.runForTarget(req.targetId);
     if (!run) return;
+    // TEST D — record the raw frames (both directions) BEFORE routing, so a player's own click is captured even
+    // when no session has been started. Passive and cheap when idle; never allowed to break capture.
+    try { if (frameRecorder.isRecording()) frameRecorder.record(run.id, { raw: req.body && req.body.raw, direction: req.wsDirection, url: req.url, label: run.profileLabel || null }); } catch { /* never break capture */ }
     try {
       // When a cluster is active, frames flow through the cluster envelope (validation +
       // aggregate), which routes to the host session; otherwise route directly.
@@ -1244,6 +1250,32 @@ else {
     ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
     // PHASE-2 — read the monotonic discovery/sync milestone timeline (telemetry for latency inspection).
     ipcMain.handle('phom:trace', () => ({ ok: true, trace: phomSessions ? phomSessions.trace() : [] }));
+    // TEST D — record the game client's own frames while the player acts by hand (e.g. clicks a table), then
+    // write them to a file (secrets redacted) so the real protocol can be read instead of guessed.
+    ipcMain.handle('phom:frames-record-start', (_e, cfg) => {
+      const runIds = cfg && Array.isArray(cfg.runIds) ? cfg.runIds.filter((x) => x != null).map(String) : null;
+      return { ok: true, ...frameRecorder.start({ runIds, label: cfg && cfg.label != null ? String(cfg.label) : null }) };
+    });
+    ipcMain.handle('phom:frames-record-status', () => ({ ok: true, ...frameRecorder.status() }));
+    ipcMain.handle('phom:frames-record-stop', () => {
+      const out = frameRecorder.stop();
+      if (!out) return { ok: false, error: { code: 'PHOM_NOT_RECORDING', message: 'Chưa bắt đầu ghi gói' } };
+      try {
+        const dir = path.join(app.getPath('userData'), 'phom-captures');
+        fs.mkdirSync(dir, { recursive: true });
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const base = path.join(dir, `test-D-${stamp}`);
+        fs.writeFileSync(base + '.json', JSON.stringify(out, null, 2), 'utf8');
+        // a readable companion: one line per frame, in order
+        const lines = [`# ${out.label || 'Test D'} — ${out.frameCount} gói trong ${Math.round(out.durationMs / 1000)}s${out.dropped ? `, bỏ ${out.dropped}` : ''}`];
+        for (const f of out.frames) lines.push(`${String(f.t).padStart(7)}ms  [${f.label || f.runId}]  ${f.summary}`);
+        fs.writeFileSync(base + '.txt', lines.join('\n'), 'utf8');
+        return { ok: true, path: base + '.json', txtPath: base + '.txt', frameCount: out.frameCount, dropped: out.dropped, byType: out.byType, preview: lines.slice(0, 60) };
+      } catch (e) {
+        return { ok: false, error: { code: 'PHOM_CAPTURE_WRITE_FAILED', message: String(e && e.message || e) } };
+      }
+    });
+    ipcMain.handle('phom:frames-open-folder', (_e, p) => { try { if (p) electronShell.showItemInFolder(String(p)); return { ok: true }; } catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: String(e && e.message || e) } }; } });
     // PHASE-3 · PART B — observe-only native-JOIN experiment (A→B→C, same stake, no room forcing).
     // Authorized+licensed only; observes server matchmaking from ps[], never changes production flow.
     ipcMain.handle('phom:join-experiment', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.runJoinExperiment(cfg && cfg.channel, cfg && cfg.opts); }));

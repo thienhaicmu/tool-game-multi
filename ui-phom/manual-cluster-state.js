@@ -128,5 +128,19 @@
   // The prefill RID for a browser's Room/RID input: its own rid, else the shared rid (§14).
   function prefillRid(state, b) { if (b && b.rid != null) return String(b.rid); if (state.sharedRid != null) return String(state.sharedRid); return ''; }
 
-  return { create, onFindStart, onFindResult, onJoinResult, reconcile, canFind, canJoin, canRejoin, canLeave, findLabel, prefillRid, browserAction, BUSY };
+  // §51 — WHO searches and WHO follows, from the authoritative per-browser snapshot. The finder choice is a
+  // Player number ('B1'/'B2'/'B3' = browserIndex 1/2/3); it must never be used as a key into anything else (the
+  // Tool's own slot map is keyed A/B/C — indexing it with 'B2' returned undefined and silently killed TÌM BÀN).
+  // No finder chosen → the first browser that is in the game (socket + lobby list), else the first browser.
+  // Returns { finderId, followerIds } (profile ids), or finderId null when there is no browser at all.
+  function pickFinder(browsers, selectedFinderPlayer) {
+    const list = (Array.isArray(browsers) ? browsers : []).filter((b) => b && b.profileId != null);
+    const idx = selectedFinderPlayer != null ? Number(String(selectedFinderPlayer).replace(/^B/i, '')) : null;
+    const inGame = (b) => !!(b.socketReady && b.connected && (b.channelCount || 0) > 0);
+    const finder = (Number.isFinite(idx) && list.find((b) => Number(b.browserIndex) === idx)) || list.find(inGame) || list[0] || null;
+    const finderId = finder ? String(finder.profileId) : null;
+    return { finderId, followerIds: list.filter((b) => String(b.profileId) !== finderId).map((b) => String(b.profileId)) };
+  }
+
+  return { create, onFindStart, onFindResult, onJoinResult, reconcile, canFind, canJoin, canRejoin, canLeave, findLabel, prefillRid, browserAction, pickFinder, BUSY };
 });

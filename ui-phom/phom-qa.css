@@ -513,3 +513,5 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .find-rows { margin-top: 4px; }
 .find-rows summary { cursor: pointer; }
 .find-rows > div { font-family: ui-monospace, Consolas, monospace; padding-left: 10px; }
+
+.capture-preview { max-height: 320px; overflow: auto; font: 11px/1.4 ui-monospace, Consolas, monospace; background: #f7f7f9; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; white-space: pre; }
