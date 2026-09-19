@@ -1988,19 +1988,32 @@
     status.className = 'note warn';
   }
 
-  // Run the full HOST/follower/Ready/ReJoin flow for a validated stake (§14).
+  // §44 — ONE find engine. This Tool-wide TÌM BÀN used to start the legacy HOST/FOLLOWER discovery loop
+  // (api.discover), while the per-browser buttons and the in-Chromium headers used the manual PHASE-6 flow:
+  // three buttons, two engines, two sets of rules. It now drives the SAME manual flow — the chosen finder
+  // searches, then the other browsers join that room — so every surface behaves identically and benefits from
+  // the same fixes (per-run blacklist, persistent search + HỦY, validated shared room, same-room proof).
   async function runFindTable(stake) {
     selectedStake = stake;
+    const finderSlot = selectedFinderPlayer || SLOTS.find((sl) => slotInPhom(assign[sl].runId)) || SLOTS[0];
+    const finderRunId = assign[finderSlot].runId;
+    if (!finderRunId) { note('Chưa có browser nào sẵn sàng để tìm bàn.', true); return; }
     note('Đang tìm bàn (mức cược ' + stake + ')…'); // FIND_TABLE_REQUESTED — immediate visible feedback
-    const sel = await api.selectStake(stake);
-    if (sel && sel.ok === false) { note('Không thể chọn mức cược: ' + errText(sel), true); return; }
     autoFlow = true; renderApp(); // FIND_TABLE_STARTED — button reflects the running search
     try {
-      // Host-first discovery loop (§ real flow): A joins + validates first, then B/C follow. The
-      // coordinator owns the whole loop; the UI just starts it and reports the typed outcome.
-      const d = await api.discover();
-      if (d && d.ok === false) { note('Không thể tìm bàn: ' + errText(d), true); return; }
-      note('HOST đang tìm bàn hợp lệ — A vào trước → kiểm tra → B/C theo A.');
+      selectedStakeByBrowser[finderRunId] = stake;
+      const d = await api.manualDiscover(finderRunId, { selectedStake: stake });
+      if (!d || d.ok === false) { note('Không thể tìm bàn: ' + errText(d), true); return; }
+      note('Đã tìm được bàn ' + d.rid + ' — đang đưa các browser còn lại vào bàn…');
+      // The other browsers JOIN the room the finder actually landed in (bounded retry + same-room proof).
+      for (const sl of SLOTS) {
+        const runId = assign[sl].runId;
+        if (!runId || runId === finderRunId) continue;
+        const r = await api.manualJoinShared(runId, d.rid);
+        if (r && r.ok === false) note(`${sl}: ` + errText(r), true);
+      }
+      await refreshManual();
+      note('Đã vào bàn ' + d.rid + '.');
     } catch (e) {
       note('Lỗi tìm bàn: ' + String(e && e.message || e), true);
     } finally {

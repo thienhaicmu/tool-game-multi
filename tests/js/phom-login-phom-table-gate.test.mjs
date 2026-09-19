@@ -171,7 +171,11 @@ test('BUG1: detection is prompt — poll actively requests the channel list when
 test('BUG2: runFindTable emits immediate feedback and ALWAYS clears autoFlow (finally)', () => {
   const fn = between('async function runFindTable(', 'function advanceAutoFlow(');
   assert.match(fn, /Đang tìm bàn/);            // FIND_TABLE_REQUESTED visible feedback
-  assert.match(fn, /await api\.discover\(\)/); // handler is actually invoked
+  // §44 — ONE engine: the Tool-wide TÌM BÀN drives the SAME manual flow as the per-browser buttons and the
+  // in-Chromium headers (it used to start the legacy HOST/FOLLOWER loop instead).
+  assert.match(fn, /await api\.manualDiscover\(finderRunId, \{ selectedStake: stake \}\)/);
+  assert.match(fn, /await api\.manualJoinShared\(runId, d\.rid\)/);
+  assert.equal(/api\.discover\(\)/.test(fn), false, 'the legacy cluster discovery loop is no longer started here');
   assert.match(fn, /finally \{[^]*autoFlow = false/); // never stuck "ĐANG CHẠY…"
   assert.match(fn, /Không thể tìm bàn/);       // typed error, not silent
 });
