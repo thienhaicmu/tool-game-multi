@@ -18,14 +18,16 @@ test('explicit V2 bounds are defined (no scattered magic numbers)', () => {
   assert.match(coord, /const MAX_SHARED_RID_JOIN_RETRIES = 2;/);
 });
 
-test('post-anchor capacity check uses authoritative ps[] occupancy vs the table Mu (freeSlots >= need − 1)', () => {
+test('post-join capacity is REPORTED from authoritative ps[] occupancy, and the seat is never given back', () => {
   assert.match(coord, /const ts = rec\.ctx\.tableState\(\);/);
   assert.match(coord, /Number\(candidate\.Mu\) - occupancy/);
-  assert.match(coord, /freeAfter >= needAfter/);
+  // §47 — the count decides what to REPORT (fitsAll), not whether to keep the table
+  assert.match(coord, /const fitsAll = freeAfter == null \? null : freeAfter >= needAfter;/);
+  assert.match(coord, /const MIN_SEATS_TO_JOIN = 1;/);
+  assert.equal(/F13_ANCHOR_INVALID/.test(coord), false, 'a joined table is no longer abandoned for being too small');
   // invalid anchor: blacklist + leave + bounded re-FIND, never publish. The blacklist is scoped to THIS
   // discovery run (runFailedRids) — a coordinator-wide set was never cleared in the manual flow and
-  // permanently hid every table that lost a race.
-  assert.match(coord, /F13_ANCHOR_INVALID/);
+  // permanently hid every table that lost a race. §47 — only a FAILED JOIN blacklists a rid now.
   assert.match(coord, /runFailedRids\.add\(candidate\.rid\)/);
   assert.match(coord, /const runFailedRids = new Set\(\);/);
   assert.match(coord, /PHOM_FIND_RESILIENCE_EXHAUSTED/);
@@ -62,7 +64,7 @@ test('the session manager delegates manualJoinShared and main routes JOIN_SHARED
 });
 
 test('V2 FIND trace milestones present (gated by PHOM_FIND_LOG)', () => {
-  for (const m of ['F11_ANCHOR_CAPACITY_CHECK', 'F12_ANCHOR_VALID', 'F13_ANCHOR_INVALID', 'F14_REANCHOR_START',
+  for (const m of ['F11_ANCHOR_CAPACITY_CHECK', 'F12_ANCHOR_VALID', 'F14_REANCHOR_START',
     'J0_FOLLOWER_JOIN_START', 'J3_UID_CONFIRMED', 'J4_SAME_ROOM_CONFIRMED', 'J5_RETRY', 'J6_RETRY_EXHAUSTED']) {
     assert.ok(coord.includes(m), `V2 trace ${m} present`);
   }

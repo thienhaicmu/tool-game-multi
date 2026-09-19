@@ -61,7 +61,10 @@ test('coordinator uses the qualifier BEFORE join and logs NOT_ENOUGH_FREE_SLOTS 
   assert.match(coord, /need, selectedStake, zone: ZONE, gid: GID, isFailedRid/);
   assert.match(coord, /_mark\('TABLE_REJECT', \{[^}]*reason: r\.reason/);
   // discovery still qualifies BEFORE manualJoinRoom (pick → then JOIN)
-  assert.match(coord, /_pickManualCandidate\(rec, need, selectedStake, runFailedRids\)[\s\S]*?manualJoinRoom\(profileId, candidate\.rid/);
+  // §47 — the picker is given the MINIMUM seats needed to sit down (one), not the number of browsers: wanting a
+  // seat for everyone orders the candidates, it never blocks joining.
+  assert.match(coord, /_pickManualCandidate\(rec, minSeats, selectedStake, runFailedRids\)[\s\S]*?manualJoinRoom\(profileId, candidate\.rid/);
+  assert.match(coord, /const MIN_SEATS_TO_JOIN = 1;/);
 });
 
 // Every diagnosis code FIND can produce must have a human explanation — that text is what the header's ⚠

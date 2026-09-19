@@ -64,37 +64,43 @@ test('RES-02: P1 anchor with exactly 2 free slots after seating → VALID', asyn
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
   assert.equal(r.ok, true); assert.equal(r.freeAfter, 2); assert.equal(r.anchorValid, true);
 });
-test('RES-03: P1 anchor with only 1 free slot after seating → INVALID (bounded, exhausted)', async () => {
+test('RES-03: a table that fits only SOME browsers is kept — the seat is never given back (§47)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // after P1: 3 seated → freeAfter=1
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, false); assert.equal(r.resilienceExhausted, true);
-  assert.equal(r.error.code, 'PHOM_FIND_RESILIENCE_EXHAUSTED');
+  assert.equal(r.ok, true, 'TÌM BÀN ends up AT a table');
+  assert.equal(r.rid, 700);
+  assert.equal(r.freeAfter, 1);
+  assert.equal(r.fitsAll, false, 'and says only one of the other two still fits');
+  assert.equal(snapB(coord, 'B1').manualState, 'JOINED');
 });
-test('RES-04: P1 anchor with 0 free slots after seating → INVALID', async () => {
+test('RES-04: a table that fills completely on join is still kept (§47)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 3 }]); // after P1: 4 seated → freeAfter=0
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, false); assert.equal(r.resilienceExhausted, true);
+  assert.equal(r.ok, true);
+  assert.equal(r.freeAfter, 0);
+  assert.equal(r.fitsAll, false);
 });
-test('RES-05: an invalid anchor does NOT publish a shared RID (anchorValid false / no rid)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]);
-  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+test('RES-05: a browser that could NOT join publishes no shared room', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }]);
+  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 600 });
   const b1 = snapB(coord, 'B1');
-  assert.notEqual(b1.manualState, 'JOINED', 'an invalid anchor is not left in JOINED');
-  assert.equal(b1.rid, null, 'no RID is left for followers to pick up');
+  assert.notEqual(b1.manualState, 'JOINED');
+  assert.equal(b1.rid, null, 'no RID is left for the others to pick up');
+  assert.equal(coord.sharedRid(), null);
 });
 
 // ================= BOUNDED RE-ANCHOR (RES-06/07/08) =================
-test('RES-06/07: an invalid anchor triggers a bounded re-FIND that lands a NEW valid RID', async () => {
-  // Room 700 is the emptiest (picked first) but fills on P1 join → invalid; Room 701 is valid.
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'x' }] }]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1 });
+test('RES-06/07: a FAILED join triggers a bounded re-FIND that lands a different table', async () => {
+  // 700 is the emptiest (picked first) but its joins never confirm; 701 works.
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'x' }] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60, budgetMs: 600 });
   assert.equal(r.ok, true);
-  assert.equal(r.rid, 701, 're-anchored to the second, valid table');
+  assert.equal(r.rid, 701, 're-anchored to the table it could actually join');
   assert.equal(r.anchorValid, true);
 });
-test('RES-08: the invalidated old RID is blacklisted and P1 now holds the NEW rid (old cannot overwrite)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'x' }] }]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1 });
+test('RES-08: the un-joinable RID is blacklisted and the browser holds the NEW rid (old cannot overwrite)', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'x' }] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60, budgetMs: 600 });
   assert.equal(snapB(coord, 'B1').rid, 701);
   assert.notEqual(r.rid, 700);
 });
@@ -189,15 +195,17 @@ test('RES-21/22: same-room proof P1+P2 then P1+P2+P3 from authoritative ps[]', a
   assert.ok(c.membership.includes('1_1') && c.membership.includes('1_2') && c.membership.includes('1_3'));
 });
 test('RES-23: capacity race — qualifies at discovery but fills on JOIN → invalid, not published (maxRecovery 0)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }], injectOnJoin: 1 }]); // uC1 qualifies; +inject+P1 → 3
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }], injectOnJoin: 1 }]); // uC1; +inject+P1 → 3
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, false);
-  assert.equal(snapB(coord, 'B1').rid, null);
+  assert.equal(r.ok, true, 'the seat is kept even though the room filled up during the join');
+  assert.equal(r.fitsAll, false);
+  assert.equal(snapB(coord, 'B1').rid, 700);
 });
 test('RES-24: capacity change right after P1 JOIN is caught by the authoritative post-anchor check', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'y' }] }]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1 });
-  assert.equal(r.ok, true); assert.equal(r.rid, 701); // recovered to a table that survives the check
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, budgetMs: 500 });
+  // the emptiest table is still preferred and the browser STAYS there; the post-join count is reported
+  assert.equal(r.ok, true); assert.equal(r.rid, 700); assert.equal(r.freeAfter, 1); assert.equal(r.fitsAll, false);
 });
 
 // ================= SAFETY (RES-28/29/30) — source scan =================
@@ -276,7 +284,7 @@ test('FIND-LIVE: NO_TABLE carries a precise, debuggable reason', async () => {
   assert.equal(r1.ok, false);
   assert.equal(r1.reason, 'NO_MATCHING_STAKE');
 
-  const full = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // freeSlots 2 < 3
+  const full = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] }]); // no free seat at all
   const r2 = await full.coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
   assert.equal(r2.ok, false);
   assert.equal(r2.reason, 'NOT_ENOUGH_FREE_SLOTS');
@@ -287,31 +295,31 @@ test('FIND-LIVE: NO_TABLE carries a precise, debuggable reason', async () => {
 // coordinator-wide set was never cleared in the manual flow, so every transient capacity race permanently hid
 // one more real table from all three browsers — after a few TÌM BÀN clicks the lobby looked empty.
 test('FIND-BL-01: a NEW FIND is not blinded by the previous FIND blacklist', async () => {
-  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // fills to 3 on P1 join → invalid
-  const r1 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
-  assert.equal(r1.ok, false, 'the capacity race invalidates the only table');
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }]); // its joins never confirm
+  const r1 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 600 });
+  assert.equal(r1.ok, false, 'the only table could not be joined');
 
-  sim.rooms[0].seats.length = 0; // the fillers left: the SAME table is empty and joinable again
+  sim.rooms[0].failJoins = {}; // the transient problem cleared: the SAME table is joinable again
   const r2 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
   assert.equal(r2.ok, true, 'a fresh FIND starts from the full server list, not a session-long blacklist');
   assert.equal(r2.rid, 700);
 });
 
 test('FIND-BL-02: one browser failed FIND does not hide that table from another browser', async () => {
-  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]);
-  const r1 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }]);
+  const r1 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 600 });
   assert.equal(r1.ok, false);
 
-  sim.rooms[0].seats.length = 0;
+  sim.rooms[0].failJoins = {};
   const r2 = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
   assert.equal(r2.ok, true, 'the blacklist is per discovery run, never shared across browsers');
   assert.equal(r2.rid, 700);
 });
 
 test('FIND-BL-03: within ONE run the blacklist still applies (no re-pick of the failed RID)', async () => {
-  // Unchanged 6.3.5 behaviour: 700 invalidates on join, the recovery pass must move to 701.
-  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [] }]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60, budgetMs: 500 });
+  // 700 cannot be joined, so the recovery pass must move to 701 and never re-pick 700.
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }, { rid: 701, b: 500, seats: [] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60, budgetMs: 600 });
   assert.equal(r.ok, true);
   assert.equal(r.rid, 701);
   assert.equal(sim.attemptsFor(700, 'B1'), 1, 'the invalidated RID was never re-picked inside the same run');
@@ -321,13 +329,20 @@ test('FIND-BL-03: within ONE run the blacklist still applies (no re-pick of the 
 // `reason` is the field that makes a FIND failure diagnosable, but the header (⚠ tooltip) and the Tool's
 // errText only render error.message — so the reason has to be in the message too.
 test('FIND-MSG-01: the NO_EMPTY_TABLE message names the reason and how many tables were examined', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // free 2 < 3
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] }]); // no free seat at all
   // The budget must be MANY poll windows wide: this test asserts the search re-asked the server, and with a
   // budget only a few polls wide a loaded CI box can spend the whole budget inside the first wait.
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 400, pollMs: 20 });
   assert.equal(r.reason, 'NOT_ENOUGH_FREE_SLOTS');
   assert.match(r.error.message, /mức cược 500/);
-  assert.match(r.error.message, /3 ghế trống/);
+  // §46 — the message shows HOW FULL the lobby is: a player clicking in needs one free seat, a FIND needs one
+  // per browser, and that difference is exactly what looked like a bug from the outside.
+  assert.match(r.error.message, /có 1 bàn ở mức cược này nhưng bàn nào cũng đầy/);
+  assert.match(r.error.message, /còn 0 ghế/);
+  assert.equal(r.tablesAtStake, 1);
+  assert.equal(r.bestFreeSlots, 0);
+  assert.equal(r.need, 3, 'it still reports how many seats the group wanted');
+  assert.equal(r.minSeats, 1, 'but only one was required to sit down');
   assert.match(r.error.message, /xét 1 bàn/);
   // §32 — it also says how hard it looked, so "tìm không ra bàn" can be told apart from "hỏi đúng 1 lần"
   assert.match(r.error.message, /đã hỏi máy chủ \d+ lần/);
@@ -419,8 +434,8 @@ test('FIND-ANC-05: a follower error names the browser that really holds the room
 // Asking the server once and giving up was why a user saw "không tìm thấy bàn" while a table freed up two
 // seconds later. One click now re-asks until its budget runs out, and stops the moment a table qualifies.
 test('FIND-P-01: a table that appears AFTER the first CMD 300 is still found', async () => {
-  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }] }]); // free 2 < 3
-  setTimeout(() => { sim.rooms[0].seats.length = 0; }, 40); // two players stand up mid-search
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] }]); // no seat at all
+  setTimeout(() => { sim.rooms[0].seats.length = 0; }, 40); // the table empties mid-search
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 400, pollMs: 20 });
   assert.equal(r.ok, true, 'the search was still running when the table freed up');
   assert.equal(r.rid, 700);
@@ -530,9 +545,9 @@ test('FIND-SHARED-02: a selected finder owns the shared room — another browser
   assert.equal(coord.sharedRidOwner(), 'B3');
 });
 
-test('FIND-SHARED-03: a provisional anchor (capacity check not passed) is never published', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // fills on join → invalid anchor
-  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+test('FIND-SHARED-03: a room the browser never got into is never published', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }]);
+  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 600 });
   assert.equal(coord.sharedRid(), null);
 });
 
@@ -592,11 +607,24 @@ test('LOBBY-02: the legacy whole-cluster lobby reset stays dormant in the manual
 });
 
 // §39 — the seat requirement follows the browsers that can actually play.
-test('SEATS-01: all three alive → a FIND still requires 3 free seats (unchanged)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // 2 free
+test('SEATS-01: with all three alive the search PREFERS the table that fits the whole group', async () => {
+  const { coord } = mk([
+    { rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] },  // 2 free — joinable, too small
+    { rid: 701, b: 500, seats: [] },                                            // 4 free — fits everyone
+  ]);
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, false);
-  assert.equal(r.reason, 'NOT_ENOUGH_FREE_SLOTS');
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, 701, 'the emptiest table wins');
+  assert.equal(r.fitsAll, true);
+});
+
+test('SEATS-01b: when nothing fits the group it still sits down, and says so', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // only 2 free
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, true, 'a player clicking this lobby gets in — so does TÌM BÀN');
+  assert.equal(r.rid, 700);
+  assert.equal(r.fitsAll, false);
+  assert.equal(r.seatsForOthers, 1);
 });
 
 test('SEATS-02: a closed browser lowers the requirement, so a 2-seat table now fits the two still playing', async () => {
@@ -614,8 +642,49 @@ test('SEATS-03: a browser still LOADING the game (no lobby list yet) still count
 });
 
 test('SEATS-04: the failure message quotes the seats this FIND actually needed', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }, { sit: 2, uid: 'z' }] }]); // 1 free
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] }]); // full
   coord.markDisconnected('B3');
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.match(r.error.message, /2 ghế trống/);
+  assert.equal(r.need, 2, 'two browsers are still alive');
+  assert.equal(r.bestFreeSlots, 0);
+  assert.match(r.error.message, /bàn nào cũng đầy/);
+});
+
+// §45 — searching asks for the LOBBY channel list, which a seated client never receives: a browser that is
+// already at a table must not start a search (it would poll its whole budget and report "no table" while the
+// lobby is full of them, and a CHANNEL_LIST reply would drop a table it still sits at).
+test('SEATED-01: a browser already at a table refuses to search, with a typed reason', async () => {
+  const { coord, sim } = mk([{ rid: 555, b: 500, seats: [] }, { rid: 556, b: 500, seats: [] }]);
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
+  sim.channelReqs = 0;
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'PHOM_ALREADY_AT_TABLE');
+  assert.equal(r.rid, 555, 'it says which table the browser is at');
+  assert.equal(sim.channelReqs, 0, 'no CMD 300 is sent from a seated socket');
+  assert.equal(snapB(coord, 'B1').manualState, 'JOINED', 'the browser keeps its table');
+});
+
+test('SEATED-02: after THOÁT BÀN the same browser can search again', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }, { rid: 556, b: 500, seats: [] }]);
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
+  await coord.manualLeave('B1');
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, true);
+});
+
+// Every disqualified row reaches the trace, so a live "tìm không ra" can be explained from the installed app.
+test('SEATED-03: the trace records WHY each server row was rejected, not just the free-slot case', async () => {
+  const { coord } = mk([
+    { rid: 140, b: 500, Mu: 4, seats: Array.from({ length: 70 }, (_, i) => ({ sit: i, uid: 'x' + i })) }, // bucket
+    { rid: 700, b: 900, seats: [] },                                                                      // other stake
+    { rid: 701, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] },                                                            // full
+  ]);
+  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  const rejects = coord.trace().filter((e) => e.milestone === 'TABLE_REJECT');
+  const reasons = new Set(rejects.map((e) => e.reason));
+  assert.ok(reasons.has('INVALID_STRUCTURE'), 'the stake bucket is explained');
+  assert.ok(reasons.has('STAKE_MISMATCH'), 'the other-stake row is explained');
+  assert.ok(reasons.has('NOT_ENOUGH_FREE_SLOTS'), 'the too-full table is explained');
+  assert.ok(rejects.some((e) => e.rid === 140 && e.uC === 70 && e.Mu === 4), 'with the row the server actually sent');
 });

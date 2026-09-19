@@ -33,7 +33,7 @@ test('coordinator: FIND is single-flight (no duplicate CMD 300) + reuses a cache
   assert.match(coord, /PHOM_FIND_IN_FLIGHT/);
   // PHASE 6.3.7 — reuse a cached candidate on the first pass ONLY while the list is fresh; a stale cache falls
   // through to a fresh CMD 300 (a user FIND is live discovery). Recovery passes always request fresh.
-  assert.match(coord, /let candidate = \(recovery === 0 && cacheFresh\) \? this\._pickManualCandidate\(rec, need, selectedStake, runFailedRids\) : null;/);
+  assert.match(coord, /let candidate = \(recovery === 0 && cacheFresh\) \? this\._pickManualCandidate\(rec, minSeats, selectedStake, runFailedRids\) : null;/);
   assert.match(coord, /cacheFresh = at != null && \(this\._now\(\) - Number\(at\)\) < freshMs;/);
   assert.match(coord, /buildChannelListFrame\(aid\)/);
   // the single-flight flag is released on the finally + on leave/reset
