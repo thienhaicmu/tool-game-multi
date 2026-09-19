@@ -16,7 +16,7 @@ class Sim {
   }
   attach(c) { this.coord = c; }
   _feed(id, raw) { this.coord.ingest(id, { raw, direction: 'recv', targetId: id, url: 'wss://sim', now: Date.now() }); }
-  _channelList() { const rs = this.rooms.map((r) => ({ rid: r.rid, b: r.b, uC: r.seats.length, Mu: r.Mu, zn: 'Simms', gid: 8, rn: 'Phom' })); return JSON.stringify([5, { rs, cmd: 300 }]); }
+  _channelList() { const rs = this.rooms.filter((r) => !r.hidden).map((r) => ({ rid: r.rid, b: r.b, uC: r.uC != null ? r.uC : r.seats.length, Mu: r.Mu, zn: 'Simms', gid: 8, rn: 'Phom' })); return JSON.stringify([5, { rs, cmd: 300 }]); }
   _table(r) { return JSON.stringify([5, { b: r.b, ps: r.seats.map((s) => ({ uid: s.uid, sit: s.sit, r: false })), cmd: 202 }]); }
   _room(rid) { return this.rooms.find((r) => r.rid === rid); }
   attemptsFor(rid, id) { return this.joinAttempts[`${rid}:${id}`] || 0; }
@@ -26,7 +26,9 @@ class Sim {
       const uid = this.uids[id];
       if (j[0] === 6 && j[3] && j[3].cmd === 300) { this.channelReqs++; this._feed(id, this._channelList()); return { ok: true }; }
       if (j[0] === 3) {
-        const rid = j[2]; const room = this._room(rid); if (!room) return { ok: true };
+        const rid = j[2]; let room = this._room(rid); if (!room) return { ok: true };
+        // a STAKE CHANNEL is not a table: joining it makes the server seat you at one (seatsAt)
+        if (room.seatsAt != null) room = this._room(room.seatsAt);
         const key = `${rid}:${id}`; this.joinAttempts[key] = (this.joinAttempts[key] || 0) + 1;
         const fail = (room.failJoins && room.failJoins[id]) || 0;
         if (this.joinAttempts[key] <= fail) { this._feed(id, this._table(room)); return { ok: true }; } // transient: ps[] WITHOUT us
@@ -349,15 +351,16 @@ test('FIND-MSG-01: the NO_EMPTY_TABLE message names the reason and how many tabl
   assert.ok(r.attempts >= 2, `a persistent search re-asks the server (attempts=${r.attempts})`);
 });
 
-test('FIND-MSG-02: a lobby holding only stake BUCKETS reports ONLY_STAKE_BUCKETS, not NO_MATCHING_STAKE', async () => {
-  // A stake bucket reports uC >> Mu; it is not a joinable table. Reporting it as "no table at this stake"
-  // pointed diagnosis at the stake instead of the lobby.
-  const bucket = { rid: 140, b: 500, Mu: 4, seats: Array.from({ length: 70 }, (_, i) => ({ sit: i, uid: 'x' + i })) };
-  const { coord } = mk([bucket]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+test('FIND-MSG-02: a lobby holding only the stake CHANNEL is attempted, and an honest verdict if it fails', async () => {
+  // §50 — a stake channel reports uC >> Mu, so it is not a joinable TABLE row; it is the lobby entry a player
+  // clicks. The search now tries it. When even that cannot seat us, the verdict says every candidate failed.
+  const channel = { rid: 140, b: 500, Mu: 4, uC: 70, seats: [], failJoins: { B1: 99 } };
+  const { coord, sim } = mk([channel]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 500 });
+  assert.ok(sim.attemptsFor(140, 'B1') >= 1, 'the stake channel was actually tried');
   assert.equal(r.ok, false);
-  assert.equal(r.reason, 'ONLY_STAKE_BUCKETS');
-  assert.match(r.error.message, /nhóm cược/);
+  assert.equal(r.viaStakeChannel, true, 'and the verdict says the attempt went through the stake channel');
+  assert.ok(r.rows.length >= 1, 'the rows the lobby offered are still reported');
 });
 
 // ================= SHARED ANCHOR (FIND-ANC) — who the same-room proof compares against =================
@@ -697,11 +700,13 @@ test('ROWS-01: a failed FIND reports every row the server sent and why each was 
     { rid: 700, b: 900, seats: [] },                                                                      // other stake
     { rid: 701, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] },
   ]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 500 });
   assert.equal(r.ok, false);
   assert.equal(r.totalRows, 3, 'every row the lobby sent is counted');
   const byRid = Object.fromEntries(r.rows.map((x) => [x.rid, x]));
-  assert.equal(byRid[140].reason, 'INVALID_STRUCTURE');
+  // the stake channel is reported with the server's own counts; its reason is either its shape or, once §50 has
+  // tried and failed to get seated through it, the blacklist
+  assert.ok(['INVALID_STRUCTURE', 'FAILED_RID_SKIPPED'].includes(byRid[140].reason), byRid[140].reason);
   assert.equal(byRid[140].uC, 70);
   assert.equal(byRid[140].Mu, 4);
   assert.equal(byRid[700].reason, 'STAKE_MISMATCH');
@@ -717,4 +722,46 @@ test('ROWS-02: the rows stay on the browser snapshot so the Tool can show them a
   assert.equal(b.lastFindTotal, 1);
   assert.deepEqual(b.lastFindRows.map((r) => r.rid), [701]);
   assert.equal(b.lastFindRows[0].reason, 'NOT_ENOUGH_FREE_SLOTS');
+});
+
+// §50 — the lobby list can expose only the STAKE CHANNEL ("bàn 100"), not the individual tables behind it. The
+// table qualifier rejects that row (its uC counts everyone at the stake, so uC > Mu), which is why TÌM BÀN could
+// report "no table" for a stake a player walks straight into. Joining the channel is what the game itself does.
+test('CHAN-01: with no joinable table row, the search enters the STAKE CHANNEL and gets seated', async () => {
+  const { coord, sim } = mk([
+    { rid: 141, b: 500, Mu: 4, uC: 87, seats: [], seatsAt: 900 },  // the stake channel a player clicks
+    { rid: 900, b: 500, Mu: 4, seats: [], hidden: true },          // the real table, not in rs[]
+  ]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 600 });
+  assert.equal(r.ok, true, 'TÌM BÀN gets in exactly like clicking the lobby does');
+  assert.equal(r.viaStakeChannel, true);
+  assert.equal(r.rid, 141, 'it joined the stake channel');
+  assert.equal(snapB(coord, 'B1').manualState, 'JOINED');
+  assert.ok(sim.rooms[1].seats.some((x) => x.uid === '1_1'), 'the server seated it at the real table');
+});
+
+test('CHAN-02: a joinable table row is still preferred — the channel is only a fallback', async () => {
+  const { coord } = mk([
+    { rid: 141, b: 500, Mu: 4, uC: 87, seats: [], seatsAt: 900 },
+    { rid: 900, b: 500, Mu: 4, seats: [], hidden: true },
+    { rid: 701, b: 500, seats: [] },                               // a normal, joinable table row
+  ]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, 701);
+  assert.notEqual(r.viaStakeChannel, true);
+});
+
+test('CHAN-03: the channel of ANOTHER stake is never used', async () => {
+  const { coord } = mk([{ rid: 141, b: 900, Mu: 4, uC: 87, seats: [], seatsAt: 901 }, { rid: 901, b: 900, Mu: 4, seats: [], hidden: true }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 200 });
+  assert.equal(r.ok, false, 'stake 500 was asked for; the stake-900 channel is not a substitute');
+  assert.equal(r.reason, 'NO_MATCHING_STAKE');
+});
+
+test('CHAN-04: if the channel does not seat us either, the failure is still honest', async () => {
+  const { coord } = mk([{ rid: 141, b: 500, Mu: 4, uC: 87, seats: [], failJoins: { B1: 99 } }]); // seats nobody
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 400 });
+  assert.equal(r.ok, false);
+  assert.notEqual(snapB(coord, 'B1').manualState, 'JOINED');
 });

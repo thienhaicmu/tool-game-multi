@@ -843,6 +843,21 @@ class HostTableCoordinator extends EventEmitter {
     return candidate;
   }
 
+  // §50 — the STAKE CHANNEL row for a stake: the lobby entry a player clicks ("bàn 100"). It is NOT a joinable
+  // table — its uC counts everyone at the stake, so uC > Mu — which is exactly why the table qualifier rejects
+  // it. Joining it is how the GAME itself puts a player at a table, so it is the fallback when the channel list
+  // exposes no individual table we can take. Deterministic (lowest rid) and never a blacklisted rid.
+  _pickStakeChannelRow(rec, selectedStake, failedRids) {
+    let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; }
+    const rows = chans.filter((c) => c && c.rid != null
+      && (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID)
+      && Number(c.b) === Number(selectedStake)
+      && Number.isFinite(Number(c.uC)) && Number.isFinite(Number(c.Mu)) && Number(c.uC) > Number(c.Mu)
+      && !(failedRids && failedRids.has(c.rid)));
+    rows.sort((a, b) => Number(a.rid) - Number(b.rid));
+    return rows[0] || null;
+  }
+
   // §14 — a precise, debuggable reason for "the lobby seemed to have a table but FIND found none", derived from
   // the LAST candidate evaluation (never a secret; server evidence only). Distinguishes the common confusions.
   _diagNoTable(rec) {
@@ -928,6 +943,7 @@ class HostTableCoordinator extends EventEmitter {
         let cacheFresh = false;
         try { const at = rec.ctx.channelsAt(); cacheFresh = at != null && (this._now() - Number(at)) < freshMs; } catch { cacheFresh = false; }
         let candidate = (recovery === 0 && cacheFresh) ? this._pickManualCandidate(rec, minSeats, selectedStake, runFailedRids) : null;
+        let viaStakeChannel = false; // §50 — set when the candidate is the stake channel, not a table row
         if (candidate) {
           this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: true });
         } else {
@@ -945,6 +961,13 @@ class HostTableCoordinator extends EventEmitter {
             this.emit('update', this.snapshot());                   // keep the header's elapsed/attempt live
             await this._waitManual(() => { candidate = this._pickManualCandidate(rec, minSeats, selectedStake, runFailedRids); return !!candidate; }, rec, myGen, Math.min(pollMs, left));
             if (rec._manualGen !== myGen || this._stopped) break;    // cancelled / session gone
+            // §50 — the server answered and listed no table we can take. Before polling on, do what a player
+            // does when the lobby shows no free table row: enter the STAKE CHANNEL itself and let the game seat
+            // us. Tried once per pass; if it does not seat us the poll simply continues.
+            if (!candidate && !viaStakeChannel) {
+              const chRow = this._pickStakeChannelRow(rec, selectedStake, runFailedRids);
+              if (chRow) { candidate = chRow; viaStakeChannel = true; this._findLog('F15_STAKE_CHANNEL_FALLBACK', rec, myGen, { rid: chRow.rid, uC: chRow.uC, Mu: chRow.Mu }); break; }
+            }
           }
           if (candidate) this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: false, attempts: rec._searchAttempt || 0 });
         }
@@ -999,7 +1022,9 @@ class HostTableCoordinator extends EventEmitter {
           rec.manualState = 'ERROR';
           rec.lastError = res.error || { code: 'PHOM_ALL_CANDIDATES_FAILED', message: 'Bàn vừa tìm đã đầy/không vào được — thử lại' };
           this.emit('update', this.snapshot());
-          return { ...res, allCandidatesFailed: retryable, stake: candidate.b, playerCount: candidate.uC };
+          // §49 — carry the diagnosis on THIS path too: a search that died trying to join is exactly when the
+          // user needs to see the rows the lobby actually offered.
+          return { ...res, allCandidatesFailed: retryable, stake: candidate.b, playerCount: candidate.uC, viaStakeChannel, rows: rec._lastFindRows || [], totalRows: rec._lastPickTotal || 0 };
         }
         // §47 — TÌM BÀN MUST END UP AT A TABLE. The old rule demanded a table with a free seat for EVERY browser
         // and, if the room turned out not to fit them all, LEFT the table again and searched on — so at a busy
@@ -1019,7 +1044,7 @@ class HostTableCoordinator extends EventEmitter {
           rec.lastError = { code: 'PHOM_TABLE_FITS_PARTIAL', message: `Đã vào bàn ${res.rid} nhưng bàn chỉ còn ${freeAfter} ghế cho ${needAfter} browser còn lại` };
         }
         this.emit('update', this.snapshot());
-        return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC, freeAfter, fitsAll, seatsForOthers: freeAfter, anchorValid: true };
+        return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: viaStakeChannel ? null : candidate.uC, freeAfter, fitsAll, seatsForOthers: freeAfter, anchorValid: true, viaStakeChannel };
       }
       // §31 — bounded recovery exhausted: stop (never an infinite re-FIND). The user can retry (TÌM LẠI).
       rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: `Không tìm được bàn còn đủ chỗ cho ${need} người sau ${maxRecovery + 1} lần thử — bàn vừa tìm được đều bị người khác ngồi mất`, attempts: maxRecovery + 1 };
