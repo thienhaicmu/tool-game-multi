@@ -33,6 +33,14 @@ class PhomContext extends EventEmitter {
     this._joinedChannel = null;
     this._lastFrameAt = null;
     this._connected = false;
+    // Server answers to our own JOIN / LEAVE (Test D capture). A JOIN refusal ([3,false,code,-1,msg]) lets a join
+    // fail fast with the server's reason; a LEAVE ack ([4,true,code,...]) is the proof the player left the table.
+    this._lastJoinAck = null;   // { accepted, code, message, at, seq }
+    this._lastLeaveAck = null;  // { accepted, code, at, seq }
+    this._ackSeq = 0;
+    // Bumped on every FULL table snapshot (ps[]). A join is only proven by a snapshot that arrived AFTER it was
+    // sent — the old table's state must never count as 'seated at the new one'.
+    this._tableSeq = 0;
   }
 
   // Inject identity known from the authenticated runtime/login context (§4). Never
@@ -89,6 +97,17 @@ class PhomContext extends EventEmitter {
       }
     }
 
+    if (cls.type === 'JOIN_ACCEPTED' && meta.direction !== 'send') {
+      this._lastJoinAck = { accepted: cls.accepted === true, code: cls.resultCode != null ? cls.resultCode : null, message: cls.resultMessage || null, at: now, seq: ++this._ackSeq };
+      changed = true;
+    }
+    if (cls.type === 'LEAVE_ACK' && meta.direction !== 'send') {
+      this._lastLeaveAck = { accepted: cls.accepted === true, code: cls.resultCode != null ? cls.resultCode : null, at: now, seq: ++this._ackSeq };
+      // the server says we are out of the table — drop it now instead of waiting for the lobby list
+      if (cls.accepted === true && this._tableState) { this._tableState = null; this._tableStateAt = now; }
+      changed = true;
+    }
+
     if (cls.type === 'CHANNEL_LIST' && Array.isArray(cls.rs)) {
       this._channels = cls.rs.map(normalizeChannel).filter(Boolean);
       this._channelsAt = now;
@@ -101,6 +120,7 @@ class PhomContext extends EventEmitter {
 
     if (cls.type === 'TABLE_STATE' && Array.isArray(cls.ps)) {
       this._tableState = buildTableState(cls);
+      this._tableSeq += 1;
       this._tableStateAt = now;
       // Own-uid anchor: if this profile joined an EMPTY table (exactly one occupant) and has not yet
       // bound its authoritative game uid, that lone occupant IS us — in the id:0 / ps[] form. This is
@@ -137,7 +157,7 @@ class PhomContext extends EventEmitter {
   }
 
   reset() {
-    this._socket = null; this._channels = []; this._tableState = null;
+    this._socket = null; this._channels = []; this._tableState = null; this._lastJoinAck = null; this._lastLeaveAck = null;
     this._joinedChannel = null; this._connected = false;
     this._emit();
   }
@@ -173,6 +193,11 @@ class PhomContext extends EventEmitter {
   channels() { return this._channels.slice(); }
   // PHASE 6.3.7 — when the authoritative channel list (CMD 300 rs[]) was last received, for FIND freshness.
   channelsAt() { return this._channelsAt; }
+  // The latest server answers to our JOIN / LEAVE, with a monotonic seq so a caller can tell 'new since I sent'.
+  lastJoinAck() { return this._lastJoinAck ? { ...this._lastJoinAck } : null; }
+  lastLeaveAck() { return this._lastLeaveAck ? { ...this._lastLeaveAck } : null; }
+  ackSeq() { return this._ackSeq; }
+  tableSeq() { return this._tableSeq; }
   tableState() { return this._tableState; }
 
   // The seat this profile occupies at the current table (own uid within ps[]).

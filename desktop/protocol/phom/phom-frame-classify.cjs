@@ -95,7 +95,15 @@ function classifyPhomFrame(raw) {
     // ensuing TABLE_STATE ps[] push carrying own uid + sit. So neither op-3 shape is server
     // evidence for socket binding (only TABLE_STATE / other pushes are).
     if (typeof json[1] === 'boolean') {
-      return finalize(out, { type: 'JOIN_ACCEPTED', accepted: json[1] });
+      // Test D capture (2026-09-19): a refusal carries a code and a human message —
+      //   [3,false,100,-1,"Phòng đầy"]   [3,false,104,-1,"Phòng đã bị hủy"]
+      // so a rejected JOIN can fail FAST with the server's own reason instead of waiting for a
+      // TABLE_STATE that will never come.
+      return finalize(out, {
+        type: 'JOIN_ACCEPTED', accepted: json[1],
+        resultCode: Number.isFinite(json[2]) ? json[2] : null,
+        resultMessage: typeof json[4] === 'string' && json[4] ? json[4] : null,
+      });
     }
     // The numeric arg is the SmartFoxServer room-join code (live capture: 139). It is distinct
     // from the lobby stake-bucket rids in CHANNEL_LIST rs[] (141/142/320872 observed same
@@ -108,6 +116,12 @@ function classifyPhomFrame(raw) {
     });
   }
   if (op === OP.LEAVE) {
+    // Test D capture: the SERVER answers a leave with [4,true,<code>,-1,0,""] — it was classified as a
+    // LEAVE_REQUEST. It is the proof that the player is out of the table (code 1 = left on request, code 2 =
+    // moved out because a new JOIN was sent while seated).
+    if (typeof json[1] === 'boolean') {
+      return finalize(out, { type: 'LEAVE_ACK', accepted: json[1], resultCode: Number.isFinite(json[2]) ? json[2] : null });
+    }
     return finalize(out, { type: 'LEAVE_REQUEST', channel: Number.isFinite(json[2]) ? json[2] : null });
   }
 
@@ -175,6 +189,8 @@ function finalize(out, extra) {
     channel: extra.channel !== undefined ? extra.channel : undefined,
     hasPassword: extra.hasPassword !== undefined ? extra.hasPassword : undefined,
     accepted: extra.accepted !== undefined ? extra.accepted : undefined,
+    resultCode: extra.resultCode !== undefined ? extra.resultCode : undefined,
+    resultMessage: extra.resultMessage !== undefined ? extra.resultMessage : undefined,
     // identity / seat-delta fields
     identityId: extra.identityId !== undefined ? extra.identityId : undefined,
     seat: extra.seat !== undefined ? extra.seat : undefined,     // single seat object (SEAT_UPDATE)
