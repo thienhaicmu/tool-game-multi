@@ -121,6 +121,33 @@ else {
   const wsReplay = new WsReplay({ resolveClient: (tid) => resolveTargetClient(tid), getCaptured: (id) => capture.get(id) });
   // TEST D — passive recorder of the game's own frames between a user START/STOP (see frame-recorder.cjs).
   const frameRecorder = createFrameRecorder();
+  const lastCaptureByRun = Object.create(null); // runId -> file name of that browser's last Test D capture
+  // Stop the recording and write it as JSON + a readable one-line-per-frame .txt under userData/phom-captures.
+  // Shared by the Tool window (IPC) and the in-Chromium header (⋯ menu).
+  function stopAndSaveCapture() {
+    const out = frameRecorder.stop();
+    if (!out) return { ok: false, error: { code: 'PHOM_NOT_RECORDING', message: 'Chưa bắt đầu ghi gói' } };
+    try {
+      const dir = path.join(app.getPath('userData'), 'phom-captures');
+      fs.mkdirSync(dir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const base = path.join(dir, 'test-D-' + stamp);
+      fs.writeFileSync(base + '.json', JSON.stringify(out, null, 2), 'utf8');
+      const lines = ['# ' + (out.label || 'Test D') + ' — ' + out.frameCount + ' gói trong ' + Math.round(out.durationMs / 1000) + 's' + (out.dropped ? ', bỏ ' + out.dropped : '')];
+      for (const f of out.frames) lines.push(String(f.t).padStart(7) + 'ms  [' + (f.label || f.runId) + ']  ' + f.summary);
+      fs.writeFileSync(base + '.txt', lines.join('\n'), 'utf8');
+      const name = path.basename(base + '.txt');
+      for (const id of (out.runIds || [])) lastCaptureByRun[id] = name;
+      return { ok: true, path: base + '.json', txtPath: base + '.txt', fileName: name, frameCount: out.frameCount, dropped: out.dropped, byType: out.byType, preview: lines.slice(0, 60), runIds: out.runIds };
+    } catch (e) {
+      return { ok: false, error: { code: 'PHOM_CAPTURE_WRITE_FAILED', message: String(e && e.message || e) } };
+    }
+  }
+  // Is THIS browser currently being recorded (a recording of one browser, or of all)?
+  function captureActiveFor(runId) {
+    const st = frameRecorder.status();
+    return !!(st && st.recording && (!st.runIds || st.runIds.includes(String(runId))));
+  }
   // Resolve + validate the pinned custom Chromium runtime once (dev vs packaged). No
   // system-Chrome fallback: an invalid runtime blocks browser launches with a typed error.
   var _chromiumRuntime = null;
@@ -602,6 +629,9 @@ else {
       // §32/§34 — live search progress so the header shows "ĐANG TÌM BÀN… 12s · lần 6" instead of a label that
       // cannot be told apart from a hang, and offers HỦY.
       searchElapsedSec: b.searchElapsedSec || 0,
+      // TEST D — recording state for THIS browser's ⋯ menu
+      capturing: captureActiveFor(runId),
+      lastCapture: lastCaptureByRun[String(runId)] || null,
       searchAttempt: b.searchAttempt || 0,
       rid: b.rid != null ? b.rid : null,
       lastRid: b.lastRid != null ? b.lastRid : null,
@@ -741,6 +771,13 @@ else {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
         res = await phomSessions.manualDiscoverTable(rid, { selectedStake });
+      } else if (action === 'CAPTURE_START') {
+        // TEST D from the header: record THIS browser (the one the player is about to click in by hand).
+        const run = runManager && runManager.get(rid);
+        res = { ok: true, ...frameRecorder.start({ runIds: [rid], label: 'Test D — ' + ((run && run.profileLabel) || rid) }) };
+      } else if (action === 'CAPTURE_STOP') {
+        res = stopAndSaveCapture();
+        if (res && res.ok) { try { electronShell.showItemInFolder(res.txtPath); } catch { /* best effort */ } }
       } else if (action === 'CANCEL_FIND') {
         // §34 — stop the persistent search this browser is running. Runs alongside the pending FIND (exempt
         // from single-flight); the coordinator's generation bump is what actually resolves that FIND as stale.
@@ -1257,24 +1294,7 @@ else {
       return { ok: true, ...frameRecorder.start({ runIds, label: cfg && cfg.label != null ? String(cfg.label) : null }) };
     });
     ipcMain.handle('phom:frames-record-status', () => ({ ok: true, ...frameRecorder.status() }));
-    ipcMain.handle('phom:frames-record-stop', () => {
-      const out = frameRecorder.stop();
-      if (!out) return { ok: false, error: { code: 'PHOM_NOT_RECORDING', message: 'Chưa bắt đầu ghi gói' } };
-      try {
-        const dir = path.join(app.getPath('userData'), 'phom-captures');
-        fs.mkdirSync(dir, { recursive: true });
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-        const base = path.join(dir, `test-D-${stamp}`);
-        fs.writeFileSync(base + '.json', JSON.stringify(out, null, 2), 'utf8');
-        // a readable companion: one line per frame, in order
-        const lines = [`# ${out.label || 'Test D'} — ${out.frameCount} gói trong ${Math.round(out.durationMs / 1000)}s${out.dropped ? `, bỏ ${out.dropped}` : ''}`];
-        for (const f of out.frames) lines.push(`${String(f.t).padStart(7)}ms  [${f.label || f.runId}]  ${f.summary}`);
-        fs.writeFileSync(base + '.txt', lines.join('\n'), 'utf8');
-        return { ok: true, path: base + '.json', txtPath: base + '.txt', frameCount: out.frameCount, dropped: out.dropped, byType: out.byType, preview: lines.slice(0, 60) };
-      } catch (e) {
-        return { ok: false, error: { code: 'PHOM_CAPTURE_WRITE_FAILED', message: String(e && e.message || e) } };
-      }
-    });
+    ipcMain.handle('phom:frames-record-stop', () => stopAndSaveCapture());
     ipcMain.handle('phom:frames-open-folder', (_e, p) => { try { if (p) electronShell.showItemInFolder(String(p)); return { ok: true }; } catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: String(e && e.message || e) } }; } });
     // PHASE-3 · PART B — observe-only native-JOIN experiment (A→B→C, same stake, no room forcing).
     // Authorized+licensed only; observes server matchmaking from ps[], never changes production flow.

@@ -219,7 +219,7 @@ test('main installs the header on attach with per-run identity + logging, routes
 // PHASE 6.3.2.2 / 6.3.2.3 — reliability guards in the action router (single-flight via the pure guard,
 // identity cross-check, and dead-session guard). PHOM_HEADER_BUSY now lives in header-action-guard.cjs.
 test('router has a per-browser single-flight + identity guard and a dead-session guard', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 6500);
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
   assert.match(r, /evaluateHeaderAction\(/);             // pure single-flight + identity guard
   assert.match(r, /busy: !!headerActionBusy\[rid\]/);    // one op per browser
   assert.match(r, /if \(!runClientFor\(rid\)\)/);        // never route into a dead CDP session

@@ -78,3 +78,38 @@ test('Test D is wired: capture hook → recorder → IPC → Tool menu', () => {
   assert.match(ui, /api\.framesRecordStart\(/);
   assert.match(ui, /api\.framesRecordStop\(\)/);
 });
+
+// Test D must be reachable from where the player actually is: the ⋯ menu of the in-Chromium header of the
+// browser they are about to click in (it first shipped only in the Tool window's ⋯ menu, which nobody looked at).
+const gh = require('../../desktop/protocol/phom/game-header.cjs');
+const { evaluateHeaderAction, isBusyExempt } = require('../../desktop/protocol/phom/header-action-guard.cjs');
+test('Test D in the header: the ⋯ menu toggles start/stop for THIS browser', () => {
+  const src = gh.bootScript({ slotId: 'B' });
+  assert.match(src, /Bắt đầu ghi gói \(Test D\)/);
+  assert.match(src, /Dừng & lưu ghi gói \(Test D\)/);
+  assert.match(src, /emit\(state\.capturing \? 'CAPTURE_STOP' : 'CAPTURE_START'\)/);
+  const idle = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY' });
+  assert.equal(idle.capturing, false);
+  const rec = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', capturing: true, lastCapture: 'test-D-x.txt' });
+  assert.equal(rec.capturing, true);
+  assert.equal(rec.lastCapture, 'test-D-x.txt');
+});
+test('Test D in the header: start/stop work even while a search holds the browser', () => {
+  assert.equal(isBusyExempt('CAPTURE_START'), true);
+  assert.equal(isBusyExempt('CAPTURE_STOP'), true);
+  assert.equal(evaluateHeaderAction({ payload: { action: 'CAPTURE_STOP' }, boundRunId: 'r', busy: true }).ok, true);
+});
+test('Test D in the header: main routes the actions and tells each header whether it is recorded', () => {
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /action === 'CAPTURE_START'/);
+  assert.match(main, /frameRecorder\.start\(\{ runIds: \[rid\]/);
+  assert.match(main, /action === 'CAPTURE_STOP'/);
+  assert.match(main, /res = stopAndSaveCapture\(\);/);
+  assert.match(main, /capturing: captureActiveFor\(runId\),/);
+  assert.match(main, /ipcMain\.handle\('phom:frames-record-stop', \(\) => stopAndSaveCapture\(\)\);/);
+});
+// the header showed a bare "Player" for the Tool's A/B/C slot ids — the number is what tells the player which is which
+test('the header shows the Player number for both slot schemes', () => {
+  const src = gh.bootScript({ slotId: 'B' });
+  assert.match(src, /abc=\{A:1,B:2,C:3\}/);
+});

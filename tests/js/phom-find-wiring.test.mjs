@@ -96,7 +96,7 @@ test('header: SEARCHING offers HỦY and reports progress; the guard exempts the
   assert.match(header, /CANCEL_FIND: \{ icon:/);
   assert.match(header, /action: 'CANCEL_FIND', label: 'HỦY TÌM'/);
   const guard = read('desktop/protocol/phom/header-action-guard.cjs');
-  assert.match(guard, /BUSY_EXEMPT_ACTIONS = Object\.freeze\(new Set\(\['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS'\]\)\)/);
+  assert.match(guard, /BUSY_EXEMPT_ACTIONS = Object\.freeze\(new Set\(\['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS', 'CAPTURE_START', 'CAPTURE_STOP'\]\)\)/);
   assert.match(guard, /if \(busy && !isBusyExempt\(p\.action\)\)/);
 });
 
