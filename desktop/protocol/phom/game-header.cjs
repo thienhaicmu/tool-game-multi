@@ -81,7 +81,9 @@ function deriveHeaderState(view = {}) {
   else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND', label: 'TÌM BÀN', needsBet: true, betOptions }; }
   // PHASE 6.3.8 — the ordered GAME/TABLE icon set (primary first, then secondary). Lifecycle is added by the page.
   const actions = [toActionIcon(primary), ...secondary.map(toActionIcon)].filter(Boolean);
-  return { account, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null, joinedShared };
+  return { account, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null, joinedShared,
+    // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
+    capturing: !!view.capturing, lastCapture: view.lastCapture || null };
 }
 
 // The one-time page bootstrap script (injected via Page.addScriptToEvaluateOnNewDocument + evaluated
@@ -118,7 +120,9 @@ function bootScript(opts = {}) {
   // Report the header's REAL DOM presence to main (once per mount/remount) so the Tool shows HEADER = Sẵn sàng.
   function emitStatus(){ try { window[BID] && window[BID](JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId })); } catch(e){} }
   // PHASE 6.3.8 — per-player accent (B1 blue / B2 green / B3 orange) + "Player N" derived from the slot id.
-  var SLOTN = (function(){ var m=/B(\\d)/.exec(ID.slotId||''); return m?Number(m[1]):null; })();
+  // Player number from the slot id. Two schemes exist: 'B1'/'B2'/'B3' and the Tool's 'A'/'B'/'C' — the header only
+  // understood the first, so a browser on slot 'B' showed a bare "Player" with no number and no accent colour.
+  var SLOTN = (function(){ var sid=String(ID.slotId||''); var m=/^B(\\d)$/i.exec(sid); if(m) return Number(m[1]); var abc={A:1,B:2,C:3}[sid.toUpperCase()]; return abc||null; })();
   var ACCENT = SLOTN===1?'#2563eb':SLOTN===2?'#16a34a':SLOTN===3?'#ea580c':'#6b7280';
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
   // ---- the floating, compact, single-row header (mobile-landscape; never a full-width toolbar) ----
@@ -233,6 +237,9 @@ function bootScript(opts = {}) {
     menu.appendChild(menuItem('↑ Đưa cửa sổ lên trên cùng', function(){ emit('FOCUS'); }));
     menu.appendChild(menuItem('⟳ Tải lại web', function(){ emit('RELOAD'); }));
     menu.appendChild(menuItem('⏻ Tắt Chromium', function(){ emit('STOP'); }));
+    // TEST D — record THIS browser's own game frames while the player acts by hand (e.g. clicks a table).
+    menu.appendChild(menuItem(state.capturing ? '⏹ Dừng & lưu ghi gói (Test D)' : '⏺ Bắt đầu ghi gói (Test D)', function(){ emit(state.capturing ? 'CAPTURE_STOP' : 'CAPTURE_START'); }));
+    if(state.lastCapture){ var cap=mk('div','padding:6px 10px;color:#86efac;font-weight:500;white-space:nowrap;'); cap.textContent='📄 Đã lưu: '+state.lastCapture; menu.appendChild(cap); }
     var info = mk('div','padding:8px 10px;color:#9ca3af;font-weight:500;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
     info.textContent = (SLOTN?('Player '+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · RID '+state.rid : '');
     menu.appendChild(info);

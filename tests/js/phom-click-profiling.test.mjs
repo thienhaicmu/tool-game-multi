@@ -29,7 +29,7 @@ test('main passes the click-profiling gate and it is OFF unless the env flag is 
 });
 
 test('main-side handler duration (M1→M4) is measured with a monotonic clock for EVERY action', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 6500);
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
   assert.match(r, /const _t0 = nowMs\(\);/);
   assert.match(r, /headerLog\('action-done',[\s\S]*?elapsedMs: Math\.round\(nowMs\(\) - _t0\)/);
   // ENTER_GAME already reports click→ENTERED evidence latency (from 6.3.2.6)

@@ -22,7 +22,7 @@ const REASONS = Object.freeze({
 // browser for a minute, and single-flight is about not stacking two table operations — it was never meant to
 // trap the user: HỦY is the way out of the very operation that is busy, and ⟳ / ⏻ / ↑ are lifecycle escapes
 // that own their own teardown. Identity + duplicate-click checks still apply to them.
-const BUSY_EXEMPT_ACTIONS = Object.freeze(new Set(['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS']));
+const BUSY_EXEMPT_ACTIONS = Object.freeze(new Set(['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS', 'CAPTURE_START', 'CAPTURE_STOP']));
 function isBusyExempt(action) { return BUSY_EXEMPT_ACTIONS.has(String(action || '')); }
 
 function evaluateHeaderAction({ payload = {}, boundRunId, runProfileId = null, busy = false, lastActionId = null } = {}) {
