@@ -309,12 +309,19 @@ class GoogleSheetClient {
       query: '?valueInputOption=RAW',
       body: { values: [SHEET_HEADERS.slice()] },
     });
-    try { await this.applyFormatting(title); } catch { /* formatting is best-effort, never blocks a save */ }
+    await this._reformat(title);
     return { created: true, headers: SHEET_HEADERS.slice() };
   }
 
-  // Make the ledger readable: frozen bold header, date columns as dd/mm/yyyy hh:mm,
-  // clipped overflow, and the technical rawPayloadJson column hidden. Idempotent.
+  // Make the ledger readable: frozen bold header, PLAIN data rows, date columns as
+  // dd/mm/yyyy hh:mm, clipped overflow, and the technical rawPayloadJson column hidden.
+  // Idempotent, and re-applied after every write (see upsertLicenseRow) because BOTH
+  // problems below are (re)created by each append:
+  //   - Sheets copies the format of the row ABOVE onto a row inserted by append, so every
+  //     data row inherited the dark bold HEADER style (row 2 from the header, row 3 from
+  //     row 2, ...). The data-row reset below undoes that.
+  //   - that same inheritance also overwrites the date columns' DATE_TIME format with the
+  //     header's plain format, so the serials rendered as raw numbers (46279,77228).
   async applyFormatting(sheetTitle) {
     const title = await this._titleFor(sheetTitle);
     const gid = Number(await this._gidForTitle(title));
@@ -323,7 +330,12 @@ class GoogleSheetClient {
     const requests = [
       { updateSheetProperties: { properties: { sheetId: gid, gridProperties: { frozenRowCount: 1 } }, fields: 'gridProperties.frozenRowCount' } },
       { repeatCell: { range: { sheetId: gid }, cell: { userEnteredFormat: { wrapStrategy: 'CLIP' } }, fields: 'userEnteredFormat.wrapStrategy' } },
+      // Header row: dark background, bold white, centred.
       { repeatCell: { range: { sheetId: gid, startRowIndex: 0, endRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 0.17, green: 0.24, blue: 0.31 }, textFormat: { bold: true, foregroundColor: { red: 1, green: 1, blue: 1 } }, horizontalAlignment: 'CENTER', verticalAlignment: 'MIDDLE' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)' } },
+      // Data rows (2 → end): plain white, normal black, left-aligned — this is what undoes the
+      // header style that append() copies onto each new row. It deliberately does NOT touch
+      // numberFormat, so the date-column requests below stand on their own.
+      { repeatCell: { range: { sheetId: gid, startRowIndex: 1 }, cell: { userEnteredFormat: { backgroundColor: { red: 1, green: 1, blue: 1 }, textFormat: { bold: false, foregroundColor: { red: 0, green: 0, blue: 0 } }, horizontalAlignment: 'LEFT', verticalAlignment: 'MIDDLE' } }, fields: 'userEnteredFormat(backgroundColor,textFormat,horizontalAlignment,verticalAlignment)' } },
       { updateDimensionProperties: { range: { sheetId: gid, dimension: 'COLUMNS', startIndex: col('rawPayloadJson'), endIndex: col('rawPayloadJson') + 1 }, properties: { hiddenByUser: true }, fields: 'hiddenByUser' } },
     ];
     for (const h of DATE_COLUMNS) {
@@ -372,6 +384,7 @@ class GoogleSheetClient {
         query: '?valueInputOption=RAW',
         body: { values },
       });
+      await this._reformat(title);
       return { action: 'updated', rowIndex: existingIndex, sheetTitle: title };
     }
     await this._api(`/values/${encodeURIComponent(`${title}!A1`)}:append`, {
@@ -379,7 +392,17 @@ class GoogleSheetClient {
       query: '?valueInputOption=RAW&insertDataOption=INSERT_ROWS',
       body: { values },
     });
+    await this._reformat(title);
     return { action: 'appended', rowIndex: null, sheetTitle: title };
+  }
+
+  // Re-apply the ledger formatting after a write. An appended row arrives carrying the
+  // previous row's format, so formatting once at header-creation time was never enough:
+  // a tab that already had headers (the PHOM tab) never got formatted at all, and every
+  // appended row re-inherited the header style. Best-effort — a formatting failure must
+  // NEVER lose a license that was already written to the sheet.
+  async _reformat(title) {
+    try { await this.applyFormatting(title); } catch { /* cosmetic only, never blocks a save */ }
   }
 
   // Delete a single row by licenseId on a given sheet (used ONLY by the marked live smoke test).
