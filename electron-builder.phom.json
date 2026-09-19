@@ -40,7 +40,7 @@
   ],
   "extraMetadata": {
     "main": "desktop/phom-main.cjs",
-    "version": "3.0.4"
+    "version": "3.0.5"
   },
   "artifactName": "Phom-QA Setup ${version}.${ext}",
   "npmRebuild": false,
