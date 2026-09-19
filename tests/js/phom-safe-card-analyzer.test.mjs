@@ -197,3 +197,104 @@ test('19. the analyzer source contains NO send / PLAY / CDP click / game command
     assert.equal(src.includes(forbidden), false, `analyzer must not reference ${forbidden}`);
   }
 });
+
+// ================= ĐỢT 2 — own phỏm, laid cards, value ordering, learned turn order =================
+const C = (rank, suit) => encodeCard(rank, suit); // rank 0=A … 12=K, suit 0..3
+const tableFrame = (uids) => classifyPhomFrame(JSON.stringify([5, { b: 100, ps: uids.map((uid, i) => ({ uid, sit: i, r: false })), cmd: 202 }]));
+
+// §41 — a card already laid down on the table is not in the player's hand to discard.
+test('Đ2-01: cards the target already LAID in a public phỏm are never discard candidates', () => {
+  const laid = [C(4, 0), C(5, 0), C(6, 0)];            // 5♠6♠7♠ laid publicly
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', dealFrame([...laid, C(12, 1)]));
+    feed('B1', 'uidA', meldFrame('uidA', laid));
+  });
+  const r = createSafeCardAnalyzer().analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' });
+  const candidates = r.targetCards.map((c) => c.code);
+  for (const c of laid) assert.equal(candidates.includes(c), false, `laid card ${c} is not a candidate`);
+  assert.deepEqual(r.laidCards.map((c) => c.code), laid.slice().sort((a, b) => a - b));
+});
+
+// §41 — breaking your own phỏm is never suggested.
+test('Đ2-02: cards of the target\'s OWN phỏm (still in hand) are never suggested to discard', () => {
+  const run = [C(0, 0), C(1, 0), C(2, 0)];              // A♠2♠3♠ in hand
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', dealFrame([...run, C(12, 1)]));
+    // make EVERY card provably safe: publicly discard their rank partners + run neighbours
+    feed('B1', 'uidA', playFrame('uidD', [C(0, 1), C(0, 2), C(1, 1), C(1, 2), C(2, 1), C(2, 2), C(3, 0), C(12, 0), C(12, 2), C(11, 1)], 'uidA'));
+  });
+  const r = createSafeCardAnalyzer().analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' });
+  assert.deepEqual(r.ownMeldCards.map((c) => c.code).sort((a, b) => a - b), run);
+  assert.equal(r.ownMeldSource, 'RULES', 'a dealt hand carries no sMs → the shared rules find the phỏm');
+  for (const c of run) {
+    assert.equal(r.safeCards.some((x) => x.code === c), false, `own phỏm card ${c} is not offered`);
+    assert.notEqual(r.recommendedCode, c);
+  }
+});
+
+test('Đ2-03: the server\'s own arrangement (sMs) wins over the rules when the hand came with it', () => {
+  const hand = [C(0, 0), C(1, 0), C(2, 0), C(9, 3), C(12, 1)];
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', dealFrame(hand.slice(0, 4)));
+    feed('B1', 'uidA', drawFrame({ uid: 'uidA', cs: C(12, 1), sAC: hand, sMs: [C(0, 0), C(1, 0), C(2, 0)] }));
+  });
+  const r = createSafeCardAnalyzer().analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' });
+  assert.equal(r.ownMeldSource, 'SERVER');
+  assert.deepEqual(r.ownMeldCards.map((c) => c.code).sort((a, b) => a - b), [C(0, 0), C(1, 0), C(2, 0)]);
+});
+
+// §42 — among PROVEN-safe cards, the costliest loose card comes first and is the suggestion.
+test('Đ2-04: safe cards are ordered by point value (K before A) and the top one is suggested', () => {
+  const K = C(12, 0), A = C(0, 2);
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', dealFrame([A, K]));
+    // K♠ safe: 2 of its 3 rank partners out + its only run window (J♠,Q♠) broken; A♦ likewise.
+    feed('B1', 'uidA', playFrame('uidD', [C(12, 1), C(12, 2), C(11, 0), C(0, 0), C(0, 1), C(1, 2)], 'uidA'));
+  });
+  const r = createSafeCardAnalyzer().analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' });
+  assert.deepEqual(r.safeCards.map((c) => c.code), [K, A], 'highest point first');
+  assert.equal(r.recommendedCode, K);
+});
+
+test('Đ2-05: nothing is suggested unless it is PROVEN safe (a LIKELY card is never the suggestion)', () => {
+  const obs = observerWith((feed) => feed('B1', 'uidA', dealFrame([C(6, 0), C(9, 3)])));
+  const r = createSafeCardAnalyzer().analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' });
+  assert.equal(r.safeCards.length, 0);
+  assert.equal(r.recommendedCode, null);
+});
+
+// §40 — the seat order is learned from PUBLIC play and shown as context only.
+test('Đ2-06: the observer learns who plays next from public PLAY frames (fP → tP)', () => {
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', tableFrame(['uidA', 'uidB', 'uidC', 'uidD']));
+    feed('B1', 'uidA', dealFrame([C(3, 0), C(8, 1)]));
+    feed('B1', 'uidA', playFrame('uidA', C(3, 0), 'uidB'));
+    feed('B1', 'uidA', playFrame('uidB', C(5, 2), 'uidD'));
+  });
+  const snap = obs.getSnapshot();
+  assert.equal(snap.nextOf.uidA, 'uidB');
+  assert.equal(snap.nextOf.uidB, 'uidD');
+  const r = createSafeCardAnalyzer().analyze({ snapshot: snap, targetPlayerUid: 'uidA' });
+  assert.equal(r.nextPlayerUid, 'uidB');
+  assert.equal(r.nextPlayerLabel, 'Player 2');
+});
+
+test('Đ2-07: the learned order is dropped when someone joins or leaves the table', () => {
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', tableFrame(['uidA', 'uidB', 'uidC', 'uidD']));
+    feed('B1', 'uidA', dealFrame([C(3, 0)]));
+    feed('B1', 'uidA', playFrame('uidA', C(3, 0), 'uidB'));
+    feed('B1', 'uidA', tableFrame(['uidA', 'uidB', 'uidC', 'uidE'])); // uidD left, uidE sat down
+  });
+  assert.deepEqual(obs.getSnapshot().nextOf, {}, 'order re-learned from the next plays');
+});
+
+test('Đ2-08: knowing the next player does NOT change how a card is classified (context only)', () => {
+  const feedBase = (feed) => { feed('B1', 'uidA', dealFrame([C(6, 0), C(9, 3)])); };
+  const without = observerWith(feedBase);
+  const withNext = observerWith((feed) => { feedBase(feed); feed('B1', 'uidA', playFrame('uidA', C(9, 3), 'uidB')); feed('B1', 'uidA', dealFrame([C(6, 0), C(9, 3)])); });
+  const a = createSafeCardAnalyzer().analyze({ snapshot: without.getSnapshot(), targetPlayerUid: 'uidA' });
+  const b = createSafeCardAnalyzer().analyze({ snapshot: withNext.getSnapshot(), targetPlayerUid: 'uidA' });
+  const cls = (r) => r.targetCards.filter((c) => c.code === C(6, 0)).map((c) => c.classification);
+  assert.deepEqual(cls(b), cls(a));
+});

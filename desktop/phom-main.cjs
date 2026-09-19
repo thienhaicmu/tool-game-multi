@@ -53,7 +53,8 @@ const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
 const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
-const { evaluateHeaderAction } = require('./protocol/phom/header-action-guard.cjs');
+const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
+const { evaluateHeaderAction } = headerActionGuard;
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
 const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
@@ -571,19 +572,12 @@ else {
 
   // The cluster's shared RID = the RID of the first browser already JOINED to a table. Other in-game
   // browsers then show VÀO BÀN (JOIN_SHARED) for that RID — no independent re-discovery (§ shared RID).
-  function headerSharedRid(browsers) {
-    const list = browsers || [];
-    // PHASE 6.3.4 §3/§16/§20 — Player 1 (browserIndex 1) is the SINGLE room anchor: the shared RID is P1's
-    // own JOINED rid. Followers JOIN that RID; there is never a second anchor.
-    // PHASE 6.3.5 §7 — but ONLY once the anchor is validated (post-anchor capacity check passed). A
-    // provisional/invalid anchor (anchorValid === false) is never published to the followers.
-    const valid = (b) => b && b.manualState === 'JOINED' && b.rid != null && b.anchorValid !== false;
-    // PHASE 6.3.6 — the shared anchor RID is the USER-selected finder's OWN validated joined rid. When a finder
-    // is chosen, ONLY that Player can be the anchor (others are WAIT/JOIN_SHARED, never a second anchor). When
-    // NO finder is chosen, the shared RID is simply whichever browser actually found+joined. Never browserIndex 1.
-    if (selectedFinderIndex != null) { const f = list.find((b) => b.browserIndex === selectedFinderIndex && valid(b)); return f ? Number(f.rid) : null; }
-    const j = list.find(valid);
-    return j ? Number(j.rid) : null;
+  // §38 — the shared room comes from the coordinator's single source of truth (sharedRid()), which the Tool window
+  // reads too. Rules unchanged: the USER-selected finder's own VALIDATED room (never a provisional anchor that has
+  // not passed the post-anchor capacity check); no finder chosen → whichever browser actually found+joined; never
+  // hard-coded to Player 1. Deriving it here separately is what let the Tool and the header disagree.
+  function headerSharedRid() {
+    return phomSessions && phomSessions.active() ? phomSessions.sharedRid() : null;
   }
 
   // Build the raw header view for ONE browser from authoritative snapshots (no button logic here — that
@@ -602,6 +596,10 @@ else {
       entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),
       joining: false,
       manualState: b.manualState || null,
+      // §32/§34 — live search progress so the header shows "ĐANG TÌM BÀN… 12s · lần 6" instead of a label that
+      // cannot be told apart from a hang, and offers HỦY.
+      searchElapsedSec: b.searchElapsedSec || 0,
+      searchAttempt: b.searchAttempt || 0,
       rid: b.rid != null ? b.rid : null,
       lastRid: b.lastRid != null ? b.lastRid : null,
       // PHASE 6.3.6 — FIND gating follows the USER's finder choice (selectedFinderIndex), NEVER browserIndex.
@@ -619,7 +617,7 @@ else {
   function pushHeaderStates() {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
-    const sharedRid = headerSharedRid(browsers);
+    const sharedRid = headerSharedRid();
     for (const run of runManager.list()) {
       if (run.status === RUN_STATUS.CLOSED) continue;
       const client = runClientFor(run.id);
@@ -717,7 +715,11 @@ else {
     if (!guard.ok) { headerLog('action-rejected', { runId: rid, action, actionId, reason: guard.reason }); return { ok: false, busy: guard.reason === 'DUPLICATE_ACTION', error: { code: guard.code, message: guard.message } }; }
     // §12 — never route into a dead CDP session (page crashed / target closed).
     if (!runClientFor(rid)) { headerLog('action-no-client', { runId: rid, action, actionId }); headerError[rid] = 'Chromium mất kết nối — MỞ lại trình duyệt.'; pushHeaderStates(); return { ok: false, error: { code: 'PHOM_HEADER_NO_CLIENT', message: 'no live CDP client' } }; }
-    headerActionBusy[rid] = true;
+    // §34 — a busy-exempt action (HỦY / ⟳ / ⏻ / ↑) runs ALONGSIDE the long operation it is meant to escape, so
+    // it must not take or clear the single-flight flag: doing so would release the flag that the still-running
+    // TÌM BÀN owns and let a second table operation stack on top of it.
+    const exempt = headerActionGuard.isBusyExempt(action);
+    if (!exempt) headerActionBusy[rid] = true;
     if (actionId != null) headerLastActionId[rid] = actionId;
     delete headerError[rid];
     const _t0 = nowMs(); // 6.3.2.10 — main-side handler duration (M1→M4) for ALL actions
@@ -736,6 +738,11 @@ else {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
         res = await phomSessions.manualDiscoverTable(rid, { selectedStake });
+      } else if (action === 'CANCEL_FIND') {
+        // §34 — stop the persistent search this browser is running. Runs alongside the pending FIND (exempt
+        // from single-flight); the coordinator's generation bump is what actually resolves that FIND as stale.
+        ensurePhomSessions();
+        res = await phomSessions.cancelFind(rid);
       } else if (action === 'JOIN_SHARED') {
         ensurePhomSessions();
         // PHASE 6.3.5 — a FOLLOWER joins the anchor's shared RID with bounded same-RID retry + same-room proof.
@@ -764,7 +771,7 @@ else {
         res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
       }
     } catch (e) { res = { ok: false, error: { code: 'PHOM_HEADER_ACTION_FAILED', message: safeMsg(e) } }; }
-    finally { delete headerActionBusy[rid]; }
+    finally { if (!exempt) delete headerActionBusy[rid]; }
     if (res && res.ok === false) headerError[rid] = (res.error && (res.error.message || res.error.code)) || 'LỖI';
     headerLog('action-done', { runId: rid, action, actionId, ok: !!(res && res.ok), error: res && res.error && res.error.code, elapsedMs: Math.round(nowMs() - _t0) });
     pushHeaderStates();
@@ -1210,7 +1217,8 @@ else {
     ipcMain.handle('phom:select-stake', guarded((_e, stake) => ensurePhomSessions().selectStake(stake)));
     // §13 — Find-Table stake source: request the server channel list + read the
     // AUTHORITATIVE distinct stakes it reports (never a hard-coded fallback).
-    ipcMain.handle('phom:request-channels', guarded(async () => { ensurePhomSessions(); return phomSessions.requestChannels(); }));
+    // §35 — optionally scoped to ONE browser; seated browsers are always skipped (coordinator).
+    ipcMain.handle('phom:request-channels', guarded(async (_e, cfg) => { ensurePhomSessions(); return phomSessions.requestChannels({ profileId: cfg && cfg.browserId != null ? cfg.browserId : null }); }));
     ipcMain.handle('phom:stake-channels', guarded(() => { ensurePhomSessions(); return { ok: true, stakes: phomSessions.availableStakes(), sessionActive: !!(phomSessions && phomSessions.active()) }; }));
     ipcMain.handle('phom:acquire-host', guarded(() => ensurePhomSessions().acquireHost()));
     // §18/§22 — host-first find-again discovery loop (single orchestrator; validates from ps[]).
@@ -1249,13 +1257,19 @@ else {
     // PHASE-6.2.1 — REAL discovery: qualifying empty table (rid + stake from the server table) → JOIN → ps[].
     ipcMain.handle('phom:manual-discover', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualDiscoverTable(cfg && cfg.browserId, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
+    // §38 — the Tool window joins the shared room with the SAME semantics as the header's VÀO BÀN (bounded retry +
+    // same-room proof), and can cancel a persistent search just like the header's HỦY.
+    ipcMain.handle('phom:manual-join-shared', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinShared(cfg && cfg.browserId, cfg && cfg.rid, (cfg && cfg.opts) || {}); }));
+    ipcMain.handle('phom:manual-cancel-find', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.cancelFind(cfg && cfg.browserId); }));
     ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualRejoin(cfg && cfg.browserId, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualLeave(cfg && cfg.browserId); }));
     ipcMain.handle('phom:manual-snapshot', () => {
       const browsers = phomSessions ? phomSessions.manualBrowserSnapshot() : [];
       // PHASE 6.3.2.2 — merge the READ-ONLY runtime/CDP/header status per browser for Screen 2 (no actions).
       for (const b of browsers) { if (b && b.profileId != null) Object.assign(b, browserRuntimeStatus(b.profileId)); }
-      return { ok: true, browsers };
+      // §38 — the SAME shared room the in-Chromium header publishes (single source), so the Tool never derives its own.
+      const active = !!(phomSessions && phomSessions.active());
+      return { ok: true, browsers, sharedRid: active ? phomSessions.sharedRid() : null, sharedRidOwner: active ? phomSessions.sharedRidOwner() : null };
     });
     // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
     // saved preference + what each option currently resolves to (so SETUP can show availability).

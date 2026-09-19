@@ -35,10 +35,22 @@ test('opened + not in game -> VÀO GAME (ENTER_GAME)', () => {
   assert.equal(s.primary.disabled, undefined);
 });
 
-test('in game + SEARCHING -> busy ĐANG TÌM BÀN', () => {
+// §32/§34 — a persistent search reports progress and offers HỦY. A disabled "ĐANG TÌM BÀN…" held for up to a
+// minute is indistinguishable from a hang and left the user no way out of the operation.
+test('in game + SEARCHING -> ĐANG TÌM BÀN with a working HỦY button', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'SEARCHING' });
   assert.match(s.statusLabel, /ĐANG TÌM BÀN/);
-  assert.equal(s.primary.busy, true);
+  assert.equal(s.primary.action, 'CANCEL_FIND');
+  assert.notEqual(s.primary.disabled, true, 'HỦY must be clickable while the search runs');
+});
+
+test('SEARCHING shows live progress (elapsed + how many times the server was asked)', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'SEARCHING', searchElapsedSec: 12, searchAttempt: 6 });
+  assert.match(s.statusLabel, /12s/);
+  assert.match(s.statusLabel, /lần 6/);
+  // a just-started search has nothing to report yet and must not render "0s · lần 0"
+  const s0 = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'SEARCHING' });
+  assert.doesNotMatch(s0.statusLabel, /0s|lần 0/);
 });
 
 test('in game + JOINING -> busy ĐANG VÀO BÀN', () => {
@@ -212,7 +224,10 @@ test('router has a per-browser single-flight + identity guard and a dead-session
   assert.match(r, /busy: !!headerActionBusy\[rid\]/);    // one op per browser
   assert.match(r, /if \(!runClientFor\(rid\)\)/);        // never route into a dead CDP session
   assert.match(r, /PHOM_HEADER_NO_CLIENT/);
-  assert.match(r, /finally \{ delete headerActionBusy\[rid\]/);
+  // §34 — an escape action (HỦY / ⟳ / ⏻ / ↑) runs ALONGSIDE the long op it escapes, so it neither takes nor
+  // releases the flag; every other action still releases it unconditionally.
+  assert.match(r, /if \(!exempt\) headerActionBusy\[rid\] = true;/);
+  assert.match(r, /finally \{ if \(!exempt\) delete headerActionBusy\[rid\]; \}/);
   const guard = read('desktop/protocol/phom/header-action-guard.cjs');
   assert.match(guard, /PHOM_HEADER_BUSY/);
   assert.match(guard, /STALE_RUN/); assert.match(guard, /STALE_PROFILE/); assert.match(guard, /DUPLICATE_ACTION_ID/);
@@ -237,8 +252,9 @@ test('main pushes header state on session updates via a coalesced broadcast (no 
 });
 
 test('the cluster shared RID = the first JOINED browser (header VÀO BÀN uses it, § shared RID)', () => {
-  assert.match(main, /function headerSharedRid\(browsers\)/);
-  assert.match(main, /manualState === 'JOINED' && b\.rid != null/);
+  // §38 — single source: the header asks the coordinator (the same value the Tool window gets in its snapshot)
+  assert.match(main, /function headerSharedRid\(\)/);
+  assert.match(main, /sharedRid: active \? phomSessions\.sharedRid\(\) : null/);
 });
 
 test('inGame is derived like the renderer slotInPhom (socketReady + connected + channel list)', () => {
@@ -247,7 +263,8 @@ test('inGame is derived like the renderer slotInPhom (socketReady + connected + 
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
   // NOTE: use \s* (not an explicit \n) so the assertion is line-ending agnostic — the file is LF in git but a
   // Windows checkout (autocrlf) yields CRLF, and a literal \n would not match across the intervening \r.
-  assert.match(coord, /channelCount: Array\.isArray\(c\.channels\) \? c\.channels\.length : 0,\s*rid: rec\._joinedRid/);
+  assert.match(coord, /channelCount: Array\.isArray\(c\.channels\) \? c\.channels\.length : 0,/);
+  assert.match(coord, /rid: rec\._joinedRid != null \? rec\._joinedRid : null,/);
 });
 
 test('REJOIN uses lastRid and LEAVE (THOÁT PHÒNG) preserves it (coordinator, unchanged this phase)', () => {
@@ -255,7 +272,8 @@ test('REJOIN uses lastRid and LEAVE (THOÁT PHÒNG) preserves it (coordinator, u
   // rejoin falls back to _lastRid
   assert.match(coord, /rec\._joinedRid != null \? rec\._joinedRid : rec\._lastRid/);
   // leave clears _joinedRid but NOT _lastRid
-  const leave = coord.slice(coord.indexOf('async manualLeave('), coord.indexOf('async manualLeave(') + 700);
+  // the whole method (it now waits for server confirmation, so it no longer fits a fixed-size window)
+  const leave = coord.slice(coord.indexOf('async manualLeave('), coord.indexOf('  resetBrowser(profileId)'));
   assert.match(leave, /rec\._joinedRid = null/);
   assert.equal(/_lastRid = null/.test(leave), false, 'LEAVE must preserve _lastRid for REJOIN');
 });
@@ -400,9 +418,10 @@ test('main: FIND gating + shared RID + WAIT label follow selectedFinderIndex, NE
   assert.match(main, /finderIndex: selectedFinderIndex/);
   // the old hard-coded Player-1 finder is GONE.
   assert.equal(/isFinder: b\.browserIndex === 1/.test(main), false, 'must not hard-code finder = browserIndex 1');
-  // shared RID anchor = the selected finder (or first valid JOINED when none), never browserIndex 1.
-  assert.match(main, /if \(selectedFinderIndex != null\) \{ const f = list\.find\(\(b\) => b\.browserIndex === selectedFinderIndex && valid\(b\)\); return f \? Number\(f\.rid\) : null; \}/);
-  assert.equal(/list\.find\(\(b\) => b\.browserIndex === 1 && valid\(b\)\)/.test(main), false, 'shared RID must not be keyed on browserIndex 1');
+  // shared RID anchor = the selected finder (or first valid holder when none), never browserIndex 1 — §38 now derived
+  // once, in the coordinator (behaviour covered by FIND-SHARED-* in phom-find-resilience-v2); main only delegates.
+  assert.match(main, /phomSessions\.sharedRid\(\)/);
+  assert.equal(/browserIndex === 1 && valid\(b\)/.test(main), false, 'shared RID must not be keyed on browserIndex 1');
   // the set-finder IPC syncs the coordinator anchor + re-pushes every header immediately.
   assert.match(main, /ipcMain\.handle\('phom:set-finder'/);
   assert.match(main, /applyFinderToCoordinator\(\);[\s\S]*?pushHeaderStates\(\);/);

@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { HostTableCoordinator, SESSION, PSTATE } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
-const { buildJoinFrame, buildReadyFrame } = require('../../desktop/protocol/phom/phom-coordinator.cjs');
+const { buildJoinFrame, buildReadyFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
 
 // §3/§23 — the SAME role model must work for HOST=A, HOST=B and HOST=C. Nothing may be
 // hard-coded to slot A being HOST or slot C being the waiting follower. Follower order is

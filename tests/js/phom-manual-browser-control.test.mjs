@@ -32,7 +32,13 @@ class RoomSim {
         }
         return { ok: true };
       }
-      if (j[0] === 4) { this.leaveLog.push({ id }); for (const r of this.rooms.values()) r.seats = r.seats.filter((s) => s.uid !== uid); return { ok: true }; }
+      if (j[0] === 4) {
+        this.leaveLog.push({ id }); for (const r of this.rooms.values()) r.seats = r.seats.filter((s) => s.uid !== uid);
+        // The leaver lands back in the LOBBY, which shows the stake channel list — the same evidence PhomContext
+        // already treats as "back in the lobby" (§37: THOÁT BÀN is confirmed by it). Opt out with silentLeave.
+        if (!this.silentLeave) this._feed(id, JSON.stringify([5, { rs: [{ rid: 139, b: 100, uC: 0, Mu: 4, zn: 'Simms', gid: 8 }], cmd: 300 }]));
+        return { ok: true };
+      }
       return { ok: true };
     };
   }

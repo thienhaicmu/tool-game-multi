@@ -107,6 +107,8 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .card-face span { font-size: 10px; }
 .card-face.red { color: #c62828; } .card-face.black { color: #111; }
 .card-face.meld { border-color: var(--success); border-width: 1px; box-shadow: 0 0 0 1px var(--success) inset; } /* server meld: green border */
+.card-face.recommended { box-shadow: 0 0 0 2px var(--success); transform: translateY(-2px); } /* §42 the suggested discard */
+.card-face.own-meld { opacity: .55; border-style: dashed; } /* §41 own phỏm: kept, never offered */
 .card-face.stale { opacity: .45; }                                   /* STALE: dim */
 .card-face.desynced { border-color: #c62828; box-shadow: 0 0 0 1px #c62828 inset; } /* DESYNCED: red border */
 .card-face.unknown { background: var(--panel-2); color: var(--text-faint); }        /* unknown: grey + ? */

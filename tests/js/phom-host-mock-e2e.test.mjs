@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { HostTableCoordinator, SESSION, PSTATE } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
-const { buildJoinFrame, buildReadyFrame } = require('../../desktop/protocol/phom/phom-coordinator.cjs');
+const { buildJoinFrame, buildReadyFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
 const { resolveDevBypass } = require('../../desktop/licensing/dev-bypass.cjs');
 const { createLicenseLedger, SYNC } = require('../../desktop/licensing/license-ledger.cjs');
 

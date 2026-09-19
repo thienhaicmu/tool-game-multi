@@ -72,6 +72,10 @@ test('analyzeConsistency reports duplicates, conservation and unknown count', ()
 test('offline analyzer imports only pure card codec (no launcher/CDP/ws/coordinator)', () => {
   const src = readFileSync(new URL('../../desktop/protocol/phom/offline-analyzer.cjs', import.meta.url), 'utf8');
   const requires = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
-  assert.deepEqual(requires, ['./card-codec.cjs']);
+  // the shared, pure rules module is allowed — and it must itself stay pure (checked transitively below)
+  assert.deepEqual(requires.sort(), ['./card-codec.cjs', './phom-rules.cjs']);
   for (const dep of requires) assert.equal(/ws-replay|chrome-launcher|chrome-runtime|target-manager|coordinator|session-manager|node:net|electron/.test(dep), false, `forbidden import: ${dep}`);
+  const rules = readFileSync(new URL('../../desktop/protocol/phom/phom-rules.cjs', import.meta.url), 'utf8');
+  const ruleDeps = [...rules.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]);
+  assert.deepEqual(ruleDeps, ['./card-codec.cjs'], 'phom-rules must import nothing but the card codec');
 });

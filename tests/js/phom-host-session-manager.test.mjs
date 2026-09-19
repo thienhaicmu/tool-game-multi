@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { HostSessionManager } = require('../../desktop/protocol/phom/host-session-manager.cjs');
-const { buildJoinFrame, buildChannelListFrame } = require('../../desktop/protocol/phom/phom-coordinator.cjs');
+const { buildJoinFrame, buildChannelListFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
 
 function makeManager({ authorized = true } = {}) {
   const sends = [];
@@ -50,14 +50,41 @@ test('requestChannels sends CMD 300 on each profile OWN socket once aid+socket k
   const { mgr, sends } = makeManager();
   mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
   ['A', 'B', 'C'].forEach((id) => mgr.setIdentity(id, { aid: 'aid-' + id }));
-  // bind each socket by observing one frame per profile
-  ['A', 'B', 'C'].forEach((id) => mgr.routeFrame({ id }, wsFrame(id, tableRaw(['1_seed']), 1)));
+  // bind each socket by observing one LOBBY frame per profile (requesting channels is a lobby action; a
+  // lone-seat TABLE_STATE would make each profile SEATED, and seated browsers are never asked — §35)
+  ['A', 'B', 'C'].forEach((id) => mgr.routeFrame({ id }, wsFrame(id, channelRaw(139, 1000), 1)));
   const res = await mgr.requestChannels();
   assert.equal(res.ok, true);
   for (const id of ['A', 'B', 'C']) {
     assert.ok(sends.some((x) => x.payload === buildChannelListFrame('aid-' + id) && x.ctx.targetId === `T-${id}`),
       `profile ${id} requested channels via its own socket`);
   }
+});
+
+// §35 — "tải lại mức cược" on ONE browser must not reach the others, and never a SEATED browser: PhomContext
+// reads any CHANNEL_LIST as "back in the lobby", so asking a seated browser made it look like it left its table.
+test('requestChannels can be scoped to ONE browser', async () => {
+  const { mgr, sends } = makeManager();
+  mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
+  ['A', 'B', 'C'].forEach((id) => mgr.setIdentity(id, { aid: 'aid-' + id }));
+  ['A', 'B', 'C'].forEach((id) => mgr.routeFrame({ id }, wsFrame(id, channelRaw(139, 1000), 1)));
+  await mgr.requestChannels({ profileId: 'B' });
+  const asked = sends.filter((x) => String(x.payload).includes('"cmd":300')).map((x) => x.ctx.targetId);
+  assert.deepEqual(asked, ['T-B'], 'only the browser whose bets were reloaded');
+});
+
+test('requestChannels never asks a SEATED browser (its table state would be wiped)', async () => {
+  const { mgr, sends } = makeManager();
+  mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'A' });
+  ['A', 'B', 'C'].forEach((id) => mgr.setIdentity(id, { aid: 'aid-' + id }));
+  mgr.routeFrame({ id: 'A' }, wsFrame('A', tableRaw(['1_A']), 1));        // A is seated (own uid in ps[])
+  ['B', 'C'].forEach((id) => mgr.routeFrame({ id }, wsFrame(id, channelRaw(139, 1000), 1)));
+  const res = await mgr.requestChannels();
+  const asked = sends.filter((x) => String(x.payload).includes('"cmd":300')).map((x) => x.ctx.targetId).sort();
+  assert.deepEqual(asked, ['T-B', 'T-C'], 'the seated browser is skipped');
+  const a = res.results.find((r) => r.id === 'A');
+  assert.equal(a.skipped, true);
+  assert.equal(a.reason, 'SEATED');
 });
 
 test('requestChannels reports typed not-ready when aid/socket missing (no throw, no fake success)', async () => {

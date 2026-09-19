@@ -96,7 +96,7 @@ class HostSessionManager extends EventEmitter {
   setFinder(profileId) { const c = this._c(); return c ? c.setFinder(profileId == null ? null : String(profileId)) : { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no session' } }; }
   finderId() { const c = this._c(); return c && typeof c.finderId === 'function' ? c.finderId() : null; }
   selectStake(stake) { const c = this._c(); return c ? { ok: true, selected: c.selectStake(stake) } : { ok: false }; }
-  requestChannels() { return this._guarded((c) => c.requestChannels()); }
+  requestChannels(opts) { return this._guarded((c) => c.requestChannels(opts || {})); }
   availableStakes() { const c = this._c(); return c && typeof c.availableStakes === 'function' ? c.availableStakes() : []; }
   acquireHost() { return this._guarded((c) => c.acquireHost()); }
   runDiscovery() { return this._guarded((c) => c.runDiscovery()); }
@@ -121,6 +121,11 @@ class HostSessionManager extends EventEmitter {
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   // PHASE 6.3.5 — FOLLOWER JOIN of the shared anchor RID with bounded, generation-safe, single-flight retry.
   manualJoinShared(id, rid, opts) { return this._guarded((c) => c.manualJoinShared(String(id), rid, opts)); }
+  // §34 — cancel the in-flight persistent TÌM BÀN on one browser.
+  cancelFind(id) { return this._guarded((c) => c.cancelFind(String(id))); }
+  // §38 — the single authoritative shared room (header + Tool read the same value).
+  sharedRid() { const c = this._c(); return c && typeof c.sharedRid === 'function' ? c.sharedRid() : null; }
+  sharedRidOwner() { const c = this._c(); return c && typeof c.sharedRidOwner === 'function' ? c.sharedRidOwner() : null; }
   manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
   manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
   // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).

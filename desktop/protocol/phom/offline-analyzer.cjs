@@ -27,47 +27,12 @@ function assertOffline(ctx = {}) {
   return null;
 }
 
+// The meld rules live in ONE place (phom-rules.cjs), shared with the live safe-card analyzer so both
+// screens agree on what a phỏm is. They are pure (no network), so sharing them does not weaken the
+// offline-only gate, which stays on this module's ENTRY POINTS below.
+const { classifyMeld, findMelds } = require('./phom-rules.cjs');
 const rankOf = (c) => Math.floor(c / 4);
 const suitOf = (c) => c % 4;
-
-// classifyMeld(cards) -> 'SET' | 'RUN' | null. A SET is >=3 of one rank; a RUN is
-// >=3 same-suit consecutive ranks. Pure — used ONLY for the offline simulator.
-function classifyMeld(cards) {
-  if (!Array.isArray(cards) || cards.length < 3 || !cards.every(isValidCardCode)) return null;
-  const ranks = cards.map(rankOf), suits = cards.map(suitOf);
-  if (ranks.every((r) => r === ranks[0])) return 'SET';
-  if (suits.every((s) => s === suits[0])) {
-    const sorted = [...ranks].sort((a, b) => a - b);
-    if (new Set(sorted).size !== sorted.length) return null;
-    for (let i = 1; i < sorted.length; i++) if (sorted[i] !== sorted[i - 1] + 1) return null;
-    return 'RUN';
-  }
-  return null;
-}
-
-// findMelds(hand) -> list of maximal candidate melds present in a simulated hand.
-// SIMULATOR/QA ONLY. Never called on a live table.
-function findMelds(hand) {
-  const cards = (hand || []).filter(isValidCardCode);
-  const out = [];
-  // sets by rank
-  const byRank = new Map();
-  for (const c of cards) { const r = rankOf(c); (byRank.get(r) || byRank.set(r, []).get(r)).push(c); }
-  for (const [, group] of byRank) if (group.length >= 3) out.push({ type: 'SET', cards: sortCardCodes(group) });
-  // runs by suit
-  const bySuit = new Map();
-  for (const c of cards) { const s = suitOf(c); (bySuit.get(s) || bySuit.set(s, []).get(s)).push(c); }
-  for (const [, group] of bySuit) {
-    const uniq = [...new Set(group)].sort((a, b) => rankOf(a) - rankOf(b));
-    let run = [uniq[0]];
-    for (let i = 1; i < uniq.length; i++) {
-      if (rankOf(uniq[i]) === rankOf(uniq[i - 1]) + 1) run.push(uniq[i]);
-      else { if (run.length >= 3) out.push({ type: 'RUN', cards: [...run] }); run = [uniq[i]]; }
-    }
-    if (run.length >= 3) out.push({ type: 'RUN', cards: [...run] });
-  }
-  return out;
-}
 
 // Does adding `card` to a known SIMULATED hand create a new meld it wasn't part of?
 // SIMULATOR/QA ONLY. Returns { forms, melds } — supporting cards for the meld.

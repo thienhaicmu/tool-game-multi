@@ -132,6 +132,8 @@ module.exports = {
   MIN_CODE,
   MAX_CODE,
   isValidCardCode,
+  rankIndexOf,
+  suitIndexOf,
   decodeCard,
   encodeCard,
   formatCard,

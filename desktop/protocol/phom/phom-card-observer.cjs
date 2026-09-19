@@ -85,6 +85,12 @@ class CardObserver {
     this._ledger = new Map();   // code -> { code, status, ownerUid, source, observedAt, evidenceKey }
     this._seenEvents = new Set(); // evidenceKey dedup (draws/discards/melds)
     this._analysisPlayer = null;  // §19 — selected analysis angle (never merges hands)
+    // §40 — seat ORDER learned from PUBLIC play: every PLAY names who discarded (fP.uid) and whose turn it is
+    // next (tP.uid). Only that next player may eat the discard, so this is what a player at the table knows
+    // anyway. Learned (never assumed from `sit`, whose direction is not evidenced), kept across rounds while
+    // the seated set is unchanged, dropped when someone joins/leaves.
+    this._nextOf = new Map();     // uid -> uid of the player who plays right after them
+    this._seatedKey = null;       // fingerprint of the seated uid set the order was learned for
   }
 
   // ---- identity / players ----
@@ -94,7 +100,7 @@ class CardObserver {
     if (!p) {
       p = { uid: id, seat: null, name: null, controlled: false, slot: null,
         currentCards: [], currentCardsSource: null, currentCardsAt: null,
-        drawnHistory: [], discardedHistory: [], melds: [] };
+        drawnHistory: [], discardedHistory: [], melds: [], serverMeldCards: [] };
       this._players.set(id, p);
     }
     return p;
@@ -124,7 +130,7 @@ class CardObserver {
     // Clear per-round CARD data; KEEP identity (uid/seat/name/controlled/slot) and slot binding.
     for (const p of this._players.values()) {
       p.currentCards = []; p.currentCardsSource = null; p.currentCardsAt = null;
-      p.drawnHistory = []; p.discardedHistory = []; p.melds = [];
+      p.drawnHistory = []; p.discardedHistory = []; p.melds = []; p.serverMeldCards = [];
     }
     this._discardPile = [];
     this._observedDiscardEvents = [];
@@ -166,6 +172,8 @@ class CardObserver {
       if (seat.sit != null) p.seat = seat.sit;
       if (seat.dn != null) p.name = String(seat.dn);
     }
+    const key = ps.map((x) => (x && x.uid != null ? String(x.uid) : '')).filter(Boolean).sort().join('|');
+    if (key && key !== this._seatedKey) { this._seatedKey = key; this._nextOf.clear(); } // someone joined/left: re-learn
   }
 
   _onDeal(cls, slot, ownUid, now) {
@@ -188,6 +196,7 @@ class CardObserver {
       const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || (cls.uid != null ? String(cls.uid) : null);
       if (uid != null) {
         this._setCurrentCards(uid, normalizeCards(cls.sAC), 'DRAW', now);
+        if (Array.isArray(cls.sMs)) this._player(uid).serverMeldCards = normalizeCards(cls.sMs); // own phỏm (§41)
         const drawn = normalizeCard(cls.cs);
         if (drawn != null) this._recordDraw(uid, drawn, 'DRAW_OWN', now);
       }
@@ -213,7 +222,10 @@ class CardObserver {
     if (!fp || fp.uid == null) return;
     const uid = String(fp.uid);
     const cards = normalizeCards(fp.dCs);
-    if (cls.tP && cls.tP.uid != null) this._currentTurnUid = String(cls.tP.uid);
+    if (cls.tP && cls.tP.uid != null) {
+      this._currentTurnUid = String(cls.tP.uid);
+      if (String(cls.tP.uid) !== uid) this._nextOf.set(uid, String(cls.tP.uid)); // §40 — public turn order
+    }
     if (!cards.length) return;
     const newCards = [];
     for (const code of cards) {
@@ -257,7 +269,7 @@ class CardObserver {
     this._roundActive = false;
     if (Array.isArray(cls.sAC)) {
       const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || (cls.uid != null ? String(cls.uid) : null);
-      if (uid != null) this._setCurrentCards(uid, normalizeCards(cls.sAC), 'ROUND_END', now);
+      if (uid != null) { this._setCurrentCards(uid, normalizeCards(cls.sAC), 'ROUND_END', now); if (Array.isArray(cls.sMs)) this._player(uid).serverMeldCards = normalizeCards(cls.sMs); }
     }
   }
 
@@ -317,6 +329,7 @@ class CardObserver {
         drawnHistory: clone(p.drawnHistory), drawnHistoryView: p.drawnHistory.map((e) => ({ ...e, view: decodeView(e.card) })),
         discardedHistory: clone(p.discardedHistory), discardedHistoryView: p.discardedHistory.map((e) => ({ ...e, view: decodeView(e.card) })),
         melds: p.melds.map((m) => ({ meid: m.meid, cards: m.cards.slice(), cardsView: m.cards.map(decodeView), source: m.source, observedAt: m.observedAt, evidenceKey: m.evidenceKey })),
+        serverMeldCards: p.serverMeldCards.slice(), // §41 — this player's OWN phỏm as the server arranged it (own session only)
       };
     }
     const snap = {
@@ -326,6 +339,7 @@ class CardObserver {
       roundActive: this._roundActive,
       startedAt: this._startedAt,
       currentTurnUid: this._currentTurnUid,
+      nextOf: Object.fromEntries(this._nextOf), // §40 — learned public turn order (uid -> next uid)
       slotBinding: { ...this._slotBinding },
       players,
       discardPile: this._discardPile.slice(),

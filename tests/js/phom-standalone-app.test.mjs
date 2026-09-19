@@ -180,8 +180,9 @@ test('host/live controls are rendered by CONTROL, not SETUP', () => {
   assert.equal(/acquireHost|joinFollowers|applyReady|HOST & MỨC CƯỢC/.test(setup), false,
     'SETUP must not render HOST/stake/Join/Ready controls');
   const control = rendererSrc.slice(rendererSrc.indexOf('function renderControl'));
-  // Host-first search is triggered from CONTROL via the discovery loop (api.discover()).
-  assert.match(control, /api\.discover\(\)/);
+  // §44 — the table search is triggered from CONTROL, now through the ONE manual flow every surface uses
+  // (it used to start the separate legacy host-first discovery loop).
+  assert.match(control, /api\.manualDiscover\(finderRunId/);
   // Screen 2 is the LIVE QA workspace: status toolbar + minimal command bar + monitor.
   assert.match(control, /LIVE QA MONITOR/);
   assert.match(control, /function commandToolbar/);

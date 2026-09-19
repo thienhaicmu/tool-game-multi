@@ -148,3 +148,27 @@ test('manual join result clears only a matching lock and never steals ownership'
   assert.equal(after.sharedRidOwner, '3');
   assert.equal(after.sharedRid, 500);
 });
+
+// §38 — the Tool window adopts the SAME shared room the header publishes (the coordinator's single source).
+// Its own derivation ignored the user-selected finder and the post-anchor validation, so it could disagree.
+test('§38 reconcile adopts the authoritative shared room over its own derivation', () => {
+  const st = S.create();
+  // B1 is JOINED at 700 but the coordinator says the shared room is B3's 900 (B3 is the selected finder)
+  const browsers = [B('B1', 'JOINED', { rid: 700 }), B('B3', 'JOINED', { rid: 900 })];
+  const next = S.reconcile(st, browsers, { sharedRid: 900, sharedRidOwner: 'B3' });
+  assert.equal(next.sharedRid, 900);
+  assert.equal(next.sharedRidOwner, 'B3');
+});
+
+test('§38 an authoritative null clears the shared room even while some browser is JOINED', () => {
+  // e.g. the only JOINED browser holds a PROVISIONAL anchor the coordinator refuses to publish
+  const st = { ...S.create(), sharedRid: 700, sharedRidOwner: 'B1' };
+  const next = S.reconcile(st, [B('B1', 'JOINED', { rid: 700 })], { sharedRid: null, sharedRidOwner: null });
+  assert.equal(next.sharedRid, null);
+  assert.equal(next.sharedRidOwner, null);
+});
+
+test('§38 without an authoritative value the legacy derivation still applies (back-compat)', () => {
+  const next = S.reconcile(S.create(), [B('B2', 'JOINED', { rid: 555 })]);
+  assert.equal(next.sharedRid, 555);
+});

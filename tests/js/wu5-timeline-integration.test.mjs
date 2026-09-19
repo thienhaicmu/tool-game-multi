@@ -22,6 +22,23 @@ function chromePath() {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(pred, ms = 6000) { const end = Date.now() + ms; while (Date.now() < end) { const v = await pred(); if (v) return v; await sleep(70); } return null; }
+// Page.navigate resolves when the navigation STARTS, so a fixed sleep afterwards was a bet on how fast Chrome
+// loads. Under load the document was still about:blank when the test fired its RELATIVE fetches, which then
+// resolved against the wrong origin, never reached the local server and were never captured. Wait for the real
+// precondition instead: the document is on `base` and has finished parsing.
+async function navigated(client, base, ms = 20000) {
+  await client.Page.navigate({ url: base + '/' });
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try {
+      const r = await client.Runtime.evaluate({ expression: 'location.origin + "|" + document.readyState', returnByValue: true });
+      const v = String((r.result && r.result.value) || '');
+      if (v.startsWith(base + '|') && (v.endsWith('|interactive') || v.endsWith('|complete'))) return true;
+    } catch { /* execution context not ready yet */ }
+    await sleep(50);
+  }
+  return false;
+}
 async function waitEndpoint(host, port, ms = 15000) { const end = Date.now() + ms; while (Date.now() < end) { try { await CDP.Version({ host, port }); return true; } catch { await sleep(300); } } return false; }
 
 function startServer() {
@@ -44,7 +61,7 @@ test('WU5 timeline aggregates capture + replays + intercept with correct diffs',
   const { server, port: httpPort } = await startServer();
   const base = `http://127.0.0.1:${httpPort}`;
   const host = '127.0.0.1';
-  const cdpPort = 9740 + (process.pid % 120);
+  const cdpPort = 9740 + (process.pid % 100);
   const profile = mkdtempSync(join(tmpdir(), 'wu5-chrome-'));
   const proc = spawn(chrome, ['--headless=new', `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--disable-gpu', 'about:blank'], { stdio: 'ignore', windowsHide: true });
@@ -70,8 +87,7 @@ test('WU5 timeline aggregates capture + replays + intercept with correct diffs',
     Network.loadingFailed((p) => cap.onLoadingFailed('A', p));
     client.Fetch.requestPaused((p) => intercept.onRequestPaused('A', p));
 
-    await Page.navigate({ url: base + '/' });
-    await sleep(500);
+    assert.ok(await navigated(client, base), 'page loaded on the local server origin');
 
     // 1) Enable intercept, fire a request, modify the header, continue -> WU2 captures it.
     assert.ok((await intercept.enable('A', { urlContains: '/api' })).ok);

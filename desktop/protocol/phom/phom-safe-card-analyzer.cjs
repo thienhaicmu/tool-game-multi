@@ -38,21 +38,8 @@ const rankOf = (code) => decodeCard(code).rankIndex;
 const suitOf = (code) => decodeCard(code).suitIndex;
 const view = (code) => { const d = decodeCard(code); return { code, label: d.label, rank: d.rank, suit: d.suit, color: d.color }; };
 
-// The 3 same-rank partner codes (other suits) for X.
-function rankPartners(code) {
-  const r = rankOf(code); const s = suitOf(code);
-  const out = [];
-  for (let suit = 0; suit < 4; suit++) if (suit !== s) out.push(encodeCard(r, suit));
-  return out;
-}
-// The run windows (same suit) whose completion would eat X: [X-2,X-1],[X-1,X+1],[X+1,X+2].
-function runWindows(code) {
-  const r = rankOf(code); const s = suitOf(code);
-  const wins = [];
-  const mk = (a, b) => (a >= 0 && b <= 12 ? [encodeCard(a, s), encodeCard(b, s)] : null);
-  for (const w of [mk(r - 2, r - 1), mk(r - 1, r + 1), mk(r + 1, r + 2)]) if (w) wins.push(w);
-  return wins;
-}
+// Meld partner geometry comes from the shared rules module (one implementation of the Phỏm rules).
+const { rankPartners, runWindows, cardsInMelds, cardPoints } = require('./phom-rules.cjs');
 
 class SafeCardAnalyzer {
   constructor() { this._last = null; this._key = null; }
@@ -82,6 +69,8 @@ function compute(snap, targetUid) {
     targetPlayerUid: targetUid, targetPlayerLabel: null, targetSlot: null,
     status: STATUS.NO_TARGET,
     targetCards: [], safeCards: [], likelySafeCards: [], unknownCards: [], riskyCards: [],
+    ownMeldCards: [], laidCards: [], recommendedCode: null, ownMeldSource: null,
+    nextPlayerUid: null, nextPlayerLabel: null,
     reasons: [], roundSeq: snap ? snap.roundSeq : 0, observedAt: snap ? snap.startedAt : null,
     capabilities: caps,
     transparency: 'Phân tích từ dữ liệu công khai đã quan sát',
@@ -94,8 +83,8 @@ function compute(snap, targetUid) {
   base.targetPlayerLabel = label.label; base.targetSlot = label.slot;
   if (!target) return freeze({ ...base, status: STATUS.TARGET_NOT_FOUND });
 
-  const hand = Array.isArray(target.currentCards) ? target.currentCards.filter(isValidCardCode) : [];
-  if (!hand.length) return freeze({ ...base, status: STATUS.NO_HAND });
+  const held = Array.isArray(target.currentCards) ? target.currentCards.filter(isValidCardCode) : [];
+  if (!held.length) return freeze({ ...base, status: STATUS.NO_HAND });
 
   // Location index from the observer's LEDGER (single source, §4). A code is "possibly hidden" only when it
   // has NO known location — i.e. it could be in an unobserved opponent's hand OR still in the deck (§13).
@@ -104,23 +93,58 @@ function compute(snap, targetUid) {
   const possiblyHidden = (code) => !ledgerByCode.has(code);
   const statusOf = (code) => { const e = ledgerByCode.get(code); return e ? e.status : null; };
 
+  // §41 — cards the target ALREADY laid down in a public phỏm stay in its server hand (sAC keeps them), but they
+  // are on the table: they cannot be discarded, so they are never candidates (they used to be classified —
+  // and could be shown as a card to discard).
+  const laid = held.filter((c) => { const e = ledgerByCode.get(c); return e && e.status === 'MELDED' && String(e.ownerUid) === targetUid; });
+  const laidSet = new Set(laid);
+  const hand = held.filter((c) => !laidSet.has(c));
+
+  // §41 — the target's OWN phỏm still in hand: discarding one breaks it. Prefer the server's own arrangement
+  // (sMs, sent with this player's DRAW / ROUND_END hand); fall back to the shared rules for a dealt hand
+  // (DEAL carries no sMs). Only the target's OWN cards are used.
+  const serverKnown = target.currentCardsSource === 'DRAW' || target.currentCardsSource === 'ROUND_END';
+  const ownMeld = serverKnown
+    ? new Set((target.serverMeldCards || []).filter((c) => hand.includes(c)))
+    : cardsInMelds(hand);
+  const ownMeldSource = serverKnown ? 'SERVER' : 'RULES';
+
   // The OTHER controlled players (P1/P2/P3 minus the target) whose exact hands we KNOW. They are opponents
   // too, so a known partner pair in their hand proves a real (not hypothetical) eat.
   const controlledOpps = Object.values(players).filter((p) => p && p.controlled && p.uid !== targetUid)
     .map((p) => ({ uid: p.uid, slot: p.slot, hand: new Set((p.currentCards || []).filter(isValidCardCode)) }));
 
-  const cards = hand.map((code) => classifyCard(code, { possiblyHidden, statusOf, controlledOpps }));
+  const cards = hand.map((code) => {
+    const c = classifyCard(code, { possiblyHidden, statusOf, controlledOpps });
+    const inOwnMeld = ownMeld.has(code);
+    return { ...c, inOwnMeld, points: cardPoints(code), reasonCodes: inOwnMeld ? [...c.reasonCodes, 'IN_OWN_MELD'] : c.reasonCodes };
+  });
   // Deterministic ordering by code.
   cards.sort((a, b) => a.code - b.code);
 
-  const pick = (cls) => cards.filter((c) => c.classification === cls).map((c) => ({ code: c.code, label: c.label, rank: c.rank, suit: c.suit, color: c.color, reasonCodes: c.reasonCodes }));
+  // Candidates to discard exclude the player's own phỏm. §42 — within a class, the HIGHEST point card comes first:
+  // a loose card counts its face value against the player at scoring time, so shedding the costliest SAFE card
+  // first is the standard play. Ties break by code, keeping the output deterministic.
+  const view = (c) => ({ code: c.code, label: c.label, rank: c.rank, suit: c.suit, color: c.color, points: c.points, reasonCodes: c.reasonCodes });
+  const byValue = (a, b) => (b.points - a.points) || (a.code - b.code);
+  const pick = (cls) => cards.filter((c) => c.classification === cls && !c.inOwnMeld).sort(byValue).map(view);
+  const safe = pick(CLASS.SAFE);
+  const next = snap.nextOf && snap.nextOf[targetUid] != null ? String(snap.nextOf[targetUid]) : null;
   const reasons = [...new Set(cards.flatMap((c) => c.reasonCodes))].sort();
 
   return freeze({
     ...base,
     status: STATUS.OK,
     targetCards: cards,
-    safeCards: pick(CLASS.SAFE),
+    safeCards: safe,
+    // Only a PROVEN-safe card is ever suggested — never a LIKELY one (§13: nothing is presented as safe on a guess).
+    recommendedCode: safe.length ? safe[0].code : null,
+    ownMeldCards: cards.filter((c) => c.inOwnMeld).map(view),
+    ownMeldSource,
+    laidCards: laid.slice().sort((a, b) => a - b).map((code) => ({ code, label: decodeCard(code).label })),
+    // §40 — who plays right after the target (learned from public play). Context for the user only.
+    nextPlayerUid: next,
+    nextPlayerLabel: next ? playerLabel(snap, next) : null,
     likelySafeCards: pick(CLASS.LIKELY_SAFE),
     unknownCards: pick(CLASS.UNKNOWN),
     riskyCards: pick(CLASS.RISKY),
@@ -181,6 +205,14 @@ function decorate(code, classification, reasonCodes) {
 }
 
 // The user-facing "Player N" label + internal slot for a uid (presentation only, §6).
+// A display name for any seated player: 'Player N' for a controlled browser, else the table name.
+function playerLabel(snap, uid) {
+  const l = slotLabel(snap, uid);
+  if (l.label) return l.label;
+  const p = (snap.players || {})[uid];
+  return p && p.name ? String(p.name) : 'Người chơi khác';
+}
+
 function slotLabel(snap, uid) {
   const binding = snap.slotBinding || {};
   for (const slot of ['B1', 'B2', 'B3']) if (binding[slot] === uid) return { slot, label: 'Player ' + slot.slice(1) };
@@ -192,8 +224,11 @@ function slotLabel(snap, uid) {
 function fingerprint(snap, targetUid) {
   if (!snap) return `${targetUid}|nil`;
   const led = (snap.ledger || []).map((e) => `${e.code}:${e.status}`).sort().join(',');
-  const t = snap.players && snap.players[targetUid] ? (snap.players[targetUid].currentCards || []).slice().sort((a, b) => a - b).join(',') : '';
-  return `${targetUid}|r${snap.roundSeq}|H[${t}]|L[${led}]`;
+  const tp = snap.players && snap.players[targetUid];
+  const t = tp ? (tp.currentCards || []).slice().sort((a, b) => a - b).join(',') : '';
+  const sm = tp ? `${tp.currentCardsSource || ''}:${(tp.serverMeldCards || []).slice().sort((a, b) => a - b).join(',')}` : '';
+  const nx = snap.nextOf && snap.nextOf[targetUid] != null ? String(snap.nextOf[targetUid]) : '';
+  return `${targetUid}|r${snap.roundSeq}|H[${t}]|M[${sm}]|N[${nx}]|L[${led}]`;
 }
 
 function freeze(o) { if (o && typeof o === 'object' && !Object.isFrozen(o)) { for (const k of Object.keys(o)) freeze(o[k]); Object.freeze(o); } return o; }

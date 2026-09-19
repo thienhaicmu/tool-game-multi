@@ -7,7 +7,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
-const { qualifyTable, pickQualifiedCandidate, freeSlotsOf } = require('../../desktop/protocol/phom/table-qualify.cjs');
+const { qualifyTable, pickQualifiedCandidate, freeSlotsOf, describeNoTableReason, NO_TABLE_REASON_TEXT } = require('../../desktop/protocol/phom/table-qualify.cjs');
 
 const T = (over = {}) => ({ rid: 700100, b: 100, Mu: 4, uC: 1, zn: null, gid: null, ...over });
 const q = (over, opts = {}) => qualifyTable(T(over), { selectedStake: 100, need: 3, ...opts });
@@ -61,5 +61,36 @@ test('coordinator uses the qualifier BEFORE join and logs NOT_ENOUGH_FREE_SLOTS 
   assert.match(coord, /need, selectedStake, zone: ZONE, gid: GID, isFailedRid/);
   assert.match(coord, /_mark\('TABLE_REJECT', \{[^}]*reason: r\.reason/);
   // discovery still qualifies BEFORE manualJoinRoom (pick → then JOIN)
-  assert.match(coord, /_pickManualCandidate\(rec, need, selectedStake\)[\s\S]*?manualJoinRoom\(profileId, candidate\.rid/);
+  assert.match(coord, /_pickManualCandidate\(rec, need, selectedStake, runFailedRids\)[\s\S]*?manualJoinRoom\(profileId, candidate\.rid/);
+});
+
+// Every diagnosis code FIND can produce must have a human explanation — that text is what the header's ⚠
+// tooltip and the Tool's errText actually show, so a missing entry means the user sees no reason at all.
+test('describeNoTableReason explains every diagnosis code and degrades safely', () => {
+  for (const code of ['NO_TABLE_RECORDS', 'NO_MATCHING_STAKE', 'ONLY_STAKE_BUCKETS', 'NOT_ENOUGH_FREE_SLOTS', 'ALL_CANDIDATES_FAILED']) {
+    const text = describeNoTableReason(code);
+    assert.equal(typeof text, 'string');
+    assert.ok(text.length > 0, `${code} must have an explanation`);
+    assert.equal(text, NO_TABLE_REASON_TEXT[code]);
+    assert.doesNotMatch(text, /[A-Z]{3,}_/, `${code} must read as prose, not as a raw code`);
+  }
+  // total: an unknown / missing code never throws and never leaks the raw value
+  for (const bad of [undefined, null, '', 'SOMETHING_NEW', 42]) {
+    assert.equal(describeNoTableReason(bad), 'không có bàn nào đủ điều kiện');
+  }
+});
+
+// The free-seat requirement is stated in ONE place; the message must not drift from the qualifier.
+test('the NOT_ENOUGH_FREE_SLOTS explanation quotes the real DEFAULT_NEED', () => {
+  const { DEFAULT_NEED } = require('../../desktop/protocol/phom/table-qualify.cjs');
+  assert.match(describeNoTableReason('NOT_ENOUGH_FREE_SLOTS'), new RegExp(`${DEFAULT_NEED} ghế trống`));
+});
+
+// Every code _diagNoTable can return must be one describeNoTableReason knows about.
+test('every _diagNoTable return value has an explanation', () => {
+  const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
+  const body = coord.slice(coord.indexOf('_diagNoTable(rec) {'), coord.indexOf('// REAL table discovery for ONE browser'));
+  const codes = [...body.matchAll(/return '([A-Z_]+)'/g)].map((m) => m[1]);
+  assert.ok(codes.length >= 4, 'sanity: the diagnosis branches were found');
+  for (const c of codes) assert.ok(NO_TABLE_REASON_TEXT[c], `_diagNoTable can return ${c} with no explanation`);
 });

@@ -20,8 +20,27 @@ function chromePath() {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function waitFor(pred, ms = 6000) {
   const end = Date.now() + ms;
-  while (Date.now() < end) { const v = pred(); if (v) return v; await sleep(80); }
+  // `pred` may be async: it MUST be awaited. A bare call returns an always-truthy Promise, so the loop
+  // returned after one immediate check and never retried — turning every async assertion into a race.
+  while (Date.now() < end) { const v = await pred(); if (v) return v; await sleep(80); }
   return null;
+}
+// Page.navigate resolves when the navigation STARTS, so a fixed sleep afterwards was a bet on how fast Chrome
+// loads. Under load the document was still about:blank when the test fired its RELATIVE fetches, which then
+// resolved against the wrong origin, never reached the local server and were never captured. Wait for the real
+// precondition instead: the document is on `base` and has finished parsing.
+async function navigated(client, base, ms = 20000) {
+  await client.Page.navigate({ url: base + '/' });
+  const end = Date.now() + ms;
+  while (Date.now() < end) {
+    try {
+      const r = await client.Runtime.evaluate({ expression: 'location.origin + "|" + document.readyState', returnByValue: true });
+      const v = String((r.result && r.result.value) || '');
+      if (v.startsWith(base + '|') && (v.endsWith('|interactive') || v.endsWith('|complete'))) return true;
+    } catch { /* execution context not ready yet */ }
+    await sleep(50);
+  }
+  return false;
 }
 async function waitEndpoint(host, port, ms = 15000) {
   const end = Date.now() + ms;
@@ -53,7 +72,7 @@ test('WU2 full capture against real Chrome + local server', async (t) => {
   const { server, port: httpPort } = await startServer();
   const base = `http://127.0.0.1:${httpPort}`;
   const host = '127.0.0.1';
-  const cdpPort = 9420 + (process.pid % 120);
+  const cdpPort = 9420 + (process.pid % 100);
   const profile = mkdtempSync(join(tmpdir(), 'wu2-chrome-'));
   const proc = spawn(chrome, ['--headless=new', `--remote-debugging-port=${cdpPort}`, `--user-data-dir=${profile}`,
     '--no-first-run', '--no-default-browser-check', '--disable-gpu', 'about:blank'], { stdio: 'ignore', windowsHide: true });
@@ -73,8 +92,7 @@ test('WU2 full capture against real Chrome + local server', async (t) => {
     Network.loadingFailed((p) => cap.onLoadingFailed('T', p));
 
     // Load app content same-origin so subsequent fetches are not cross-origin.
-    await Page.navigate({ url: base + '/' });
-    await sleep(600);
+    assert.ok(await navigated(client, base), 'page loaded on the local server origin');
 
     // POST JSON
     await Runtime.evaluate({ expression: `fetch('/echo',{method:'POST',headers:{'Content-Type':'application/json','X-Test':'42'},body:JSON.stringify({hello:'world'})})`, awaitPromise: true });
