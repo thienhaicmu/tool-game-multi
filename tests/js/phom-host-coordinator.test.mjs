@@ -228,7 +228,8 @@ test('FINDER: no finder chosen -> every browser isFinder=true; choosing one narr
 test('FINDER: unknown profile rejected; the same-room-proof anchor follows the selected finder (not always P1)', () => {
   const { coord } = makeSession();
   assert.equal(coord.setFinder('Z').ok, false); // unknown profile is typed-rejected
-  assert.equal(coord._anchor().id, 'A');         // default (no finder) = first profile, unchanged 6.3.5 behavior
+  assert.equal(coord._anchor().id, 'A');         // no finder AND no browser holding a room yet -> first profile
+  assert.equal(coord._anchorUid(), null);        // ...but nobody is seated, so there is no uid to prove against
   coord.setFinder('C');
   assert.equal(coord._anchor().id, 'C');         // explicit finder = C → follower proof checks C's uid, not A's
 });

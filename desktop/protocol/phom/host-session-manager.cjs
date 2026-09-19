@@ -121,6 +121,8 @@ class HostSessionManager extends EventEmitter {
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   // PHASE 6.3.5 — FOLLOWER JOIN of the shared anchor RID with bounded, generation-safe, single-flight retry.
   manualJoinShared(id, rid, opts) { return this._guarded((c) => c.manualJoinShared(String(id), rid, opts)); }
+  // §34 — cancel the in-flight persistent TÌM BÀN on one browser.
+  cancelFind(id) { return this._guarded((c) => c.cancelFind(String(id))); }
   manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
   manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
   // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).

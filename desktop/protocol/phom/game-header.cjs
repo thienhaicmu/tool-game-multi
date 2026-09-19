@@ -21,6 +21,7 @@
 const HEADER_ACTIONS = Object.freeze({
   ENTER_GAME:  { icon: '▶', short: 'Vào Game', tip: 'Đưa Player vào game' },
   FIND:        { icon: '🔍', short: 'Tìm Bàn', tip: 'Tìm bàn phù hợp theo mức cược' },
+  CANCEL_FIND: { icon: '⛔', short: 'Hủy Tìm', tip: 'Dừng tìm bàn ngay' },
   JOIN_SHARED: { icon: '🚪', short: 'Vào Bàn', tip: 'Vào bàn đã tìm được (RID chia sẻ)' },
   JOIN:        { icon: '🚪', short: 'Vào Bàn', tip: 'Vào bàn' },
   REJOIN:      { icon: '↻', short: 'Rejoin', tip: 'Vào lại bàn hiện tại' },
@@ -60,7 +61,15 @@ function deriveHeaderState(view = {}) {
   if (!view.opened) { statusLabel = 'CHƯA MỞ'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME', disabled: true }; }
   else if (view.entering) { statusLabel = 'ĐANG VÀO GAME'; statusClass = 'warn'; primary = { action: 'ENTER_GAME', label: 'ĐANG VÀO GAME…', busy: true, disabled: true }; }
   else if (!view.inGame) { statusLabel = 'CHƯA VÀO GAME'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME' }; }
-  else if (s === 'SEARCHING') { statusLabel = 'ĐANG TÌM BÀN'; statusClass = 'warn'; primary = { action: 'FIND', label: 'ĐANG TÌM BÀN…', busy: true, disabled: true }; }
+  // §32/§34 — a persistent search can run for up to a minute, so it reports PROGRESS (elapsed + how many times
+  // the server was asked) and its primary button becomes HỦY. A disabled "ĐANG TÌM BÀN…" for 60s is
+  // indistinguishable from a hang, and left the user no way out.
+  else if (s === 'SEARCHING') {
+    const el = Number(view.searchElapsedSec) > 0 ? ` ${Number(view.searchElapsedSec)}s` : '';
+    const at = Number(view.searchAttempt) > 0 ? ` · lần ${Number(view.searchAttempt)}` : '';
+    statusLabel = `ĐANG TÌM BÀN…${el}${at}`; statusClass = 'warn';
+    primary = { action: 'CANCEL_FIND', label: 'HỦY TÌM', danger: true };
+  }
   else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
   else if (joined) { statusLabel = 'ĐÃ VÀO BÀN'; statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }]; }
   else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_SHARED', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }
@@ -98,7 +107,7 @@ function bootScript(opts = {}) {
   // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
   function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } if(OPTIMISTIC_ACTIONS[action]) applyOptimistic(action); window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
   // Only the GAME/TABLE flow actions paint an optimistic busy overlay; lifecycle (RELOAD/STOP/FOCUS) do not.
-  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, FIND:1, JOIN_SHARED:1, JOIN:1, REJOIN:1, LEAVE:1 };
+  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, FIND:1, JOIN_SHARED:1, JOIN:1, REJOIN:1, LEAVE:1, CANCEL_FIND:1 };
   // 6.3.2.11 OPTIMISTIC visual state (page-local only). __authState = last AUTHORITATIVE state pushed by main;
   // __optAction = a transient action the user just clicked. The click paints an immediate busy state with NO
   // CDP/main round-trip; the next authoritative __phomHeaderRender CLEARS it and wins. Only the status/action
@@ -239,10 +248,11 @@ function bootScript(opts = {}) {
       : (action==='JOIN_SHARED'||action==='JOIN') ? 'ĐANG VÀO BÀN…'
       : action==='REJOIN' ? 'ĐANG VÀO BÀN…'
       : action==='LEAVE' ? 'ĐANG THOÁT PHÒNG…'
+      : action==='CANCEL_FIND' ? 'ĐANG HỦY TÌM…'
       : 'ĐANG XỬ LÝ…';
     return { account: base.account, rid: base.rid, statusLabel: label, statusClass:'warn', primary:{ action: action, label: label, disabled: true, busy: true }, actions: [{ action: action, icon:(OPT_ICON[action]||'•'), short:label, label:label, disabled:true, busy:true }], secondary: [], error: null };
   }
-  var OPT_ICON = { ENTER_GAME:'▶', FIND:'🔍', JOIN_SHARED:'🚪', JOIN:'🚪', REJOIN:'↻', LEAVE:'✕' };
+  var OPT_ICON = { ENTER_GAME:'▶', FIND:'🔍', JOIN_SHARED:'🚪', JOIN:'🚪', REJOIN:'↻', LEAVE:'✕', CANCEL_FIND:'⛔' };
   // Synchronous, page-local: show the busy state the instant the user clicks — no CDP, no main round-trip.
   function applyOptimistic(action){ try { __optAction = action; paint(optState(action)); } catch(e){} }
   // AUTHORITATIVE render from main ALWAYS wins: store it, clear any optimistic overlay, paint it.
@@ -261,6 +271,7 @@ function optimisticLabel(action) {
     case 'JOIN_SHARED': case 'JOIN': return 'ĐANG VÀO BÀN…';
     case 'REJOIN': return 'ĐANG VÀO BÀN…';
     case 'LEAVE': return 'ĐANG THOÁT PHÒNG…';
+    case 'CANCEL_FIND': return 'ĐANG HỦY TÌM…';
     default: return 'ĐANG XỬ LÝ…';
   }
 }

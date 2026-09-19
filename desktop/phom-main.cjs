@@ -53,7 +53,8 @@ const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
 const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
-const { evaluateHeaderAction } = require('./protocol/phom/header-action-guard.cjs');
+const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
+const { evaluateHeaderAction } = headerActionGuard;
 const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
 const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
 const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
@@ -602,6 +603,10 @@ else {
       entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),
       joining: false,
       manualState: b.manualState || null,
+      // §32/§34 — live search progress so the header shows "ĐANG TÌM BÀN… 12s · lần 6" instead of a label that
+      // cannot be told apart from a hang, and offers HỦY.
+      searchElapsedSec: b.searchElapsedSec || 0,
+      searchAttempt: b.searchAttempt || 0,
       rid: b.rid != null ? b.rid : null,
       lastRid: b.lastRid != null ? b.lastRid : null,
       // PHASE 6.3.6 — FIND gating follows the USER's finder choice (selectedFinderIndex), NEVER browserIndex.
@@ -717,7 +722,11 @@ else {
     if (!guard.ok) { headerLog('action-rejected', { runId: rid, action, actionId, reason: guard.reason }); return { ok: false, busy: guard.reason === 'DUPLICATE_ACTION', error: { code: guard.code, message: guard.message } }; }
     // §12 — never route into a dead CDP session (page crashed / target closed).
     if (!runClientFor(rid)) { headerLog('action-no-client', { runId: rid, action, actionId }); headerError[rid] = 'Chromium mất kết nối — MỞ lại trình duyệt.'; pushHeaderStates(); return { ok: false, error: { code: 'PHOM_HEADER_NO_CLIENT', message: 'no live CDP client' } }; }
-    headerActionBusy[rid] = true;
+    // §34 — a busy-exempt action (HỦY / ⟳ / ⏻ / ↑) runs ALONGSIDE the long operation it is meant to escape, so
+    // it must not take or clear the single-flight flag: doing so would release the flag that the still-running
+    // TÌM BÀN owns and let a second table operation stack on top of it.
+    const exempt = headerActionGuard.isBusyExempt(action);
+    if (!exempt) headerActionBusy[rid] = true;
     if (actionId != null) headerLastActionId[rid] = actionId;
     delete headerError[rid];
     const _t0 = nowMs(); // 6.3.2.10 — main-side handler duration (M1→M4) for ALL actions
@@ -736,6 +745,11 @@ else {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
         res = await phomSessions.manualDiscoverTable(rid, { selectedStake });
+      } else if (action === 'CANCEL_FIND') {
+        // §34 — stop the persistent search this browser is running. Runs alongside the pending FIND (exempt
+        // from single-flight); the coordinator's generation bump is what actually resolves that FIND as stale.
+        ensurePhomSessions();
+        res = await phomSessions.cancelFind(rid);
       } else if (action === 'JOIN_SHARED') {
         ensurePhomSessions();
         // PHASE 6.3.5 — a FOLLOWER joins the anchor's shared RID with bounded same-RID retry + same-room proof.
@@ -764,7 +778,7 @@ else {
         res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
       }
     } catch (e) { res = { ok: false, error: { code: 'PHOM_HEADER_ACTION_FAILED', message: safeMsg(e) } }; }
-    finally { delete headerActionBusy[rid]; }
+    finally { if (!exempt) delete headerActionBusy[rid]; }
     if (res && res.ok === false) headerError[rid] = (res.error && (res.error.message || res.error.code)) || 'LỖI';
     headerLog('action-done', { runId: rid, action, actionId, ok: !!(res && res.ok), error: res && res.error && res.error.code, elapsedMs: Math.round(nowMs() - _t0) });
     pushHeaderStates();

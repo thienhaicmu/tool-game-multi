@@ -21,9 +21,12 @@ test('post-anchor capacity check uses authoritative ps[] occupancy vs the table 
   assert.match(coord, /const ts = rec\.ctx\.tableState\(\);/);
   assert.match(coord, /Number\(candidate\.Mu\) - occupancy/);
   assert.match(coord, /freeAfter >= POST_ANCHOR_FREE_SLOTS/);
-  // invalid anchor: blacklist + leave + bounded re-FIND, never publish
+  // invalid anchor: blacklist + leave + bounded re-FIND, never publish. The blacklist is scoped to THIS
+  // discovery run (runFailedRids) — a coordinator-wide set was never cleared in the manual flow and
+  // permanently hid every table that lost a race.
   assert.match(coord, /F13_ANCHOR_INVALID/);
-  assert.match(coord, /this\._failedRids\.add\(candidate\.rid\)/);
+  assert.match(coord, /runFailedRids\.add\(candidate\.rid\)/);
+  assert.match(coord, /const runFailedRids = new Set\(\);/);
   assert.match(coord, /PHOM_FIND_RESILIENCE_EXHAUSTED/);
 });
 

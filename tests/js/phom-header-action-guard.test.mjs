@@ -54,7 +54,7 @@ test('the router uses the pure guard, tracks last accepted actionId, and keeps t
   assert.match(r, /headerLastActionId\[rid\] = actionId/);
   assert.match(r, /if \(!runClientFor\(rid\)\)/);            // §26 closed browser → no CDP action
   assert.match(r, /PHOM_HEADER_NO_CLIENT/);
-  assert.match(r, /finally \{ delete headerActionBusy\[rid\]/); // single-flight always released
+  assert.match(r, /finally \{ if \(!exempt\) delete headerActionBusy\[rid\]; \}/); // single-flight always released by the op that took it
 });
 
 test('reopen yields a FRESH run identity (new runId) → an old header click is rejected as stale', () => {

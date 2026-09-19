@@ -7,7 +7,7 @@ const { reduceHand, emptyHand, SYNC } = require('./hand-reducer.cjs');
 const { ZONE, GID } = require('./phom-frame-classify.cjs');
 const { buildChannelListFrame, buildJoinFrame, buildReadyFrame, buildLeaveFrame } = require('./phom-coordinator.cjs');
 const { remainingCardsView } = require('./remaining-cards.cjs');
-const { pickQualifiedCandidate } = require('./table-qualify.cjs');
+const { pickQualifiedCandidate, describeNoTableReason } = require('./table-qualify.cjs');
 const { createCardObserver } = require('./phom-card-observer.cjs');
 
 // ---------------------------------------------------------------------------
@@ -76,6 +76,11 @@ const MAX_SHARED_RID_JOIN_RETRIES = 2; // §11 — follower same-RID retries (in
 // PHASE 6.3.7 — a user-triggered FIND is a LIVE discovery: reuse the cached CMD 300 rs[] ONLY while it is this
 // fresh; older than this, request a fresh CMD 300 so a stale list can never hide a new/changed table.
 const FIND_CACHE_FRESH_MS = 1500;
+// §32/§33 — PERSISTENT FIND. A lobby with no free table right now usually has one within seconds (a table
+// empties every round), so ONE click keeps asking rather than giving up after a single CMD 300. Two explicit
+// bounds, never a while(true): a HARD budget for the whole operation and how often the server is re-asked.
+const FIND_BUDGET_MS = 60000;    // total wall time one TÌM BÀN click may spend (search + joins + re-anchors)
+const FIND_LIST_POLL_MS = 2000;  // ceiling between CMD 300 re-requests; a reply resolves the wait immediately
 
 class HostTableCoordinator extends EventEmitter {
   constructor(deps = {}) {
@@ -97,6 +102,10 @@ class HostTableCoordinator extends EventEmitter {
     this._capacity = deps.tableCapacity != null ? deps.tableCapacity : 4; // Phỏm seats per table (Mu)
     this._maxHostSearch = deps.maxHostSearchAttempts != null ? deps.maxHostSearchAttempts : 8;
     this._discoverBackoffMs = deps.discoverBackoffMs != null ? deps.discoverBackoffMs : 800;
+    // §32/§33 — how long ONE TÌM BÀN click may keep looking, and how often it re-asks the server. Session-level
+    // config so the budget can be tuned per deployment without threading an opt through every call site.
+    this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : FIND_BUDGET_MS;
+    this._findPollMs = deps.findPollMs != null ? Number(deps.findPollMs) : FIND_LIST_POLL_MS;
     this._delay = deps.delay || ((ms) => new Promise((r) => setTimeout(r, ms)));
 
     this._state = SESSION.IDLE;
@@ -722,13 +731,17 @@ class HostTableCoordinator extends EventEmitter {
     this._mark(`M_${intent}_SENT`, { id: rec.id, rid: r });
     this.emit('update', this.snapshot());
     try { await rec.send(buildJoinFrame(r), ctx); } catch (e) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; this._findLog('FX_JOIN_REJECTED', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, error: rec.lastError }; }
-    rec._joinedRid = r; rec._lastRid = r; // _lastRid survives LEAVE so REJOIN can return to this room
+    rec._joinedRid = r;
     this._findLog('F6_JOIN_SENT', rec, fg, { rid: r, intent });
     const seated = await this._waitManual(() => this._ownSeated(rec), rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
     if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, fg, { rid: r, intent, reason: 'SUPERSEDED' }); return { ok: false, id: rec.id, rid: r, superseded: true, state: rec.manualState }; }
     if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, fg, { rid: r, intent }); return { ok: false, id: rec.id, rid: r, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
     if (!seated) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_NOT_CONFIRMED', message: 'no TABLE_STATE membership within timeout' }; this._findLog('FX_TIMEOUT', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, state: 'JOIN_FAILED', error: rec.lastError }; }
     rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+    // _lastRid survives LEAVE so REJOIN can return to this room — so it is written only once the join is
+    // AUTHORITATIVELY confirmed (own uid ∈ ps[]). Writing it at send time let a room we never got into
+    // become REJOIN's fallback target after an intentional LEAVE.
+    rec._lastRid = r;
     // PHASE 6.3.5 §7 — a discover join is PROVISIONAL until manualDiscoverTable's post-anchor capacity check
     // passes; it must NOT be published to followers yet. Every other join (follower JOIN / REJOIN / direct
     // find-by-channel) is valid on ps[] immediately.
@@ -756,10 +769,13 @@ class HostTableCoordinator extends EventEmitter {
   // >= `need` (default 3) FREE seats so B1+B2+B3 can all JOIN. Prefers the emptiest. Logs each reject (esp.
   // NOT_ENOUGH_FREE_SLOTS) for diagnosis (§B5). Qualification happens BEFORE any JOIN (§B6). Returns null
   // when nothing qualifies. The rid + stake come from the table itself — never invented.
-  _pickManualCandidate(rec, need, selectedStake) {
+  // `failedRids` is the CALLER's blacklist — for a manual FIND it is scoped to that ONE discovery run
+  // (see manualDiscoverTable), never the coordinator-wide this._failedRids: a session-long blacklist
+  // accumulated every transient race and eventually hid every real table at the stake.
+  _pickManualCandidate(rec, need, selectedStake, failedRids) {
     let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; }
     const { candidate, rejects } = pickQualifiedCandidate(chans, {
-      need, selectedStake, zone: ZONE, gid: GID, isFailedRid: (rid) => this._failedRids.has(rid),
+      need, selectedStake, zone: ZONE, gid: GID, isFailedRid: (rid) => !!(failedRids && failedRids.has(rid)),
     });
     // §13/§14 — remember what the LAST evaluation saw so a NO_TABLE result can report a precise reason.
     rec._lastPickTotal = chans.length;
@@ -782,6 +798,10 @@ class HostTableCoordinator extends EventEmitter {
     if (total === 0) return 'NO_TABLE_RECORDS';                              // CMD 300 returned no channels at all
     if (reasons.includes('NOT_ENOUGH_FREE_SLOTS')) return 'NOT_ENOUGH_FREE_SLOTS'; // stake matched but < 3 free
     if (reasons.includes('FAILED_RID_SKIPPED')) return 'ALL_CANDIDATES_FAILED';    // every match was blacklisted
+    // Rows DID match the stake, but every one of them is a stake BUCKET (uC >> Mu), not a joinable table.
+    // Without this branch the lobby-has-no-real-tables-yet case was reported as NO_MATCHING_STAKE, which
+    // sends diagnosis after the wrong thing (the stake) instead of the right one (the lobby).
+    if (reasons.includes('INVALID_STRUCTURE')) return 'ONLY_STAKE_BUCKETS';
     return 'NO_MATCHING_STAKE';                                             // rows exist but none at this stake
   }
 
@@ -801,42 +821,72 @@ class HostTableCoordinator extends EventEmitter {
     const need = opts.need != null ? opts.need : DISCOVER_FREE_SLOTS; // §21 — BEFORE join: fit P1+P2+P3 (>=3)
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
     const maxRecovery = opts.maxRecovery != null ? opts.maxRecovery : MAX_ANCHOR_RECOVERY; // §8 bounded re-FIND
+    // §32/§33 — ONE click keeps looking for up to budgetMs, re-asking the server every pollMs. The budget is a
+    // HARD ceiling on the whole operation (search + joins + re-anchors), so a click's cost stays predictable.
+    const budgetMs = opts.budgetMs != null ? Number(opts.budgetMs) : this._findBudgetMs;
+    const pollMs = opts.pollMs != null ? Number(opts.pollMs) : this._findPollMs;
     // PHASE 6.3.4 §7/§23/§24 — SINGLE-FLIGHT: a duplicate FIND while one is already in flight for THIS browser
     // is ignored (never a second CMD 300 per rapid click). The header/renderer disable the button too; this
     // is defence-in-depth for the coordinator regardless of caller.
     if (rec._discovering) { this._findLog('FX_DUPLICATE_IGNORED', rec, rec._manualGen); return { ok: false, id: rec.id, busy: true, state: 'SEARCHING', error: { code: 'PHOM_FIND_IN_FLIGHT', message: 'đang tìm bàn' } }; }
     rec._discovering = true;
     let myGen = (rec._manualGen = (rec._manualGen || 0) + 1); // §8 — find generation / cancellation token
+    // §11 — the blacklist exists so the BOUNDED recovery loop below never re-picks the room that just
+    // proved bad. That is its whole scope, so it lives and dies with THIS discovery run: a fresh TÌM BÀN
+    // always starts from the full server list. (A coordinator-wide set was never cleared in the manual
+    // flow — _maybeLobbyReset returns early on `alreadyClean` — so every transient race permanently hid
+    // one more real table from all three browsers until the next app launch.) Bounded by maxRecovery, so
+    // no size cap is needed. The legacy HOST/FOLLOWER flow keeps using this._failedRids unchanged.
+    const runFailedRids = new Set();
     const t0 = this._mono();
+    const deadline = t0 + budgetMs;
     rec.manualState = 'SEARCHING'; rec.lastError = null;
-    this._findLog('F0_FIND_START', rec, myGen, { selectedStake, need });
+    // Live progress for the header (ĐANG TÌM BÀN… 12s · lần 6) so a long search never looks like a freeze.
+    rec._searchStartedAt = this._now(); rec._searchAttempt = 0; rec._searchBudgetMs = budgetMs;
+    this._findLog('F0_FIND_START', rec, myGen, { selectedStake, need, budgetMs, pollMs });
     this._mark('M_DISCOVER_SENT', { id: rec.id, selectedStake });
     this.emit('update', this.snapshot());
     try {
       // §8 — BOUNDED re-anchor loop (never a while(true)). Each pass: (re)acquire a qualifying table, JOIN,
       // confirm from ps[], then PROACTIVELY verify the room STILL fits both followers before publishing (§4/§6).
       for (let recovery = 0; recovery <= maxRecovery; recovery++) {
+        // §33 — the budget bounds the WHOLE operation, not just the search: a pass that would start with no
+        // time left is not started at all (its two 8s waits would blow past the ceiling the user was promised).
+        if (recovery > 0 && this._mono() >= deadline) { this._findLog('FX_BUDGET_SPENT', rec, myGen, { recovery }); break; }
         // §10/§11/§12 — REUSE the cached rs[] on the FIRST pass ONLY while it is FRESH (a user FIND is live
         // discovery — PHASE 6.3.7); a stale cache never hides a new/changed table. On a RECOVERY pass force a
         // fresh CMD 300 (the just-invalidated room proved the cache stale, so re-request authoritative capacity).
         const freshMs = opts.cacheFreshMs != null ? Number(opts.cacheFreshMs) : FIND_CACHE_FRESH_MS;
         let cacheFresh = false;
         try { const at = rec.ctx.channelsAt(); cacheFresh = at != null && (this._now() - Number(at)) < freshMs; } catch { cacheFresh = false; }
-        let candidate = (recovery === 0 && cacheFresh) ? this._pickManualCandidate(rec, need, selectedStake) : null;
+        let candidate = (recovery === 0 && cacheFresh) ? this._pickManualCandidate(rec, need, selectedStake, runFailedRids) : null;
         if (candidate) {
           this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: true });
         } else {
+          // §32 — KEEP LOOKING until the budget runs out. A lobby with no free table right now very often has
+          // one a few seconds later (a table empties every round), so asking the server ONCE and giving up was
+          // the single biggest reason a user saw "không tìm thấy bàn" while tables were in fact available.
+          // Each poll is one CMD 300 + an EVENT-DRIVEN wait (the reply resolves it immediately; pollMs is only
+          // the ceiling before asking again). Cancellable at any moment via the generation token.
           const aid = rec.ctx.aid();
-          if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); this._findLog('F1_CMD300_REQUEST', rec, myGen, { recovery }); } catch { /* best effort */ } }
-          // Wait (event-driven) for a qualifying empty table AT THE SELECTED STAKE to appear (§9/§30 — no polling).
-          await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake); return !!candidate; }, rec, myGen, timeoutMs);
-          if (candidate) this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: false });
+          while (!candidate) {
+            const left = deadline - this._mono();
+            if (left <= 0) break;                                   // §33 — one click never exceeds its budget
+            rec._searchAttempt = (rec._searchAttempt || 0) + 1;
+            if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); this._findLog('F1_CMD300_REQUEST', rec, myGen, { recovery, attempt: rec._searchAttempt }); } catch { /* best effort */ } }
+            this.emit('update', this.snapshot());                   // keep the header's elapsed/attempt live
+            await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake, runFailedRids); return !!candidate; }, rec, myGen, Math.min(pollMs, left));
+            if (rec._manualGen !== myGen || this._stopped) break;    // cancelled / session gone
+          }
+          if (candidate) this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: false, attempts: rec._searchAttempt || 0 });
         }
         // §8 — a stale FIND (superseded by a newer op / leave / stop) must NOT proceed to JOIN.
         if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; }
         if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, myGen); return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
         // §7/§21 — no auto-switch to another stake: fail typed and let the user pick a different stake.
-        if (!candidate) { const diag = this._diagNoTable(rec); rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}`, reason: diag }; this._findLog('FX_NO_TABLE', rec, myGen, { reason: diag, total: rec._lastPickTotal || 0 }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag }; }
+        // The typed `reason` is what makes a FIND failure diagnosable, so it also goes into the MESSAGE —
+        // that is the only field the in-Chromium header (⚠ tooltip) and the Tool's errText actually show.
+        if (!candidate) { const diag = this._diagNoTable(rec); const seen = rec._lastPickTotal || 0; const tries = rec._searchAttempt || 0; const secs = Math.round((this._mono() - t0) / 1000); rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake} — ${describeNoTableReason(diag)} (đã hỏi máy chủ ${tries} lần trong ${secs}s, xét ${seen} bàn)`, reason: diag, attempts: tries, elapsedSec: secs }; this._findLog('FX_NO_TABLE', rec, myGen, { reason: diag, total: seen, attempts: tries }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag, attempts: tries }; }
         this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
         this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
         // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[] (§15/§16).
@@ -851,7 +901,7 @@ class HostTableCoordinator extends EventEmitter {
           // which re-bumps and continues rather than comparing against the pre-join gen.)
           const retryable = this._isRetryableJoin(res);
           this._findLog(res.state === 'JOIN_FAILED' ? 'FX_TABLE_CHANGED' : 'FX_JOIN_REJECTED', rec, myGen, { rid: candidate.rid, retryable });
-          if (retryable) { this._failedRids.add(candidate.rid); if (this._failedRids.size > 32) this._failedRids.delete(this._failedRids.values().next().value); }
+          if (retryable) runFailedRids.add(candidate.rid);
           if (retryable && recovery < maxRecovery && !this._stopped) {
             try { await rec.send(buildLeaveFrame(), ctx); } catch { /* best effort */ }
             rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.IDLE;
@@ -882,7 +932,7 @@ class HostTableCoordinator extends EventEmitter {
         }
         // §7 — ANCHOR INVALID: do NOT publish this RID. Blacklist it, LEAVE it, and (if attempts remain) re-FIND.
         this._findLog('F13_ANCHOR_INVALID', rec, myGen, { rid: res.rid, freeAfter, need: POST_ANCHOR_FREE_SLOTS });
-        this._failedRids.add(candidate.rid); if (this._failedRids.size > 32) this._failedRids.delete(this._failedRids.values().next().value);
+        runFailedRids.add(candidate.rid);
         try { await rec.send(buildLeaveFrame(), ctx); } catch { /* best effort */ }
         rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.IDLE;
         // §9/§18 — a NEW generation makes the just-left RID's callbacks stale: an old-RID result can never
@@ -893,11 +943,11 @@ class HostTableCoordinator extends EventEmitter {
         if (recovery < maxRecovery) this._findLog('F14_REANCHOR_START', rec, myGen, { attempt: recovery + 1 });
       }
       // §31 — bounded recovery exhausted: stop (never an infinite re-FIND). The user can retry (TÌM LẠI).
-      rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: 'Không tìm được bàn còn đủ chỗ cho 3 người' };
+      rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: `Không tìm được bàn còn đủ chỗ cho 3 người sau ${maxRecovery + 1} lần thử — bàn vừa tìm được đều bị người khác ngồi mất`, attempts: maxRecovery + 1 };
       this._findLog('FX_RESILIENCE_EXHAUSTED', rec, myGen, { attempts: maxRecovery + 1 });
       this.emit('update', this.snapshot());
       return { ok: false, id: rec.id, error: rec.lastError, resilienceExhausted: true };
-    } finally { rec._discovering = false; }
+    } finally { rec._discovering = false; rec._searchStartedAt = null; }
   }
 
   // PHASE 6.3.6 — the FINDER/room anchor is the USER-selected profile when set; only when NO finder has been
@@ -914,12 +964,28 @@ class HostTableCoordinator extends EventEmitter {
   finderId() { return this._finderId; }
   // True when THIS profile is allowed to FIND: no finder chosen yet (every browser may FIND) OR it IS the finder.
   isFinder(profileId) { return this._finderId == null ? true : String(profileId) === this._finderId; }
+  // A browser that AUTHORITATIVELY holds a room right now. Same predicate headerSharedRid (phom-main.cjs)
+  // uses to publish the shared RID, so the coordinator's same-room proof and the header can never disagree
+  // about who the anchor is. manualState === 'JOINED' is what excludes a FOLLOWER_ERROR browser that still
+  // carries a stale _joinedRid.
+  _holdsRoom(rec) { return !!(rec && rec.manualState === 'JOINED' && rec._joinedRid != null && rec._joinedRidValidated !== false); }
   _anchor() {
     if (this._finderId && this._profiles.has(this._finderId)) return this._profiles.get(this._finderId);
+    // No finder chosen (the shipped default) — the anchor is whichever browser ACTUALLY found+joined a room,
+    // mirroring headerSharedRid. Defaulting to the first profile made the follower same-room proof compare
+    // against a browser still sitting in the lobby, so VÀO BÀN reported PHOM_FOLLOWER_ROOM_MISMATCH even
+    // though the browser was correctly seated at the published RID.
+    for (const rec of this._profiles.values()) if (this._holdsRoom(rec)) return rec;
     const it = this._profiles.values().next(); return it && !it.done ? it.value : null;
   }
   _anchorRid() { const a = this._anchor(); return a && a._joinedRid != null ? a._joinedRid : null; }
-  _anchorUid() { const a = this._anchor(); return a ? a.ctx.uid() : null; }
+  // "Player N" for a profile, by the same 1-based order manualBrowserSnapshot uses. The anchor is no longer
+  // always the first browser, so a message must name the browser that really holds the room.
+  _playerLabel(rec) { if (!rec) return 'Player tìm bàn'; const i = [...this._profiles.keys()].indexOf(String(rec.id)); return i >= 0 ? `Player ${i + 1}` : rec.displayName || 'Player tìm bàn'; }
+  // The uid to prove co-seating against — only when the anchor really is at a table. When no browser holds a
+  // room (e.g. the anchor left between the header publishing its RID and the follower's click) this is null
+  // and manualJoinShared falls back to the follower's OWN ps[] evidence instead of a proof that cannot pass.
+  _anchorUid() { const a = this._anchor(); return this._holdsRoom(a) ? a.ctx.uid() : null; }
   // Which follower-JOIN failures are worth a same-RID retry (§12). A transient room race / not-yet-confirmed
   // membership is retryable; a dead/cancelled/invalid situation is NOT (retrying it is pointless).
   _isRetryableJoin(res) {
@@ -956,7 +1022,7 @@ class HostTableCoordinator extends EventEmitter {
         if (this._stopped) { this._findLog('FX_SESSION_DEAD', rec, myGen, { rid: r, follower: true }); return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
         // §17/§18 — the anchor moved to a new RID → stop retrying the dead one (no parallel old/new flows).
         const anchor = this._anchorRid();
-        if (anchor != null && Number(anchor) !== r) { this._findLog('FX_TABLE_CHANGED', rec, myGen, { rid: r, anchor, follower: true }); return { ok: false, id: rec.id, ridChanged: true, error: { code: 'PHOM_SHARED_RID_CHANGED', message: 'Player 1 đã đổi bàn' } }; }
+        if (anchor != null && Number(anchor) !== r) { this._findLog('FX_TABLE_CHANGED', rec, myGen, { rid: r, anchor, follower: true }); return { ok: false, id: rec.id, ridChanged: true, error: { code: 'PHOM_SHARED_RID_CHANGED', message: `${this._playerLabel(this._anchor())} đã đổi bàn` } }; }
         if (attempt > 0) this._findLog('J5_RETRY', rec, myGen, { rid: r, attempt });
         last = await this.manualJoinRoom(profileId, r, { ...opts, intent: 'JOIN', followGen: myGen });
         if (last.ok) {
@@ -967,7 +1033,7 @@ class HostTableCoordinator extends EventEmitter {
           const anchorUid = this._anchorUid();
           const sameRoom = anchorUid == null || !!(ts && ts.uids.includes(anchorUid));
           if (sameRoom) { this._findLog('J4_SAME_ROOM_CONFIRMED', rec, myGen, { rid: r, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 }); return { ...last, sameRoom: true, attempts: attempt + 1 }; }
-          last = { ...last, ok: false, state: 'ROOM_MISMATCH', error: { code: 'PHOM_FOLLOWER_ROOM_MISMATCH', message: 'không cùng bàn với Player 1' } };
+          last = { ...last, ok: false, state: 'ROOM_MISMATCH', error: { code: 'PHOM_FOLLOWER_ROOM_MISMATCH', message: `không cùng bàn với ${this._playerLabel(this._anchor())}` } };
         }
         if (!this._isRetryableJoin(last) || attempt === maxRetries) break; // §12 — non-retryable / out of tries
       }
@@ -995,6 +1061,33 @@ class HostTableCoordinator extends EventEmitter {
     const rid = rec._joinedRid != null ? rec._joinedRid : rec._lastRid; // survives an intentional LEAVE
     if (rid == null) return { ok: false, id: rec.id, error: { code: 'PHOM_REJOIN_NO_RID', message: 'Chưa có Room/RID để Rejoin' } };
     return this.manualJoinRoom(profileId, rid, { ...opts, intent: 'REJOIN' });
+  }
+
+  // §34 — CANCEL an in-flight TÌM BÀN on ONE browser. A persistent search can run for a whole minute, so the
+  // user must be able to stop it; without this the only way out was to wait the budget out or kill Chromium.
+  // Cancellation is the SAME mechanism the rest of the flow already uses (a generation bump makes every
+  // pending wait resolve stale), so no new cancellation concept is introduced. If the JOIN frame already went
+  // out, the browser may have been seated by the server — so a LEAVE is sent to put it back in the lobby
+  // deterministically, rather than leaving the tool's state and the real table disagreeing.
+  async cancelFind(profileId) {
+    if (!this._guard()) return this._unauthorized();
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
+    if (!rec._discovering) return { ok: false, id: rec.id, error: { code: 'PHOM_FIND_NOT_RUNNING', message: 'Không có lượt tìm bàn nào đang chạy' } };
+    const attempts = rec._searchAttempt || 0;
+    rec._manualGen = (rec._manualGen || 0) + 1; // supersede the pending search/join waits
+    rec._discovering = false;
+    const wasJoining = rec._joinedRid != null;
+    if (wasJoining) {
+      try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { /* best effort */ }
+      rec.ctx.leaveTable(); rec._joinedRid = null; rec._joinedRidValidated = false; rec.confirmedInTable = false;
+    }
+    rec.state = PSTATE.IDLE; rec.manualState = 'READY'; rec.lastError = null;
+    rec._searchStartedAt = null; rec._searchAttempt = 0;
+    this._mark('M_FIND_CANCELLED', { id: rec.id, attempts });
+    this._findLog('FX_FIND_CANCELLED', rec, rec._manualGen, { reason: 'USER_CANCELLED', attempts });
+    this.emit('update', this.snapshot());
+    return { ok: true, id: rec.id, state: 'READY', cancelled: true, attempts };
   }
 
   // LEAVE ONE browser only (never leave-all). Sends the native LEAVE and clears that browser's table.
@@ -1050,6 +1143,12 @@ class HostTableCoordinator extends EventEmitter {
         // channelCount > 0 == this browser received the Phỏm stake list, i.e. it is in the Phỏm lobby
         // (mirrors snapshot().channelCount). The header uses it to decide "inGame" (§6.3.2).
         channelCount: Array.isArray(c.channels) ? c.channels.length : 0,
+        // §32/§34 — LIVE progress of a persistent search, so the header can show "ĐANG TÌM BÀN… 12s · lần 6"
+        // (a minute-long search must never look like a freeze) and offer HỦY. Derived, never stored twice.
+        searching: !!rec._discovering,
+        searchAttempt: rec._discovering ? (rec._searchAttempt || 0) : 0,
+        searchElapsedSec: rec._discovering && rec._searchStartedAt != null ? Math.max(0, Math.round((this._now() - rec._searchStartedAt) / 1000)) : 0,
+        searchBudgetSec: rec._discovering ? Math.round((rec._searchBudgetMs || FIND_BUDGET_MS) / 1000) : 0,
         rid: rec._joinedRid != null ? rec._joinedRid : null,
         lastRid: rec._lastRid != null ? rec._lastRid : null,
         // PHASE 6.3.5 §7 — a discover anchor is published to followers ONLY after its post-anchor capacity

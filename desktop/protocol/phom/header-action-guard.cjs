@@ -18,14 +18,21 @@ const REASONS = Object.freeze({
   DUPLICATE_ACTION:    { code: 'PHOM_HEADER_BUSY',          message: 'Đang xử lý thao tác trước…' },
 });
 
+// §34 — actions that must stay clickable WHILE a long operation is running. A persistent TÌM BÀN can hold the
+// browser for a minute, and single-flight is about not stacking two table operations — it was never meant to
+// trap the user: HỦY is the way out of the very operation that is busy, and ⟳ / ⏻ / ↑ are lifecycle escapes
+// that own their own teardown. Identity + duplicate-click checks still apply to them.
+const BUSY_EXEMPT_ACTIONS = Object.freeze(new Set(['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS']));
+function isBusyExempt(action) { return BUSY_EXEMPT_ACTIONS.has(String(action || '')); }
+
 function evaluateHeaderAction({ payload = {}, boundRunId, runProfileId = null, busy = false, lastActionId = null } = {}) {
   const p = payload || {};
   const bad = (reason) => ({ ok: false, reason, code: REASONS[reason].code, message: REASONS[reason].message });
   if (p.runId != null && String(p.runId) !== String(boundRunId)) return bad('STALE_RUN');
   if (p.profileId != null && runProfileId != null && String(p.profileId) !== String(runProfileId)) return bad('STALE_PROFILE');
   if (p.actionId != null && lastActionId != null && String(p.actionId) === String(lastActionId)) return bad('DUPLICATE_ACTION_ID');
-  if (busy) return bad('DUPLICATE_ACTION');
+  if (busy && !isBusyExempt(p.action)) return bad('DUPLICATE_ACTION');
   return { ok: true };
 }
 
-module.exports = { evaluateHeaderAction, REASONS };
+module.exports = { evaluateHeaderAction, isBusyExempt, BUSY_EXEMPT_ACTIONS, REASONS };

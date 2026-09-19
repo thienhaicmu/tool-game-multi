@@ -41,7 +41,7 @@ class Sim {
 }
 function mk(rooms) {
   const sim = new Sim(rooms);
-  const coord = new HostTableCoordinator({ environmentAuthorized: true, delay: () => Promise.resolve(), profiles: ['B1', 'B2', 'B3'].map((id) => ({ id, displayName: id, send: sim.sendFor(id) })) });
+  const coord = new HostTableCoordinator({ environmentAuthorized: true, delay: () => Promise.resolve(), findBudgetMs: 40, findPollMs: 10, profiles: ['B1', 'B2', 'B3'].map((id) => ({ id, displayName: id, send: sim.sendFor(id) })) });
   sim.attach(coord);
   for (const id of ['B1', 'B2', 'B3']) { coord.ingest(id, { raw: `[5,{"uid":"${sim.uids[id]}","As":{"gold":1},"cmd":100,"id":0}]`, direction: 'recv', targetId: id, url: 'wss://sim', now: 1 }); coord.setIdentity(id, { aid: '1' }); }
   return { coord, sim };
@@ -253,7 +253,7 @@ test('FIND-LIVE-04/05: a JOIN failure blacklists the RID and re-discovers a DIFF
     { rid: 700, b: 500, seats: [], failJoins: { B1: 1 } }, // ps[] never lands own uid once → JOIN_FAILED
     { rid: 701, b: 500, seats: [] },                       // the real table
   ]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60 });
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60, budgetMs: 500 });
   assert.equal(r.ok, true);
   assert.equal(r.rid, 701, 'joined the SECOND table after the first failed');
   assert.equal(sim.attemptsFor(700, 'B1'), 1, 'the failed RID was tried once and never retried (blacklisted)');
@@ -275,4 +275,230 @@ test('FIND-LIVE: NO_TABLE carries a precise, debuggable reason', async () => {
   const r2 = await full.coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
   assert.equal(r2.ok, false);
   assert.equal(r2.reason, 'NOT_ENOUGH_FREE_SLOTS');
+});
+
+// ================= BLACKLIST SCOPE (FIND-BL) — a blacklist must not outlive its discovery run =================
+// The RID blacklist exists so the bounded re-anchor loop never re-picks the room that just proved bad. A
+// coordinator-wide set was never cleared in the manual flow, so every transient capacity race permanently hid
+// one more real table from all three browsers — after a few TÌM BÀN clicks the lobby looked empty.
+test('FIND-BL-01: a NEW FIND is not blinded by the previous FIND blacklist', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // fills to 3 on P1 join → invalid
+  const r1 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r1.ok, false, 'the capacity race invalidates the only table');
+
+  sim.rooms[0].seats.length = 0; // the fillers left: the SAME table is empty and joinable again
+  const r2 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r2.ok, true, 'a fresh FIND starts from the full server list, not a session-long blacklist');
+  assert.equal(r2.rid, 700);
+});
+
+test('FIND-BL-02: one browser failed FIND does not hide that table from another browser', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]);
+  const r1 = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r1.ok, false);
+
+  sim.rooms[0].seats.length = 0;
+  const r2 = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r2.ok, true, 'the blacklist is per discovery run, never shared across browsers');
+  assert.equal(r2.rid, 700);
+});
+
+test('FIND-BL-03: within ONE run the blacklist still applies (no re-pick of the failed RID)', async () => {
+  // Unchanged 6.3.5 behaviour: 700 invalidates on join, the recovery pass must move to 701.
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, timeoutMs: 60, budgetMs: 500 });
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, 701);
+  assert.equal(sim.attemptsFor(700, 'B1'), 1, 'the invalidated RID was never re-picked inside the same run');
+});
+
+// ================= FAILURE REASON REACHES THE USER (FIND-MSG) =================
+// `reason` is the field that makes a FIND failure diagnosable, but the header (⚠ tooltip) and the Tool's
+// errText only render error.message — so the reason has to be in the message too.
+test('FIND-MSG-01: the NO_EMPTY_TABLE message names the reason and how many tables were examined', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // free 2 < 3
+  // The budget must be MANY poll windows wide: this test asserts the search re-asked the server, and with a
+  // budget only a few polls wide a loaded CI box can spend the whole budget inside the first wait.
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 400, pollMs: 20 });
+  assert.equal(r.reason, 'NOT_ENOUGH_FREE_SLOTS');
+  assert.match(r.error.message, /mức cược 500/);
+  assert.match(r.error.message, /3 ghế trống/);
+  assert.match(r.error.message, /xét 1 bàn/);
+  // §32 — it also says how hard it looked, so "tìm không ra bàn" can be told apart from "hỏi đúng 1 lần"
+  assert.match(r.error.message, /đã hỏi máy chủ \d+ lần/);
+  assert.ok(r.attempts >= 2, `a persistent search re-asks the server (attempts=${r.attempts})`);
+});
+
+test('FIND-MSG-02: a lobby holding only stake BUCKETS reports ONLY_STAKE_BUCKETS, not NO_MATCHING_STAKE', async () => {
+  // A stake bucket reports uC >> Mu; it is not a joinable table. Reporting it as "no table at this stake"
+  // pointed diagnosis at the stake instead of the lobby.
+  const bucket = { rid: 140, b: 500, Mu: 4, seats: Array.from({ length: 70 }, (_, i) => ({ sit: i, uid: 'x' + i })) };
+  const { coord } = mk([bucket]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'ONLY_STAKE_BUCKETS');
+  assert.match(r.error.message, /nhóm cược/);
+});
+
+// ================= SHARED ANCHOR (FIND-ANC) — who the same-room proof compares against =================
+// The shipped default is NO finder chosen. The header publishes the RID of whichever browser actually
+// joined, so the coordinator must prove co-seating against THAT browser — not against the first profile.
+test('FIND-ANC-01: with no finder chosen, the anchor is the browser that actually joined', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }]);
+  assert.equal(coord.finderId(), null, 'the shipped default: no finder chosen');
+  const f = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(f.ok, true);
+  assert.equal(coord._anchor().id, 'B2', 'not B1 (the first profile), which is still in the lobby');
+});
+
+test('FIND-ANC-02: a follower joining the published RID is confirmed, not reported as ROOM_MISMATCH', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }]);
+  const f = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  // what phom-main's headerSharedRid publishes to the other browsers
+  const shared = coord.manualBrowserSnapshot().find((b) => b.manualState === 'JOINED' && b.rid != null && b.anchorValid !== false).rid;
+  assert.equal(shared, f.rid);
+
+  const j = await coord.manualJoinShared('B3', shared, { timeoutMs: 60 });
+  assert.equal(j.ok, true);
+  assert.equal(j.sameRoom, true);
+  assert.equal(snapB(coord, 'B3').manualState, 'JOINED');
+});
+
+test('FIND-ANC-03: a browser whose follower JOIN failed never becomes the anchor', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }, { rid: 556, b: 500, seats: [], failJoins: { B3: 99 } }]);
+  const f = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(f.ok, true);
+  const bad = await coord.manualJoinShared('B3', 556, { timeoutMs: 40, maxRetries: 0 });
+  assert.equal(bad.ok, false);
+  assert.equal(coord._anchor().id, 'B2', 'a stale _joinedRid on an errored browser must not win the anchor');
+});
+
+test('FIND-ANC-04: when no browser holds a room there is no anchor uid to prove against', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }]);
+  assert.equal(coord._anchorUid(), null, 'never the first profile uid while it sits in the lobby');
+  const f = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(f.ok, true);
+  assert.equal(coord._anchorUid(), '1_2');
+  await coord.manualLeave('B2');
+  assert.equal(coord._anchorUid(), null, 'the anchor left → fall back to the follower own ps[] evidence');
+});
+
+// ================= REJOIN TARGET (FIND-RJ) =================
+test('FIND-RJ-01: REJOIN returns to a room actually joined, never one that only failed', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }, { rid: 701, b: 500, seats: [] }]);
+  const bad = await coord.manualJoinRoom('B1', 700, { timeoutMs: 40 });
+  assert.equal(bad.ok, false, 'never seated at 700');
+  const good = await coord.manualJoinRoom('B1', 701, { timeoutMs: 60 });
+  assert.equal(good.ok, true);
+  await coord.manualLeave('B1');
+  assert.equal(snapB(coord, 'B1').lastRid, 701, 'the failed RID never became the REJOIN fallback');
+
+  const again = await coord.manualRejoin('B1', { timeoutMs: 60 });
+  assert.equal(again.ok, true);
+  assert.equal(again.rid, 701);
+  assert.ok(sim.attemptsFor(701, 'B1') >= 2);
+});
+
+test('FIND-ANC-05: a follower error names the browser that really holds the room, not always "Player 1"', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }, { rid: 556, b: 500, seats: [] }]);
+  const f = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60 });
+  assert.equal(f.ok, true);
+  const stale = await coord.manualJoinShared('B3', 556, { timeoutMs: 60, maxRetries: 0 }); // anchor is at 555
+  assert.equal(stale.ok, false);
+  assert.equal(stale.ridChanged, true);
+  assert.match(stale.error.message, /Player 2/, 'B2 is the anchor — the message must say so');
+  assert.doesNotMatch(stale.error.message, /Player 1/);
+});
+
+// ================= PERSISTENT FIND (FIND-P) — one click keeps looking =================
+// Asking the server once and giving up was why a user saw "không tìm thấy bàn" while a table freed up two
+// seconds later. One click now re-asks until its budget runs out, and stops the moment a table qualifies.
+test('FIND-P-01: a table that appears AFTER the first CMD 300 is still found', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }] }]); // free 2 < 3
+  setTimeout(() => { sim.rooms[0].seats.length = 0; }, 40); // two players stand up mid-search
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 400, pollMs: 20 });
+  assert.equal(r.ok, true, 'the search was still running when the table freed up');
+  assert.equal(r.rid, 700);
+  assert.ok(sim.channelReqs >= 2, `re-asked the server (${sim.channelReqs} times)`);
+});
+
+test('FIND-P-02: the search is bounded by its budget, never a while(true)', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 999, seats: [] }]); // never a table at the chosen stake
+  const t0 = Date.now();
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 300, pollMs: 15 });
+  const ms = Date.now() - t0;
+  assert.equal(r.ok, false);
+  assert.ok(ms >= 300, `spent its budget (${ms}ms)`);
+  assert.ok(ms < 3000, `stopped at the budget instead of running on (${ms}ms)`);
+  assert.ok(sim.channelReqs >= 3, `polled repeatedly (${sim.channelReqs} requests)`);
+});
+
+test('FIND-P-03: a successful find returns immediately — the budget is a ceiling, not a delay', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [] }]);
+  const t0 = Date.now();
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 2000, pollMs: 500 });
+  assert.equal(r.ok, true);
+  assert.ok(Date.now() - t0 < 300, 'an available table is joined at once');
+});
+
+test('FIND-P-04: the budget caps the WHOLE operation, including join retries', async () => {
+  const full = (rid) => ({ rid, b: 500, seats: [], failJoins: { B1: 99 } }); // each join burns a full timeoutMs
+  const { coord } = mk([full(700), full(701), full(702)]);
+  const t0 = Date.now();
+  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 2, timeoutMs: 100, budgetMs: 120, pollMs: 40 });
+  const ms = Date.now() - t0;
+  assert.ok(ms < 600, `re-anchor passes stop once the budget is gone (${ms}ms)`);
+});
+
+// ================= CANCEL (FIND-C) — the way out of a long search =================
+test('FIND-C-01: HỦY stops an in-flight search and leaves the browser usable', async () => {
+  const { coord } = mk([{ rid: 700, b: 999, seats: [] }]); // nothing will ever qualify → a long search
+  const p = coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 3000, pollMs: 10 });
+  await new Promise((res) => setTimeout(res, 50));
+  assert.equal(snapB(coord, 'B1').searching, true, 'the search is running');
+
+  const c = await coord.cancelFind('B1');
+  assert.equal(c.ok, true);
+  assert.equal(c.cancelled, true);
+
+  const r = await p;
+  assert.equal(r.ok, false, 'the cancelled search never reports success');
+  const b = snapB(coord, 'B1');
+  assert.equal(b.searching, false);
+  assert.equal(b.manualState, 'READY', 'the browser is back in the lobby, ready to search again');
+  assert.equal(b.lastError, null, 'a user-initiated cancel is not an error');
+});
+
+test('FIND-C-02: after HỦY a new search starts cleanly (the single-flight flag was released)', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 999, seats: [] }]);
+  const p = coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 3000, pollMs: 10 });
+  await new Promise((res) => setTimeout(res, 50));
+  await coord.cancelFind('B1');
+  await p;
+
+  sim.rooms.push({ rid: 701, b: 500, Mu: 4, injectOnJoin: 0, failJoins: {}, seats: [] }); // a real table shows up
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, true, 'never PHOM_FIND_IN_FLIGHT — the cancelled run released the flag');
+  assert.equal(r.rid, 701);
+});
+
+test('FIND-C-03: HỦY on a browser that is not searching is a typed no-op', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [] }]);
+  const c = await coord.cancelFind('B1');
+  assert.equal(c.ok, false);
+  assert.equal(c.error.code, 'PHOM_FIND_NOT_RUNNING');
+});
+
+test('FIND-C-04: the snapshot reports live progress so the header can show it', async () => {
+  const { coord } = mk([{ rid: 700, b: 999, seats: [] }]);
+  const p = coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 3000, pollMs: 10 });
+  await new Promise((res) => setTimeout(res, 70));
+  const b = snapB(coord, 'B1');
+  assert.equal(b.searching, true);
+  assert.ok(b.searchAttempt >= 2, `attempt counter advances (${b.searchAttempt})`);
+  assert.equal(typeof b.searchElapsedSec, 'number');
+  assert.equal(b.searchBudgetSec, 3);
+  await coord.cancelFind('B1');
+  await p;
+  assert.equal(snapB(coord, 'B1').searchAttempt, 0, 'progress is cleared once the search ends');
 });

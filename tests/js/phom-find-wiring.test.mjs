@@ -32,11 +32,11 @@ test('coordinator: FIND is single-flight (no duplicate CMD 300) + reuses a cache
   assert.match(coord, /PHOM_FIND_IN_FLIGHT/);
   // PHASE 6.3.7 — reuse a cached candidate on the first pass ONLY while the list is fresh; a stale cache falls
   // through to a fresh CMD 300 (a user FIND is live discovery). Recovery passes always request fresh.
-  assert.match(coord, /let candidate = \(recovery === 0 && cacheFresh\) \? this\._pickManualCandidate\(rec, need, selectedStake\) : null;/);
+  assert.match(coord, /let candidate = \(recovery === 0 && cacheFresh\) \? this\._pickManualCandidate\(rec, need, selectedStake, runFailedRids\) : null;/);
   assert.match(coord, /cacheFresh = at != null && \(this\._now\(\) - Number\(at\)\) < freshMs;/);
   assert.match(coord, /buildChannelListFrame\(aid\)/);
   // the single-flight flag is released on the finally + on leave/reset
-  assert.match(coord, /finally \{ rec\._discovering = false; \}/);
+  assert.match(coord, /finally \{ rec\._discovering = false; rec\._searchStartedAt = null; \}/);
   assert.match(coord, /rec\._discovering = false;\s*\/\/ PHASE 6\.3\.4 — release the FIND single-flight on ↻ WEB reset/);
 });
 
@@ -60,4 +60,41 @@ test('§34 safety: the FIND phase adds NO game-action / browser restart to the c
   }
   // JOIN protocol untouched
   assert.match(coord, /buildJoinFrame\(r\)/);
+});
+
+// §32/§34 — persistent FIND + its escape hatch, wired end to end (source-level, no GUI).
+test('coordinator: the persistent search is bounded by an explicit budget + poll, never a while(true)', () => {
+  assert.match(coord, /const FIND_BUDGET_MS = \d+;/);
+  assert.match(coord, /const FIND_LIST_POLL_MS = \d+;/);
+  assert.match(coord, /const deadline = t0 \+ budgetMs;/);
+  assert.match(coord, /if \(left <= 0\) break;/);                     // the poll loop always terminates
+  assert.match(coord, /if \(recovery > 0 && this\._mono\(\) >= deadline\)/); // re-anchor passes respect it too
+  // both bounds are configurable per session, so the budget can be tuned without editing call sites
+  assert.match(coord, /this\._findBudgetMs = deps\.findBudgetMs != null/);
+  assert.match(coord, /this\._findPollMs = deps\.findPollMs != null/);
+});
+
+test('coordinator: HỦY cancels via the SAME generation token the rest of the flow uses', () => {
+  assert.match(coord, /async cancelFind\(profileId\)/);
+  assert.match(coord, /PHOM_FIND_NOT_RUNNING/);
+  assert.match(coord, /rec\._manualGen = \(rec\._manualGen \|\| 0\) \+ 1; \/\/ supersede the pending search\/join waits/);
+  assert.match(coord, /buildLeaveFrame\(\)/); // a join already in flight is undone, not left dangling
+  // the snapshot carries live progress for the header
+  for (const f of ['searching:', 'searchAttempt:', 'searchElapsedSec:']) assert.ok(coord.includes(f), `snapshot exposes ${f}`);
+});
+
+test('main: HỦY is routed, and the escape actions are exempt from single-flight', () => {
+  assert.match(main, /action === 'CANCEL_FIND'/);
+  assert.match(main, /phomSessions\.cancelFind\(rid\)/);
+  assert.match(main, /const exempt = headerActionGuard\.isBusyExempt\(action\);/);
+  assert.match(main, /if \(!exempt\) headerActionBusy\[rid\] = true;/);
+  assert.match(main, /searchElapsedSec: b\.searchElapsedSec \|\| 0,/);
+});
+
+test('header: SEARCHING offers HỦY and reports progress; the guard exempts the escapes', () => {
+  assert.match(header, /CANCEL_FIND: \{ icon:/);
+  assert.match(header, /action: 'CANCEL_FIND', label: 'HỦY TÌM'/);
+  const guard = read('desktop/protocol/phom/header-action-guard.cjs');
+  assert.match(guard, /BUSY_EXEMPT_ACTIONS = Object\.freeze\(new Set\(\['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS'\]\)\)/);
+  assert.match(guard, /if \(busy && !isBusyExempt\(p\.action\)\)/);
 });
