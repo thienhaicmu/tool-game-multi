@@ -716,6 +716,21 @@ else {
     try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
     catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
   }
+  // §54 — the page of a run loaded a NEW DOCUMENT (F5 in Chromium, the header's ⟳, a redirect back to the web
+  // lobby). The old document's game socket, channel list and table are gone with it, so this browser's Phỏm
+  // state is reset — exactly what the tool's own ⟳ always did. A reload the USER did (F5) never went through
+  // the tool, so the header kept showing the old state (in game / at a table) while the page sat at the web
+  // lobby and never offered VÀO GAME. Runs at commit time, so no frame of the old document can re-bind the
+  // state afterwards. VÀO GAME in flight is kept: that navigation is the one it is waiting for.
+  function onRunDocumentReplaced(runId, url) {
+    const rid = String(runId);
+    if (!url || /^about:/i.test(url)) return; // the proxy-auth launch page, not the game
+    try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ }
+    delete headerError[rid]; headerDomPresent[rid] = false; delete headerLastPushed[rid];
+    headerLog('DOCUMENT_REPLACED', { runId: rid });
+    pushHeaderStates();
+  }
+
   async function closeBrowserRun(runId) {
     const rid = String(runId == null ? '' : runId);
     if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
@@ -967,6 +982,12 @@ else {
       // are reinstalled and the state re-pushed (§11 reattach). (§6.3.2 / §6.3.2.2)
       headerLog('cdp-attach', { runId: run.id, slotId: run.slot, targetId: target.cdpTargetId });
       const boot = gameHeader.bootScript({ slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' });
+      // §54 — a new top-level document on this run's PAGE resets its Phỏm state (see onRunDocumentReplaced).
+      if ((!target.type || target.type === 'PAGE') && client.Page && !client.__phomDocNav) {
+        client.__phomDocNav = true;
+        client.Page.enable().catch(() => {});
+        client.Page.frameNavigated((p) => { if (p && p.frame && !p.frame.parentId) onRunDocumentReplaced(run.id, p.frame.url); });
+      }
       headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
         .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); }).catch(() => {});
       // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).

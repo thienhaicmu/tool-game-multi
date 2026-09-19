@@ -14,17 +14,22 @@ test('explicit V2 bounds are defined (no scattered magic numbers)', () => {
   assert.match(coord, /const DISCOVER_FREE_SLOTS = 3;/);
   // §39 — the post-anchor requirement is derived (need − 1), so it follows the in-game browser count
   assert.match(coord, /const needAfter = Math\.max\(0, need - 1\);/);
-  assert.match(coord, /const MAX_ANCHOR_RECOVERY = 2;/);
+  // §53 — the FIND loop re-rolls misfit tables, so its pass cap is high and the time budget is the real ceiling
+  assert.match(coord, /const MAX_ANCHOR_RECOVERY = 40;/);
+  assert.match(coord, /const REROLL_COOLDOWN_MS = 1500;/);
   assert.match(coord, /const MAX_SHARED_RID_JOIN_RETRIES = 2;/);
 });
 
-test('post-join capacity is REPORTED from authoritative ps[] occupancy, and the seat is never given back', () => {
+test('post-join capacity comes from authoritative ps[] occupancy, and a misfit table is re-rolled (§53)', () => {
   assert.match(coord, /const ts = rec\.ctx\.tableState\(\);/);
-  assert.match(coord, /Number\(candidate\.Mu\) - occupancy/);
-  // §47 — the count decides what to REPORT (fitsAll), not whether to keep the table
+  assert.match(coord, /seatsPerTable - occupancy/);
+  // §53 — a table without a seat for every other browser is LEFT (confirmed) and the stake joined again
+  assert.match(coord, /if \(fitsAll === false && rerollUntilFit\)/);
+  assert.match(coord, /F16_TABLE_REROLL/);
+  assert.match(coord, /PHOM_NO_FITTING_TABLE/);
   assert.match(coord, /const fitsAll = freeAfter == null \? null : freeAfter >= needAfter;/);
   assert.match(coord, /const MIN_SEATS_TO_JOIN = 1;/);
-  assert.equal(/F13_ANCHOR_INVALID/.test(coord), false, 'a joined table is no longer abandoned for being too small');
+  assert.equal(/F13_ANCHOR_INVALID/.test(coord), false);
   // invalid anchor: blacklist + leave + bounded re-FIND, never publish. The blacklist is scoped to THIS
   // discovery run (runFailedRids) — a coordinator-wide set was never cleared in the manual flow and
   // permanently hid every table that lost a race. §47 — only a FAILED JOIN blacklists a rid now.

@@ -37,7 +37,7 @@ test('coordinator: FIND is single-flight (no duplicate CMD 300) + reuses a cache
   assert.match(coord, /cacheFresh = at != null && \(this\._now\(\) - Number\(at\)\) < freshMs;/);
   assert.match(coord, /buildChannelListFrame\(aid\)/);
   // the single-flight flag is released on the finally + on leave/reset
-  assert.match(coord, /finally \{ rec\._discovering = false; rec\._searchStartedAt = null; \}/);
+  assert.match(coord, /finally \{ rec\._discovering = false; rec\._searchStartedAt = null; rec\._searchRerolls = 0; \}/);
   assert.match(coord, /rec\._discovering = false;\s*\/\/ PHASE 6\.3\.4 — release the FIND single-flight on ↻ WEB reset/);
 });
 

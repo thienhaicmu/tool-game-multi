@@ -74,7 +74,10 @@ const DISCOVER_FREE_SLOTS = 3;         // §21/§39 — the MOST seats a FIND tr
 // every browser is a PREFERENCE (the emptiest table wins), never a precondition — demanding it is what made
 // TÌM BÀN report "no table" at a stake a player could simply click into.
 const MIN_SEATS_TO_JOIN = 1;
-const MAX_ANCHOR_RECOVERY = 2;         // §8  — bounded P1 re-FIND attempts after an invalid anchor
+// §8/§53 — passes of the FIND loop (a pass = pick → JOIN → check). Since the lobby only lists STAKE CHANNELS and
+// the server picks the table, re-rolling a table that does not fit the group is a normal pass, so this is set
+// high: the hard ceiling is the time budget (FIND_BUDGET_MS), this only guards against a runaway loop.
+const MAX_ANCHOR_RECOVERY = 40;
 const MAX_SHARED_RID_JOIN_RETRIES = 2; // §11 — follower same-RID retries (initial attempt + 2 = 3 tries max)
 // PHASE 6.3.7 — a user-triggered FIND is a LIVE discovery: reuse the cached CMD 300 rs[] ONLY while it is this
 // fresh; older than this, request a fresh CMD 300 so a stale list can never hide a new/changed table.
@@ -86,6 +89,12 @@ const FIND_BUDGET_MS = 60000;    // total wall time one TÌM BÀN click may spen
 const FIND_LIST_POLL_MS = 2000;  // ceiling between CMD 300 re-requests; a reply resolves the wait immediately
 // §37 — how long THOÁT BÀN waits for the server to prove the browser is out of the table.
 const LEAVE_CONFIRM_MS = 5000;
+// §53 — pause between leaving a table that does not fit and joining the stake again, so the server's
+// seating has settled (the Test D capture shows the game itself waits a couple of seconds between tries).
+const REROLL_COOLDOWN_MS = 1500;
+// §53 — after the server REFUSES a JOIN, how long to still wait for a seat: when two JOINs are in flight
+// (the game client's own + ours) one reply can be a refusal while the other seats the player.
+const JOIN_REJECT_GRACE_MS = 600;
 
 class HostTableCoordinator extends EventEmitter {
   constructor(deps = {}) {
@@ -112,6 +121,8 @@ class HostTableCoordinator extends EventEmitter {
     this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : FIND_BUDGET_MS;
     this._findPollMs = deps.findPollMs != null ? Number(deps.findPollMs) : FIND_LIST_POLL_MS;
     this._leaveConfirmMs = deps.leaveConfirmMs != null ? Number(deps.leaveConfirmMs) : LEAVE_CONFIRM_MS; // §37
+    this._rerollCooldownMs = deps.rerollCooldownMs != null ? Number(deps.rerollCooldownMs) : REROLL_COOLDOWN_MS; // §53
+    this._joinRejectGraceMs = deps.joinRejectGraceMs != null ? Number(deps.joinRejectGraceMs) : JOIN_REJECT_GRACE_MS; // §53
     this._delay = deps.delay || ((ms) => new Promise((r) => setTimeout(r, ms)));
 
     this._state = SESSION.IDLE;
@@ -762,8 +773,20 @@ class HostTableCoordinator extends EventEmitter {
     if (!Number.isFinite(r)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_RID', message: 'Room/RID trống hoặc không hợp lệ' } }; }
     const ctx = rec.ctx.sendContext();
     if (!ctx) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
+    // §53 — NEVER send a JOIN while seated. The Test D capture proves what the server does with one: it moves the
+    // player OUT of the current table ([4,true,2,...]) and seats them again wherever it likes, refusing the extra
+    // JOINs ("Phòng đầy" / "Phòng đã bị hủy"). That is how VÀO BÀN retries kept kicking a follower off tables.
+    // Callers that mean to move a browser leave first (_leaveConfirmed).
+    if (this._ownSeated(rec)) {
+      rec.lastError = { code: 'PHOM_ALREADY_AT_TABLE', message: 'Browser đang ở bàn — rời bàn trước khi vào bàn khác' };
+      this.emit('update', this.snapshot());
+      return { ok: false, id: rec.id, rid: r, state: 'ALREADY_SEATED', error: rec.lastError };
+    }
     const intent = opts.intent === 'FIND' ? 'FIND' : (opts.intent === 'REJOIN' ? 'REJOIN' : 'JOIN');
     const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+    // Answers already received BEFORE this JOIN must never be read as its answer.
+    const ackBefore = rec.ctx.ackSeq ? rec.ctx.ackSeq() : 0;
+    const tableBefore = rec.ctx.tableSeq ? rec.ctx.tableSeq() : 0;
     const fg = opts.findGen != null ? opts.findGen : myGen; // PHASE 6.3.4 — correlate FIND trace across discover→join
     rec.manualState = intent === 'FIND' ? 'SEARCHING' : (intent === 'REJOIN' ? 'RECONNECTING' : 'JOINING');
     this._mark(`M_${intent}_SENT`, { id: rec.id, rid: r });
@@ -771,10 +794,23 @@ class HostTableCoordinator extends EventEmitter {
     try { await rec.send(buildJoinFrame(r), ctx); } catch (e) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; this._findLog('FX_JOIN_REJECTED', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, error: rec.lastError }; }
     rec._joinedRid = r;
     this._findLog('F6_JOIN_SENT', rec, fg, { rid: r, intent });
-    const seated = await this._waitManual(() => this._ownSeated(rec), rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
+    // Seated = own uid in a table snapshot that arrived AFTER this JOIN was sent.
+    const seatedFresh = () => this._ownSeated(rec) && (!rec.ctx.tableSeq || rec.ctx.tableSeq() > tableBefore);
+    const refusal = () => { const a = rec.ctx.lastJoinAck ? rec.ctx.lastJoinAck() : null; return a && a.seq > ackBefore && a.accepted === false ? a : null; };
+    let seated = await this._waitManual(() => seatedFresh() || !!refusal(), rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
+    if (seated && !seatedFresh()) seated = await this._waitManual(seatedFresh, rec, myGen, this._joinRejectGraceMs); // refused — unless another reply seats us
+    const refused = !seated ? refusal() : null;
     if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, fg, { rid: r, intent, reason: 'SUPERSEDED' }); return { ok: false, id: rec.id, rid: r, superseded: true, state: rec.manualState }; }
     if (this._stopped) { rec.manualState = 'LEFT'; this._findLog('FX_SESSION_DEAD', rec, fg, { rid: r, intent }); return { ok: false, id: rec.id, rid: r, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
-    if (!seated) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_NOT_CONFIRMED', message: 'no TABLE_STATE membership within timeout' }; this._findLog('FX_TIMEOUT', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, state: 'JOIN_FAILED', error: rec.lastError }; }
+    if (!seated && refused) {
+      // The server said no, with its own reason — report it instead of waiting out the timeout.
+      rec._joinedRid = null; rec.manualState = 'ERROR';
+      rec.lastError = { code: 'PHOM_JOIN_REJECTED', message: `Máy chủ từ chối vào bàn: ${refused.message || `mã ${refused.code}`}`, serverCode: refused.code };
+      this._findLog('FX_JOIN_REJECTED', rec, fg, { rid: r, intent, serverCode: refused.code });
+      this.emit('update', this.snapshot());
+      return { ok: false, id: rec.id, rid: r, state: 'JOIN_REJECTED', error: rec.lastError };
+    }
+    if (!seated) { rec._joinedRid = null; rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_NOT_CONFIRMED', message: 'no TABLE_STATE membership within timeout' }; this._findLog('FX_TIMEOUT', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, state: 'JOIN_FAILED', error: rec.lastError }; }
     rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
     // _lastRid survives LEAVE so REJOIN can return to this room — so it is written only once the join is
     // AUTHORITATIVELY confirmed (own uid ∈ ps[]). Writing it at send time let a room we never got into
@@ -852,8 +888,10 @@ class HostTableCoordinator extends EventEmitter {
     const rows = chans.filter((c) => c && c.rid != null
       && (c.zn == null || c.zn === ZONE) && (c.gid == null || c.gid === GID)
       && Number(c.b) === Number(selectedStake)
-      && Number.isFinite(Number(c.uC)) && Number.isFinite(Number(c.Mu)) && Number(c.uC) > Number(c.Mu)
-      && !(failedRids && failedRids.has(c.rid)));
+      && Number.isFinite(Number(c.uC)) && Number.isFinite(Number(c.Mu)) && Number(c.uC) > Number(c.Mu));
+    // §53 — the Test D capture shows the lobby lists ONE channel per stake and nothing else, so the channel is the
+    // only way in: the blacklist (failedRids) never applies to it — a refused JOIN there must not end the search.
+    void failedRids;
     rows.sort((a, b) => Number(a.rid) - Number(b.rid));
     return rows[0] || null;
   }
@@ -921,6 +959,9 @@ class HostTableCoordinator extends EventEmitter {
     // one more real table from all three browsers until the next app launch.) Bounded by maxRecovery, so
     // no size cap is needed. The legacy HOST/FOLLOWER flow keeps using this._failedRids unchanged.
     const runFailedRids = new Set();
+    // §53 — re-roll state: how many misfit tables were left, the best one seen, and whether the budget ended it.
+    const rerollUntilFit = opts.rerollUntilFit !== false;
+    let rerolls = 0; let bestFree = null; let rerollExhausted = false;
     const t0 = this._mono();
     const deadline = t0 + budgetMs;
     rec.manualState = 'SEARCHING'; rec.lastError = null;
@@ -977,6 +1018,7 @@ class HostTableCoordinator extends EventEmitter {
         // §7/§21 — no auto-switch to another stake: fail typed and let the user pick a different stake.
         // The typed `reason` is what makes a FIND failure diagnosable, so it also goes into the MESSAGE —
         // that is the only field the in-Chromium header (⚠ tooltip) and the Tool's errText actually show.
+        if (!candidate && rerolls > 0) { rerollExhausted = true; break; } // §53 — report the re-rolls, not "no table"
         if (!candidate) {
           const diag = this._diagNoTable(rec); const seen = rec._lastPickTotal || 0; const tries = rec._searchAttempt || 0;
           const secs = Math.round((this._mono() - t0) / 1000);
@@ -1005,11 +1047,15 @@ class HostTableCoordinator extends EventEmitter {
           // which re-bumps and continues rather than comparing against the pre-join gen.)
           const retryable = this._isRetryableJoin(res);
           this._findLog(res.state === 'JOIN_FAILED' ? 'FX_TABLE_CHANGED' : 'FX_JOIN_REJECTED', rec, myGen, { rid: candidate.rid, retryable });
-          if (retryable) runFailedRids.add(candidate.rid);
+          if (retryable && !viaStakeChannel && this._rowsAtStake(rec, candidate.b) > 1) runFailedRids.add(candidate.rid); // §53 — never blacklist the stake's only door
           if (retryable && recovery < maxRecovery && !this._stopped) {
-            try { await rec.send(buildLeaveFrame(), ctx); } catch { /* best effort */ }
-            rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.IDLE;
             myGen = (rec._manualGen = (rec._manualGen || 0) + 1); // fresh gen: old-RID callbacks are now stale
+            // §53 — leave only if the server actually seated us (a refused JOIN left us in the lobby: a LEAVE then
+            // would be noise), and wait for the proof before the next JOIN.
+            if (this._ownSeated(rec)) { const lv = await this._leaveConfirmed(rec, myGen); if (lv.cancelled) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; } }
+            else { rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.IDLE; }
+            await this._waitManual(() => false, rec, myGen, Math.min(this._rerollCooldownMs, Math.max(0, deadline - this._mono())));
+            if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; }
             rec.manualState = 'SEARCHING';
             this._findLog('F14_REANCHOR_START', rec, myGen, { attempt: recovery + 1, afterJoinFail: true });
             this.emit('update', this.snapshot());
@@ -1034,9 +1080,30 @@ class HostTableCoordinator extends EventEmitter {
         // the lobby allows it; re-anchoring is now only for a JOIN that actually failed.
         const ts = rec.ctx.tableState();
         const occupancy = ts ? ts.playerCount : null;
-        const freeAfter = (occupancy != null && Number.isFinite(Number(candidate.Mu))) ? Number(candidate.Mu) - occupancy : null;
+        const seatsPerTable = Number.isFinite(Number(candidate.Mu)) && Number(candidate.Mu) > 0 ? Number(candidate.Mu) : null;
+        const freeAfter = (occupancy != null && seatsPerTable != null) ? seatsPerTable - occupancy : null;
         const fitsAll = freeAfter == null ? null : freeAfter >= needAfter;
         this._findLog('F11_ANCHOR_CAPACITY_CHECK', rec, myGen, { rid: res.rid, Mu: candidate.Mu, uC: occupancy, freeAfter, need: needAfter, fitsAll });
+        // §53 — THE TABLE MUST FIT THE GROUP. The lobby only lists stake channels, so the server — not the tool —
+        // picks the table, and the only way to a different one is to leave and join the stake again (exactly what
+        // a player does by hand; the Test D capture shows the third try landing on an empty table). A table without
+        // a seat for every other browser is left and re-rolled until one fits or the click's budget runs out.
+        if (fitsAll === false && rerollUntilFit) {
+          rerolls += 1; if (bestFree == null || freeAfter > bestFree) bestFree = freeAfter;
+          rec._searchRerolls = rerolls;
+          this._mark('M_TABLE_REROLL', { id: rec.id, rid: res.rid, freeAfter, need: needAfter, reroll: rerolls });
+          this._findLog('F16_TABLE_REROLL', rec, myGen, { rid: res.rid, freeAfter, need: needAfter, reroll: rerolls });
+          myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+          rec.manualState = 'SEARCHING'; this.emit('update', this.snapshot());
+          const lv = await this._leaveConfirmed(rec, myGen);
+          if (lv.cancelled) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; }
+          const left = deadline - this._mono();
+          if (left <= this._rerollCooldownMs || recovery >= maxRecovery) { rerollExhausted = true; break; }
+          await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
+          if (rec._manualGen !== myGen) { this._findLog('FX_FIND_CANCELLED', rec, myGen); return { ok: false, id: rec.id, result: 'STALE' }; }
+          if (this._stopped) { rec.manualState = 'LEFT'; return { ok: false, id: rec.id, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'stopped' } }; }
+          continue;
+        }
         rec._joinedRidValidated = true; // the browser IS seated here — this is the room the others join
         this._findLog('F12_ANCHOR_VALID', rec, myGen, { rid: res.rid, freeAfter, fitsAll });
         this._findLog('F10_FIND_SUCCESS', rec, myGen, { rid: res.rid, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 });
@@ -1044,14 +1111,40 @@ class HostTableCoordinator extends EventEmitter {
           rec.lastError = { code: 'PHOM_TABLE_FITS_PARTIAL', message: `Đã vào bàn ${res.rid} nhưng bàn chỉ còn ${freeAfter} ghế cho ${needAfter} browser còn lại` };
         }
         this.emit('update', this.snapshot());
-        return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: viaStakeChannel ? null : candidate.uC, freeAfter, fitsAll, seatsForOthers: freeAfter, anchorValid: true, viaStakeChannel };
+        return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: viaStakeChannel ? null : candidate.uC, freeAfter, fitsAll, seatsForOthers: freeAfter, anchorValid: true, viaStakeChannel, rerolls };
+      }
+      // §53 — re-rolled until the budget ran out without a table that fits the group: the browser has already left
+      // the last misfit, so it is back in the lobby and the user sees exactly how hard the tool tried.
+      if (rerollExhausted || rerolls > 0) {
+        const secs = Math.round((this._mono() - t0) / 1000);
+        rec.manualState = 'ERROR';
+        rec.lastError = { code: 'PHOM_NO_FITTING_TABLE', message: `Đã thử ${rerolls} bàn ở mức cược ${selectedStake} trong ${secs}s nhưng không bàn nào còn đủ ${needAfter} ghế cho các browser còn lại (bàn tốt nhất còn ${bestFree == null ? 0 : bestFree} ghế) — đã rời bàn, bấm TÌM BÀN để thử tiếp`, rerolls, elapsedSec: secs, bestFreeSlots: bestFree, need };
+        this._findLog('FX_NO_FITTING_TABLE', rec, myGen, { rerolls, bestFree });
+        this.emit('update', this.snapshot());
+        return { ok: false, id: rec.id, error: rec.lastError, rerolls, bestFreeSlots: bestFree, need };
       }
       // §31 — bounded recovery exhausted: stop (never an infinite re-FIND). The user can retry (TÌM LẠI).
       rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: `Không tìm được bàn còn đủ chỗ cho ${need} người sau ${maxRecovery + 1} lần thử — bàn vừa tìm được đều bị người khác ngồi mất`, attempts: maxRecovery + 1 };
       this._findLog('FX_RESILIENCE_EXHAUSTED', rec, myGen, { attempts: maxRecovery + 1 });
       this.emit('update', this.snapshot());
       return { ok: false, id: rec.id, error: rec.lastError, resilienceExhausted: true };
-    } finally { rec._discovering = false; rec._searchStartedAt = null; }
+    } finally { rec._discovering = false; rec._searchStartedAt = null; rec._searchRerolls = 0; }
+  }
+
+  _rowsAtStake(rec, stake) { let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; } return chans.filter((c) => c && Number(c.b) === Number(stake)).length; }
+
+  // §53 — LEAVE and wait for the server's proof (LEAVE ack, or own uid gone from ps[]), then clear the table
+  // locally. Used before any JOIN that moves a seated browser: a JOIN sent while seated gets the player moved
+  // by the server wherever it likes. `myGen` is the caller's generation; a newer op cancels the wait.
+  async _leaveConfirmed(rec, myGen) {
+    const ackBefore = rec.ctx.ackSeq ? rec.ctx.ackSeq() : 0;
+    let sent = true; try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { sent = false; }
+    const acked = () => { const a = rec.ctx.lastLeaveAck ? rec.ctx.lastLeaveAck() : null; return !!(a && a.seq > ackBefore && a.accepted); };
+    const confirmed = sent && await this._waitManual(() => acked() || !this._ownSeated(rec), rec, myGen, this._leaveConfirmMs);
+    if (rec._manualGen !== myGen || this._stopped) return { confirmed: false, cancelled: true };
+    rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec._joinedRidValidated = false; rec.state = PSTATE.IDLE;
+    this._mark(confirmed ? 'M_LEAVE_CONFIRMED' : 'M_LEAVE_UNCONFIRMED', { id: rec.id, internal: true });
+    return { confirmed, cancelled: false };
   }
 
   // PHASE 6.3.6 — the FINDER/room anchor is the USER-selected profile when set; only when NO finder has been
@@ -1103,8 +1196,8 @@ class HostTableCoordinator extends EventEmitter {
     if (!res || res.ok) return false;
     if (res.superseded || res.ridChanged) return false; // a newer op / anchor change already owns the flow
     const code = res.error && res.error.code;
-    if (res.state === 'JOIN_FAILED' || res.state === 'ROOM_MISMATCH') return true;
-    if (code === 'PHOM_JOIN_NOT_CONFIRMED' || code === 'PHOM_FOLLOWER_ROOM_MISMATCH') return true;
+    if (res.state === 'JOIN_FAILED' || res.state === 'ROOM_MISMATCH' || res.state === 'JOIN_REJECTED') return true;
+    if (code === 'PHOM_JOIN_NOT_CONFIRMED' || code === 'PHOM_FOLLOWER_ROOM_MISMATCH' || code === 'PHOM_JOIN_REJECTED') return true;
     return false; // PHOM_INVALID_RID / PHOM_SOCKET_NOT_FOUND / PHOM_OPERATION_CANCELLED / PROFILE_NOT_READY
   }
 
@@ -1135,6 +1228,20 @@ class HostTableCoordinator extends EventEmitter {
         const anchor = this._anchorRid();
         if (anchor != null && Number(anchor) !== r) { this._findLog('FX_TABLE_CHANGED', rec, myGen, { rid: r, anchor, follower: true }); return { ok: false, id: rec.id, ridChanged: true, error: { code: 'PHOM_SHARED_RID_CHANGED', message: `${this._playerLabel(this._anchor())} đã đổi bàn` } }; }
         if (attempt > 0) this._findLog('J5_RETRY', rec, myGen, { rid: r, attempt });
+        // §53 — already seated: at the anchor's table → done; anywhere else → LEAVE (confirmed) first. The old
+        // retry re-sent JOIN while seated, the server moved the player and refused the extras (Test D capture).
+        if (this._ownSeated(rec)) {
+          const aUid = this._anchorUid(); const ts0 = rec.ctx.tableState();
+          if (aUid != null && ts0 && ts0.uids.includes(aUid) && attempt === 0) {
+            rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec._joinedRid = r; rec._joinedRidValidated = true; rec.lastError = null;
+            this.emit('update', this.snapshot());
+            return { ok: true, id: rec.id, rid: r, state: 'JOINED', seat: rec.ctx.seat(), sameRoom: true, attempts: 0, alreadySeated: true };
+          }
+          const g = (rec._manualGen = (rec._manualGen || 0) + 1);
+          const lv = await this._leaveConfirmed(rec, g);
+          if (lv.cancelled || rec._followGen !== myGen) return { ok: false, id: rec.id, superseded: true };
+          if (attempt > 0 || !lv.confirmed) { await this._waitManual(() => false, rec, g, this._rerollCooldownMs); if (rec._manualGen !== g || rec._followGen !== myGen) return { ok: false, id: rec.id, superseded: true }; }
+        }
         last = await this.manualJoinRoom(profileId, r, { ...opts, intent: 'JOIN', followGen: myGen });
         if (last.ok) {
           // §13/§14 — SAME-ROOM PROOF from authoritative ps[]: own uid confirmed (manualJoinRoom) AND the
@@ -1148,8 +1255,16 @@ class HostTableCoordinator extends EventEmitter {
         }
         if (!this._isRetryableJoin(last) || attempt === maxRetries) break; // §12 — non-retryable / out of tries
       }
+      // §53 — the server seated this browser at a DIFFERENT table than the anchor on every try. The game gives the
+      // tool no table id (the lobby lists stake channels only), so which table a JOIN lands on is the server's
+      // choice. Do not stay at the wrong table: it would be reported as joined and could even become the anchor.
+      if (last && last.state === 'ROOM_MISMATCH' && this._ownSeated(rec) && rec._followGen === myGen) {
+        const g = (rec._manualGen = (rec._manualGen || 0) + 1);
+        await this._leaveConfirmed(rec, g);
+        last = { ...last, error: { code: 'PHOM_FOLLOWER_ROOM_MISMATCH', message: `Máy chủ xếp vào bàn khác ${this._playerLabel(this._anchor())} (game không cho chọn bàn theo số bàn) — đã rời bàn đó, bấm VÀO BÀN để thử lại` } };
+      }
       // §15/§16/§31 — retry exhausted or a non-retryable error: FOLLOWER_ERROR. NEVER become a finder.
-      rec.manualState = 'FOLLOWER_ERROR';
+      rec.manualState = 'FOLLOWER_ERROR'; rec.lastError = (last && last.error) || rec.lastError;
       this._findLog('J6_RETRY_EXHAUSTED', rec, myGen, { rid: r });
       this.emit('update', this.snapshot());
       return { ...(last || { ok: false, id: rec.id }), retriesExhausted: true, error: (last && last.error) || { code: 'PHOM_FOLLOWER_JOIN_FAILED', message: 'Không vào được bàn' } };

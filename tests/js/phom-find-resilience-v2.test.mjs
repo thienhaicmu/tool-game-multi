@@ -48,7 +48,7 @@ class Sim {
 }
 function mk(rooms) {
   const sim = new Sim(rooms);
-  const coord = new HostTableCoordinator({ environmentAuthorized: true, delay: () => Promise.resolve(), findBudgetMs: 40, findPollMs: 10, profiles: ['B1', 'B2', 'B3'].map((id) => ({ id, displayName: id, send: sim.sendFor(id) })) });
+  const coord = new HostTableCoordinator({ environmentAuthorized: true, delay: () => Promise.resolve(), findBudgetMs: 40, findPollMs: 10, rerollCooldownMs: 0, joinRejectGraceMs: 20, profiles: ['B1', 'B2', 'B3'].map((id) => ({ id, displayName: id, send: sim.sendFor(id) })) });
   sim.attach(coord);
   for (const id of ['B1', 'B2', 'B3']) { coord.ingest(id, { raw: `[5,{"uid":"${sim.uids[id]}","As":{"gold":1},"cmd":100,"id":0}]`, direction: 'recv', targetId: id, url: 'wss://sim', now: 1 }); coord.setIdentity(id, { aid: '1' }); }
   return { coord, sim };
@@ -66,21 +66,29 @@ test('RES-02: P1 anchor with exactly 2 free slots after seating → VALID', asyn
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
   assert.equal(r.ok, true); assert.equal(r.freeAfter, 2); assert.equal(r.anchorValid, true);
 });
-test('RES-03: a table that fits only SOME browsers is kept — the seat is never given back (§47)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // after P1: 3 seated → freeAfter=1
+test('RES-03: a table that fits only SOME browsers is LEFT, and the search says why when it runs out (§53)', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // after P1: 3 seated → freeAfter=1
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, true, 'TÌM BÀN ends up AT a table');
-  assert.equal(r.rid, 700);
-  assert.equal(r.freeAfter, 1);
-  assert.equal(r.fitsAll, false, 'and says only one of the other two still fits');
-  assert.equal(snapB(coord, 'B1').manualState, 'JOINED');
+  assert.equal(r.ok, false, 'a table without room for the group is not kept');
+  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(r.rerolls, 1);
+  assert.match(r.error.message, /đã rời bàn/);
+  assert.notEqual(snapB(coord, 'B1').manualState, 'JOINED');
+  assert.equal(sim.rooms[0].seats.some((s) => s.uid === '1_1'), false, 'the browser really left the table');
+  assert.equal(coord.sharedRid(), null, 'a misfit table is never published to the others');
 });
-test('RES-04: a table that fills completely on join is still kept (§47)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 3 }]); // after P1: 4 seated → freeAfter=0
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+test('RES-04: a table that fills on join is left and the search re-rolls onto one that fits (§53)', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 3 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'y' }] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 2000 });
   assert.equal(r.ok, true);
-  assert.equal(r.freeAfter, 0);
-  assert.equal(r.fitsAll, false);
+  assert.equal(r.rid, 701);
+  assert.equal(r.fitsAll, true);
+  assert.equal(r.rerolls, 1);
+});
+test('RES-04b: rerollUntilFit:false keeps the old keep-the-seat behaviour for callers that want it', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 3 }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, rerollUntilFit: false });
+  assert.equal(r.ok, true); assert.equal(r.freeAfter, 0); assert.equal(r.fitsAll, false);
 });
 test('RES-05: a browser that could NOT join publishes no shared room', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }]);
@@ -199,15 +207,16 @@ test('RES-21/22: same-room proof P1+P2 then P1+P2+P3 from authoritative ps[]', a
 test('RES-23: capacity race — qualifies at discovery but fills on JOIN → invalid, not published (maxRecovery 0)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }], injectOnJoin: 1 }]); // uC1; +inject+P1 → 3
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, true, 'the seat is kept even though the room filled up during the join');
-  assert.equal(r.fitsAll, false);
-  assert.equal(snapB(coord, 'B1').rid, 700);
+  assert.equal(r.ok, false, 'the room filled up during the join → it is left, never published (§53)');
+  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(snapB(coord, 'B1').rid, null);
+  assert.equal(coord.sharedRid(), null);
 });
 test('RES-24: capacity change right after P1 JOIN is caught by the authoritative post-anchor check', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'y' }] }]);
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, budgetMs: 500 });
-  // the emptiest table is still preferred and the browser STAYS there; the post-join count is reported
-  assert.equal(r.ok, true); assert.equal(r.rid, 700); assert.equal(r.freeAfter, 1); assert.equal(r.fitsAll, false);
+  // §53 — the emptiest table is tried first; it filled during the join, so it is left and the next one fits
+  assert.equal(r.ok, true); assert.equal(r.rid, 701); assert.equal(r.freeAfter, 2); assert.equal(r.fitsAll, true); assert.equal(r.rerolls, 1);
 });
 
 // ================= SAFETY (RES-28/29/30) — source scan =================
@@ -621,13 +630,14 @@ test('SEATS-01: with all three alive the search PREFERS the table that fits the 
   assert.equal(r.fitsAll, true);
 });
 
-test('SEATS-01b: when nothing fits the group it still sits down, and says so', async () => {
+test('SEATS-01b: when nothing fits the group the misfit table is left and the reason names the seats (§53)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // only 2 free
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, true, 'a player clicking this lobby gets in — so does TÌM BÀN');
-  assert.equal(r.rid, 700);
-  assert.equal(r.fitsAll, false);
-  assert.equal(r.seatsForOthers, 1);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 2, budgetMs: 2000 });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(r.rerolls, 3, 'bounded: one re-roll per pass');
+  assert.equal(r.bestFreeSlots, 1);
+  assert.match(r.error.message, /đủ 2 ghế/);
 });
 
 test('SEATS-02: a closed browser lowers the requirement, so a 2-seat table now fits the two still playing', async () => {
