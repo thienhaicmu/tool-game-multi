@@ -55,6 +55,11 @@ contextBridge.exposeInMainWorld('phomQA', {
   sessionState: () => ipcRenderer.invoke('phom:session-state'),
   verifyTable: () => ipcRenderer.invoke('phom:verify-table'),
   trace: () => ipcRenderer.invoke('phom:trace'),
+  // TEST D — record the game client's own frames while the player acts by hand, then save them to a file.
+  framesRecordStart: (cfg) => ipcRenderer.invoke('phom:frames-record-start', cfg || {}),
+  framesRecordStatus: () => ipcRenderer.invoke('phom:frames-record-status'),
+  framesRecordStop: () => ipcRenderer.invoke('phom:frames-record-stop'),
+  framesOpenFolder: (p) => ipcRenderer.invoke('phom:frames-open-folder', p),
   joinExperiment: (channel, opts) => ipcRenderer.invoke('phom:join-experiment', { channel, opts }),
   hostAnchoredJoin: (channel, opts) => ipcRenderer.invoke('phom:host-anchored-join', { channel, opts }),
   // PHASE-6 — manual per-browser control (browserId === browserRunId). No host/follower role.

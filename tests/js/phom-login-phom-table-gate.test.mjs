@@ -190,3 +190,10 @@ test('BUG2: openFindTable reports the authorization gate with a typed note (no s
   assert.match(fn, /caps\.authorized/);
   assert.match(fn, /Không thể tìm bàn: môi trường chưa được cấp quyền QA/);
 });
+
+// §51 — the Tool-wide TÌM BÀN must never key the A/B/C slot map with a Player value ('B1'/'B2'/'B3').
+test('§51 runFindTable resolves the finder from the snapshot, never assign[selectedFinderPlayer]', () => {
+  const fn = between('async function runFindTable(', 'function advanceAutoFlow(');
+  assert.match(fn, /MCS\.pickFinder\(manualBrowsers, selectedFinderPlayer\)/);
+  assert.equal(/assign\[\s*(finderSlot|selectedFinderPlayer)/.test(fn), false);
+});

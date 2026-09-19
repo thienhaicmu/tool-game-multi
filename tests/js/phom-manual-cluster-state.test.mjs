@@ -172,3 +172,29 @@ test('§38 without an authoritative value the legacy derivation still applies (b
   const next = S.reconcile(S.create(), [B('B2', 'JOINED', { rid: 555 })]);
   assert.equal(next.sharedRid, 555);
 });
+
+// §51 — the Tool-wide TÌM BÀN resolved its finder by indexing the A/B/C slot map with 'B1'/'B2'/'B3', got
+// undefined and threw before its try block: with a finder chosen, the button silently did nothing. The finder is
+// now resolved by Player NUMBER from the authoritative per-browser snapshot.
+const browsers3 = [
+  { profileId: 'run-a', browserIndex: 1, socketReady: true, connected: true, channelCount: 5 },
+  { profileId: 'run-b', browserIndex: 2, socketReady: true, connected: true, channelCount: 5 },
+  { profileId: 'run-c', browserIndex: 3, socketReady: true, connected: true, channelCount: 5 },
+];
+test('§51 pickFinder: a chosen finder is resolved by Player number, the others follow', () => {
+  for (const [sel, id] of [['B1', 'run-a'], ['B2', 'run-b'], ['B3', 'run-c']]) {
+    const r = S.pickFinder(browsers3, sel);
+    assert.equal(r.finderId, id, `${sel} → ${id}`);
+    assert.deepEqual([...r.followerIds].sort(), browsers3.map((b) => b.profileId).filter((x) => x !== id).sort());
+  }
+});
+test('§51 pickFinder: no finder chosen → the first browser that is actually in the game', () => {
+  const list = browsers3.map((b, i) => (i === 0 ? { ...b, channelCount: 0 } : b)); // Player 1 still loading
+  assert.equal(S.pickFinder(list, null).finderId, 'run-b');
+});
+test('§51 pickFinder: never throws, even with nothing to pick from', () => {
+  // (compared as JSON: the module runs in a vm context, so its objects come from another realm)
+  assert.equal(JSON.stringify(S.pickFinder([], 'B2')), JSON.stringify({ finderId: null, followerIds: [] }));
+  assert.equal(JSON.stringify(S.pickFinder(null, null)), JSON.stringify({ finderId: null, followerIds: [] }));
+  assert.equal(S.pickFinder(browsers3, 'B9').finderId, 'run-a', 'an unknown Player falls back instead of failing');
+});

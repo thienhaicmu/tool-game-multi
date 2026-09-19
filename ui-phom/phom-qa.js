@@ -1552,6 +1552,7 @@
       el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); openSimulator(); } }, 'Mô phỏng Offline (QA)'),
       el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); openAnalyzer(); } }, 'Phân tích luật Offline'),
       el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); toggleAdvancedDebug(); } }, 'Advanced Debug'),
+      el('button', { class: 'menu-item', onclick: (e) => { closeMore(e); openFrameCapture(); } }, 'Ghi gói (Test D)'),
       // The ONLY UI action that closes the browsers (explicit + confirmed) — DỪNG never does.
       el('button', { class: 'menu-item danger', onclick: (e) => { closeMore(e); closeBrowsers(); } }, 'ĐÓNG 3 TRÌNH DUYỆT'),
     );
@@ -1748,6 +1749,54 @@
   function refreshMonitor() { const mon = $('phq-monitor'); if (!mon) return; if (monitorMode === MON.REPLAY) renderReplayMonitorInto(mon); else renderLiveMonitorInto(mon); }
 
   // Offline rule analyzer (§16/§23) — a separate mode, refused while any live run exists.
+  // TEST D — record the game client's OWN frames while the player acts by hand (e.g. clicks a table in the lobby),
+  // then save them to a file (secrets redacted). This is how the real protocol for entering a table is read
+  // instead of guessed. Passive: nothing is sent; it only watches the frames the tool already sees.
+  async function openFrameCapture() {
+    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
+    try { await refreshManual(); } catch {}
+    const overlay = el('div', { class: 'phq-analyzer' });
+    const card = el('div', { class: 'anz-card ft-card' });
+    let timer = null;
+    const close = () => { if (timer) clearInterval(timer); overlay.remove(); };
+    card.appendChild(el('div', { class: 'section-t' }, 'GHI GÓI — TEST D'));
+    card.appendChild(el('div', { class: 'note' }, 'Chọn browser → BẮT ĐẦU → thao tác tay trong game (ví dụ bấm vào bàn 100) → DỪNG & LƯU. Mật khẩu/token được che trước khi lưu.'));
+    const choices = el('div', { class: 'phq-row' });
+    let chosen = null;
+    const list = (manualBrowsers || []).slice().sort((a, b) => a.browserIndex - b.browserIndex);
+    const mkChoice = (id, text) => {
+      const b = el('button', { class: 'btn sm', onclick: () => { chosen = id; [...choices.children].forEach((c) => c.classList.remove('primary')); b.classList.add('primary'); } }, text);
+      return b;
+    };
+    for (const b of list) choices.appendChild(mkChoice(b.profileId, `Player ${b.browserIndex}` + (b.username && b.username !== 'USER_UNKNOWN' ? ' · ' + b.username : '')));
+    choices.appendChild(mkChoice(null, 'Tất cả'));
+    card.appendChild(choices);
+    const status = el('div', { class: 'note' }, 'Chưa ghi.');
+    const out = el('pre', { class: 'capture-preview', hidden: 'hidden' });
+    const startBtn = el('button', { class: 'btn primary', onclick: async () => {
+      const who = chosen == null ? 'Tất cả' : ((list.find((x) => x.profileId === chosen) || {}).username || chosen);
+      const r = await api.framesRecordStart({ runIds: chosen == null ? null : [chosen], label: 'Test D — ' + who });
+      if (!r || r.ok === false) { status.textContent = errText(r); status.className = 'note warn'; return; }
+      startBtn.disabled = true; stopBtn.disabled = null; out.hidden = true;
+      status.textContent = 'ĐANG GHI… hãy thao tác trong game.'; status.className = 'note warn';
+      timer = setInterval(async () => { try { const st = await api.framesRecordStatus(); if (st && st.recording) status.textContent = `ĐANG GHI… ${st.frames} gói — hãy thao tác trong game.`; } catch {} }, 1000);
+    } }, 'BẮT ĐẦU');
+    const stopBtn = el('button', { class: 'btn', disabled: 'disabled', onclick: async () => {
+      if (timer) { clearInterval(timer); timer = null; }
+      const r = await api.framesRecordStop();
+      startBtn.disabled = null; stopBtn.disabled = true;
+      if (!r || r.ok === false) { status.textContent = errText(r); status.className = 'note warn'; return; }
+      status.replaceChildren(document.createTextNode(`Đã lưu ${r.frameCount} gói${r.dropped ? ` (bỏ ${r.dropped})` : ''}: ${r.txtPath}  `),
+        el('button', { class: 'btn sm', onclick: () => api.framesOpenFolder(r.txtPath) }, 'Mở thư mục'));
+      status.className = 'note ok';
+      out.textContent = (r.preview || []).join(String.fromCharCode(10)); out.hidden = false;
+    } }, 'DỪNG & LƯU');
+    card.appendChild(el('div', { class: 'phq-row' }, startBtn, stopBtn, el('button', { class: 'btn', onclick: close }, 'ĐÓNG')));
+    card.appendChild(status);
+    card.appendChild(out);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
   async function openAnalyzer() {
     let status = {}; try { status = await api.analyzerStatus(); } catch { status = {}; }
     document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
@@ -1995,8 +2044,10 @@
   // the same fixes (per-run blacklist, persistent search + HỦY, validated shared room, same-room proof).
   async function runFindTable(stake) {
     selectedStake = stake;
-    const finderSlot = selectedFinderPlayer || SLOTS.find((sl) => slotInPhom(assign[sl].runId)) || SLOTS[0];
-    const finderRunId = assign[finderSlot].runId;
+    await refreshManual(); // the finder/followers come from the authoritative per-browser snapshot
+    // §51 — resolved by Player NUMBER from the snapshot. The old code indexed the A/B/C slot map with the finder
+    // value 'B1'/'B2'/'B3', got undefined, and threw before the try — so with a finder chosen this button did nothing.
+    const { finderId: finderRunId, followerIds } = MCS ? MCS.pickFinder(manualBrowsers, selectedFinderPlayer) : { finderId: null, followerIds: [] };
     if (!finderRunId) { note('Chưa có browser nào sẵn sàng để tìm bàn.', true); return; }
     note('Đang tìm bàn (mức cược ' + stake + ')…'); // FIND_TABLE_REQUESTED — immediate visible feedback
     autoFlow = true; renderApp(); // FIND_TABLE_STARTED — button reflects the running search
@@ -2006,11 +2057,9 @@
       if (!d || d.ok === false) { note('Không thể tìm bàn: ' + errText(d), true); return; }
       note('Đã tìm được bàn ' + d.rid + ' — đang đưa các browser còn lại vào bàn…');
       // The other browsers JOIN the room the finder actually landed in (bounded retry + same-room proof).
-      for (const sl of SLOTS) {
-        const runId = assign[sl].runId;
-        if (!runId || runId === finderRunId) continue;
+      for (const runId of followerIds) {
         const r = await api.manualJoinShared(runId, d.rid);
-        if (r && r.ok === false) note(`${sl}: ` + errText(r), true);
+        if (r && r.ok === false) note(errText(r), true);
       }
       await refreshManual();
       note('Đã vào bàn ' + d.rid + '.');
