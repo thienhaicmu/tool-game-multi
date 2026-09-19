@@ -1128,16 +1128,27 @@
     if (!selectedAnalysisPlayer) return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'Chọn B1 / B2 / B3 để xem lá an toàn của player đó'));
     const a = safeAnalysis;
     if (!a || a.status === 'NO_HAND' || a.status === 'TARGET_NOT_FOUND' || a.status === 'NO_TARGET') return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'ĐANG CHỜ DỮ LIỆU BÀI…'));
-    const safe = a.safeCards || []; const likely = a.likelySafeCards || [];
-    if (!safe.length && !likely.length) return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'CHƯA ĐỦ DỮ LIỆU'));
+    const safe = a.safeCards || []; const likely = a.likelySafeCards || []; const own = a.ownMeldCards || [];
     const wrap = el('div');
-    if (safe.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'AN TOÀN')); wrap.appendChild(safeCardRow(safe, 'meld')); }
+    // §40 — who plays right after this player (learned from public play). Context only.
+    if (a.nextPlayerLabel) wrap.appendChild(el('div', { class: 'faint xs' }, 'Lượt sau: ' + a.nextPlayerLabel));
+    if (!safe.length && !likely.length) wrap.appendChild(el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'CHƯA ĐỦ DỮ LIỆU')));
+    // §42 — highest-value PROVEN-safe card first; the first one is the suggestion (still only a display — the
+    // player decides; nothing is played).
+    if (safe.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'AN TOÀN — lá điểm cao trước')); wrap.appendChild(safeCardRow(safe, 'meld', a.recommendedCode)); }
     if (likely.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'CÓ THỂ AN TOÀN')); wrap.appendChild(safeCardRow(likely, '')); }
+    // §41 — the player's own phỏm: shown so it is clear WHY those cards are never offered.
+    if (own.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'TRONG PHỎM — giữ lại' + (a.ownMeldSource === 'SERVER' ? '' : ' (tự tính)'))); wrap.appendChild(safeCardRow(own, 'own-meld')); }
     return wrap;
   }
-  function safeCardRow(cards, extra) {
+  function safeCardRow(cards, extra, recommendedCode) {
     const row = el('div', { class: 'cards' });
-    for (const c of cards) row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') + (extra ? ' ' + extra : ''), title: (c.reasonCodes || []).join(', ') }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
+    for (const c of cards) {
+      const rec = recommendedCode != null && c.code === recommendedCode;
+      const tip = (rec ? 'NÊN ĐÁNH — ' : '') + (c.points != null ? c.points + ' điểm · ' : '') + (c.reasonCodes || []).join(', ');
+      row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') + (extra ? ' ' + extra : '') + (rec ? ' recommended' : ''), title: tip }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
+      if (rec) row.appendChild(el('span', { class: 'chip green sm' }, 'NÊN ĐÁNH'));
+    }
     return row;
   }
   // Resolve the selected slot → authoritative uid (via the observer's binding) and run the read-only
