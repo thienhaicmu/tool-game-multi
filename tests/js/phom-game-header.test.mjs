@@ -252,8 +252,9 @@ test('main pushes header state on session updates via a coalesced broadcast (no 
 });
 
 test('the cluster shared RID = the first JOINED browser (header VÀO BÀN uses it, § shared RID)', () => {
-  assert.match(main, /function headerSharedRid\(browsers\)/);
-  assert.match(main, /manualState === 'JOINED' && b\.rid != null/);
+  // §38 — single source: the header asks the coordinator (the same value the Tool window gets in its snapshot)
+  assert.match(main, /function headerSharedRid\(\)/);
+  assert.match(main, /sharedRid: active \? phomSessions\.sharedRid\(\) : null/);
 });
 
 test('inGame is derived like the renderer slotInPhom (socketReady + connected + channel list)', () => {
@@ -271,7 +272,8 @@ test('REJOIN uses lastRid and LEAVE (THOÁT PHÒNG) preserves it (coordinator, u
   // rejoin falls back to _lastRid
   assert.match(coord, /rec\._joinedRid != null \? rec\._joinedRid : rec\._lastRid/);
   // leave clears _joinedRid but NOT _lastRid
-  const leave = coord.slice(coord.indexOf('async manualLeave('), coord.indexOf('async manualLeave(') + 700);
+  // the whole method (it now waits for server confirmation, so it no longer fits a fixed-size window)
+  const leave = coord.slice(coord.indexOf('async manualLeave('), coord.indexOf('  resetBrowser(profileId)'));
   assert.match(leave, /rec\._joinedRid = null/);
   assert.equal(/_lastRid = null/.test(leave), false, 'LEAVE must preserve _lastRid for REJOIN');
 });
@@ -416,9 +418,10 @@ test('main: FIND gating + shared RID + WAIT label follow selectedFinderIndex, NE
   assert.match(main, /finderIndex: selectedFinderIndex/);
   // the old hard-coded Player-1 finder is GONE.
   assert.equal(/isFinder: b\.browserIndex === 1/.test(main), false, 'must not hard-code finder = browserIndex 1');
-  // shared RID anchor = the selected finder (or first valid JOINED when none), never browserIndex 1.
-  assert.match(main, /if \(selectedFinderIndex != null\) \{ const f = list\.find\(\(b\) => b\.browserIndex === selectedFinderIndex && valid\(b\)\); return f \? Number\(f\.rid\) : null; \}/);
-  assert.equal(/list\.find\(\(b\) => b\.browserIndex === 1 && valid\(b\)\)/.test(main), false, 'shared RID must not be keyed on browserIndex 1');
+  // shared RID anchor = the selected finder (or first valid holder when none), never browserIndex 1 — §38 now derived
+  // once, in the coordinator (behaviour covered by FIND-SHARED-* in phom-find-resilience-v2); main only delegates.
+  assert.match(main, /phomSessions\.sharedRid\(\)/);
+  assert.equal(/browserIndex === 1 && valid\(b\)/.test(main), false, 'shared RID must not be keyed on browserIndex 1');
   // the set-finder IPC syncs the coordinator anchor + re-pushes every header immediately.
   assert.match(main, /ipcMain\.handle\('phom:set-finder'/);
   assert.match(main, /applyFinderToCoordinator\(\);[\s\S]*?pushHeaderStates\(\);/);

@@ -69,8 +69,7 @@ const ROLE = Object.freeze({ HOST: 'HOST', FOLLOWER: 'FOLLOWER' });
 const PSTATE = Object.freeze({ IDLE: 'IDLE', JOINING: 'JOINING', AT_TABLE: 'AT_TABLE', MISMATCH: 'MISMATCH', READY: 'READY', KICKED: 'KICKED', REJOINING: 'REJOINING', DISCONNECTED: 'DISCONNECTED', LEFT: 'LEFT', ERROR: 'ERROR' });
 
 // PHASE 6.3.5 — FIND RESILIENCE V2 bounds (all explicit, no hard-coded magic scattered around):
-const DISCOVER_FREE_SLOTS = 3;         // §21 — BEFORE P1 joins, a table must fit P1+P2+P3 (freeSlots >= 3)
-const POST_ANCHOR_FREE_SLOTS = 2;      // §20 — AFTER P1 is seated, it must still fit P2+P3 (freeSlots >= 2)
+const DISCOVER_FREE_SLOTS = 3;         // §21/§39 — the MOST seats a FIND secures (all 3 browsers); fewer when fewer play
 const MAX_ANCHOR_RECOVERY = 2;         // §8  — bounded P1 re-FIND attempts after an invalid anchor
 const MAX_SHARED_RID_JOIN_RETRIES = 2; // §11 — follower same-RID retries (initial attempt + 2 = 3 tries max)
 // PHASE 6.3.7 — a user-triggered FIND is a LIVE discovery: reuse the cached CMD 300 rs[] ONLY while it is this
@@ -81,6 +80,8 @@ const FIND_CACHE_FRESH_MS = 1500;
 // bounds, never a while(true): a HARD budget for the whole operation and how often the server is re-asked.
 const FIND_BUDGET_MS = 60000;    // total wall time one TÌM BÀN click may spend (search + joins + re-anchors)
 const FIND_LIST_POLL_MS = 2000;  // ceiling between CMD 300 re-requests; a reply resolves the wait immediately
+// §37 — how long THOÁT BÀN waits for the server to prove the browser is out of the table.
+const LEAVE_CONFIRM_MS = 5000;
 
 class HostTableCoordinator extends EventEmitter {
   constructor(deps = {}) {
@@ -106,6 +107,7 @@ class HostTableCoordinator extends EventEmitter {
     // config so the budget can be tuned per deployment without threading an opt through every call site.
     this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : FIND_BUDGET_MS;
     this._findPollMs = deps.findPollMs != null ? Number(deps.findPollMs) : FIND_LIST_POLL_MS;
+    this._leaveConfirmMs = deps.leaveConfirmMs != null ? Number(deps.leaveConfirmMs) : LEAVE_CONFIRM_MS; // §37
     this._delay = deps.delay || ((ms) => new Promise((r) => setTimeout(r, ms)));
 
     this._state = SESSION.IDLE;
@@ -114,6 +116,10 @@ class HostTableCoordinator extends EventEmitter {
     this._roundRunning = false;
     this._gen = 0;                 // orchestration generation token (§22 single orchestrator)
     this._running = false;         // discovery loop active
+    // §36 — true once a LEGACY HOST/FOLLOWER entry point (acquireHost / joinFollowers / runDiscovery /
+    // the PHASE-3/4 experiments) has actually been started. The UI drives only the PHASE-6 manual flow,
+    // so the legacy whole-cluster lobby reset must stay dormant unless the legacy flow is really in use.
+    this._legacyActive = false;
     this._hostSearchAttempts = 0;
     this._candidateValid = false;
     this._failedRids = new Set();  // candidates whose authoritative state proved invalid (avoid re-pick)
@@ -251,10 +257,19 @@ class HostTableCoordinator extends EventEmitter {
   // The stake dropdown then reads availableStakes(). No hard-coded stakes; no stale
   // list — the list only becomes non-empty once a real CHANNEL_LIST frame arrives.
   // Requesting is an active send, so it is environment-guarded like Join/Ready.
-  async requestChannels() {
+  //
+  // §35 — SCOPED + SEAT-SAFE. `profileId` limits the request to ONE browser (the one whose
+  // bets the user asked to reload) — it used to hit all three. And a browser that is SEATED is
+  // never asked: PhomContext treats any CHANNEL_LIST as "back in the lobby" and drops the table
+  // state (true for the real game client, which never lists channels while seated), so the tool
+  // asking a seated browser made it look like that browser had LEFT its table — and with all
+  // three affected, the lobby reset wiped every RID while everyone was still seated.
+  async requestChannels({ profileId = null } = {}) {
     if (!this._guard()) return this._unauthorized();
     const out = [];
     for (const rec of this._profiles.values()) {
+      if (profileId != null && rec.id !== String(profileId)) continue;
+      if (this._seatedNow(rec)) { out.push({ id: rec.id, ok: false, skipped: true, reason: 'SEATED' }); continue; }
       const aid = rec.ctx.aid();
       const ctx = rec.ctx.sendContext();
       if (aid == null) { out.push({ id: rec.id, ok: false, error: { code: 'PHOM_PROTOCOL_CONTEXT_MISSING', message: 'aid not learned yet' } }); continue; }
@@ -268,6 +283,7 @@ class HostTableCoordinator extends EventEmitter {
   // ---- §12 HOST acquires an EMPTY table at the selected stake ----
   async acquireHost() {
     if (!this._guard()) return this._unauthorized();
+    this._legacyActive = true; // §36 — the HOST/FOLLOWER state machine now owns the table
     const host = this.host();
     if (!host) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no host selected' } };
     if (this._selectedStake == null) return { ok: false, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'select a stake first' } };
@@ -352,6 +368,7 @@ class HostTableCoordinator extends EventEmitter {
   // ---- §14 followers leave their table then join the host's table ----
   async joinFollowers() {
     if (!this._guard()) return this._unauthorized();
+    this._legacyActive = true; // §36 — the HOST/FOLLOWER state machine now owns the table
     if (this._state !== SESSION.HOST_ACQUIRED && this._state !== SESSION.PARTIAL_JOIN && this._state !== SESSION.TABLE_MISMATCH) {
       return { ok: false, error: { code: 'PHOM_HOST_NOT_ACQUIRED', message: `host not acquired (state ${this._state})` } };
     }
@@ -523,6 +540,7 @@ class HostTableCoordinator extends EventEmitter {
   // the generation so it is the single orchestrator while it runs (a concurrent discovery is cancelled).
   async runJoinExperiment(channel, opts = {}) {
     if (!this._guard()) return this._unauthorized();
+    this._legacyActive = true; // §36 — the HOST/FOLLOWER state machine now owns the table
     const host = this.host();
     if (!host) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no host selected' } };
     const ch = Number.isFinite(channel) ? channel : (channel != null ? Number(channel) : this._selectedStake);
@@ -615,6 +633,7 @@ class HostTableCoordinator extends EventEmitter {
 
   async runHostAnchoredJoin(channel, opts = {}) {
     if (!this._guard()) return this._unauthorized();
+    this._legacyActive = true; // §36 — the HOST/FOLLOWER state machine now owns the table
     const host = this.host();
     if (!host) return { ok: false, result: 'HOST_JOIN_FAILED', error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no host selected' } };
     const followers = this.followers();
@@ -710,6 +729,21 @@ class HostTableCoordinator extends EventEmitter {
 
   _rec(profileId) { return this._profiles.get(String(profileId)) || null; }
   _ownSeated(rec) { const ts = rec.ctx.tableState(); const uid = rec.ctx.uid(); return !!(ts && uid && ts.uids.includes(uid)); }
+  // Seated as far as ANY flow knows: authoritative own uid in ps[], or the manual flow holds a confirmed room.
+  _seatedNow(rec) { return !!rec && (this._ownSeated(rec) || rec.manualState === 'JOINED'); }
+  // §39 — how many seats a FIND must secure: the browsers of this session that still have a LIVE game socket (or
+  // are already seated), clamped to 1..3. Deliberately NOT "has the lobby channel list": a browser that is still
+  // loading the game has no list yet but WILL play — counting only lobby-ready browsers let Player 1 pick a table
+  // with a single free seat while Players 2/3 were still loading. A browser that was closed / lost its socket is
+  // what legitimately lowers the requirement. All three alive → 3, exactly as before.
+  _activeSeatNeed() {
+    let n = 0;
+    for (const rec of this._profiles.values()) {
+      const c = rec.ctx.get();
+      if ((c.socketReady && c.connected) || this._seatedNow(rec)) n += 1;
+    }
+    return Math.min(DISCOVER_FREE_SLOTS, Math.max(1, n));
+  }
   // Authoritative logged-in username = the display name (dn) on this browser's OWN seat in ps[]. From
   // server evidence only; USER_UNKNOWN until seated (never guessed, never a "Browser N" placeholder §11).
   _username(rec) { const ts = rec.ctx.tableState(); const uid = rec.ctx.uid(); if (!ts || !uid) return null; const mine = (ts.seats || []).find((s) => s.uid === uid); return mine && mine.dn ? mine.dn : null; }
@@ -818,7 +852,10 @@ class HostTableCoordinator extends EventEmitter {
     // §5/§6/§14 — the finder chooses a REAL stake from the server bet options; discovery filters by it.
     const selectedStake = opts.selectedStake != null ? Number(opts.selectedStake) : null;
     if (selectedStake == null || !Number.isFinite(selectedStake)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'Chọn mức cược trước khi tìm bàn' } }; }
-    const need = opts.need != null ? opts.need : DISCOVER_FREE_SLOTS; // §21 — BEFORE join: fit P1+P2+P3 (>=3)
+    // §21/§39 — BEFORE join the table must fit every browser that is actually PLAYING (in game), not a fixed 3:
+    // with only 1–2 browsers in game, demanding 3 free seats rejected tables they could all have shared.
+    const need = opts.need != null ? Number(opts.need) : this._activeSeatNeed();
+    const needAfter = Math.max(0, need - 1); // §20 — after this browser sits, the rest must still fit
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
     const maxRecovery = opts.maxRecovery != null ? opts.maxRecovery : MAX_ANCHOR_RECOVERY; // §8 bounded re-FIND
     // §32/§33 — ONE click keeps looking for up to budgetMs, re-asking the server every pollMs. The budget is a
@@ -886,7 +923,7 @@ class HostTableCoordinator extends EventEmitter {
         // §7/§21 — no auto-switch to another stake: fail typed and let the user pick a different stake.
         // The typed `reason` is what makes a FIND failure diagnosable, so it also goes into the MESSAGE —
         // that is the only field the in-Chromium header (⚠ tooltip) and the Tool's errText actually show.
-        if (!candidate) { const diag = this._diagNoTable(rec); const seen = rec._lastPickTotal || 0; const tries = rec._searchAttempt || 0; const secs = Math.round((this._mono() - t0) / 1000); rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake} — ${describeNoTableReason(diag)} (đã hỏi máy chủ ${tries} lần trong ${secs}s, xét ${seen} bàn)`, reason: diag, attempts: tries, elapsedSec: secs }; this._findLog('FX_NO_TABLE', rec, myGen, { reason: diag, total: seen, attempts: tries }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag, attempts: tries }; }
+        if (!candidate) { const diag = this._diagNoTable(rec); const seen = rec._lastPickTotal || 0; const tries = rec._searchAttempt || 0; const secs = Math.round((this._mono() - t0) / 1000); rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake} — ${describeNoTableReason(diag, { need })} (đã hỏi máy chủ ${tries} lần trong ${secs}s, xét ${seen} bàn)`, reason: diag, attempts: tries, elapsedSec: secs }; this._findLog('FX_NO_TABLE', rec, myGen, { reason: diag, total: seen, attempts: tries }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag, attempts: tries }; }
         this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
         this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
         // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[] (§15/§16).
@@ -922,8 +959,8 @@ class HostTableCoordinator extends EventEmitter {
         const ts = rec.ctx.tableState();
         const occupancy = ts ? ts.playerCount : null;
         const freeAfter = (occupancy != null && Number.isFinite(Number(candidate.Mu))) ? Number(candidate.Mu) - occupancy : null;
-        this._findLog('F11_ANCHOR_CAPACITY_CHECK', rec, myGen, { rid: res.rid, Mu: candidate.Mu, uC: occupancy, freeAfter, need: POST_ANCHOR_FREE_SLOTS });
-        if (freeAfter != null && freeAfter >= POST_ANCHOR_FREE_SLOTS) {
+        this._findLog('F11_ANCHOR_CAPACITY_CHECK', rec, myGen, { rid: res.rid, Mu: candidate.Mu, uC: occupancy, freeAfter, need: needAfter });
+        if (freeAfter != null && freeAfter >= needAfter) {
           rec._joinedRidValidated = true; // §6/§7 — now the anchor may be published to followers
           this._findLog('F12_ANCHOR_VALID', rec, myGen, { rid: res.rid, freeAfter });
           this._findLog('F10_FIND_SUCCESS', rec, myGen, { rid: res.rid, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 });
@@ -931,8 +968,11 @@ class HostTableCoordinator extends EventEmitter {
           return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC, freeAfter, anchorValid: true };
         }
         // §7 — ANCHOR INVALID: do NOT publish this RID. Blacklist it, LEAVE it, and (if attempts remain) re-FIND.
-        this._findLog('F13_ANCHOR_INVALID', rec, myGen, { rid: res.rid, freeAfter, need: POST_ANCHOR_FREE_SLOTS });
+        this._findLog('F13_ANCHOR_INVALID', rec, myGen, { rid: res.rid, freeAfter, need: needAfter });
         runFailedRids.add(candidate.rid);
+        // Leave the JOINED state BEFORE dropping the table: this is the discovery loop leaving on purpose, not
+        // the game sending the browser back to the lobby, so _reconcileManualSeats must not see JOINED+no table.
+        rec.manualState = 'SEARCHING';
         try { await rec.send(buildLeaveFrame(), ctx); } catch { /* best effort */ }
         rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.IDLE;
         // §9/§18 — a NEW generation makes the just-left RID's callbacks stale: an old-RID result can never
@@ -943,7 +983,7 @@ class HostTableCoordinator extends EventEmitter {
         if (recovery < maxRecovery) this._findLog('F14_REANCHOR_START', rec, myGen, { attempt: recovery + 1 });
       }
       // §31 — bounded recovery exhausted: stop (never an infinite re-FIND). The user can retry (TÌM LẠI).
-      rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: `Không tìm được bàn còn đủ chỗ cho 3 người sau ${maxRecovery + 1} lần thử — bàn vừa tìm được đều bị người khác ngồi mất`, attempts: maxRecovery + 1 };
+      rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: `Không tìm được bàn còn đủ chỗ cho ${need} người sau ${maxRecovery + 1} lần thử — bàn vừa tìm được đều bị người khác ngồi mất`, attempts: maxRecovery + 1 };
       this._findLog('FX_RESILIENCE_EXHAUSTED', rec, myGen, { attempts: maxRecovery + 1 });
       this.emit('update', this.snapshot());
       return { ok: false, id: rec.id, error: rec.lastError, resilienceExhausted: true };
@@ -979,6 +1019,13 @@ class HostTableCoordinator extends EventEmitter {
     const it = this._profiles.values().next(); return it && !it.done ? it.value : null;
   }
   _anchorRid() { const a = this._anchor(); return a && a._joinedRid != null ? a._joinedRid : null; }
+  // §38 — THE shared room, single source of truth for BOTH surfaces (in-Chromium header + Tool window). It used to
+  // be derived three times — headerSharedRid in main, the renderer's manual-cluster-state, and _anchor() here —
+  // and the renderer's copy ignored both the user-selected finder and the post-anchor capacity validation, so the
+  // Tool could publish a different (or a not-yet-validated) room than the header. Now: the selected finder's
+  // validated room, or — no finder chosen — the first browser that authoritatively holds a room; else null.
+  sharedRid() { const a = this._anchor(); return this._holdsRoom(a) ? Number(a._joinedRid) : null; }
+  sharedRidOwner() { const a = this._anchor(); return this._holdsRoom(a) ? a.id : null; }
   // "Player N" for a profile, by the same 1-based order manualBrowserSnapshot uses. The anchor is no longer
   // always the first browser, so a message must name the browser that really holds the room.
   _playerLabel(rec) { if (!rec) return 'Player tìm bàn'; const i = [...this._profiles.keys()].indexOf(String(rec.id)); return i >= 0 ? `Player ${i + 1}` : rec.displayName || 'Player tìm bàn'; }
@@ -1091,18 +1138,37 @@ class HostTableCoordinator extends EventEmitter {
   }
 
   // LEAVE ONE browser only (never leave-all). Sends the native LEAVE and clears that browser's table.
-  async manualLeave(profileId) {
+  //
+  // §37 — CONFIRMED like JOIN is. Leaving used to drop the table locally the moment the frame was sent, so a LEAVE
+  // the server ignored left the tool saying "left" while the browser still sat at the table — and the next TÌM BÀN
+  // then ran from a seat the tool no longer knew about. Now the local table is kept until the SERVER proves the
+  // browser is out (own uid gone from ps[], or the lobby channel list arrived — which clears the table state).
+  // No proof within leaveTimeoutMs → the browser is still treated as left (nothing better can be known) but the
+  // result says so with a typed, visible PHOM_LEAVE_NOT_CONFIRMED instead of claiming a clean exit.
+  async manualLeave(profileId, opts = {}) {
     if (!this._guard()) return this._unauthorized();
     const rec = this._rec(profileId);
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
     rec._manualGen = (rec._manualGen || 0) + 1; rec._discovering = false; rec._followGen = (rec._followGen || 0) + 1; rec._followInFlight = false; // §8/§17 cancel in-flight find/join/retry
+    const myGen = rec._manualGen;
     rec.manualState = 'LEAVING';
     this.emit('update', this.snapshot());
-    let ok = true; try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { ok = false; }
+    let sent = true; try { await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); } catch { sent = false; }
+    const timeoutMs = opts.leaveTimeoutMs != null ? Number(opts.leaveTimeoutMs) : this._leaveConfirmMs;
+    const confirmed = sent && await this._waitManual(() => !this._ownSeated(rec), rec, myGen, timeoutMs);
+    if (rec._manualGen !== myGen) return { ok: false, id: rec.id, superseded: true, state: rec.manualState }; // a newer op owns this browser
     rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec._joinedRidValidated = false; rec.state = PSTATE.LEFT; rec.manualState = 'LEFT';
-    this._mark('M_LEAVE_SENT', { id: rec.id });
+    this._mark(confirmed ? 'M_LEAVE_CONFIRMED' : 'M_LEAVE_UNCONFIRMED', { id: rec.id });
+    if (!confirmed) {
+      rec.lastError = sent
+        ? { code: 'PHOM_LEAVE_NOT_CONFIRMED', message: 'Đã gửi lệnh rời bàn nhưng máy chủ chưa xác nhận — kiểm tra lại trong game' }
+        : { code: 'PHOM_LEAVE_SEND_FAILED', message: 'Không gửi được lệnh rời bàn' };
+      this.emit('update', this.snapshot());
+      return { ok: false, id: rec.id, state: 'LEFT', confirmed: false, error: rec.lastError };
+    }
+    rec.lastError = null;
     this.emit('update', this.snapshot());
-    return { ok, id: rec.id, state: 'LEFT' };
+    return { ok: true, id: rec.id, state: 'LEFT', confirmed: true };
   }
 
   // PHASE 6.2.3-fix — reset ONE browser's Phỏm context after a web reload (↻ WEB). The reloaded page has
@@ -1283,6 +1349,7 @@ class HostTableCoordinator extends EventEmitter {
   // generation becomes a no-op. §18 — the host-first find-again loop.
   async runDiscovery() {
     if (!this._guard()) return this._unauthorized();
+    this._legacyActive = true; // §36 — the HOST/FOLLOWER state machine now owns the table
     if (this._running) { this._log('DISCOVERY_ALREADY_RUNNING'); return { ok: true, already: true, gen: this._gen }; }
     const gen = ++this._gen;
     this._running = true; this._hostSearchAttempts = 0; this._failedRids.clear();
@@ -1427,6 +1494,12 @@ class HostTableCoordinator extends EventEmitter {
   // stale membership/identity/PSTATE and return to a clean LOBBY_WAITING — so a fresh TÌM BÀN always
   // works, even after a previous partial/failed attempt (no sticky BÀN / MISMATCH / ĐÃ RỜI / HOST_LOST).
   _maybeLobbyReset() {
+    // §36 — LEGACY only. It resets EVERY browser at once (_joinedRid, state) and runs on every frame; the
+    // manual flow never started it, yet it fired whenever all three looked "in the lobby" and wiped the RIDs
+    // of browsers that were still seated. The manual flow reconciles per browser instead (_reconcileManualSeats).
+    // _hostTableIdentity is set ONLY by the legacy acquisition (_confirmHostAcquired), so it is also proof
+    // that the legacy flow owns a table.
+    if (!this._legacyActive && this._hostTableIdentity == null) return false;
     if (this._running) return false;
     const profs = [...this._profiles.values()];
     if (!profs.length) return false;
@@ -1491,7 +1564,22 @@ class HostTableCoordinator extends EventEmitter {
         this._setState(SESSION.C_REJOINING); this._log('C_REJOIN_REQUIRED', { missing: (rc.missing || []).map(shortUid) }); this.emit('cRejoinRequired', { missing: rc.missing });
       }
     }
+    this._reconcileManualSeats();
     this.emit('update', this.snapshot());
+  }
+
+  // §36 — PER-BROWSER lobby reconciliation for the manual flow. A browser the tool believes is JOINED but whose
+  // table state is gone was sent back to the lobby by the GAME itself (the player left via the game UI, was
+  // kicked, the round closed the table): only a CHANNEL_LIST clears table state for a JOINED browser, and the
+  // tool no longer requests one for a seated browser (§35). Only THAT browser is moved back to READY; the other
+  // browsers and the shared anchor are untouched, and _lastRid is kept so REJOIN can still return.
+  _reconcileManualSeats() {
+    for (const rec of this._profiles.values()) {
+      if (rec.manualState !== 'JOINED' || rec.ctx.tableState()) continue;
+      rec.manualState = 'READY'; rec._joinedRid = null; rec._joinedRidValidated = false; rec.confirmedInTable = false;
+      if (rec.state === PSTATE.AT_TABLE || rec.state === PSTATE.READY) rec.state = PSTATE.IDLE;
+      this._mark('M_BACK_TO_LOBBY', { id: rec.id });
+    }
   }
 
   _markFollowerMismatch() {

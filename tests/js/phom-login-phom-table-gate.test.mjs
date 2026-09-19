@@ -160,7 +160,9 @@ test('BUG1: entry status chips reflect REAL per-run state, not the entryPhase', 
 test('BUG1: detection is prompt — poll actively requests the channel list when socket is up but list missing', () => {
   const poll = between('function startEntryPolling()', 'function stopEntryPolling()');
   assert.match(poll, /needChannels/);
-  assert.match(poll, /api\.requestChannels\(\)/);
+  // §35 — scoped: each browser still missing the list is asked individually, never all three at once
+  assert.match(poll, /api\.requestChannels\(assign\[sl\]\.runId\)/);
+  assert.equal(/api\.requestChannels\(\)/.test(poll), false, 'the poll must not broadcast CMD 300 to every browser');
   // no fixed multi-minute sleep to become ready
   assert.equal(/600000|300000|sleep\(\s*[0-9]{6,}/.test(poll), false);
 });

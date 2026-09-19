@@ -51,12 +51,24 @@
   // Reconcile against the authoritative per-browser snapshot (manualBrowserSnapshot):
   //  - unstick a search lock whose owner is no longer busy (terminal FOUND/FAILED/TIMEOUT/CANCELLED §13)
   //  - keep the shared RID only while at least one browser is JOINED on it; clear when ALL have left (§18)
-  function reconcile(state, browsers) {
+  //  - §38 when `authoritative` ({ sharedRid, sharedRidOwner } from the manual snapshot) is supplied, the shared
+  //    room IS that value — the SAME one the in-Chromium header publishes (the coordinator's single source). The
+  //    local derivation below remains only for callers that don't pass it; it ignored both the user-selected
+  //    finder and the post-anchor capacity validation, which is how the Tool could show a different room.
+  function reconcile(state, browsers, authoritative) {
     const next = { ...state };
     const list = Array.isArray(browsers) ? browsers : [];
     if (next.searchingBrowserId != null) {
       const b = list.find((x) => sid(x.profileId) === next.searchingBrowserId);
       if (!b || !BUSY.includes(b.manualState)) next.searchingBrowserId = null;
+    }
+    if (authoritative && authoritative.sharedRid !== undefined) {
+      const rid = authoritative.sharedRid;
+      if (rid == null) { next.sharedRid = null; next.sharedRidOwner = null; next.sharedStake = null; return next; }
+      if (Number(next.sharedRid) !== Number(rid)) next.sharedStake = null; // a different room: its stake is unknown here
+      next.sharedRid = Number(rid);
+      next.sharedRidOwner = authoritative.sharedRidOwner != null ? sid(authoritative.sharedRidOwner) : null;
+      return next;
     }
     if (next.sharedRid != null && list.length) {
       const anyJoined = list.some((x) => x.manualState === 'JOINED' && Number(x.rid) === Number(next.sharedRid));

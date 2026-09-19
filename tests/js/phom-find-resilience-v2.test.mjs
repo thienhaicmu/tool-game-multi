@@ -34,7 +34,12 @@ class Sim {
         if (!room.seats.find((s) => s.uid === uid) && room.seats.length < room.Mu) room.seats.push({ uid, sit: room.seats.length });
         this._feed(id, this._table(room)); return { ok: true };
       }
-      if (j[0] === 4) { for (const r of this.rooms) r.seats = r.seats.filter((s) => s.uid !== uid); return { ok: true }; }
+      if (j[0] === 4) {
+        for (const r of this.rooms) r.seats = r.seats.filter((s) => s.uid !== uid);
+        // back in the LOBBY → the lobby channel list arrives (§37 evidence that THOÁT BÀN took effect)
+        if (!this.silentLeave) this._feed(id, this._channelList());
+        return { ok: true };
+      }
       return { ok: true };
     };
   }
@@ -501,4 +506,116 @@ test('FIND-C-04: the snapshot reports live progress so the header can show it', 
   await coord.cancelFind('B1');
   await p;
   assert.equal(snapB(coord, 'B1').searchAttempt, 0, 'progress is cleared once the search ends');
+});
+
+// ================= ĐỢT 1 — one shared room, confirmed leave, per-browser lobby reconcile, seat need =================
+
+// §38 — ONE source of truth for the shared room (header + Tool read the same value).
+test('FIND-SHARED-01: no finder → the shared room is the browser that actually holds a validated room', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }]);
+  assert.equal(coord.sharedRid(), null, 'nobody holds a room yet');
+  const f = await coord.manualDiscoverTable('B2', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(f.ok, true);
+  assert.equal(coord.sharedRid(), 555);
+  assert.equal(coord.sharedRidOwner(), 'B2', 'never forced to Player 1');
+});
+
+test('FIND-SHARED-02: a selected finder owns the shared room — another browser\'s room is never published', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }, { rid: 556, b: 500, seats: [] }]);
+  coord.setFinder('B3');
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 }); // B1 sits somewhere on its own
+  assert.equal(coord.sharedRid(), null, 'the chosen finder (B3) holds no room yet → nothing is published');
+  await coord.manualJoinRoom('B3', 556, { timeoutMs: 60 });
+  assert.equal(coord.sharedRid(), 556);
+  assert.equal(coord.sharedRidOwner(), 'B3');
+});
+
+test('FIND-SHARED-03: a provisional anchor (capacity check not passed) is never published', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // fills on join → invalid anchor
+  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(coord.sharedRid(), null);
+});
+
+// §37 — THOÁT BÀN is confirmed by the server, like JOIN is.
+test('LEAVE-01: a leave the server confirms is reported as a clean exit', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }]);
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
+  const r = await coord.manualLeave('B1');
+  assert.equal(r.ok, true);
+  assert.equal(r.confirmed, true);
+  assert.equal(snapB(coord, 'B1').manualState, 'LEFT');
+});
+
+test('LEAVE-02: a leave the server never confirms is surfaced, never claimed as clean', async () => {
+  const { coord, sim } = mk([{ rid: 555, b: 500, seats: [] }]);
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
+  sim.silentLeave = true;
+  const t0 = Date.now();
+  const r = await coord.manualLeave('B1', { leaveTimeoutMs: 80 });
+  assert.equal(r.ok, false);
+  assert.equal(r.confirmed, false);
+  assert.equal(r.error.code, 'PHOM_LEAVE_NOT_CONFIRMED');
+  assert.ok(Date.now() - t0 >= 70, 'it actually waited for evidence');
+  assert.equal(snapB(coord, 'B1').manualState, 'LEFT', 'still treated as left — nothing better can be known');
+});
+
+test('LEAVE-03: the local table is kept until the server proves the exit (not dropped at send time)', async () => {
+  const { coord, sim } = mk([{ rid: 555, b: 500, seats: [] }]);
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
+  sim.silentLeave = true;
+  const p = coord.manualLeave('B1', { leaveTimeoutMs: 200 });
+  await new Promise((res) => setTimeout(res, 30));
+  assert.equal(snapB(coord, 'B1').manualState, 'LEAVING');
+  assert.ok(coord._ownSeated(coord._rec('B1')), 'still seated as far as the server has told us');
+  await p;
+});
+
+// §36 — the game sending ONE browser back to the lobby resets only that browser.
+test('LOBBY-01: a lobby channel list for ONE seated browser resets only that browser; the others keep their room', async () => {
+  const { coord, sim } = mk([{ rid: 555, b: 500, seats: [] }]);
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
+  await coord.manualJoinShared('B2', 555, { timeoutMs: 60 });
+  await coord.manualJoinShared('B3', 555, { timeoutMs: 60 });
+  sim._feed('B2', sim._channelList()); // the game itself put B2 back in the lobby
+  assert.equal(snapB(coord, 'B2').manualState, 'READY');
+  assert.equal(snapB(coord, 'B2').rid, null);
+  assert.equal(snapB(coord, 'B2').lastRid, 555, 'REJOIN can still return');
+  assert.equal(snapB(coord, 'B1').rid, 555, 'B1 untouched');
+  assert.equal(snapB(coord, 'B3').rid, 555, 'B3 untouched');
+  assert.equal(coord.sharedRid(), 555, 'the shared room survives');
+});
+
+test('LOBBY-02: the legacy whole-cluster lobby reset stays dormant in the manual flow', async () => {
+  const { coord } = mk([{ rid: 555, b: 500, seats: [] }]);
+  await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
+  assert.equal(coord._maybeLobbyReset(), false);
+});
+
+// §39 — the seat requirement follows the browsers that can actually play.
+test('SEATS-01: all three alive → a FIND still requires 3 free seats (unchanged)', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // 2 free
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'NOT_ENOUGH_FREE_SLOTS');
+});
+
+test('SEATS-02: a closed browser lowers the requirement, so a 2-seat table now fits the two still playing', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // 2 free
+  coord.markDisconnected('B3');
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, 700);
+});
+
+test('SEATS-03: a browser still LOADING the game (no lobby list yet) still counts — it will play', async () => {
+  // In mk() only a self-identity frame arrived for B2/B3: live socket, no channel list. They must count.
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]);
+  assert.equal(coord._activeSeatNeed(), 3);
+});
+
+test('SEATS-04: the failure message quotes the seats this FIND actually needed', async () => {
+  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }, { sit: 2, uid: 'z' }] }]); // 1 free
+  coord.markDisconnected('B3');
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.match(r.error.message, /2 ghế trống/);
 });

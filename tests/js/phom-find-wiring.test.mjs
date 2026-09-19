@@ -13,9 +13,10 @@ const header = read('desktop/protocol/phom/game-header.cjs');
 
 // PHASE 6.3.6 — the finder/anchor is now the USER's explicit choice (selectedFinderIndex), NOT Player 1.
 test('main: the finder + shared-RID anchor follow the USER-selected finder, never browserIndex 1', () => {
-  // shared RID anchor = the selected finder's validated joined rid (or first valid JOINED when none chosen).
-  assert.match(main, /if \(selectedFinderIndex != null\) \{ const f = list\.find\(\(b\) => b\.browserIndex === selectedFinderIndex && valid\(b\)\); return f \? Number\(f\.rid\) : null; \}/);
-  assert.match(main, /b\.manualState === 'JOINED' && b\.rid != null && b\.anchorValid !== false/); // §7 only a validated anchor is published
+  // shared RID anchor = the selected finder's validated room (or first valid holder when none chosen). §38 — derived
+  // ONCE in the coordinator; main delegates, and the coordinator syncs the finder the user picked.
+  assert.match(main, /phomSessions\.sharedRid\(\)/);
+  assert.match(main, /applyFinderToCoordinator/);
   // FIND gating follows the user choice; the old browserIndex-1 hard-codes are gone.
   assert.match(main, /isFinder: selectedFinderIndex == null \? true : \(b\.browserIndex === selectedFinderIndex\)/);
   assert.equal(/isFinder: b\.browserIndex === 1/.test(main), false, 'finder must not be hard-coded to Player 1');
@@ -97,4 +98,22 @@ test('header: SEARCHING offers HỦY and reports progress; the guard exempts the
   const guard = read('desktop/protocol/phom/header-action-guard.cjs');
   assert.match(guard, /BUSY_EXEMPT_ACTIONS = Object\.freeze\(new Set\(\['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS'\]\)\)/);
   assert.match(guard, /if \(busy && !isBusyExempt\(p\.action\)\)/);
+});
+
+// §38 — the Tool window and the in-Chromium header drive the SAME operations with the SAME semantics.
+test('Tool window: VÀO BÀN uses join-shared (retry + same-room proof), HỦY cancels, shared room is authoritative', () => {
+  const ui = read('ui-phom/phom-qa.js');
+  const preload = read('desktop/phom-preload.cjs');
+  assert.equal(/api\.manualJoin\(b\.profileId, rid\)[\s\S]{0,40}\/\/ exact shared/.test(ui), false);
+  assert.match(ui, /api\.manualJoinShared\(b\.profileId, rid\)/);
+  assert.match(ui, /api\.manualJoinShared\(b\.profileId, dec\.rid\)/);
+  assert.match(ui, /api\.cancelFind\(b\.profileId\)/);
+  assert.match(ui, /b\.manualState === 'SEARCHING'/);
+  assert.match(ui, /MCS\.reconcile\(manualCluster, manualBrowsers, sharedAuth\)/);
+  assert.match(preload, /manualJoinShared: \(browserId, rid, opts\) => ipcRenderer\.invoke\('phom:manual-join-shared'/);
+  assert.match(preload, /cancelFind: \(browserId\) => ipcRenderer\.invoke\('phom:manual-cancel-find'/);
+  assert.match(main, /ipcMain\.handle\('phom:manual-join-shared'/);
+  assert.match(main, /ipcMain\.handle\('phom:manual-cancel-find'/);
+  // a Tool-side THOÁT BÀN no longer swallows an unconfirmed leave
+  assert.match(ui, /res = await api\.manualLeave\(b\.profileId\)/);
 });

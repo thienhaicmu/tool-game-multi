@@ -31,7 +31,8 @@ test('VÀO BÀN joins the shared RID (never a new discovery) and shows ĐANG VÀ
   const h = fn(js, 'onManualJoinShared');
   assert.match(h, /manualCluster\.sharedRid/);
   assert.match(h, /manualJoining\[b\.profileId\] = true/); // immediate ĐANG VÀO BÀN
-  assert.match(h, /api\.manualJoin\(b\.profileId, rid\)/); // exact shared RID, no discovery
+  // exact shared RID, no discovery — and §38 the SAME join the header uses (bounded retry + same-room proof)
+  assert.match(h, /api\.manualJoinShared\(b\.profileId, rid\)/);
   assert.equal(/api\.manualDiscover\(/.test(h), false, 'VÀO BÀN must not run discovery');
 });
 

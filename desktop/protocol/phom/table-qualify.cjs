@@ -58,16 +58,22 @@ function pickQualifiedCandidate(candidates, opts = {}) {
 // Human-readable (Vietnamese) explanation for a "no table qualified" diagnosis code, so the FIND failure
 // the user sees names the ACTUAL cause instead of only "không tìm thấy bàn". Pure: a total map with a safe
 // fallback for an unknown code — never throws, never leaks a rid or any other server detail.
-const NO_TABLE_REASON_TEXT = Object.freeze({
-  NO_TABLE_RECORDS: 'máy chủ chưa trả về bàn nào (thử ⟳ tải lại web rồi vào lại game)',
-  NO_MATCHING_STAKE: 'không có bàn nào ở mức cược này',
-  ONLY_STAKE_BUCKETS: 'mức cược này mới chỉ có nhóm cược, chưa có bàn thật nào',
-  NOT_ENOUGH_FREE_SLOTS: `có bàn ở mức cược này nhưng không bàn nào còn đủ ${DEFAULT_NEED} ghế trống`,
-  ALL_CANDIDATES_FAILED: 'mọi bàn tìm được đều vừa vào không thành công',
-});
-function describeNoTableReason(reason) {
+function reasonTexts(need) {
+  return Object.freeze({
+    NO_TABLE_RECORDS: 'máy chủ chưa trả về bàn nào (thử ⟳ tải lại web rồi vào lại game)',
+    NO_MATCHING_STAKE: 'không có bàn nào ở mức cược này',
+    ONLY_STAKE_BUCKETS: 'mức cược này mới chỉ có nhóm cược, chưa có bàn thật nào',
+    NOT_ENOUGH_FREE_SLOTS: `có bàn ở mức cược này nhưng không bàn nào còn đủ ${need} ghế trống`,
+    ALL_CANDIDATES_FAILED: 'mọi bàn tìm được đều vừa vào không thành công',
+  });
+}
+const NO_TABLE_REASON_TEXT = reasonTexts(DEFAULT_NEED);
+// `need` = the seats this FIND actually required (fewer than 3 when fewer browsers are playing), so the message
+// never claims "3 ghế" when the search only needed 2.
+function describeNoTableReason(reason, { need } = {}) {
   const key = reason == null ? '' : String(reason);
-  return NO_TABLE_REASON_TEXT[key] || 'không có bàn nào đủ điều kiện';
+  const n = need != null && Number.isFinite(Number(need)) ? Number(need) : DEFAULT_NEED;
+  return reasonTexts(n)[key] || 'không có bàn nào đủ điều kiện';
 }
 
 module.exports = { qualifyTable, pickQualifiedCandidate, freeSlotsOf, describeNoTableReason, NO_TABLE_REASON_TEXT, DEFAULT_NEED };

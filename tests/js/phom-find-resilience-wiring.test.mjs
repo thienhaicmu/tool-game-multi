@@ -12,15 +12,16 @@ const main = read('desktop/phom-main.cjs');
 
 test('explicit V2 bounds are defined (no scattered magic numbers)', () => {
   assert.match(coord, /const DISCOVER_FREE_SLOTS = 3;/);
-  assert.match(coord, /const POST_ANCHOR_FREE_SLOTS = 2;/);
+  // §39 — the post-anchor requirement is derived (need − 1), so it follows the in-game browser count
+  assert.match(coord, /const needAfter = Math\.max\(0, need - 1\);/);
   assert.match(coord, /const MAX_ANCHOR_RECOVERY = 2;/);
   assert.match(coord, /const MAX_SHARED_RID_JOIN_RETRIES = 2;/);
 });
 
-test('post-anchor capacity check uses authoritative ps[] occupancy vs the table Mu (freeSlots >= 2)', () => {
+test('post-anchor capacity check uses authoritative ps[] occupancy vs the table Mu (freeSlots >= need − 1)', () => {
   assert.match(coord, /const ts = rec\.ctx\.tableState\(\);/);
   assert.match(coord, /Number\(candidate\.Mu\) - occupancy/);
-  assert.match(coord, /freeAfter >= POST_ANCHOR_FREE_SLOTS/);
+  assert.match(coord, /freeAfter >= needAfter/);
   // invalid anchor: blacklist + leave + bounded re-FIND, never publish. The blacklist is scoped to THIS
   // discovery run (runFailedRids) — a coordinator-wide set was never cleared in the manual flow and
   // permanently hid every table that lost a race.
@@ -35,7 +36,10 @@ test('a discover anchor is provisional until validated; snapshot exposes anchorV
   assert.match(coord, /provisional: true/);
   assert.match(coord, /rec\._joinedRidValidated = true;/); // set only after F12 capacity pass
   assert.match(coord, /anchorValid: rec\._joinedRidValidated !== false,/);
-  assert.match(main, /b\.anchorValid !== false/); // headerSharedRid never publishes an unvalidated anchor
+  // §38 — the published shared room comes from ONE place, and that place never publishes an unvalidated anchor
+  assert.match(coord, /_holdsRoom\(rec\) \{ return !!\(rec && rec\.manualState === 'JOINED' && rec\._joinedRid != null && rec\._joinedRidValidated !== false\); \}/);
+  assert.match(coord, /sharedRid\(\) \{ const a = this\._anchor\(\); return this\._holdsRoom\(a\)/);
+  assert.match(main, /return phomSessions && phomSessions\.active\(\) \? phomSessions\.sharedRid\(\) : null;/);
 });
 
 test('follower JOIN is bounded + generation-safe + single-flight, with authoritative same-room proof', () => {
