@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { HostSessionManager } = require('../../desktop/protocol/phom/host-session-manager.cjs');
-const { buildJoinFrame, buildChannelListFrame } = require('../../desktop/protocol/phom/phom-coordinator.cjs');
+const { buildJoinFrame, buildChannelListFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
 
 function makeManager({ authorized = true } = {}) {
   const sends = [];

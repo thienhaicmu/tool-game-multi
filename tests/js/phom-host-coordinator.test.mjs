@@ -4,7 +4,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { HostTableCoordinator, SESSION, ROLE, PSTATE } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
-const { buildJoinFrame, buildReadyFrame, buildChannelListFrame } = require('../../desktop/protocol/phom/phom-coordinator.cjs');
+const { buildJoinFrame, buildReadyFrame, buildChannelListFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
 
 const UID = { A: '1_AAA', B: '1_BBB', C: '1_CCC', D: '1_DDD' };
 
