@@ -976,7 +976,16 @@ else {
           username: run.proxyUsername || null,
           resolvePassword: () => proxyConfigStore && run.proxy ? proxyConfigStore.resolvePassword(run.proxy.id) : null,
           onAuthFailure: (code) => send('phom:proxy-auth', { runId: run.id, code }),
-        }).then((detach) => { run._detachProxyAuth = detach; }).catch(() => {});
+        }).then((detach) => {
+          run._detachProxyAuth = detach;
+          // §52 — the proxy challenge is now answered by the tool, so the page may finally leave about:blank.
+          // Only the PAGE target navigates, and only once (a re-attach must never reload the game).
+          const pending = run._pendingNavigateUrl;
+          if (pending && (!target.type || target.type === 'PAGE')) {
+            run._pendingNavigateUrl = null;
+            client.Page.navigate({ url: pending }).catch(() => {});
+          }
+        }).catch(() => {});
       }
     });
     manager.on('target-removed', (id) => {
@@ -1119,7 +1128,14 @@ else {
     run.browserKind = rtChoice.kind; // 'chromium' | 'chrome' — surfaced read-only on Screen 2
     headerLog('browser-launch', { runId: run.id, slotId: slot, kind: rtChoice.kind, profileDir });
     run.proxyUsername = username || (gate.config && gate.config.username) || null;
-    const launched = await run.launcher.open(String(url || ''));
+    // §52 — an AUTHENTICATED proxy must be answerable BEFORE the first request leaves the browser. Chromium used
+    // to be launched straight onto the game URL: the very first request hit the proxy's 407 while the tool's CDP
+    // connection was still ~1-2s away, so Chromium showed its own "Sign in — the proxy requires a username and
+    // password" dialog and the credentials the tool holds were never used. Now such a browser starts on
+    // about:blank; the game URL is loaded only once the proxy-auth handler is live (see the attach handler).
+    const authFirst = !!(gate.runProxy && gate.runProxy.requiresAuth);
+    run._pendingNavigateUrl = authFirst ? String(url || '') : null;
+    const launched = await run.launcher.open(authFirst ? 'about:blank' : String(url || ''));
     if (!launched.ok) { runManager.failRun(run, launched.error); return { ok: false, error: launched.error }; }
     run.cdpEndpoint = launched.endpoint;
     connectRunEndpointWithRetry(run, launched.endpoint).catch(() => {});

@@ -512,6 +512,15 @@
     const pn2 = $('phq-proxynote'); if (pn2) { pn2.textContent = 'Đã áp dụng proxy theo thứ tự chọn.'; pn2.className = 'note ok'; }
   }
   // Add/Edit profile modal (name · type preset · OS window w/h · viewport w/h · touch). OS window ⟂ viewport.
+  // 'HTTP 171.239.26.48:23566 · user a***b · có mật khẩu' — from the redaction-safe proxy snapshot.
+  function proxyLabel(px) {
+    if (!px) return '';
+    const proto = String(px.protocol || 'http').toUpperCase();
+    const parts = [proto + ' ' + (px.endpoint || ((px.host || '?') + ':' + (px.port || '?')))];
+    if (px.username) parts.push('user ' + px.username);
+    parts.push(px.hasAuth ? 'có mật khẩu' : 'không mật khẩu');
+    return parts.join(' · ');
+  }
   function openProfileModal(id) {
     const existing = id ? profilesX.find((x) => x.id === id) : null;
     // §6.3.13 — a NEW profile defaults to the standard 22/24" 16:9 preset (600×338) so three
@@ -525,6 +534,7 @@
     const presetSel = el('select', { class: 'sel', id: 'pf-preset' }, el('option', { value: '' }, '— chọn preset (tùy chọn) —'));
     for (const pr of presets) presetSel.appendChild(el('option', { value: pr.id, selected: dev.presetId === pr.id ? 'selected' : null }, `${pr.name} · ${(pr.profileType || '').replace('_', ' ')}`));
     const f = (idv, ph, val) => el('input', { class: 'f', id: idv, placeholder: ph, value: val != null ? val : '' });
+    const curProxy = existing && existing.proxyRef ? (proxies || []).find((x) => x.id === existing.proxyRef) || null : null;
     const applyPreset = () => { const pr = presets.find((x) => x.id === presetSel.value); if (!pr) return; $('pf-name').value = $('pf-name').value || pr.name; $('pf-osw').value = pr.osWindowWidth || ''; $('pf-osh').value = pr.osWindowHeight || ''; $('pf-vpw').value = pr.viewportWidth || ''; $('pf-vph').value = pr.viewportHeight || ''; if ($('pf-touch')) $('pf-touch').checked = !!pr.touch; };
     presetSel.onchange = applyPreset;
     const card = el('div', { class: 'anz-card' },
@@ -541,7 +551,11 @@
       // PHASE 6.3.9 — PROXY is now configured HERE (per-profile), replacing the bulk-proxy panel. Optional:
       // empty = DIRECT. Reuses api.profileSetProxy (same IPC the bulk panel used) — no new proxy logic.
       el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'PROXY (tùy chọn — để trống = DIRECT)'),
-      el('div', { class: 'phq-row' }, el('span', null, 'Proxy'), el('input', { class: 'f mono', id: 'pf-proxy', placeholder: 'host:port  hoặc  host:port:user:pass', value: '' })),
+      // The saved proxy is SHOWN (protocol, host:port, masked user, whether a password is stored) — the input used to
+      // be blank for an existing profile, so a proxy that WAS saved looked as if it had not been. The password itself
+      // never reaches the renderer; typing into the box replaces the proxy, leaving it empty keeps it.
+      (curProxy ? el('div', { class: 'phq-row' }, el('span', null, 'Đang dùng'), el('span', { class: 'chip green sm mono' }, proxyLabel(curProxy))) : el('span', { style: 'display:none' })),
+      el('div', { class: 'phq-row' }, el('span', null, 'Proxy'), el('input', { class: 'f mono', id: 'pf-proxy', placeholder: curProxy ? 'để trống = giữ proxy hiện tại · nhập mới để đổi' : 'host:port  hoặc  host:port:user:pass', value: '' })),
       (existing && existing.proxyRef)
         ? el('div', { class: 'phq-row' }, el('span', null, ''), el('label', { class: 'faint sm' }, el('input', { type: 'checkbox', id: 'pf-proxy-remove' }), ' Đang có proxy — tick để xóa (DIRECT), hoặc nhập proxy mới để đổi'))
         : el('span', { style: 'display:none' }),
@@ -581,9 +595,9 @@
       const proxyStr = ($('pf-proxy') && $('pf-proxy').value || '').trim();
       const removeProxy = !!($('pf-proxy-remove') && $('pf-proxy-remove').checked);
       if (proxyStr) { const pr = await api.profileSetProxy(pid, proxyStr); if (pr && pr.ok === false) { if (err) { err.textContent = errText(pr); err.className = 'note warn'; } return; } }
-      else if (removeProxy) { await api.profileSetProxy(pid, null); }
+      else if (removeProxy) { await api.profileSetProxy(pid, null); } // refresh the proxy snapshot so reopening the editor shows the proxy that was just saved
     }
-    close(); await refreshProfilesX(); renderApp();
+    close(); await refreshProxies(); await refreshProfilesX(); renderApp();
   }
 
   // LEFT panel 1 — CẤU HÌNH CHUNG: Cluster Profile + HOST on one row, shared Link below.

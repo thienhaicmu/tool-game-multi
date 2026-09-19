@@ -54,15 +54,20 @@ async function bindProxyAuth(client, ctx = {}) {
       }
     } catch { /* target gone — ignore */ }
   };
-  // A paused request that follows an auth handshake must be continued so the page
-  // never hangs. With empty patterns only auth-related pauses occur.
+  // Every paused request is continued immediately and untouched, so interception adds no behaviour of its own.
   const onPaused = async (params) => {
     try { await client.Fetch.continueRequest({ requestId: params.requestId }); } catch { /* ignore */ }
   };
   try {
     client.Fetch.authRequired(onAuth);
     client.Fetch.requestPaused(onPaused);
-    await client.Fetch.enable({ handleAuthRequests: true, patterns: [] });
+    // §52 — Fetch.authRequired is only ever raised for a request that Fetch is INTERCEPTING. This used
+    // `patterns: []` — intercept nothing — so no auth challenge was ever delivered: the proxy's 407 went
+    // unanswered and Chromium fell back to its own "Sign in" dialog. Intercept every request (each one is
+    // continued at once above) so the proxy challenge reaches onAuth — the same mechanism Puppeteer's
+    // page.authenticate() uses. Verified against a real Chrome + a real 407 proxy in
+    // tests/js/phom-proxy-auth-live.test.mjs (it was previously "runtime-unverified").
+    await client.Fetch.enable({ handleAuthRequests: true, patterns: [{ urlPattern: '*' }] });
   } catch { /* enable failed — caller treats as auth-unavailable */ }
   return async () => { try { await client.Fetch.disable(); } catch { /* ignore */ } };
 }
