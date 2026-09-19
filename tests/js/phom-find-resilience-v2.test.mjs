@@ -688,3 +688,33 @@ test('SEATED-03: the trace records WHY each server row was rejected, not just th
   assert.ok(reasons.has('NOT_ENOUGH_FREE_SLOTS'), 'the too-full table is explained');
   assert.ok(rejects.some((e) => e.rid === 140 && e.uC === 70 && e.Mu === 4), 'with the row the server actually sent');
 });
+
+// §49 — a failed search must hand back the SERVER'S OWN ROWS, so a lobby that visibly has joinable tables can
+// be compared against the list the tool was actually given.
+test('ROWS-01: a failed FIND reports every row the server sent and why each was skipped', async () => {
+  const { coord } = mk([
+    { rid: 140, b: 500, Mu: 4, seats: Array.from({ length: 70 }, (_, i) => ({ sit: i, uid: 'x' + i })) }, // bucket
+    { rid: 700, b: 900, seats: [] },                                                                      // other stake
+    { rid: 701, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] },
+  ]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  assert.equal(r.ok, false);
+  assert.equal(r.totalRows, 3, 'every row the lobby sent is counted');
+  const byRid = Object.fromEntries(r.rows.map((x) => [x.rid, x]));
+  assert.equal(byRid[140].reason, 'INVALID_STRUCTURE');
+  assert.equal(byRid[140].uC, 70);
+  assert.equal(byRid[140].Mu, 4);
+  assert.equal(byRid[700].reason, 'STAKE_MISMATCH');
+  assert.equal(byRid[701].reason, 'NOT_ENOUGH_FREE_SLOTS');
+  assert.equal(byRid[701].freeSlots, 0);
+});
+
+test('ROWS-02: the rows stay on the browser snapshot so the Tool can show them after the fact', async () => {
+  const { coord } = mk([{ rid: 701, b: 500, seats: [{ sit: 0, uid: 'a' }, { sit: 1, uid: 'b' }, { sit: 2, uid: 'c' }, { sit: 3, uid: 'd' }] }]);
+  await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
+  const b = snapB(coord, 'B1');
+  assert.equal(b.lastFindStake, 500);
+  assert.equal(b.lastFindTotal, 1);
+  assert.deepEqual(b.lastFindRows.map((r) => r.rid), [701]);
+  assert.equal(b.lastFindRows[0].reason, 'NOT_ENOUGH_FREE_SLOTS');
+});

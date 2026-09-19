@@ -824,6 +824,12 @@ class HostTableCoordinator extends EventEmitter {
     const realAtStake = rejects.filter((r) => r.reason === 'NOT_ENOUGH_FREE_SLOTS' && Number.isFinite(Number(r.freeSlots)));
     rec._lastStakeTables = realAtStake.length;
     rec._lastBestFree = realAtStake.length ? Math.max(...realAtStake.map((r) => Number(r.freeSlots))) : null;
+    // §49 — keep the SERVER'S OWN ROWS behind the verdict. When the game's lobby shows joinable tables at a
+    // stake and TÌM BÀN still reports none, the only way to tell whose picture is wrong is to look at what the
+    // server actually sent this browser: rid, stake, uC/Mu, and why each row was skipped. Bounded, and it holds
+    // nothing but the protocol's own channel fields (no names, no accounts).
+    rec._lastFindRows = rejects.slice(0, 24).map((r) => ({ rid: r.rid, stake: r.stake, uC: r.uC, Mu: r.Mu, freeSlots: r.freeSlots, reason: r.reason }));
+    rec._lastFindStake = selectedStake;
     // §13 — per-candidate diagnostics (gated behind PHOM_FIND_LOG): total rows seen + WHY each was skipped.
     this._findLog('F2_CANDIDATES_SEEN', rec, rec._manualGen, { total: chans.length, rejected: rejects.length, qualified: candidate ? candidate.rid : null });
     for (const r of rejects) {
@@ -960,7 +966,7 @@ class HostTableCoordinator extends EventEmitter {
           rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}${detail} (đã hỏi máy chủ ${tries} lần trong ${secs}s, xét ${seen} bàn)`, reason: diag, attempts: tries, elapsedSec: secs, tablesAtStake: rec._lastStakeTables || 0, bestFreeSlots: rec._lastBestFree, need, minSeats };
           this._findLog('FX_NO_TABLE', rec, myGen, { reason: diag, total: seen, attempts: tries, bestFree: rec._lastBestFree });
           this.emit('update', this.snapshot());
-          return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag, attempts: tries, tablesAtStake: rec._lastStakeTables || 0, bestFreeSlots: rec._lastBestFree, need, minSeats };
+          return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag, attempts: tries, tablesAtStake: rec._lastStakeTables || 0, bestFreeSlots: rec._lastBestFree, need, minSeats, rows: rec._lastFindRows || [], totalRows: rec._lastPickTotal || 0 };
         }
         this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
         this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
@@ -1263,6 +1269,10 @@ class HostTableCoordinator extends EventEmitter {
         membership: ts ? ts.uids.map(shortUid) : [],
         playerCount: ts ? ts.playerCount : 0,
         lastError: rec.lastError || null,
+        // §49 — the server rows behind the last FIND verdict (what the lobby actually sent this browser).
+        lastFindRows: Array.isArray(rec._lastFindRows) ? rec._lastFindRows.map((r) => ({ ...r })) : [],
+        lastFindStake: rec._lastFindStake != null ? rec._lastFindStake : null,
+        lastFindTotal: rec._lastPickTotal || 0,
       };
     });
   }
