@@ -69,7 +69,11 @@ const ROLE = Object.freeze({ HOST: 'HOST', FOLLOWER: 'FOLLOWER' });
 const PSTATE = Object.freeze({ IDLE: 'IDLE', JOINING: 'JOINING', AT_TABLE: 'AT_TABLE', MISMATCH: 'MISMATCH', READY: 'READY', KICKED: 'KICKED', REJOINING: 'REJOINING', DISCONNECTED: 'DISCONNECTED', LEFT: 'LEFT', ERROR: 'ERROR' });
 
 // PHASE 6.3.5 — FIND RESILIENCE V2 bounds (all explicit, no hard-coded magic scattered around):
-const DISCOVER_FREE_SLOTS = 3;         // §21/§39 — the MOST seats a FIND secures (all 3 browsers); fewer when fewer play
+const DISCOVER_FREE_SLOTS = 3;         // §21/§39 — the MOST seats a FIND tries for (all 3 browsers); fewer when fewer play
+// §47 — the MINIMUM a table must have for the searching browser to sit down: its own seat. Wanting a seat for
+// every browser is a PREFERENCE (the emptiest table wins), never a precondition — demanding it is what made
+// TÌM BÀN report "no table" at a stake a player could simply click into.
+const MIN_SEATS_TO_JOIN = 1;
 const MAX_ANCHOR_RECOVERY = 2;         // §8  — bounded P1 re-FIND attempts after an invalid anchor
 const MAX_SHARED_RID_JOIN_RETRIES = 2; // §11 — follower same-RID retries (initial attempt + 2 = 3 tries max)
 // PHASE 6.3.7 — a user-triggered FIND is a LIVE discovery: reuse the cached CMD 300 rs[] ONLY while it is this
@@ -814,12 +818,21 @@ class HostTableCoordinator extends EventEmitter {
     // §13/§14 — remember what the LAST evaluation saw so a NO_TABLE result can report a precise reason.
     rec._lastPickTotal = chans.length;
     rec._lastRejectReasons = rejects.map((r) => r.reason);
+    // §46 — how FULL the lobby is at this stake. "Không tìm thấy bàn trống" is confusing next to a game
+    // client that just walked into a table: the player only needs ONE free seat, a FIND needs one for every
+    // browser. Saying "12 bàn, bàn trống nhất còn 2 ghế (cần 3)" makes that difference visible at a glance.
+    const realAtStake = rejects.filter((r) => r.reason === 'NOT_ENOUGH_FREE_SLOTS' && Number.isFinite(Number(r.freeSlots)));
+    rec._lastStakeTables = realAtStake.length;
+    rec._lastBestFree = realAtStake.length ? Math.max(...realAtStake.map((r) => Number(r.freeSlots))) : null;
     // §13 — per-candidate diagnostics (gated behind PHOM_FIND_LOG): total rows seen + WHY each was skipped.
     this._findLog('F2_CANDIDATES_SEEN', rec, rec._manualGen, { total: chans.length, rejected: rejects.length, qualified: candidate ? candidate.rid : null });
     for (const r of rejects) {
       this._findLog('F4_CANDIDATE_REJECT', rec, rec._manualGen, { rid: r.rid, stake: r.stake, uC: r.uC, Mu: r.Mu, freeSlots: r.freeSlots, reason: r.reason });
-      // Surface WHY a table was skipped (never a secret). The free-slots shortfall is the key new rule.
-      if (r.reason === 'NOT_ENOUGH_FREE_SLOTS') this._mark('TABLE_REJECT', { id: rec.id, rid: r.rid, stake: r.stake, uC: r.uC, Mu: r.Mu, freeSlots: r.freeSlots, reason: r.reason });
+      // Surface WHY a table was skipped (never a secret). EVERY reason is recorded, not just the free-slots
+      // shortfall: when a live lobby visibly has tables but FIND reports none, the trace (phom:trace) has to show
+      // which rows the server actually sent and what disqualified each one — otherwise the only way to find out
+      // is to re-run with PHOM_FIND_LOG=1, which an installed app cannot do.
+      this._mark('TABLE_REJECT', { id: rec.id, rid: r.rid, stake: r.stake, uC: r.uC, Mu: r.Mu, freeSlots: r.freeSlots, reason: r.reason });
     }
     return candidate;
   }
@@ -849,13 +862,25 @@ class HostTableCoordinator extends EventEmitter {
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
     const ctx = rec.ctx.sendContext();
     if (!ctx) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
+    // §45 — a browser that is AT A TABLE cannot search. Discovery asks for the lobby channel list (CMD 300),
+    // and the real client never asks for it while seated: the request goes unanswered, so the search polls its
+    // whole budget and reports "no table" even though the lobby is full of them. (And if the server DID answer,
+    // PhomContext would read that CHANNEL_LIST as "back in the lobby" and drop a table the browser still sits
+    // at.) This is the same rule §35 applies to requestChannels — the discovery path was missing it.
+    if (this._seatedNow(rec)) {
+      rec.lastError = { code: 'PHOM_ALREADY_AT_TABLE', message: 'Browser đang ở bàn — bấm THOÁT PHÒNG trước khi tìm bàn mới' };
+      this.emit('update', this.snapshot());
+      return { ok: false, id: rec.id, error: rec.lastError, rid: rec._joinedRid != null ? rec._joinedRid : null };
+    }
     // §5/§6/§14 — the finder chooses a REAL stake from the server bet options; discovery filters by it.
     const selectedStake = opts.selectedStake != null ? Number(opts.selectedStake) : null;
     if (selectedStake == null || !Number.isFinite(selectedStake)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_NO_STAKE_SELECTED', message: 'Chọn mức cược trước khi tìm bàn' } }; }
-    // §21/§39 — BEFORE join the table must fit every browser that is actually PLAYING (in game), not a fixed 3:
-    // with only 1–2 browsers in game, demanding 3 free seats rejected tables they could all have shared.
+    // §21/§39 — how many seats we WANT: one per browser that is actually playing (not a fixed 3).
     const need = opts.need != null ? Number(opts.need) : this._activeSeatNeed();
-    const needAfter = Math.max(0, need - 1); // §20 — after this browser sits, the rest must still fit
+    const needAfter = Math.max(0, need - 1); // seats the OTHER browsers will need once this one sits
+    // §47 — but only ONE free seat is REQUIRED to join. The wanted count orders the candidates (emptiest first,
+    // so the group lands together whenever the lobby allows) and is reported back; it never blocks sitting down.
+    const minSeats = opts.minSeats != null ? Number(opts.minSeats) : MIN_SEATS_TO_JOIN;
     const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
     const maxRecovery = opts.maxRecovery != null ? opts.maxRecovery : MAX_ANCHOR_RECOVERY; // §8 bounded re-FIND
     // §32/§33 — ONE click keeps looking for up to budgetMs, re-asking the server every pollMs. The budget is a
@@ -880,7 +905,7 @@ class HostTableCoordinator extends EventEmitter {
     rec.manualState = 'SEARCHING'; rec.lastError = null;
     // Live progress for the header (ĐANG TÌM BÀN… 12s · lần 6) so a long search never looks like a freeze.
     rec._searchStartedAt = this._now(); rec._searchAttempt = 0; rec._searchBudgetMs = budgetMs;
-    this._findLog('F0_FIND_START', rec, myGen, { selectedStake, need, budgetMs, pollMs });
+    this._findLog('F0_FIND_START', rec, myGen, { selectedStake, need, minSeats, budgetMs, pollMs });
     this._mark('M_DISCOVER_SENT', { id: rec.id, selectedStake });
     this.emit('update', this.snapshot());
     try {
@@ -896,7 +921,7 @@ class HostTableCoordinator extends EventEmitter {
         const freshMs = opts.cacheFreshMs != null ? Number(opts.cacheFreshMs) : FIND_CACHE_FRESH_MS;
         let cacheFresh = false;
         try { const at = rec.ctx.channelsAt(); cacheFresh = at != null && (this._now() - Number(at)) < freshMs; } catch { cacheFresh = false; }
-        let candidate = (recovery === 0 && cacheFresh) ? this._pickManualCandidate(rec, need, selectedStake, runFailedRids) : null;
+        let candidate = (recovery === 0 && cacheFresh) ? this._pickManualCandidate(rec, minSeats, selectedStake, runFailedRids) : null;
         if (candidate) {
           this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: true });
         } else {
@@ -912,7 +937,7 @@ class HostTableCoordinator extends EventEmitter {
             rec._searchAttempt = (rec._searchAttempt || 0) + 1;
             if (aid != null) { try { await rec.send(buildChannelListFrame(aid), ctx); this._findLog('F1_CMD300_REQUEST', rec, myGen, { recovery, attempt: rec._searchAttempt }); } catch { /* best effort */ } }
             this.emit('update', this.snapshot());                   // keep the header's elapsed/attempt live
-            await this._waitManual(() => { candidate = this._pickManualCandidate(rec, need, selectedStake, runFailedRids); return !!candidate; }, rec, myGen, Math.min(pollMs, left));
+            await this._waitManual(() => { candidate = this._pickManualCandidate(rec, minSeats, selectedStake, runFailedRids); return !!candidate; }, rec, myGen, Math.min(pollMs, left));
             if (rec._manualGen !== myGen || this._stopped) break;    // cancelled / session gone
           }
           if (candidate) this._findLog('F3_TABLE_LIST_READY', rec, myGen, { reused: false, attempts: rec._searchAttempt || 0 });
@@ -923,7 +948,20 @@ class HostTableCoordinator extends EventEmitter {
         // §7/§21 — no auto-switch to another stake: fail typed and let the user pick a different stake.
         // The typed `reason` is what makes a FIND failure diagnosable, so it also goes into the MESSAGE —
         // that is the only field the in-Chromium header (⚠ tooltip) and the Tool's errText actually show.
-        if (!candidate) { const diag = this._diagNoTable(rec); const seen = rec._lastPickTotal || 0; const tries = rec._searchAttempt || 0; const secs = Math.round((this._mono() - t0) / 1000); rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake} — ${describeNoTableReason(diag, { need })} (đã hỏi máy chủ ${tries} lần trong ${secs}s, xét ${seen} bàn)`, reason: diag, attempts: tries, elapsedSec: secs }; this._findLog('FX_NO_TABLE', rec, myGen, { reason: diag, total: seen, attempts: tries }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag, attempts: tries }; }
+        if (!candidate) {
+          const diag = this._diagNoTable(rec); const seen = rec._lastPickTotal || 0; const tries = rec._searchAttempt || 0;
+          const secs = Math.round((this._mono() - t0) / 1000);
+          // §46 — when real tables DO exist at this stake, say how full the emptiest one is: that is the whole
+          // difference between the tool (needs a seat per browser) and a player clicking in (needs one).
+          const detail = rec._lastBestFree != null
+            ? ` — có ${rec._lastStakeTables} bàn ở mức cược này nhưng bàn nào cũng đầy (bàn trống nhất còn ${rec._lastBestFree} ghế)`
+            : ` — ${describeNoTableReason(diag, { need: minSeats })}`;
+          rec.manualState = 'ERROR';
+          rec.lastError = { code: 'PHOM_NO_EMPTY_TABLE', message: `Không tìm thấy bàn trống với mức cược ${selectedStake}${detail} (đã hỏi máy chủ ${tries} lần trong ${secs}s, xét ${seen} bàn)`, reason: diag, attempts: tries, elapsedSec: secs, tablesAtStake: rec._lastStakeTables || 0, bestFreeSlots: rec._lastBestFree, need, minSeats };
+          this._findLog('FX_NO_TABLE', rec, myGen, { reason: diag, total: seen, attempts: tries, bestFree: rec._lastBestFree });
+          this.emit('update', this.snapshot());
+          return { ok: false, id: rec.id, error: rec.lastError, selectedStake, reason: diag, attempts: tries, tablesAtStake: rec._lastStakeTables || 0, bestFreeSlots: rec._lastBestFree, need, minSeats };
+        }
         this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
         this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
         // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[] (§15/§16).
@@ -949,38 +987,33 @@ class HostTableCoordinator extends EventEmitter {
             continue; // §11 — fresh CMD 300 on the next pass finds a DIFFERENT real table (blacklisted RID skipped)
           }
           // no attempts left, or a non-retryable failure → typed failure carrying the join reason.
+          // §48 — drop the room we never got into: _joinedRid is written when the JOIN is SENT, so leaving it
+          // set made the browser show "BÀN 700" (and REJOIN target it) for a table it was never seated at.
+          rec._joinedRid = null; rec._joinedRidValidated = false; rec.confirmedInTable = false;
           rec.manualState = 'ERROR';
           rec.lastError = res.error || { code: 'PHOM_ALL_CANDIDATES_FAILED', message: 'Bàn vừa tìm đã đầy/không vào được — thử lại' };
           this.emit('update', this.snapshot());
           return { ...res, allCandidatesFailed: retryable, stake: candidate.b, playerCount: candidate.uC };
         }
-        // §4/§5/§19/§20 — POST-ANCHOR CAPACITY CHECK from AUTHORITATIVE state: Mu (the table's fixed capacity)
-        // minus the LIVE ps[] occupancy. P1 already holds a seat, so it must still leave >= 2 for P2 + P3.
+        // §47 — TÌM BÀN MUST END UP AT A TABLE. The old rule demanded a table with a free seat for EVERY browser
+        // and, if the room turned out not to fit them all, LEFT the table again and searched on — so at a busy
+        // stake the tool reported "no table" while a player clicking the same lobby walked straight in. A seat
+        // taken is never given back now: the table is kept, and the result simply says how many seats are left
+        // for the other browsers (fitsAll). Preferring the emptiest table still puts the group together whenever
+        // the lobby allows it; re-anchoring is now only for a JOIN that actually failed.
         const ts = rec.ctx.tableState();
         const occupancy = ts ? ts.playerCount : null;
         const freeAfter = (occupancy != null && Number.isFinite(Number(candidate.Mu))) ? Number(candidate.Mu) - occupancy : null;
-        this._findLog('F11_ANCHOR_CAPACITY_CHECK', rec, myGen, { rid: res.rid, Mu: candidate.Mu, uC: occupancy, freeAfter, need: needAfter });
-        if (freeAfter != null && freeAfter >= needAfter) {
-          rec._joinedRidValidated = true; // §6/§7 — now the anchor may be published to followers
-          this._findLog('F12_ANCHOR_VALID', rec, myGen, { rid: res.rid, freeAfter });
-          this._findLog('F10_FIND_SUCCESS', rec, myGen, { rid: res.rid, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 });
-          this.emit('update', this.snapshot());
-          return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC, freeAfter, anchorValid: true };
+        const fitsAll = freeAfter == null ? null : freeAfter >= needAfter;
+        this._findLog('F11_ANCHOR_CAPACITY_CHECK', rec, myGen, { rid: res.rid, Mu: candidate.Mu, uC: occupancy, freeAfter, need: needAfter, fitsAll });
+        rec._joinedRidValidated = true; // the browser IS seated here — this is the room the others join
+        this._findLog('F12_ANCHOR_VALID', rec, myGen, { rid: res.rid, freeAfter, fitsAll });
+        this._findLog('F10_FIND_SUCCESS', rec, myGen, { rid: res.rid, totalMs: Math.round((this._mono() - t0) * 1000) / 1000 });
+        if (fitsAll === false) {
+          rec.lastError = { code: 'PHOM_TABLE_FITS_PARTIAL', message: `Đã vào bàn ${res.rid} nhưng bàn chỉ còn ${freeAfter} ghế cho ${needAfter} browser còn lại` };
         }
-        // §7 — ANCHOR INVALID: do NOT publish this RID. Blacklist it, LEAVE it, and (if attempts remain) re-FIND.
-        this._findLog('F13_ANCHOR_INVALID', rec, myGen, { rid: res.rid, freeAfter, need: needAfter });
-        runFailedRids.add(candidate.rid);
-        // Leave the JOINED state BEFORE dropping the table: this is the discovery loop leaving on purpose, not
-        // the game sending the browser back to the lobby, so _reconcileManualSeats must not see JOINED+no table.
-        rec.manualState = 'SEARCHING';
-        try { await rec.send(buildLeaveFrame(), ctx); } catch { /* best effort */ }
-        rec.ctx.leaveTable(); rec.confirmedInTable = false; rec._joinedRid = null; rec.state = PSTATE.IDLE;
-        // §9/§18 — a NEW generation makes the just-left RID's callbacks stale: an old-RID result can never
-        // overwrite the new anchor, and any follower still on the old RID is cancelled by the anchor change.
-        myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
-        rec.manualState = 'SEARCHING';
         this.emit('update', this.snapshot());
-        if (recovery < maxRecovery) this._findLog('F14_REANCHOR_START', rec, myGen, { attempt: recovery + 1 });
+        return { ...res, state: 'FOUND', roomAnchor: res.rid, stake: candidate.b, playerCountBefore: candidate.uC, freeAfter, fitsAll, seatsForOthers: freeAfter, anchorValid: true };
       }
       // §31 — bounded recovery exhausted: stop (never an infinite re-FIND). The user can retry (TÌM LẠI).
       rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_FIND_RESILIENCE_EXHAUSTED', message: `Không tìm được bàn còn đủ chỗ cho ${need} người sau ${maxRecovery + 1} lần thử — bàn vừa tìm được đều bị người khác ngồi mất`, attempts: maxRecovery + 1 };

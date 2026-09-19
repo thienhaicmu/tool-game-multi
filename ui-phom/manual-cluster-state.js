@@ -88,7 +88,10 @@
   // ---- button-enable derivations (§27/§32) ----
   function isBusy(b) { return !!b && BUSY.includes(b.manualState); }
   // TÌM BÀN disabled whenever ANY browser is searching (§27), or this browser is busy.
-  function canFind(state, b) { if (!b) return false; if (state.searchingBrowserId != null) return false; return !isBusy(b); }
+  // §45 — a browser already AT A TABLE cannot search (searching asks for the lobby list, which a seated client
+  // never gets). The in-Chromium header already offers REJOIN/THOÁT PHÒNG instead of TÌM BÀN here; the Tool now
+  // agrees, so the button is not offered for an operation the backend must refuse.
+  function canFind(state, b) { if (!b) return false; if (state.searchingBrowserId != null) return false; if (b.manualState === 'JOINED') return false; return !isBusy(b); }
   function canJoin(state, b, ridInput) { if (!b || b.manualState === 'JOINING') return false; return ridInput != null && String(ridInput).trim() !== ''; }
   function canRejoin(state, b) { return !!(b && b.canRejoin) && !['JOINING', 'RECONNECTING'].includes(b.manualState); }
   function canLeave(state, b) { return !!b && b.manualState === 'JOINED'; }

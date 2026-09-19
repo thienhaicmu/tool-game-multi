@@ -51,7 +51,10 @@ function pickQualifiedCandidate(candidates, opts = {}) {
     if (q.ok) ok.push(c);
     else rejects.push({ rid: c && c.rid, stake: c && c.b, uC: c && c.uC, Mu: c && c.Mu, freeSlots: q.freeSlots, reason: q.reason });
   }
-  ok.sort((a, b) => (Number(a.uC) || 0) - (Number(b.uC) || 0));
+  // §47 — MOST FREE SEATS first (not simply the lowest occupancy): the searching browser only needs one seat,
+  // but the table that leaves the most room is the one where the whole group can still end up together. Ties
+  // break on rid so the choice is deterministic.
+  ok.sort((a, b) => ((freeSlotsOf(b) || 0) - (freeSlotsOf(a) || 0)) || (Number(a.rid) - Number(b.rid)));
   return { candidate: ok[0] || null, qualifiedCount: ok.length, rejects };
 }
 
