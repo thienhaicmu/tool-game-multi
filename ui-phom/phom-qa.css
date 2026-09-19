@@ -509,3 +509,7 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .phq-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .phq-row > span:first-child { min-width: 60px; color: var(--text-2); font-size: 12px; }
 .phq-row .f { flex: 1; }
+
+.find-rows { margin-top: 4px; }
+.find-rows summary { cursor: pointer; }
+.find-rows > div { font-family: ui-monospace, Consolas, monospace; padding-left: 10px; }

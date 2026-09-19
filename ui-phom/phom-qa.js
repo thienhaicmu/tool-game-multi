@@ -2271,6 +2271,21 @@
     else note('Đã hủy tìm bàn.');
     await refreshManual(); renderApp();
   }
+  // §49 — "BÀN SERVER TRẢ VỀ": the raw rows the lobby sent this browser for the stake it searched, with the
+  // reason each one was skipped. When the game's own lobby shows joinable tables and TÌM BÀN reports none, this
+  // is the only way to see WHICH picture is wrong — the tool's list or the screen's. Shown only after a failed
+  // search, collapsed by default, and it contains nothing but the protocol's channel fields.
+  function findRowsDetail(b) {
+    const rows = (b && Array.isArray(b.lastFindRows)) ? b.lastFindRows : [];
+    if (!b || !b.lastError || b.lastError.code !== 'PHOM_NO_EMPTY_TABLE' || !rows.length) return null;
+    const box = el('details', { class: 'find-rows' });
+    box.appendChild(el('summary', { class: 'faint xs' }, `BÀN SERVER TRẢ VỀ (${b.lastFindTotal || rows.length}) — mức cược ${b.lastFindStake != null ? b.lastFindStake : '—'}`));
+    for (const r of rows) {
+      box.appendChild(el('div', { class: 'faint xs' },
+        `rid ${r.rid} · cược ${r.stake} · ${r.uC}/${r.Mu} người · trống ${r.freeSlots != null ? r.freeSlots : '?'} · ${r.reason}`));
+    }
+    return box;
+  }
   async function onManualLeave(b) {
     note('Đang rời bàn…');
     // §37 — leaving is now CONFIRMED by the server; an unconfirmed leave is surfaced, never reported as clean.
@@ -2319,6 +2334,7 @@
         el('button', { class: 'btn', disabled: canRejoin ? null : true, onclick: () => onManualRejoin(b) }, 'REJOIN'),
         el('button', { class: 'btn danger', disabled: canLeave ? null : true, onclick: () => onManualLeave(b) }, 'THOÁT')),
       b.lastError ? el('div', { class: 'warnrow sm' }, errText({ error: b.lastError })) : null,
+      findRowsDetail(b),
     );
   }
   function manualStatusCls(s) { return ({ JOINED: 'green', SEARCHING: 'yellow', JOINING: 'blue', RECONNECTING: 'blue', LEAVING: 'yellow', LEFT: 'gray', ERROR: 'red', READY: 'gray', CLOSED: 'gray' })[s] || 'gray'; }
