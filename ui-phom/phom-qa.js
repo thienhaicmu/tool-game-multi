@@ -2277,7 +2277,7 @@
   // search, collapsed by default, and it contains nothing but the protocol's channel fields.
   function findRowsDetail(b) {
     const rows = (b && Array.isArray(b.lastFindRows)) ? b.lastFindRows : [];
-    if (!b || !b.lastError || b.lastError.code !== 'PHOM_NO_EMPTY_TABLE' || !rows.length) return null;
+    if (!b || !b.lastError || !rows.length) return null; // any failed search, not just "no table"
     const box = el('details', { class: 'find-rows' });
     box.appendChild(el('summary', { class: 'faint xs' }, `BÀN SERVER TRẢ VỀ (${b.lastFindTotal || rows.length}) — mức cược ${b.lastFindStake != null ? b.lastFindStake : '—'}`));
     for (const r of rows) {
