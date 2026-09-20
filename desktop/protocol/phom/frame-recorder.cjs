@@ -16,30 +16,40 @@
 const { classifyPhomFrame } = require('./phom-frame-classify.cjs');
 
 const SECRET_KEY = /pass|pwd|token|sess|secret|auth|cookie|sig/i;
+// TABLE-ROUTING tokens, NOT user credentials: `hpwd` (a table's host/room password) and the positional JOIN
+// room-code are exactly what decides WHICH table you land in — the evidence a private-table co-seat needs. When
+// `keepRoomCodes` is set (Test D "giữ mã bàn" mode) these are preserved while real credentials (accessToken /
+// sessionId / cookie / sig) are STILL redacted by SECRET_KEY. Default OFF, so an ordinary capture stays fully redacted.
+const KEEP_ROOM_KEY = /^hpwd$/i;
 const REDACTED = '[redacted]';
 const DEFAULT_MAX_FRAMES = 4000;
 const DEFAULT_MAX_FRAME_CHARS = 65536;
 
-function redactValue(v) {
-  if (Array.isArray(v)) return v.map(redactValue);
+function redactValue(v, keep) {
+  if (Array.isArray(v)) return v.map((x) => redactValue(x, keep));
   if (v && typeof v === 'object') {
     const out = {};
-    for (const k of Object.keys(v)) out[k] = SECRET_KEY.test(k) ? REDACTED : redactValue(v[k]);
+    for (const k of Object.keys(v)) {
+      const isKept = keep && KEEP_ROOM_KEY.test(k);
+      out[k] = (SECRET_KEY.test(k) && !isKept) ? REDACTED : redactValue(v[k], keep);
+    }
     return out;
   }
   return v;
 }
 
 // Redact one raw frame. Non-JSON frames are kept only as a length marker (they are not Phỏm protocol and
-// could carry anything).
-function redactFrame(raw) {
+// could carry anything). `opts.keepRoomCodes` preserves the table-routing tokens (see KEEP_ROOM_KEY).
+function redactFrame(raw, opts = {}) {
+  const keep = !!opts.keepRoomCodes;
   const text = raw == null ? '' : String(raw);
   let json;
   try { json = JSON.parse(text.trim()); } catch { return { raw: null, note: `non-JSON frame (${text.length} chars)` }; }
-  let clean = redactValue(json);
-  // op 3 JOIN request: [3, zone, roomId, password] — the password is positional, not keyed
+  let clean = redactValue(json, keep);
+  // op 3 JOIN request: [3, zone, roomId, roomCode] — the room-code is positional, not keyed. It is the token
+  // that routes a JOIN to a specific (private) table, so keepRoomCodes preserves it; otherwise it is redacted.
   if (Array.isArray(clean) && clean[0] === 3 && typeof clean[1] === 'string' && clean.length > 3) {
-    clean = clean.slice(); clean[3] = clean[3] === '' ? '' : REDACTED;
+    clean = clean.slice(); clean[3] = (clean[3] === '' || keep) ? clean[3] : REDACTED;
   }
   return { raw: JSON.stringify(clean), note: null };
 }
@@ -72,10 +82,11 @@ function createFrameRecorder(opts = {}) {
     isRecording() { return !!session; },
     status() { return session ? { recording: true, label: session.label, runIds: session.runIds ? [...session.runIds] : null, frames: session.frames.length, dropped: session.dropped, startedAt: session.startedAt } : { recording: false }; },
 
-    // runIds: array of browser run ids to record, or null/empty for every browser.
-    start({ runIds = null, label = null } = {}) {
+    // runIds: array of browser run ids to record, or null/empty for every browser. keepRoomCodes: preserve the
+    // table-routing tokens (hpwd + positional JOIN room-code) for a private-table co-seat investigation.
+    start({ runIds = null, label = null, keepRoomCodes = false } = {}) {
       const ids = Array.isArray(runIds) && runIds.length ? new Set(runIds.map(String)) : null;
-      session = { runIds: ids, label: label != null ? String(label) : null, startedAt: now(), frames: [], dropped: 0 };
+      session = { runIds: ids, label: label != null ? String(label) : null, keepRoomCodes: !!keepRoomCodes, startedAt: now(), frames: [], dropped: 0 };
       return this.status();
     },
 
@@ -87,7 +98,7 @@ function createFrameRecorder(opts = {}) {
       const direction = frame.direction === 'send' ? 'send' : 'recv';
       const text = frame.raw == null ? '' : String(frame.raw);
       const clipped = text.length > maxChars;
-      const { raw, note } = redactFrame(clipped ? text.slice(0, maxChars) : text);
+      const { raw, note } = redactFrame(clipped ? text.slice(0, maxChars) : text, { keepRoomCodes: session.keepRoomCodes });
       session.frames.push({
         t: now() - session.startedAt, runId: String(runId), label: frame.label != null ? String(frame.label) : null,
         direction, url: frame.url || null,

@@ -68,6 +68,7 @@ contextBridge.exposeInMainWorld('phomQA', {
   reloadWeb: (browserId) => ipcRenderer.invoke('phom:reload-web', { browserId }),
   closeBrowser: (browserId) => ipcRenderer.invoke('phom:close-browser', { browserId }),
   manualJoin: (browserId, rid, opts) => ipcRenderer.invoke('phom:manual-join', { browserId, rid, opts }),
+  manualJoinCode: (browserId, rid, key, opts) => ipcRenderer.invoke('phom:manual-join-code', { browserId, rid, key, opts }),
   manualJoinShared: (browserId, rid, opts) => ipcRenderer.invoke('phom:manual-join-shared', { browserId, rid, opts }),
   cancelFind: (browserId) => ipcRenderer.invoke('phom:manual-cancel-find', { browserId }),
   manualRejoin: (browserId, opts) => ipcRenderer.invoke('phom:manual-rejoin', { browserId, opts }),

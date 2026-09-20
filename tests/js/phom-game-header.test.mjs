@@ -76,7 +76,7 @@ test('in game + a cluster shared RID (not yet joined) -> VÀO BÀN for that RID 
 
 test('JOINED -> REJOIN primary + THOÁT PHÒNG (danger) secondary; RID shown', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 700100, sharedRid: 700100 });
-  assert.equal(s.statusLabel, 'ĐÃ VÀO BÀN');
+  assert.equal(s.statusLabel, 'SS 700100'); // §co-seat — the joined status shows the table number (SS = rid)
   assert.equal(s.primary.action, 'REJOIN');
   assert.equal(s.secondary.length, 1);
   assert.equal(s.secondary[0].action, 'LEAVE');

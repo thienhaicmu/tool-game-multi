@@ -112,7 +112,7 @@ test('the header action router acts on ONE browser via the run-scoped coordinato
   // the single runId the click came from (never a leave-all / cross-browser action).
   const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
   assert.match(r, /ENTER_GAME'[\s\S]*?phomEnterGame\(rid\)/);
-  assert.match(r, /FIND'[\s\S]*?manualDiscoverTable\(rid, \{ selectedStake \}\)/);
+  assert.match(r, /FIND'[\s\S]*?manualDiscoverTable\(rid, \{ selectedStake/); // §co-seat — plus budget/poll/fallback opts
   assert.match(r, /manualRejoin\(rid/);
   assert.match(r, /manualLeave\(rid\)/);
 });

@@ -74,6 +74,7 @@
   let selectedFinderPlayer = null;
   let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
   const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
+  const pwdDraft = {};       // §co-seat — per-browser table PASSWORD input draft (join a numbered table by code)
   const manualEntering = {}; // browserId -> true while VÀO GAME is in flight (real ENTERING state, §5)
   const manualEnterError = {}; // browserId -> message when VÀO GAME failed/timed out (retryable)
   const manualEnterTimers = {}; // browserId -> bounded entry timeout handle
@@ -1785,11 +1786,15 @@
     for (const b of list) choices.appendChild(mkChoice(b.profileId, `Player ${b.browserIndex}` + (b.username && b.username !== 'USER_UNKNOWN' ? ' · ' + b.username : '')));
     choices.appendChild(mkChoice(null, 'Tất cả'));
     card.appendChild(choices);
+    // Co-seat investigation: keep the table-routing tokens (hpwd + mã vào bàn) instead of redacting them, so a
+    // "tạo bàn riêng / vào bàn bằng mã" capture reveals the exact JOIN frame. Real credentials stay redacted.
+    const keepChk = el('input', { type: 'checkbox' });
+    card.appendChild(el('label', { class: 'note', style: 'display:flex;align-items:center;gap:6px;cursor:pointer;' }, keepChk, 'Giữ mã bàn (điều tra co-seat — không che hpwd / mã vào bàn)'));
     const status = el('div', { class: 'note' }, 'Chưa ghi.');
     const out = el('pre', { class: 'capture-preview', hidden: 'hidden' });
     const startBtn = el('button', { class: 'btn primary', onclick: async () => {
       const who = chosen == null ? 'Tất cả' : ((list.find((x) => x.profileId === chosen) || {}).username || chosen);
-      const r = await api.framesRecordStart({ runIds: chosen == null ? null : [chosen], label: 'Test D — ' + who });
+      const r = await api.framesRecordStart({ runIds: chosen == null ? null : [chosen], label: 'Test D — ' + who, keepRoomCodes: !!keepChk.checked });
       if (!r || r.ok === false) { status.textContent = errText(r); status.className = 'note warn'; return; }
       startBtn.disabled = true; stopBtn.disabled = null; out.hidden = true;
       status.textContent = 'ĐANG GHI… hãy thao tác trong game.'; status.className = 'note warn';
@@ -2313,9 +2318,11 @@
   }
   async function onManualJoin(b) {
     const rid = (ridDraft[b.profileId] != null ? ridDraft[b.profileId] : (MCS ? MCS.prefillRid(manualCluster, b) : '')).trim();
-    if (!rid) return note('Nhập Room/RID để vào bàn.', true);
-    note(`Đang vào bàn ${rid}…`);
-    let res; try { res = await api.manualJoin(b.profileId, rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (!rid) return note('Nhập Số bàn để vào bàn.', true);
+    const pwd = (pwdDraft[b.profileId] || '').trim(); // §co-seat — join by SỐ BÀN + KEY (mật khẩu); empty → host token
+    note(`Đang vào bàn ${rid}… (thử lì qua "sai mật khẩu")`);
+    // §co-seat — retry through the transient "sai mật khẩu phòng" (like the reference tool) until seated.
+    let res; try { res = await api.manualJoinCode(b.profileId, rid, pwd, {}); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
     if (MCS) manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
     if (res && res.ok === false) note(errText(res), true);
     await refreshManual(); renderApp();
@@ -2390,8 +2397,12 @@
       el('div', { class: 'bc-head' }, el('b', null, 'BROWSER ' + b.browserIndex), el('span', { class: 'bc-status ' + manualStatusCls(b.manualState) }, b.manualState || 'READY')),
       el('div', { class: 'bc-user' }, 'User: ', el('b', null, uname)),
       el('button', { class: 'btn primary bc-find', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, MCS ? MCS.findLabel(manualCluster, b) : 'TÌM BÀN'),
-      el('div', { class: 'bc-rid' }, el('span', { class: 'faint sm' }, 'Room/RID'),
-        el('input', { class: 'f mono', id: 'rid-' + b.profileId, value: draft, placeholder: manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : '—', oninput: (e) => { ridDraft[b.profileId] = e.target.value; } })),
+      el('div', { class: 'bc-rid' }, el('span', { class: 'faint sm' }, 'Số bàn'),
+        el('input', { class: 'f mono', id: 'rid-' + b.profileId, value: draft, placeholder: manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : 'số bàn', oninput: (e) => { ridDraft[b.profileId] = e.target.value; } })),
+      // §co-seat — vào đúng bàn của người khác bằng SỐ BÀN + MẬT KHẨU (như hộp "VÀO BÀN" của game). Gửi
+      // [3,"Simms",<số bàn>,"<mật khẩu>"]. Để trống mật khẩu = vào bàn công khai theo số (nếu bàn cho phép).
+      el('div', { class: 'bc-rid' }, el('span', { class: 'faint sm' }, 'Mật khẩu'),
+        el('input', { class: 'f mono', id: 'pwd-' + b.profileId, value: pwdDraft[b.profileId] || '', placeholder: 'mật khẩu bàn (nếu có)', oninput: (e) => { pwdDraft[b.profileId] = e.target.value; } })),
       el('div', { class: 'bc-actions' },
         el('button', { class: 'btn', disabled: canJoin ? null : true, onclick: () => onManualJoin(b) }, 'JOIN BÀN'),
         el('button', { class: 'btn', disabled: canRejoin ? null : true, onclick: () => onManualRejoin(b) }, 'REJOIN'),

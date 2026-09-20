@@ -110,14 +110,16 @@ test('REAL-01: the finder leaves a table without room for the group and re-joins
   assert.equal(coord.sharedRid(), 139);
 });
 
-test('REAL-02: when the budget runs out without a fitting table the browser is back in the lobby and told why', async () => {
+test('REAL-02: when no table fits the group, the best joinable one is kept as a fallback and published (§53b)', async () => {
   const { coord, sim } = mk({ tables: [{ others: ['s1', 's2'] }], placement: () => 0 });
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 100, maxRecovery: 3 });
-  assert.equal(r.ok, false);
-  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(r.ok, true, 'the finder never ends empty-handed — it re-joins the emptiest table it saw');
+  assert.equal(r.fallbackBest, true);
   assert.equal(r.rerolls, 4);
-  assert.equal(sim.seatedAt('1_1'), -1, 'not left sitting at a misfit table');
-  assert.equal(coord.sharedRid(), null);
+  assert.equal(r.fitsAll, false);
+  assert.equal(r.freeAfter, 1, 'one seat is left for the two other browsers to contend for');
+  assert.equal(sim.seatedAt('1_1'), 0, 'seated at the best (only) table as a fallback');
+  assert.equal(coord.sharedRid(), 139);
   noJoinWhileSeated(sim);
 });
 

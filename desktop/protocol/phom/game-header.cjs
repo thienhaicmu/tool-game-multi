@@ -71,7 +71,13 @@ function deriveHeaderState(view = {}) {
     primary = { action: 'CANCEL_FIND', label: 'HỦY TÌM', danger: true };
   }
   else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
-  else if (joined) { statusLabel = 'ĐÃ VÀO BÀN'; statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }]; }
+  else if (joined) {
+    // §co-seat — show SS (số bàn = the rid this browser is seated in) + the key, like the reference tool's "SS".
+    const code = view.roomCode != null && String(view.roomCode) !== '' ? String(view.roomCode) : null;
+    const ss = view.rid != null ? String(view.rid) : null;
+    statusLabel = 'SS ' + (ss != null ? ss : '—') + (code ? ' · KEY ' + code : '');
+    statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }];
+  }
   else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_SHARED', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }
   // PHASE 6.3.6 — the finder is the USER's explicit choice (view.finderIndex), NEVER defaulted to Player 1.
   // A non-finder (isFinder === false, i.e. a finder WAS chosen and it isn't this browser) with no shared RID
@@ -82,6 +88,8 @@ function deriveHeaderState(view = {}) {
   // PHASE 6.3.8 — the ordered GAME/TABLE icon set (primary first, then secondary). Lifecycle is added by the page.
   const actions = [toActionIcon(primary), ...secondary.map(toActionIcon)].filter(Boolean);
   return { account, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null, joinedShared,
+    // §co-seat — this browser's room CODE (hpwd) + the shared code, so the page/⋯ menu can show "mã bàn".
+    roomCode: view.roomCode != null ? String(view.roomCode) : null, sharedRoomCode: view.sharedRoomCode != null ? String(view.sharedRoomCode) : null,
     // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
     capturing: !!view.capturing, lastCapture: view.lastCapture || null };
 }
@@ -241,7 +249,7 @@ function bootScript(opts = {}) {
     menu.appendChild(menuItem(state.capturing ? '⏹ Dừng & lưu ghi gói (Test D)' : '⏺ Bắt đầu ghi gói (Test D)', function(){ emit(state.capturing ? 'CAPTURE_STOP' : 'CAPTURE_START'); }));
     if(state.lastCapture){ var cap=mk('div','padding:6px 10px;color:#86efac;font-weight:500;white-space:nowrap;'); cap.textContent='📄 Đã lưu: '+state.lastCapture; menu.appendChild(cap); }
     var info = mk('div','padding:8px 10px;color:#9ca3af;font-weight:500;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
-    info.textContent = (SLOTN?('Player '+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · RID '+state.rid : '');
+    info.textContent = (SLOTN?('Player '+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · RID '+state.rid : '') + (state.roomCode ? ' · MÃ '+state.roomCode : (state.sharedRoomCode ? ' · MÃ chung '+state.sharedRoomCode : ''));
     menu.appendChild(info);
     // 6.3.2.10 PROFILING (gated) — click→visual in ONE (page) clock on the FIRST paint after a click.
     if(CLICKLOG && window.__phClickT!=null){ try{ console.log('[PHOM-CLK] CLICK_TO_RENDER', Math.round(CLK()-window.__phClickT)+'ms', 'action='+window.__phClickA, '->', state.statusLabel||''); }catch(e){} window.__phClickT=null; }

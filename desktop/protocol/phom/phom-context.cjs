@@ -257,6 +257,9 @@ function buildTableState(cls) {
     seats,
     playerCount: seats.length,
     uids,
+    // The room CODE (hpwd) + table/owner id (cP) another browser needs to JOIN THIS exact table (co-seat).
+    roomCode: (cls.hpwd != null && cls.hpwd !== '') ? String(cls.hpwd) : null,
+    cP: cls.cP != null ? String(cls.cP) : null,
     identity: uids.length ? { type: 'PLAYER_SET_FINGERPRINT', value: uids.join('|') } : null,
   };
 }
@@ -276,6 +279,8 @@ function foldSeat(ts, seat) {
     seats,
     playerCount: seats.length,
     uids,
+    roomCode: ts.roomCode != null ? ts.roomCode : null, // preserved from the base ps[] snapshot
+    cP: ts.cP != null ? ts.cP : null,
     identity: uids.length ? { type: 'PLAYER_SET_FINGERPRINT', value: uids.join('|') } : null,
   };
 }
