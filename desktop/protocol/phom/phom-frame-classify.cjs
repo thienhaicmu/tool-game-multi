@@ -203,6 +203,11 @@ function finalize(out, extra) {
     b: p.b !== undefined ? p.b : undefined,
     rs: Array.isArray(p.rs) ? p.rs : undefined,
     ps: Array.isArray(p.ps) ? p.ps : undefined,
+    // TABLE_STATE routing tokens (Test D 2026-09-19): `hpwd` is the table's room CODE that another browser
+    // JOINs with to land at THIS exact table; `cP` is the table/owner id. Surfaced verbatim so the follower
+    // JOIN can carry the anchor's code (the protocol's positional [3,zone,rid,CODE] field).
+    hpwd: typeof p.hpwd === 'string' ? p.hpwd : undefined,
+    cP: p.cP !== undefined ? p.cP : undefined,
     mB: p.mB !== undefined ? p.mB : undefined,
     // gameplay fields (surfaced verbatim)
     cs: p.cs !== undefined ? p.cs : undefined,      // array (DEAL) or single (DRAW)

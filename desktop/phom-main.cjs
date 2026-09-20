@@ -143,6 +143,54 @@ else {
       return { ok: false, error: { code: 'PHOM_CAPTURE_WRITE_FAILED', message: String(e && e.message || e) } };
     }
   }
+  // ALWAYS-ON co-seat wire log → userData/phom-captures/coseat.jsonl. One JSON line per JOIN request/response +
+  // resulting table membership + room code, so "who landed at which table with which code" can be read directly
+  // from a file (no Test D recorder, no env var). Truncated once per app launch, and size-capped so it can't grow
+  // without bound. Room codes ARE kept here (this is the co-seat evidence); it carries no login credential.
+  let _coseatInit = false;
+  function coseatLogPath() { return path.join(app.getPath('userData'), 'phom-captures', 'coseat.jsonl'); }
+  function _archiveCoseat(dir, reason) {
+    try { const p = coseatLogPath(); if (fs.existsSync(p)) { const arch = path.join(dir, 'coseat-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jsonl'); fs.renameSync(p, arch); } } catch { /* best effort */ }
+    try { fs.writeFileSync(coseatLogPath(), '# SESSION ' + (reason || '') + ' ' + new Date().toISOString() + '\n', 'utf8'); } catch { /* best effort */ }
+  }
+  function appendCoseatLog(entry) {
+    try {
+      const dir = path.join(app.getPath('userData'), 'phom-captures'); fs.mkdirSync(dir, { recursive: true });
+      const p = coseatLogPath();
+      // §ws-log — NEVER overwrite: on the first write of a run ARCHIVE the previous session's log (rename by time)
+      // so history is kept; and ROTATE (archive) when it grows large instead of dropping frames.
+      if (!_coseatInit) { _archiveCoseat(dir, 'start'); _coseatInit = true; }
+      else { try { if (fs.statSync(p).size > 60 * 1024 * 1024) _archiveCoseat(dir, 'rotate'); } catch { /* file may not exist yet */ } }
+      fs.appendFileSync(coseatLogPath(), JSON.stringify(entry) + '\n', 'utf8');
+    } catch { /* never throw from logging */ }
+  }
+  // §ws-inspect — export ALL captured WebSocket request/response to a readable .txt (one line per frame: time,
+  // Player, → GỬI / ← NHẬN, and the raw frame) so the user can inspect exactly what the game sends/receives.
+  function exportWsLog() {
+    try {
+      const src = coseatLogPath();
+      if (!fs.existsSync(src)) return { ok: false, error: { code: 'PHOM_NO_WS_LOG', message: 'Chưa có log — hãy thao tác trong game trước.' } };
+      const lines = fs.readFileSync(src, 'utf8').split('\n');
+      const slotName = (r) => ({ B1: 'P1', B2: 'P2', B3: 'P3' })[r] || r || '?';
+      const out = ['# WEBSOCKET LOG — toàn bộ request/response game gửi/nhận', ''];
+      let base = null;
+      for (const ln of lines) {
+        if (!ln || ln.startsWith('#')) continue; let e; try { e = JSON.parse(ln); } catch { continue; }
+        if (e.event !== 'WIRE') continue;
+        if (base == null) base = e.at;
+        const t = ((e.at - base) / 1000).toFixed(1) + 's';
+        const dir = e.dir === 'req' ? '→ GỬI' : '← NHẬN';
+        const body = e.bin ? `[nhị phân ${e.len}b] ${e.ascii || ''}` : (e.raw || '');
+        out.push(`${String(t).padStart(8)}  ${slotName(e.slot).padEnd(3)} ${dir}  ${body}`);
+      }
+      const dir = path.join(app.getPath('userData'), 'phom-captures');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const dest = path.join(dir, 'ws-log-' + stamp + '.txt');
+      fs.writeFileSync(dest, out.join('\n'), 'utf8');
+      try { electronShell.showItemInFolder(dest); } catch { /* best effort */ }
+      return { ok: true, path: dest, frames: out.length - 2 };
+    } catch (e) { return { ok: false, error: { code: 'PHOM_WS_EXPORT_FAILED', message: String(e && e.message || e) } }; }
+  }
   // Is THIS browser currently being recorded (a recording of one browser, or of all)?
   function captureActiveFor(runId) {
     const st = frameRecorder.status();
@@ -304,7 +352,7 @@ else {
     phomSessions.on('cards', (cards) => { scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
 
     phomSessions.on('kick', (k) => send('phom:kick', k));
-    phomSessions.on('log', (l) => { try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
+    phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') appendCoseatLog(l); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
     return phomSessions;
   }
 
@@ -610,10 +658,101 @@ else {
     return phomSessions && phomSessions.active() ? phomSessions.sharedRid() : null;
   }
 
+  // §co-seat — the moment the finder is seated, fire the OTHER in-game browsers' VÀO BÀN to its rid AT ONCE
+  // (parallel, near-zero gap), so the server's fill-room seats them at the finder's table. Real capture proved
+  // the grouping window is short (~1.3s co-seats, ~2.8s misses forever), so slow manual clicks are the problem.
+  // Only browsers that are IN GAME and not already seated/joining are fired; each JOIN still proves co-seating
+  // from ps[] (manualJoinShared). Best-effort, fire-and-forget.
+  function autoJoinGroupToShared(finderRunId, rid) {
+    try {
+      if (!phomSessions) return;
+      let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
+      const targets = browsers.filter((b) => b && String(b.profileId) !== String(finderRunId)
+        && b.connected && b.socketReady && (b.channelCount || 0) > 0
+        && b.manualState !== 'JOINED' && b.manualState !== 'JOINING');
+      // §co-seat — AUTO join the host's real số bàn + host KEY (token), retrying LÌ through "sai mật khẩu phòng"
+      // exactly like the reference tool does in the video (it hits that error many times before landing).
+      for (const b of targets) Promise.resolve(phomSessions.manualJoinByCode(b.profileId, rid, null, { maxRetries: 40 })).catch(() => {});
+      headerLog('COSEAT_AUTO_JOIN', { finder: String(finderRunId), rid, targets: targets.map((b) => b.profileId) });
+    } catch { /* best effort */ }
+  }
+
+  // §co-seat — the real số bàn + key are ONLY in the game's ENCRYPTED binary channel, decoded inside the game's
+  // JS. So (like the reference tool) read them from the running game's memory: a bounded walk of `window`/the
+  // Cocos runtime collecting 6–8 digit integers + key-like strings, ranked by how "room/table"-like their property
+  // path is. Results go to coseat.jsonl (GAME_PROBE) so the exact variable holding the số bàn can be pinpointed.
+  // §co-seat — the DECODED table list lives in the game's JS memory (the game decrypts the binary channel into an
+  // array of room objects). Walk the runtime for ARRAYS whose elements look like table entries ({rid,b,uC,Mu}),
+  // and for any single "current room" object — the 7-digit SỐ BÀN we need is right there.
+  const GAME_ROOM_PROBE = `(function(){var out={lists:[],cur:[],scanned:0,xo:0};try{
+    var seen=new Set(),count=0,CAP=400000;
+    var SKIP=/loader|_pipes|md5|assets?|_cache|spriteFrame|texture|material|shader|font|audio|clip|atlas|prefab|bundle|_deps|dependUtil/i;
+    function isEntry(o){ try{ return o&&typeof o==='object'&&!Array.isArray(o)&&('rid'in o)&&(('b'in o)||('uC'in o)||('Mu'in o)); }catch(e){ return false; } }
+    function samp(x){ try{ return {rid:x.rid,b:x.b,uC:x.uC,Mu:x.Mu,hpwd:x.hpwd,rn:x.rn}; }catch(e){ return null; } }
+    function isWin(o){ try{ return o&&(o.window===o||o.self===o); }catch(e){ return true; } } // cross-origin window access throws → treat as frame, skip
+    function walk(o,path,d){ try{
+      if(count>CAP||d>13||o==null)return;
+      if(Array.isArray(o)){ if(o.length>=1&&o.length<=600){ var te=[]; for(var q=0;q<o.length;q++){ if(isEntry(o[q]))te.push(o[q]); } if(te.length>=1&&te.length>=Math.min(o.length,3)*0.6){ out.lists.push({path:path,n:o.length,sample:o.slice(0,4).map(samp)}); } }
+        if(seen.has(o))return; seen.add(o); count++; if(o.length>2500)return; for(var i=0;i<Math.min(o.length,600);i++)walk(o[i],path+'['+i+']',d+1); return; }
+      if(typeof o!=='object')return;
+      if(isWin(o)&&path!=='w'){ out.xo++; return; } // skip nested/foreign window/frame objects
+      if(seen.has(o))return; seen.add(o); count++;
+      if(isEntry(o)&&/cur|my|self|room|table|current|ban|host/i.test(path)){ var s=samp(o); if(s)out.cur.push(Object.assign({path:path},s)); }
+      // EXPLORATORY — record ANY object holding a 7-digit number, with the field name + path (số bàn regardless
+      // of how the game named it). Also record arrays-of-objects with their element key-shape (candidate list).
+      try{ if(out.cur.length<400){ for(var kk in o){ if(out.cur.length>=400)break; if(/room|table|ban|rid|\\bss\\b|host|cur|my|no|id/i.test(kk)){ var vv=o[kk]; if(typeof vv==='number'&&Number.isInteger(vv)&&vv>=1000000&&vv<=9999999){ out.cur.push({path:path+'.'+kk,num:vv}); } else if(typeof vv==='string'&&/^[0-9]{6,8}$/.test(vv)){ out.cur.push({path:path+'.'+kk,numStr:vv}); } } } } }catch(e){}
+      var ks; try{ks=Object.keys(o);}catch(e){out.xo++;return;} if(ks.length>5000)return;
+      for(var j=0;j<ks.length;j++){ var k=ks[j]; if(SKIP.test(k)||k==='__proto__'||k==='parent'||k==='_parent'||k==='node'||k==='frames'||k==='top'||k==='opener'||k==='window'||k==='self')continue; var v; try{v=o[k];}catch(e){continue;} walk(v,path+'.'+k,d+1); }
+    }catch(e){ out.xo++; } }
+    walk(window,'w',0); out.scanned=count;
+    var seenP={}; out.lists=out.lists.filter(function(x){ if(seenP[x.path])return false; seenP[x.path]=1; return true; }).slice(0,30);
+    return JSON.stringify(out);
+  }catch(e){return JSON.stringify({error:String(e&&e.message||e)});}})()`;
+  const _probeCtx = Object.create(null); // runId -> Map(contextId -> {origin,frameId,name})
+  async function probeGameRoom(runId) {
+    const client = runClientFor(runId);
+    if (!client || !client.Runtime) return null;
+    const rid = String(runId);
+    // §co-seat — the game is a cross-origin iframe in the SAME process → no child session, but CDP can still
+    // evaluate in its MAIN world via contextId. Enumerate EVERY frame's execution context (Runtime.enable
+    // re-fires executionContextCreated for all existing contexts) and run the probe in each; the game frame's
+    // context is the one that holds cc + the decoded table list.
+    if (!_probeCtx[rid]) {
+      _probeCtx[rid] = new Map();
+      try { client.Runtime.executionContextCreated((p) => { try { if (p && p.context) _probeCtx[rid].set(p.context.id, { origin: p.context.origin, name: p.context.name, frameId: p.context.auxData && p.context.auxData.frameId }); } catch { /* ignore */ } }); } catch { /* ignore */ }
+      try { client.Runtime.executionContextDestroyed((p) => { try { _probeCtx[rid].delete(p.executionContextId); } catch { /* ignore */ } }); } catch { /* ignore */ }
+    }
+    // Runtime was likely already enabled (header push) → a plain enable does NOT re-fire existing contexts.
+    // DISABLE then ENABLE forces executionContextCreated for every current context (all frames).
+    try { await client.Runtime.disable(); } catch { /* ignore */ }
+    try { await client.Runtime.enable(); } catch { /* ignore */ }
+    await new Promise((r) => setTimeout(r, 600)); // let executionContextCreated events arrive
+    // diagnostic: also dump the frame tree so the game frame's origin is visible even if contexts stay empty
+    let frames = []; try { const ft = await client.Page.getFrameTree(); (function w(n){ if (n && n.frame) frames.push({ url: n.frame.url, origin: n.frame.securityOrigin, id: n.frame.id }); if (n && n.childFrames) n.childFrames.forEach(w); })(ft.frameTree); } catch { /* ignore */ }
+    async function run(cid) {
+      const args = { expression: GAME_ROOM_PROBE, returnByValue: true, timeout: 8000 };
+      if (cid != null) args.contextId = cid;
+      const r = await client.Runtime.evaluate(args);
+      try { return JSON.parse(r && r.result && r.result.value); } catch { return null; }
+    }
+    const hit = (x) => x && ((x.lists && x.lists.length) || (x.cur && x.cur.length));
+    try {
+      let best = null;
+      const ids = [null, ...[..._probeCtx[rid].keys()]];
+      for (const cid of ids) {
+        let parsed = null; try { parsed = await run(cid); } catch { parsed = null; }
+        if (hit(parsed)) { appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE', runId: rid, at: Date.now(), contextId: cid, ctx: _probeCtx[rid].get(cid) || null, result: parsed }); return parsed; }
+        best = best || parsed;
+      }
+      appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE', runId: rid, at: Date.now(), contexts: [..._probeCtx[rid].values()], frames, result: best });
+      return best;
+    } catch (e) { appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE_ERR', runId: rid, at: Date.now(), err: String(e && e.message || e) }); return null; }
+  }
+
   // Build the raw header view for ONE browser from authoritative snapshots (no button logic here — that
   // is deriveHeaderState). opened = a live (non-closed) run; inGame mirrors the renderer's slotInPhom
   // (socketReady + connected + channelList received). account = the logged-in display name (dn) or —.
-  function headerViewFor(runId, browsers, sharedRid) {
+  function headerViewFor(runId, browsers, sharedRid, sharedRoomCode) {
     const run = runManager && runManager.get(String(runId));
     const opened = !!(run && run.status !== RUN_STATUS.CLOSED);
     const b = (browsers || []).find((x) => x && String(x.profileId) === String(runId)) || {};
@@ -635,6 +774,9 @@ else {
       searchAttempt: b.searchAttempt || 0,
       rid: b.rid != null ? b.rid : null,
       lastRid: b.lastRid != null ? b.lastRid : null,
+      // §co-seat — THIS browser's own room code (shown when it holds a table) + the shared code the followers use.
+      roomCode: b.roomCode != null ? b.roomCode : null,
+      sharedRoomCode,
       // PHASE 6.3.6 — FIND gating follows the USER's finder choice (selectedFinderIndex), NEVER browserIndex.
       // No finder chosen → every browser may FIND; a finder chosen → only that Player, others show WAIT_ANCHOR.
       isFinder: selectedFinderIndex == null ? true : (b.browserIndex === selectedFinderIndex),
@@ -651,11 +793,12 @@ else {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
     const sharedRid = headerSharedRid();
+    const sharedRoomCode = phomSessions && phomSessions.active() && typeof phomSessions.sharedRoomCode === 'function' ? phomSessions.sharedRoomCode() : null;
     for (const run of runManager.list()) {
       if (run.status === RUN_STATUS.CLOSED) continue;
       const client = runClientFor(run.id);
       if (!client) continue;
-      const view = headerViewFor(run.id, browsers, sharedRid);
+      const view = headerViewFor(run.id, browsers, sharedRid, sharedRoomCode);
       const rid = String(run.id);
       if (view.inGame) {
         // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
@@ -785,7 +928,23 @@ else {
       } else if (action === 'FIND') {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
-        res = await phomSessions.manualDiscoverTable(rid, { selectedStake });
+        // §co-seat (option A) — wait AGGRESSIVELY for the server's full 7-digit table list (broadcast rarely) so
+        // the finder lands a REAL số bàn to share, polling CMD 300 often and holding off the stake-139 fallback.
+        // §co-seat (option A) — POLL relentlessly (up to 300s), NEVER settle for kênh 139, and only accept a REAL
+        // bàn chờ with **≥ 3 free seats** (need/minSeats = 3) so all three browsers can sit together. When such a
+        // table appears in the list → its 7-digit số bàn → P1/P2 auto-join it (room for all).
+        res = await phomSessions.manualDiscoverTable(rid, { selectedStake, budgetMs: 300000, pollMs: 1500, noStakeFallback: true, need: 3, minSeats: 3 });
+        // §co-seat — REAL capture (coseat.jsonl): the server groups players who JOIN the stake within a short
+        // window (~1.3s co-seated, ~2.8s did not, and a late joiner never gets back). So the moment the finder is
+        // seated, fire the OTHER in-game browsers' JOINs to its rid IMMEDIATELY + in PARALLEL, instead of waiting
+        // for slow manual clicks. Best-effort, fire-and-forget; each still proves co-seating from ps[].
+        // §co-seat AUTO — only auto-join the followers when the finder landed a REAL TABLE (a 7-digit số bàn from
+        // the server list), NEVER when it fell back to the stake channel (rid 139 via matchmaking — that has no
+        // shareable số bàn and would just scatter them). No real số bàn → the user joins by hand (nhập ô SS).
+        if (res && res.ok && res.rid != null && !res.viaStakeChannel) autoJoinGroupToShared(rid, res.rid);
+        // §co-seat — probe the finder's game JS for the REAL số bàn + key (the game decoded them from the binary
+        // channel and holds them in memory). Small delay so the room state is populated. Results → coseat.jsonl.
+        if (res && res.ok) { setTimeout(() => { probeGameRoom(rid).catch(() => {}); }, 5000); setTimeout(() => { probeGameRoom(rid).catch(() => {}); }, 9000); }
       } else if (action === 'CAPTURE_START') {
         // TEST D from the header: record THIS browser (the one the player is about to click in by hand).
         const run = runManager && runManager.get(rid);
@@ -802,7 +961,7 @@ else {
         ensurePhomSessions();
         // PHASE 6.3.5 — a FOLLOWER joins the anchor's shared RID with bounded same-RID retry + same-room proof.
         const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
-        res = await phomSessions.manualJoinShared(rid, joinRid, {});
+        res = await phomSessions.manualJoinShared(rid, joinRid, { maxRetries: 25 }); // §co-seat — try many times
       } else if (action === 'JOIN') {
         ensurePhomSessions();
         const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
@@ -1328,8 +1487,10 @@ else {
     // write them to a file (secrets redacted) so the real protocol can be read instead of guessed.
     ipcMain.handle('phom:frames-record-start', (_e, cfg) => {
       const runIds = cfg && Array.isArray(cfg.runIds) ? cfg.runIds.filter((x) => x != null).map(String) : null;
-      return { ok: true, ...frameRecorder.start({ runIds, label: cfg && cfg.label != null ? String(cfg.label) : null }) };
+      return { ok: true, ...frameRecorder.start({ runIds, label: cfg && cfg.label != null ? String(cfg.label) : null, keepRoomCodes: !!(cfg && cfg.keepRoomCodes) }) };
     });
+    // §ws-inspect — export ALL captured WebSocket request/response to a readable .txt and reveal it.
+    ipcMain.handle('phom:export-ws-log', () => exportWsLog());
     ipcMain.handle('phom:frames-record-status', () => ({ ok: true, ...frameRecorder.status() }));
     ipcMain.handle('phom:frames-record-stop', () => stopAndSaveCapture());
     ipcMain.handle('phom:frames-open-folder', (_e, p) => { try { if (p) electronShell.showItemInFolder(String(p)); return { ok: true }; } catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: String(e && e.message || e) } }; } });
@@ -1346,6 +1507,8 @@ else {
     // PHASE-6.2.1 — REAL discovery: qualifying empty table (rid + stake from the server table) → JOIN → ps[].
     ipcMain.handle('phom:manual-discover', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualDiscoverTable(cfg && cfg.browserId, cfg && cfg.opts); }));
     ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
+    // §co-seat — join a số bàn + key with retry through "sai mật khẩu phòng" (key defaults to the host token).
+    ipcMain.handle('phom:manual-join-code', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinByCode(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.key, (cfg && cfg.opts) || {}); }));
     // §38 — the Tool window joins the shared room with the SAME semantics as the header's VÀO BÀN (bounded retry +
     // same-room proof), and can cancel a persistent search just like the header's HỦY.
     ipcMain.handle('phom:manual-join-shared', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinShared(cfg && cfg.browserId, cfg && cfg.rid, (cfg && cfg.opts) || {}); }));

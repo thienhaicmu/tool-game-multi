@@ -252,7 +252,10 @@ class CaptureCorrelator extends EventEmitter {
     const url = conn ? conn.url : '';
     const seq = conn ? conn.frameSeq++ : this._seq;
     const id = `${cdpKey}#${dir}${seq}`;
-    const raw = r.opcode === 2 ? `[binary ${String(r.payloadData || '').length} bytes]` : String(r.payloadData || '');
+    // §co-seat — a binary frame's payload (base64) IS available here; keep it behind a marker instead of
+    // discarding it, so the coordinator can inspect the game's binary channel (the room-id/key hunt). Text
+    // frames are unchanged. The marker keeps it non-JSON so no existing text parser mistakes it for a frame.
+    const raw = r.opcode === 2 ? `BINB64:${String(r.payloadData || '')}` : String(r.payloadData || '');
     const looksJson = /^[[{]/.test(raw.trim());
     const req = {
       id, targetId, cdpRequestId: String(p.requestId), cdpSessionId: sessionId || null, hop: 0,

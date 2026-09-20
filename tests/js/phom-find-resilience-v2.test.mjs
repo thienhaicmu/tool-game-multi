@@ -66,16 +66,17 @@ test('RES-02: P1 anchor with exactly 2 free slots after seating → VALID', asyn
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
   assert.equal(r.ok, true); assert.equal(r.freeAfter, 2); assert.equal(r.anchorValid, true);
 });
-test('RES-03: a table that fits only SOME browsers is LEFT, and the search says why when it runs out (§53)', async () => {
+test('RES-03: a table that fits only SOME browsers is KEPT as a fallback and published (§53b)', async () => {
   const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // after P1: 3 seated → freeAfter=1
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, false, 'a table without room for the group is not kept');
-  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(r.ok, true, 'the best joinable table is kept rather than leaving the group with nothing');
+  assert.equal(r.fallbackBest, true);
+  assert.equal(r.rid, 700);
+  assert.equal(r.fitsAll, false);
   assert.equal(r.rerolls, 1);
-  assert.match(r.error.message, /đã rời bàn/);
-  assert.notEqual(snapB(coord, 'B1').manualState, 'JOINED');
-  assert.equal(sim.rooms[0].seats.some((s) => s.uid === '1_1'), false, 'the browser really left the table');
-  assert.equal(coord.sharedRid(), null, 'a misfit table is never published to the others');
+  assert.equal(snapB(coord, 'B1').manualState, 'JOINED');
+  assert.equal(sim.rooms[0].seats.some((s) => s.uid === '1_1'), true, 'the browser ends up seated at the fallback table');
+  assert.equal(coord.sharedRid(), 700, 'the best table IS published so the others can join what seats remain');
 });
 test('RES-04: a table that fills on join is left and the search re-rolls onto one that fits (§53)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 3 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'y' }] }]);
@@ -204,13 +205,14 @@ test('RES-21/22: same-room proof P1+P2 then P1+P2+P3 from authoritative ps[]', a
   const c = await coord.manualJoinShared('B3', rid, { timeoutMs: 120 });
   assert.ok(c.membership.includes('1_1') && c.membership.includes('1_2') && c.membership.includes('1_3'));
 });
-test('RES-23: capacity race — qualifies at discovery but fills on JOIN → invalid, not published (maxRecovery 0)', async () => {
+test('RES-23: capacity race — qualifies at discovery but fills on JOIN → kept as fallback, published (§53b)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }], injectOnJoin: 1 }]); // uC1; +inject+P1 → 3
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, false, 'the room filled up during the join → it is left, never published (§53)');
-  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
-  assert.equal(snapB(coord, 'B1').rid, null);
-  assert.equal(coord.sharedRid(), null);
+  assert.equal(r.ok, true, 'the room filled during the join, but it is the best seat available → kept & published (§53b)');
+  assert.equal(r.fallbackBest, true);
+  assert.equal(r.fitsAll, false);
+  assert.equal(snapB(coord, 'B1').rid, 700);
+  assert.equal(coord.sharedRid(), 700);
 });
 test('RES-24: capacity change right after P1 JOIN is caught by the authoritative post-anchor check', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'y' }] }]);
@@ -227,7 +229,7 @@ test('RES-28/29/30: the V2 resilience code emits NO game command / no restart / 
     assert.equal(region.includes(forbidden), false, `resilience code must not reference ${forbidden}`);
   }
   // the JOIN + LEAVE wire frames are the existing ones (no new protocol)
-  assert.match(coord, /buildJoinFrame\(r\)/);
+  assert.match(coord, /buildJoinFrame\(r, roomCode\)/); // §co-seat: the JOIN carries the anchor's room code (existing positional [3] field)
   assert.match(coord, /buildLeaveFrame\(\)/);
 });
 
@@ -630,14 +632,16 @@ test('SEATS-01: with all three alive the search PREFERS the table that fits the 
   assert.equal(r.fitsAll, true);
 });
 
-test('SEATS-01b: when nothing fits the group the misfit table is left and the reason names the seats (§53)', async () => {
+test('SEATS-01b: when nothing fits the group the best joinable table is kept as a fallback (§53b)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // only 2 free
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 2, budgetMs: 2000 });
-  assert.equal(r.ok, false);
-  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
-  assert.equal(r.rerolls, 3, 'bounded: one re-roll per pass');
-  assert.equal(r.bestFreeSlots, 1);
-  assert.match(r.error.message, /đủ 2 ghế/);
+  assert.equal(r.ok, true, 'no table fit all three, but the emptiest joinable one is kept so the group sits where seats allow');
+  assert.equal(r.fallbackBest, true);
+  assert.equal(r.rid, 700);
+  assert.equal(r.fitsAll, false);
+  assert.equal(r.freeAfter, 1);
+  assert.equal(r.rerolls, 3, 'bounded: one re-roll per pass before falling back');
+  assert.equal(coord.sharedRid(), 700);
 });
 
 test('SEATS-02: a closed browser lowers the requirement, so a 2-seat table now fits the two still playing', async () => {

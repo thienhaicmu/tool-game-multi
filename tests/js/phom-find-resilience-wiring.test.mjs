@@ -65,7 +65,7 @@ test('follower JOIN is bounded + generation-safe + single-flight, with authorita
 test('the session manager delegates manualJoinShared and main routes JOIN_SHARED to it', () => {
   assert.match(mgr, /manualJoinShared\(id, rid, opts\) \{ return this\._guarded\(\(c\) => c\.manualJoinShared\(String\(id\), rid, opts\)\); \}/);
   assert.match(main, /action === 'JOIN_SHARED'/);
-  assert.match(main, /phomSessions\.manualJoinShared\(rid, joinRid, \{\}\)/);
+  assert.match(main, /phomSessions\.manualJoinShared\(rid, joinRid, \{ maxRetries: 25 \}\)/);
 });
 
 test('V2 FIND trace milestones present (gated by PHOM_FIND_LOG)', () => {

@@ -59,8 +59,8 @@ test('§34 safety: the FIND phase adds NO game-action / browser restart to the c
   for (const forbidden of ['buildPlayFrame', 'buildDrawFrame', 'buildMeldFrame', 'Input.dispatch', '.click(', 'closeRun', 'reopen', 'restart']) {
     assert.equal(discover.includes(forbidden), false, `manualDiscoverTable must not reference ${forbidden}`);
   }
-  // JOIN protocol untouched
-  assert.match(coord, /buildJoinFrame\(r\)/);
+  // JOIN protocol untouched (the room code is the existing positional [3] field, not a new frame type)
+  assert.match(coord, /buildJoinFrame\(r, roomCode\)/);
 });
 
 // §32/§34 — persistent FIND + its escape hatch, wired end to end (source-level, no GUI).

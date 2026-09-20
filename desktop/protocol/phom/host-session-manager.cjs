@@ -121,11 +121,17 @@ class HostSessionManager extends EventEmitter {
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   // PHASE 6.3.5 — FOLLOWER JOIN of the shared anchor RID with bounded, generation-safe, single-flight retry.
   manualJoinShared(id, rid, opts) { return this._guarded((c) => c.manualJoinShared(String(id), rid, opts)); }
+  // §co-seat — join a specific SỐ BÀN + KEY (host token) with retry through "sai mật khẩu phòng".
+  manualJoinByCode(id, rid, key, opts) { return this._guarded((c) => c.manualJoinByCode(String(id), rid, key, opts)); }
+  hostKey() { const c = this._c(); return c && typeof c.hostKey === 'function' ? c.hostKey() : null; }
+  gameSessionId(id) { const c = this._c(); return c && typeof c.gameSessionId === 'function' ? c.gameSessionId(String(id)) : null; }
   // §34 — cancel the in-flight persistent TÌM BÀN on one browser.
   cancelFind(id) { return this._guarded((c) => c.cancelFind(String(id))); }
   // §38 — the single authoritative shared room (header + Tool read the same value).
   sharedRid() { const c = this._c(); return c && typeof c.sharedRid === 'function' ? c.sharedRid() : null; }
   sharedRidOwner() { const c = this._c(); return c && typeof c.sharedRidOwner === 'function' ? c.sharedRidOwner() : null; }
+  // §co-seat — the shared room CODE (hpwd) the followers' JOIN carries to co-seat at the finder's exact table.
+  sharedRoomCode() { const c = this._c(); return c && typeof c.sharedRoomCode === 'function' ? c.sharedRoomCode() : null; }
   manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
   manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
   // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).
