@@ -684,28 +684,26 @@ else {
   // §co-seat — the DECODED table list lives in the game's JS memory (the game decrypts the binary channel into an
   // array of room objects). Walk the runtime for ARRAYS whose elements look like table entries ({rid,b,uC,Mu}),
   // and for any single "current room" object — the 7-digit SỐ BÀN we need is right there.
-  const GAME_ROOM_PROBE = `(function(){var out={lists:[],cur:[],scanned:0,xo:0};try{
-    var seen=new Set(),count=0,CAP=400000;
-    var SKIP=/loader|_pipes|md5|assets?|_cache|spriteFrame|texture|material|shader|font|audio|clip|atlas|prefab|bundle|_deps|dependUtil/i;
-    function isEntry(o){ try{ return o&&typeof o==='object'&&!Array.isArray(o)&&('rid'in o)&&(('b'in o)||('uC'in o)||('Mu'in o)); }catch(e){ return false; } }
-    function samp(x){ try{ return {rid:x.rid,b:x.b,uC:x.uC,Mu:x.Mu,hpwd:x.hpwd,rn:x.rn}; }catch(e){ return null; } }
-    function isWin(o){ try{ return o&&(o.window===o||o.self===o); }catch(e){ return true; } } // cross-origin window access throws → treat as frame, skip
+  const GAME_ROOM_PROBE = `(function(){var out={globals:[],hits:[],both:[],scanned:0,xo:0};try{
+    var seen=new Set(),count=0,CAP=800000;
+    var SKIP=/loader|_pipes|md5|assets?|_cache|spriteFrame|texture|material|shader|font|audio|clip|atlas|prefab|bundle|_deps|dependUtil|prototype|constructor/i;
+    function isWin(o){ try{ return o&&(o.window===o||o.self===o); }catch(e){ return true; } }
+    function is7(v){ return (typeof v==='number'&&Number.isInteger(v)&&v>=1000000&&v<=9999999) || (typeof v==='string'&&/^[0-9]{7}$/.test(v)); }
+    function isKey(v){ return typeof v==='string'&&/^[A-Za-z0-9]{6,12}$/.test(v)&&/[A-Za-z]/.test(v)&&/[0-9]/.test(v); }
+    function shape(o){ var s={}; try{ for(var k in o){ var v=o[k]; var t=typeof v; if((t==='number'||t==='boolean')||(t==='string'&&v.length<=32)) s[k]=v; } }catch(e){} return s; }
     function walk(o,path,d){ try{
-      if(count>CAP||d>13||o==null)return;
-      if(Array.isArray(o)){ if(o.length>=1&&o.length<=600){ var te=[]; for(var q=0;q<o.length;q++){ if(isEntry(o[q]))te.push(o[q]); } if(te.length>=1&&te.length>=Math.min(o.length,3)*0.6){ out.lists.push({path:path,n:o.length,sample:o.slice(0,4).map(samp)}); } }
-        if(seen.has(o))return; seen.add(o); count++; if(o.length>2500)return; for(var i=0;i<Math.min(o.length,600);i++)walk(o[i],path+'['+i+']',d+1); return; }
-      if(typeof o!=='object')return;
-      if(isWin(o)&&path!=='w'){ out.xo++; return; } // skip nested/foreign window/frame objects
-      if(seen.has(o))return; seen.add(o); count++;
-      if(isEntry(o)&&/cur|my|self|room|table|current|ban|host/i.test(path)){ var s=samp(o); if(s)out.cur.push(Object.assign({path:path},s)); }
-      // EXPLORATORY — record ANY object holding a 7-digit number, with the field name + path (số bàn regardless
-      // of how the game named it). Also record arrays-of-objects with their element key-shape (candidate list).
-      try{ if(out.cur.length<400){ for(var kk in o){ if(out.cur.length>=400)break; if(/room|table|ban|rid|\\bss\\b|host|cur|my|no|id/i.test(kk)){ var vv=o[kk]; if(typeof vv==='number'&&Number.isInteger(vv)&&vv>=1000000&&vv<=9999999){ out.cur.push({path:path+'.'+kk,num:vv}); } else if(typeof vv==='string'&&/^[0-9]{6,8}$/.test(vv)){ out.cur.push({path:path+'.'+kk,numStr:vv}); } } } } }catch(e){}
-      var ks; try{ks=Object.keys(o);}catch(e){out.xo++;return;} if(ks.length>5000)return;
-      for(var j=0;j<ks.length;j++){ var k=ks[j]; if(SKIP.test(k)||k==='__proto__'||k==='parent'||k==='_parent'||k==='node'||k==='frames'||k==='top'||k==='opener'||k==='window'||k==='self')continue; var v; try{v=o[k];}catch(e){continue;} walk(v,path+'.'+k,d+1); }
+      if(count>CAP||d>16||o==null)return; var t=typeof o; if(t!=='object')return;
+      if(isWin(o)&&path!=='w'){out.xo++;return;} if(seen.has(o))return; seen.add(o); count++;
+      if(Array.isArray(o)){ if(o.length>4000)return; for(var i=0;i<Math.min(o.length,4000);i++)walk(o[i],path+'['+i+']',d+1); return; }
+      // detect an object that holds a 7-digit number and/or an 8-char key (the room object with SS + key)
+      var has7=false,hasK=false; try{ for(var kk in o){ var vv=o[kk]; if(is7(vv))has7=true; if(isKey(vv))hasK=true; } }catch(e){}
+      if(has7 && hasK && out.both.length<60) out.both.push({path:path,shape:shape(o)});
+      else if(has7 && out.hits.length<150) out.hits.push({path:path,shape:shape(o)});
+      var ks; try{ks=Object.keys(o);}catch(e){out.xo++;return;} if(ks.length>6000)return;
+      for(var j=0;j<ks.length;j++){ var k=ks[j]; if(SKIP.test(k)||k==='parent'||k==='_parent'||k==='node'||k==='frames'||k==='top'||k==='opener'||k==='window'||k==='self')continue; var v; try{v=o[k];}catch(e){continue;} walk(v,path+'.'+k,d+1); }
     }catch(e){ out.xo++; } }
+    try{ out.globals=Object.getOwnPropertyNames(window).filter(function(k){ try{ if(/^(webkit|chrome|document|location|navigator|history|css|visual|screen|performance|external|caches|crypto|indexedDB|speech|customElements|trusted|on[a-z]|frames|length|closed|status|scroll|inner|outer|device|origin|top|self|window|parent|name)/i.test(k))return false; var v=window[k]; return v&&(typeof v==='object'||typeof v==='function'); }catch(e){return false;} }).slice(0,140); }catch(e){}
     walk(window,'w',0); out.scanned=count;
-    var seenP={}; out.lists=out.lists.filter(function(x){ if(seenP[x.path])return false; seenP[x.path]=1; return true; }).slice(0,30);
     return JSON.stringify(out);
   }catch(e){return JSON.stringify({error:String(e&&e.message||e)});}})()`;
   const _probeCtx = Object.create(null); // runId -> Map(contextId -> {origin,frameId,name})
@@ -789,9 +787,16 @@ else {
 
   // Recompute + push the header state into every open Chromium (best-effort). Called after every session
   // update and after every header action so the bars stay live without a Tool screen.
+  // §co-seat — probe the game memory of any SEATED browser for the số bàn + key (debounced, ≤ once/30s per run),
+  // so the reader runs even when the co-seat FIND (noStakeFallback) hasn't fired — the user just needs P3 at a table.
+  const _lastProbeAt = Object.create(null);
+  function maybeProbeSeated(browsers) {
+    try { for (const b of (browsers || [])) { if (!b || b.manualState !== 'JOINED') continue; const k = String(b.profileId); const now = nowMs(); if (!_lastProbeAt[k] || now - _lastProbeAt[k] > 30000) { _lastProbeAt[k] = now; setTimeout(() => { probeGameRoom(k).catch(() => {}); }, 400); } } } catch { /* best effort */ }
+  }
   function pushHeaderStates() {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
+    maybeProbeSeated(browsers);
     const sharedRid = headerSharedRid();
     const sharedRoomCode = phomSessions && phomSessions.active() && typeof phomSessions.sharedRoomCode === 'function' ? phomSessions.sharedRoomCode() : null;
     for (const run of runManager.list()) {
