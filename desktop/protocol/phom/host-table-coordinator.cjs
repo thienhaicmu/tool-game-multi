@@ -79,6 +79,10 @@ const MIN_SEATS_TO_JOIN = 1;
 // high: the hard ceiling is the time budget (FIND_BUDGET_MS), this only guards against a runaway loop.
 const MAX_ANCHOR_RECOVERY = 40;
 const MAX_SHARED_RID_JOIN_RETRIES = 2; // §11 — follower same-RID retries (initial attempt + 2 = 3 tries max)
+// §key-refresh — JOIN-by-số-bàn retries (initial attempt + 6). Each attempt costs a LEAVE + an 8s join wait, and
+// the key is now REFRESHED between attempts, so a high ceiling buys nothing: either a key we know works within a
+// few tries, or none of them does and the retry must stop and say so.
+const MAX_JOIN_BY_CODE_RETRIES = 6;
 // PHASE 6.3.7 — a user-triggered FIND is a LIVE discovery: reuse the cached CMD 300 rs[] ONLY while it is this
 // fresh; older than this, request a fresh CMD 300 so a stale list can never hide a new/changed table.
 const FIND_CACHE_FRESH_MS = 1500;
@@ -453,7 +457,14 @@ class HostTableCoordinator extends EventEmitter {
   // ---- §15 same-table invariant across the three controlled profiles ----
   verifySameTable() {
     const recs = [...this._profiles.values()];
-    const hostUid = this.host() && this.host().ctx.uid();
+    // The reference browser whose uid EVERY other browser's table state must contain. The LEGACY host/follower
+    // flow names it with setHost(); the PHASE-6 manual flow never calls setHost, so this verdict was permanently
+    // PHOM_TABLE_IDENTITY_MISSING there — the one check that proves "all three really are at the SAME table" was
+    // dead code in the shipped flow, and "đủ 3 browser" was being read off each browser's own manualState
+    // instead. The manual equivalent of the host is the ANCHOR: the browser that authoritatively holds the
+    // shared room (the same one sharedRid() publishes).
+    const refRec = this.host() || (this._holdsRoom(this._anchor()) ? this._anchor() : null);
+    const hostUid = refRec && refRec.ctx.uid();
     if (!hostUid) return { result: 'PHOM_TABLE_IDENTITY_MISSING' };
     const controlled = this._controlledUids();
     if (controlled.length < 3) return { result: 'PARTIAL_JOIN', reason: 'controlled uids not all known' };
@@ -834,6 +845,11 @@ class HostTableCoordinator extends EventEmitter {
     if (roomCode) this._findLog('F6b_JOIN_WITH_CODE', rec, fg, { rid: r, intent });
     this._coseatLog('JOIN_SENT', rec, { rid: r, intent, roomCode });
     rec._joinedRid = r;
+    // §stake-channel — is this rid a real TABLE, or the stake CHANNEL (the lobby row a player clicks, e.g. 139)?
+    // A channel rid is NOT a shareable số bàn: the server picks a table behind it, so another browser JOINing the
+    // same rid just gets matchmade somewhere else. Recorded beside the rid, by the one writer of both, so the
+    // flag can never go stale. _holdsRoom() then keeps it out of the published shared room.
+    rec._joinedViaChannel = opts.viaStakeChannel === true;
     this._findLog('F6_JOIN_SENT', rec, fg, { rid: r, intent });
     // Seated = own uid in a table snapshot that arrived AFTER this JOIN was sent.
     const seatedFresh = () => this._ownSeated(rec) && (!rec.ctx.tableSeq || rec.ctx.tableSeq() > tableBefore);
@@ -907,6 +923,14 @@ class HostTableCoordinator extends EventEmitter {
     // nothing but the protocol's own channel fields (no names, no accounts).
     rec._lastFindRows = rejects.slice(0, 24).map((r) => ({ rid: r.rid, stake: r.stake, uC: r.uC, Mu: r.Mu, freeSlots: r.freeSlots, reason: r.reason }));
     rec._lastFindStake = selectedStake;
+    // This function runs inside the FIND poll's _waitManual PREDICATE, i.e. on EVERY 'update' — which means on
+    // every WS frame of every browser. _findLog is env-gated, but _mark is not: it pushed one trace entry AND one
+    // 'log' IPC message to the renderer per rejected row per frame, for the whole search (up to 300s from the
+    // header). Log a row only when the server's picture actually CHANGES, which is the only time it carries new
+    // information — the §13/§49 diagnostics are preserved in full, the repetition is not.
+    const sig = `${chans.length}|${candidate ? candidate.rid : 'none'}|` + rejects.map((r) => `${r.rid}:${r.uC}/${r.Mu}:${r.reason}`).join(',');
+    if (rec._lastRejectSig === sig) return candidate;
+    rec._lastRejectSig = sig;
     // §13 — per-candidate diagnostics (gated behind PHOM_FIND_LOG): total rows seen + WHY each was skipped.
     this._findLog('F2_CANDIDATES_SEEN', rec, rec._manualGen, { total: chans.length, rejected: rejects.length, qualified: candidate ? candidate.rid : null });
     for (const r of rejects) {
@@ -945,6 +969,10 @@ class HostTableCoordinator extends EventEmitter {
     if (total === 0) return 'NO_TABLE_RECORDS';                              // CMD 300 returned no channels at all
     if (reasons.includes('NOT_ENOUGH_FREE_SLOTS')) return 'NOT_ENOUGH_FREE_SLOTS'; // stake matched but < 3 free
     if (reasons.includes('FAILED_RID_SKIPPED')) return 'ALL_CANDIDATES_FAILED';    // every match was blacklisted
+    // Rows matched the stake but every real one is PASSWORD-PROTECTED (rs[].hpwd === true). Reported before
+    // ONLY_STAKE_BUCKETS because the stake buckets are always in the list too, so they would otherwise mask the
+    // real cause — and "chỉ còn bàn đặt mật khẩu" is the one diagnosis that tells the user to pick another stake.
+    if (reasons.includes('ROOM_LOCKED')) return 'ONLY_LOCKED_ROOMS';
     // Rows DID match the stake, but every one of them is a stake BUCKET (uC >> Mu), not a joinable table.
     // Without this branch the lobby-has-no-real-tables-yet case was reported as NO_MATCHING_STAKE, which
     // sends diagnosis after the wrong thing (the stake) instead of the right one (the lobby).
@@ -995,6 +1023,13 @@ class HostTableCoordinator extends EventEmitter {
     // is defence-in-depth for the coordinator regardless of caller.
     if (rec._discovering) { this._findLog('FX_DUPLICATE_IGNORED', rec, rec._manualGen); return { ok: false, id: rec.id, busy: true, state: 'SEARCHING', error: { code: 'PHOM_FIND_IN_FLIGHT', message: 'đang tìm bàn' } }; }
     rec._discovering = true;
+    // §34 — THIS run's ownership token for the single-flight flag. `_discovering` is a bare boolean, so the
+    // finally below could not tell its own run from a LATER one: after a HỦY / THOÁT BÀN / ↻ WEB (each of which
+    // clears the flag itself), a new TÌM BÀN could start before the cancelled run unwound, and that run's finally
+    // then cleared the NEW search's flag — letting a second FIND stack on top of it and blanking the header's
+    // "ĐANG TÌM BÀN… 12s · lần 6" progress. The token is NOT _manualGen: that one is deliberately re-bumped
+    // mid-run (every manualJoinRoom, every re-anchor), so it can never identify the run as a whole.
+    const myDiscoverToken = (rec._discoverSeq = (rec._discoverSeq || 0) + 1);
     let myGen = (rec._manualGen = (rec._manualGen || 0) + 1); // §8 — find generation / cancellation token
     // §11 — the blacklist exists so the BOUNDED recovery loop below never re-picks the room that just
     // proved bad. That is its whole scope, so it lives and dies with THIS discovery run: a fresh TÌM BÀN
@@ -1014,6 +1049,7 @@ class HostTableCoordinator extends EventEmitter {
     rec.manualState = 'SEARCHING'; rec.lastError = null;
     // Live progress for the header (ĐANG TÌM BÀN… 12s · lần 6) so a long search never looks like a freeze.
     rec._searchStartedAt = this._now(); rec._searchAttempt = 0; rec._searchBudgetMs = budgetMs;
+    rec._lastRejectSig = null; // a new FIND always logs its first candidate evaluation, however it ended last time
     this._findLog('F0_FIND_START', rec, myGen, { selectedStake, need, minSeats, budgetMs, pollMs });
     this._mark('M_DISCOVER_SENT', { id: rec.id, selectedStake });
     this.emit('update', this.snapshot());
@@ -1090,7 +1126,7 @@ class HostTableCoordinator extends EventEmitter {
         this._findLog('F5_CANDIDATE_QUALIFIED', rec, myGen, { rid: candidate.rid, stake: candidate.b, freeSlots: Number(candidate.Mu) - Number(candidate.uC) });
         this._mark('M_TABLE_SELECTED', { id: rec.id, rid: candidate.rid, stake: candidate.b, players: `${candidate.uC}/${candidate.Mu}` });
         // JOIN the selected table's REAL rid; authoritative confirmation via own uid in own ps[] (§15/§16).
-        const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND', findGen: myGen, provisional: true });
+        const res = await this.manualJoinRoom(profileId, candidate.rid, { ...opts, intent: 'FIND', findGen: myGen, provisional: true, viaStakeChannel });
         if (!res.ok) {
           // §9/§11 — the table changed under us (filled / rejected between discovery and JOIN — common when the
           // first pass reused a slightly-stale list). BLACKLIST this RID and, if attempts remain, re-discover
@@ -1179,7 +1215,7 @@ class HostTableCoordinator extends EventEmitter {
         if (bestFit && bestFit.rid != null && !this._stopped && rec._manualGen === myGen) {
           myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
           rec.manualState = 'SEARCHING'; this.emit('update', this.snapshot());
-          const back = await this.manualJoinRoom(profileId, bestFit.rid, { ...opts, intent: 'FIND', findGen: myGen });
+          const back = await this.manualJoinRoom(profileId, bestFit.rid, { ...opts, intent: 'FIND', findGen: myGen, viaStakeChannel: bestFit.viaStakeChannel === true });
           if (back.ok) {
             rec._joinedRidValidated = true;
             rec.lastError = { code: 'PHOM_TABLE_FITS_PARTIAL', message: `Đã vào bàn ${back.rid} — bàn chỉ còn ${bestFit.freeAfter} ghế cho ${bestFit.needAfter} browser còn lại (không có bàn nào đủ chỗ cho cả nhóm sau ${rerolls} lần thử)` };
@@ -1203,7 +1239,12 @@ class HostTableCoordinator extends EventEmitter {
       this._findLog('FX_RESILIENCE_EXHAUSTED', rec, myGen, { attempts: maxRecovery + 1 });
       this.emit('update', this.snapshot());
       return { ok: false, id: rec.id, error: rec.lastError, resilienceExhausted: true };
-    } finally { rec._discovering = false; rec._searchStartedAt = null; rec._searchRerolls = 0; }
+    } finally {
+      // Only the run that still OWNS the single-flight flag may release it (see myDiscoverToken). A superseded
+      // run unwinding late must leave the newer search's flag and progress alone. Mirrors the ownership check
+      // manualJoinShared/manualJoinByCode already apply to _followInFlight.
+      if (rec._discoverSeq === myDiscoverToken) { rec._discovering = false; rec._searchStartedAt = null; rec._searchRerolls = 0; }
+    }
   }
 
   _rowsAtStake(rec, stake) { let chans = []; try { chans = rec.ctx.channels() || []; } catch { chans = []; } return chans.filter((c) => c && Number(c.b) === Number(stake)).length; }
@@ -1264,7 +1305,28 @@ class HostTableCoordinator extends EventEmitter {
   // Tool could publish a different (or a not-yet-validated) room than the header. Now: the selected finder's
   // validated room, or — no finder chosen — the first browser that authoritatively holds a room; else null.
   sharedRid() { const a = this._anchor(); return this._holdsRoom(a) ? Number(a._joinedRid) : null; }
+  // The CLUSTER-level co-seat verdict for the UI: "đủ N browser CÙNG MỘT BÀN", proven from every browser's own
+  // authoritative ps[] via verifySameTable — never from one browser's player count and never from three separate
+  // manualState === 'JOINED' flags (three browsers can each be happily seated at three different tables).
+  coSeatStatus() {
+    const v = this.verifySameTable();
+    const recs = [...this._profiles.values()];
+    return {
+      ok: v.result === 'SAME_TABLE',
+      result: v.result,
+      reason: v.reason || null,
+      rid: this.sharedRid(),
+      seatedCount: recs.filter((r) => this._ownSeated(r)).length,
+      browserCount: recs.length,
+      playerCount: v.playerCount != null ? v.playerCount : null,
+    };
+  }
   sharedRidOwner() { const a = this._anchor(); return this._holdsRoom(a) ? a.id : null; }
+  // §stake-channel — is the shared room a real 7-digit SỐ BÀN, or the lobby stake CHANNEL (e.g. 139)? Both are
+  // joinable and both co-seat the group when the followers JOIN inside the server's fill-room window, so this
+  // never gates the join — it only stops the surfaces from calling a channel id a "số bàn" (the reference tool's
+  // SS), which is what sent users hunting for a 7-digit code that does not exist yet.
+  sharedRidIsChannel() { const a = this._anchor(); return this._holdsRoom(a) ? !!a._joinedViaChannel : false; }
   // "Player N" for a profile, by the same 1-based order manualBrowserSnapshot uses. The anchor is no longer
   // always the first browser, so a message must name the browser that really holds the room.
   _playerLabel(rec) { if (!rec) return 'Player tìm bàn'; const i = [...this._profiles.keys()].indexOf(String(rec.id)); return i >= 0 ? `Player ${i + 1}` : rec.displayName || 'Player tìm bàn'; }
@@ -1366,22 +1428,40 @@ class HostTableCoordinator extends EventEmitter {
     } finally { if (rec._followGen === myGen) { rec._followInFlight = false; } }
   }
 
-  // §co-seat — JOIN a specific SỐ BÀN (mã bàn) with a KEY, retrying LÌ through the transient "sai mật khẩu phòng"
-  // the server returns (the reference-tool video shows it hitting that error many times before it lands). The
-  // target rid is the USER's số bàn (not the anchor rid), key defaults to the HOST's session token. Bounded,
-  // single-flight, generation-safe. Success = own uid ∈ ps[] at that table.
+  // §co-seat — JOIN a specific SỐ BÀN (mã bàn) with a KEY. The target rid is the USER's số bàn (not the anchor
+  // rid); the key defaults to the anchor's LIVE room code, falling back to the host session token. Bounded,
+  // single-flight, generation-safe. Two rules the reference-tool video made explicit:
+  //   §key-refresh — a key the server refused is never re-sent; the anchor's live code is re-read each attempt
+  //                  (its "Đổi Key"), and the retry stops once every known key has been refused.
+  //   §same-room   — success is own uid ∈ ps[] AND the anchor's uid in that SAME table state, never just
+  //                  "seated somewhere"; a mismatch leaves the wrong table instead of reporting a join.
   async manualJoinByCode(profileId, rid, key, opts = {}) {
     if (!this._guard()) return this._unauthorized();
     const rec = this._rec(profileId);
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
     const r = Number.isFinite(rid) ? rid : (rid != null && String(rid).trim() !== '' ? Number(rid) : NaN);
     if (!Number.isFinite(r)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_RID', message: 'Số bàn trống/không hợp lệ' } }; }
-    const code = (key != null && String(key).trim() !== '') ? String(key).trim() : (this.hostKey() || '');
-    const maxRetries = opts.maxRetries != null ? opts.maxRetries : 40;
+    // §key-refresh — the KEY is re-decided on EVERY attempt, and a key the server has already REJECTED is never
+    // re-sent. The old code computed it ONCE before the loop and then replayed the SAME value up to 41 times: if
+    // the key was stale, all 41 were stale, and each one cost a LEAVE + an 8s join wait. The known keys, in
+    // priority order, are: the one the user typed (pinned), the anchor's LIVE room code re-read from its own
+    // ps[].hpwd (so a rotated key is picked up mid-retry — the reference tool's "Đổi Key"), and the public empty
+    // code. When every one of them has been refused, the retry STOPS with a typed error instead of hammering.
+    const pinnedKey = (key != null && String(key).trim() !== '') ? String(key).trim() : null;
+    const liveKey = () => { const a = this._anchorRoomCode(rec.id); if (a != null && String(a) !== '') return String(a); return this.hostKey() || ''; };
+    const rejectedKeys = new Set();
+    const nextKey = () => {
+      const seen = new Set(); const candidates = [];
+      for (const k of [pinnedKey, liveKey(), '']) { if (k == null || seen.has(k)) continue; seen.add(k); candidates.push(k); }
+      const fresh = candidates.find((k) => !rejectedKeys.has(k));
+      return { key: fresh, exhausted: fresh === undefined };
+    };
+    // Bounded like every other retry in this file. 40 was only ever a workaround for never refreshing the key.
+    const maxRetries = opts.maxRetries != null ? opts.maxRetries : MAX_JOIN_BY_CODE_RETRIES;
     if (rec._followInFlight && Number(rec._followRid) === r) return { ok: false, id: rec.id, busy: true, error: { code: 'PHOM_FOLLOW_IN_FLIGHT', message: 'đang vào bàn' } };
     rec._followInFlight = true; rec._followRid = r;
     const myGen = (rec._followGen = (rec._followGen || 0) + 1);
-    this._findLog('C0_JOIN_BY_CODE_START', rec, myGen, { rid: r, hasKey: !!code, maxRetries });
+    this._findLog('C0_JOIN_BY_CODE_START', rec, myGen, { rid: r, pinnedKey: !!pinnedKey, hasLiveKey: !!liveKey(), maxRetries });
     try {
       let last = null;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -1393,15 +1473,44 @@ class HostTableCoordinator extends EventEmitter {
           await this._waitManual(() => false, rec, g, this._rerollCooldownMs);
           if (rec._manualGen !== g || rec._followGen !== myGen) return { ok: false, id: rec.id, superseded: true };
         }
+        // §key-refresh — pick the key for THIS attempt from the keys not yet refused. All refused → stop.
+        const pick = nextKey();
+        if (pick.exhausted) {
+          this._findLog('C3_KEYS_EXHAUSTED', rec, myGen, { rid: r, tried: rejectedKeys.size });
+          last = { ok: false, id: rec.id, rid: r, state: 'KEY_REJECTED', error: { code: 'PHOM_ROOM_KEY_REJECTED', message: `Máy chủ từ chối mọi mật khẩu phòng đã biết cho bàn ${r} — lấy lại mã bàn/key từ ${this._playerLabel(this._anchor(rec.id))} rồi thử lại` } };
+          break;
+        }
+        const code = pick.key;
         rec.manualState = 'JOINING'; if (attempt > 0) { rec._searchAttempt = attempt; this.emit('update', this.snapshot()); }
         last = await this.manualJoinRoom(profileId, r, { ...opts, intent: 'JOIN', followGen: myGen, roomCode: code });
-        if (last.ok) { rec.lastError = null; this._findLog('C1_JOIN_BY_CODE_OK', rec, myGen, { rid: r, attempts: attempt + 1 }); this.emit('update', this.snapshot()); return { ...last, attempts: attempt + 1 }; }
+        if (last.ok) {
+          // §same-room proof — own uid ∈ ps[] (manualJoinRoom) is NOT enough: the server decides which table a
+          // JOIN lands on, so "seated somewhere" was being reported as "co-seated with the anchor". The proof is
+          // the ANCHOR's uid present in the SAME authoritative table state — exactly what manualJoinShared does.
+          // Without it the whole point of the co-seat flow went unverified and the header showed a green JOINED
+          // for three browsers sitting at three different tables.
+          const ts = rec.ctx.tableState();
+          const anchorUid = this._anchorUid(rec.id);
+          const sameRoom = anchorUid == null || !!(ts && ts.uids.includes(anchorUid));
+          if (sameRoom) { rec.lastError = null; this._findLog('C1_JOIN_BY_CODE_OK', rec, myGen, { rid: r, attempts: attempt + 1, sameRoom: anchorUid != null }); this.emit('update', this.snapshot()); return { ...last, sameRoom: true, attempts: attempt + 1 }; }
+          this._findLog('C4_ROOM_MISMATCH', rec, myGen, { rid: r, attempt });
+          last = { ...last, ok: false, state: 'ROOM_MISMATCH', error: { code: 'PHOM_FOLLOWER_ROOM_MISMATCH', message: `không cùng bàn với ${this._playerLabel(this._anchor(rec.id))}` } };
+        }
         // retry on wrong-password ("sai mật khẩu phòng") / rejected / not-confirmed / mismatch
         const msg = (last.error && last.error.message) || '';
-        const retry = this._isRetryableJoin(last) || /mật khẩu|Phòng|đầy|hủy/i.test(msg);
-        this._findLog('C2_JOIN_BY_CODE_RETRY', rec, myGen, { rid: r, attempt, retry, code: last.state, msg });
+        const wrongKey = /mật khẩu|password/i.test(msg);
+        if (wrongKey) rejectedKeys.add(code); // §key-refresh — never send this key again
+        const retry = this._isRetryableJoin(last) || wrongKey || /Phòng|đầy|hủy/i.test(msg);
+        this._findLog('C2_JOIN_BY_CODE_RETRY', rec, myGen, { rid: r, attempt, retry, wrongKey, code: last.state, msg });
         if (!retry || attempt === maxRetries) break;
         await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
+      }
+      // §same-room proof — the server seated this browser at a DIFFERENT table on every try. Do not stay there:
+      // it would be reported as joined and could even become the anchor (same rule manualJoinShared applies).
+      if (last && last.state === 'ROOM_MISMATCH' && this._ownSeated(rec) && rec._followGen === myGen) {
+        const g = (rec._manualGen = (rec._manualGen || 0) + 1);
+        await this._leaveConfirmed(rec, g);
+        last = { ...last, error: { code: 'PHOM_FOLLOWER_ROOM_MISMATCH', message: `Máy chủ xếp vào bàn khác ${this._playerLabel(this._anchor(rec.id))} — đã rời bàn đó, bấm VÀO BÀN để thử lại` } };
       }
       rec.manualState = 'FOLLOWER_ERROR'; rec.lastError = (last && last.error) || { code: 'PHOM_JOIN_BY_CODE_FAILED', message: 'Không vào được bàn dù thử nhiều lần' };
       this.emit('update', this.snapshot());
@@ -1533,6 +1642,8 @@ class HostTableCoordinator extends EventEmitter {
         searchElapsedSec: rec._discovering && rec._searchStartedAt != null ? Math.max(0, Math.round((this._now() - rec._searchStartedAt) / 1000)) : 0,
         searchBudgetSec: rec._discovering ? Math.round((rec._searchBudgetMs || FIND_BUDGET_MS) / 1000) : 0,
         rid: rec._joinedRid != null ? rec._joinedRid : null,
+        // §stake-channel — this rid came from the lobby stake CHANNEL, not a table row: joinable, but not a SỐ BÀN.
+        joinedViaChannel: !!rec._joinedViaChannel,
         lastRid: rec._lastRid != null ? rec._lastRid : null,
         // §co-seat — the room CODE (hpwd) the SERVER assigned to THIS browser's table (from authoritative ps[]).
         // Shown on the finder so the user can see "mã bàn"; it is what the followers' JOIN carries to co-seat.

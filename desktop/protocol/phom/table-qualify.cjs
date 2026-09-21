@@ -32,6 +32,13 @@ function qualifyTable(c, opts = {}) {
   if (opts.gid != null && c.gid != null && c.gid !== opts.gid) return { ok: false, reason: 'WRONG_GAME', freeSlots: null };
   if (wantStake == null) return { ok: false, reason: 'NO_STAKE', freeSlots: null };
   if (Number(c.b) !== wantStake) return { ok: false, reason: 'STAKE_MISMATCH', freeSlots: null };
+  // A PASSWORD-PROTECTED room. In the CHANNEL LIST (rs[]) `hpwd` is a BOOLEAN flag — "this table needs a key" —
+  // not the key itself (the key only ever appears as a STRING in that table's own TABLE_STATE, which a browser
+  // sees solely once it is already inside). So the finder cannot possibly hold the key for a room it found in
+  // the lobby: JOINing it with the empty public code earns "Sai mật khẩu phòng", the rid gets blacklisted and
+  // the search re-rolls — a whole wasted pass per locked table. Skipping them up front is the only correct
+  // reading of the flag. Locked rooms are what the reference tool's own "Tạo / Đổi Key" flow produces.
+  if (c.hpwd === true) return { ok: false, reason: 'ROOM_LOCKED', freeSlots: freeSlotsOf(c) };
   const free = freeSlotsOf(c);
   if (free == null) return { ok: false, reason: 'INVALID_COUNTS', freeSlots: null };
   // A stake BUCKET reports uC >> Mu; a real table has uC <= Mu.
@@ -68,6 +75,7 @@ function reasonTexts(need) {
     ONLY_STAKE_BUCKETS: 'mức cược này mới chỉ có nhóm cược, chưa có bàn thật nào',
     NOT_ENOUGH_FREE_SLOTS: `có bàn ở mức cược này nhưng không bàn nào còn đủ ${need} ghế trống`,
     ALL_CANDIDATES_FAILED: 'mọi bàn tìm được đều vừa vào không thành công',
+    ONLY_LOCKED_ROOMS: 'mức cược này chỉ còn bàn ĐẶT MẬT KHẨU — tool không có key nên không vào được',
   });
 }
 const NO_TABLE_REASON_TEXT = reasonTexts(DEFAULT_NEED);

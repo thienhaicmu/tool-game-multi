@@ -60,6 +60,10 @@
   const MCS = (typeof window !== 'undefined' && window.ManualClusterState) ? window.ManualClusterState : null;
   let manualCluster = MCS ? MCS.create() : { searchingBrowserId: null, sharedRid: null, sharedRidOwner: null };
   let manualBrowsers = [];   // last manualBrowserSnapshot() (per-browser independent state)
+  // §co-seat — the CLUSTER verdict from the backend (coordinator.coSeatStatus()): are all browsers proven to be
+  // in the SAME authoritative ps[]? Never derived here from three independent JOINED flags — three browsers can
+  // each be seated, happily, at three DIFFERENT tables, which is exactly the failure this indicator exists for.
+  let coSeat = null;
   let remaining = null;      // last remainingCards() view for Screen 2
   // PHASE 6.3.3.2 — last card-observation snapshot (players/discards/melds/remaining/capabilities). Read-only
   // data binding for Screen 2; the analysis ANGLE (selectedAnalysisPlayer) never merges the three hands (§20).
@@ -1032,9 +1036,23 @@
       el('span', { class: 'th-rid' }, 'BÀN: ', el('b', null, rid)),
       el('span', { class: 'th-bet' }, 'CƯỢC: ', el('b', null, stake)),
       el('span', { class: 'th-still' }, '🂠 TỔNG LÁ ẨN: ', el('b', null, remaining ? String(remaining.count) : '—')),
+      coSeatChip(),
       moreMenuButton(),
       el('span', { class: 'chip ' + (anyOpen ? 'green' : 'gray') }, anyOpen ? '● READY' : '○'),
     );
+  }
+
+  // §co-seat — "ĐỦ 3 BROWSER CÙNG BÀN", proven by the backend from EVERY browser's own TABLE_STATE ps[]
+  // (verifySameTable: same stake, the anchor's uid and all controlled uids present in each browser's view, one
+  // player-set fingerprint, no seat conflict). A per-browser JOINED badge cannot say this — that is why the
+  // verdict is computed once in the coordinator and only displayed here.
+  function coSeatChip() {
+    if (!coSeat) return el('span', { class: 'chip gray sm', title: 'Chưa có phiên nào đang chạy' }, 'CÙNG BÀN: —');
+    const n = coSeat.browserCount || 0;
+    if (coSeat.ok) return el('span', { class: 'chip green sm', title: 'Cả ' + n + ' browser đã được máy chủ xác nhận trong CÙNG một bàn' + (coSeat.rid != null ? ' (' + coSeat.rid + ')' : '') }, '✓ ĐỦ ' + n + ' BROWSER CÙNG BÀN');
+    if (coSeat.result === 'TABLE_MISMATCH') return el('span', { class: 'chip red sm', title: 'Máy chủ xếp các browser vào những bàn KHÁC nhau: ' + (coSeat.reason || '') }, '⚠ KHÁC BÀN');
+    if (coSeat.result === 'PARTIAL_JOIN') return el('span', { class: 'chip yellow sm', title: 'Chưa đủ browser trong bàn: ' + (coSeat.reason || '') }, (coSeat.seatedCount || 0) + '/' + n + ' TRONG BÀN');
+    return el('span', { class: 'chip gray sm', title: 'Chưa có browser nào giữ bàn chung' }, 'CÙNG BÀN: —');
   }
 
   // A single horizontal row: Browser 1 / 2 / 3. One business action per card (VÀO GAME / TÌM BÀN / VÀO BÀN
@@ -2074,12 +2092,16 @@
       selectedStakeByBrowser[finderRunId] = stake;
       const d = await api.manualDiscover(finderRunId, { selectedStake: stake });
       if (!d || d.ok === false) { note('Không thể tìm bàn: ' + errText(d), true); return; }
-      note('Đã tìm được bàn ' + d.rid + ' — đang đưa các browser còn lại vào bàn…');
-      // The other browsers JOIN the room the finder actually landed in (bounded retry + same-room proof).
-      for (const runId of followerIds) {
-        const r = await api.manualJoinShared(runId, d.rid);
-        if (r && r.ok === false) note(errText(r), true);
-      }
+      note((d.viaStakeChannel ? 'Đã vào kênh cược ' : 'Đã tìm được bàn ') + d.rid + ' — đang đưa các browser còn lại vào bàn…');
+      // §co-seat — fire the followers' JOINs AT ONCE, not one after another. The capture behind autoJoinGroupToShared
+      // measured the server's fill-room window at ~1.3s (a browser joining ~2.8s later never landed with the group),
+      // and a sequential loop spends up to 8s per follower waiting for ps[] — so by the time the second one was
+      // asked, the window had closed. The header path already fires them in parallel; this one did not, which is
+      // why the same FIND co-seated from the Chromium bar and scattered from the Tool. Each JOIN still proves
+      // co-seating from ps[] on its own (manualJoinShared), so racing them changes the timing, never the proof.
+      const results = await Promise.all(followerIds.map((runId) =>
+        Promise.resolve(api.manualJoinShared(runId, d.rid)).catch((e) => ({ ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }))));
+      for (const r of results) if (r && r.ok === false) note(errText(r), true);
       await refreshManual();
       note('Đã vào bàn ' + d.rid + '.');
     } catch (e) {
@@ -2279,7 +2301,7 @@
   // Refresh the manual snapshot + remaining cards, then reconcile the shared-room lifecycle (§18).
   async function refreshManual() {
     let sharedAuth; // §38 — the coordinator's single shared room (undefined when the backend didn't send one)
-    try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; if (r && 'sharedRid' in r) sharedAuth = { sharedRid: r.sharedRid, sharedRidOwner: r.sharedRidOwner }; } catch { manualBrowsers = []; }
+    try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; coSeat = (r && r.coSeat) || null; if (r && 'sharedRid' in r) sharedAuth = { sharedRid: r.sharedRid, sharedRidOwner: r.sharedRidOwner }; } catch { manualBrowsers = []; coSeat = null; }
     try { const rc = await api.remainingCards(); remaining = rc && rc.ok !== false ? rc : null; } catch { remaining = null; }
     // PHASE 6.3.3.2 — pull the card-observation snapshot (real observed data; empty/unknown when none).
     if (api.cardsSnapshot) { try { const cs = await api.cardsSnapshot(); cardsSnap = cs && cs.ok !== false ? cs : null; } catch { cardsSnap = null; } }
@@ -2312,6 +2334,9 @@
       note('🔍 Đang tìm bàn theo mức cược ' + selectedStake + '…');
       try { res = await api.manualDiscover(b.profileId, { selectedStake }); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
       manualCluster = MCS.onFindResult(manualCluster, b.profileId, res && res.ok ? { ok: true, rid: res.rid, stake: res.stake } : { ok: false });
+      // §stake-channel — the other browsers still JOIN this id (that is how the server's fill-room window groups
+      // them); it simply is not a 7-digit SỐ BÀN, so do not let the user hunt for a code to copy.
+      if (res && res.ok && res.viaStakeChannel) note('Đã vào bàn qua KÊNH CƯỢC ' + res.rid + ' (chưa có số bàn riêng) — bấm VÀO BÀN trên các browser còn lại NGAY để cùng bàn.');
     }
     if (res && res.ok === false) note(errText(res), true);
     await refreshManual(); renderApp();

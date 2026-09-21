@@ -174,7 +174,10 @@ test('BUG2: runFindTable emits immediate feedback and ALWAYS clears autoFlow (fi
   // §44 — ONE engine: the Tool-wide TÌM BÀN drives the SAME manual flow as the per-browser buttons and the
   // in-Chromium headers (it used to start the legacy HOST/FOLLOWER loop instead).
   assert.match(fn, /await api\.manualDiscover\(finderRunId, \{ selectedStake: stake \}\)/);
-  assert.match(fn, /await api\.manualJoinShared\(runId, d\.rid\)/);
+  // §co-seat — the followers are joined AT ONCE (Promise.all over the ids), not one awaited call at a time:
+  // a sequential loop waits up to 8s per follower and misses the server's ~1.3s fill-room window. See CHAN-05.
+  assert.match(fn, /Promise\.all\(followerIds\.map\(\(runId\) =>/);
+  assert.match(fn, /api\.manualJoinShared\(runId, d\.rid\)/);
   assert.equal(/api\.discover\(\)/.test(fn), false, 'the legacy cluster discovery loop is no longer started here');
   assert.match(fn, /finally \{[^]*autoFlow = false/); // never stuck "ĐANG CHẠY…"
   assert.match(fn, /Không thể tìm bàn/);       // typed error, not silent

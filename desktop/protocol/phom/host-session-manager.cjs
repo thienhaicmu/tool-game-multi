@@ -107,6 +107,8 @@ class HostSessionManager extends EventEmitter {
   leaveAll() { return this._guarded((c) => c.leaveAll()); }
   stop() { const c = this._c(); if (c) c.stop(); }
   verifySameTable() { const c = this._c(); return c ? c.verifySameTable() : { result: 'IDLE' }; }
+  coSeatStatus() { const c = this._c(); return c ? c.coSeatStatus() : { ok: false, result: 'IDLE', rid: null, seatedCount: 0, browserCount: 0 }; }
+  sharedRidIsChannel() { const c = this._c(); return c ? c.sharedRidIsChannel() : false; }
   snapshot() { const c = this._c(); return c ? c.snapshot() : null; }
   // PHASE-2 — the monotonic discovery/sync milestone timeline (telemetry only; empty when no session).
   trace() { const c = this._c(); return c && typeof c.trace === 'function' ? c.trace() : []; }

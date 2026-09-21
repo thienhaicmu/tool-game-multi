@@ -75,7 +75,10 @@ function deriveHeaderState(view = {}) {
     // §co-seat — show SS (số bàn = the rid this browser is seated in) + the key, like the reference tool's "SS".
     const code = view.roomCode != null && String(view.roomCode) !== '' ? String(view.roomCode) : null;
     const ss = view.rid != null ? String(view.rid) : null;
-    statusLabel = 'SS ' + (ss != null ? ss : '—') + (code ? ' · KEY ' + code : '');
+    // §stake-channel — "SS" means the 7-digit SỐ BÀN. A seat taken through the lobby stake channel has no số bàn
+    // yet (the server picked the table behind that id), so calling it SS sent users looking for a code to copy
+    // that does not exist. It is still the id the other browsers JOIN — only the wording changes.
+    statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + (ss != null ? ss : '—') + (code ? ' · KEY ' + code : '');
     statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }];
   }
   else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_SHARED', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }

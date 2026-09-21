@@ -36,8 +36,11 @@ test('coordinator: FIND is single-flight (no duplicate CMD 300) + reuses a cache
   assert.match(coord, /let candidate = \(recovery === 0 && cacheFresh\) \? this\._pickManualCandidate\(rec, minSeats, selectedStake, runFailedRids\) : null;/);
   assert.match(coord, /cacheFresh = at != null && \(this\._now\(\) - Number\(at\)\) < freshMs;/);
   assert.match(coord, /buildChannelListFrame\(aid\)/);
-  // the single-flight flag is released on the finally + on leave/reset
-  assert.match(coord, /finally \{ rec\._discovering = false; rec\._searchStartedAt = null; rec\._searchRerolls = 0; \}/);
+  // The single-flight flag is released on the finally + on leave/reset — but ONLY by the run that still owns it.
+  // An unconditional release let a superseded run (cancelled by HỦY / THOÁT / ↻ WEB) clear the flag of the FIND
+  // that had already replaced it, so a second search could stack on top. See FLAG-01 in phom-find-hygiene.
+  assert.match(coord, /const myDiscoverToken = \(rec\._discoverSeq = \(rec\._discoverSeq \|\| 0\) \+ 1\);/);
+  assert.match(coord, /if \(rec\._discoverSeq === myDiscoverToken\) \{ rec\._discovering = false; rec\._searchStartedAt = null; rec\._searchRerolls = 0; \}/);
   assert.match(coord, /rec\._discovering = false;\s*\/\/ PHASE 6\.3\.4 — release the FIND single-flight on ↻ WEB reset/);
 });
 

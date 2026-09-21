@@ -151,23 +151,45 @@ else {
   function coseatLogPath() { return path.join(app.getPath('userData'), 'phom-captures', 'coseat.jsonl'); }
   function _archiveCoseat(dir, reason) {
     try { const p = coseatLogPath(); if (fs.existsSync(p)) { const arch = path.join(dir, 'coseat-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jsonl'); fs.renameSync(p, arch); } } catch { /* best effort */ }
-    try { fs.writeFileSync(coseatLogPath(), '# SESSION ' + (reason || '') + ' ' + new Date().toISOString() + '\n', 'utf8'); } catch { /* best effort */ }
+    try { fs.writeFileSync(coseatLogPath(), '# SESSION ' + (reason || '') + ' ' + new Date().toISOString() + '\n'
+        // The file holds RAW protocol frames, which include this account's login/session token. It is a
+        // local diagnostic capture, not something to paste into a chat or a bug report unedited.
+        + '# CẢNH BÁO: file này chứa frame WebSocket thô, gồm cả token phiên đăng nhập — không chia sẻ nguyên văn.\n', 'utf8'); } catch { /* best effort */ }
   }
-  function appendCoseatLog(entry) {
+  // §ws-log — the capture is ALWAYS ON and takes EVERY non-heartbeat frame of all three browsers, so it used
+  // to do one BLOCKING fs.appendFileSync per frame on the Electron main process — the same thread that serves
+  // CDP, IPC and the header pushes. Batch instead: queue the lines and write them in ONE call at most every
+  // COSEAT_FLUSH_MS. Same bytes, same rotation, same ordering; the per-frame stall is gone. A crash can lose
+  // at most one flush interval, which is the right trade for a diagnostic log.
+  const COSEAT_FLUSH_MS = 250;
+  const COSEAT_MAX_QUEUE = 2000; // a burst flushes immediately rather than growing without bound
+  let _coseatQueue = [];
+  let _coseatFlushTimer = null;
+  function _coseatFlush() {
+    if (_coseatFlushTimer) { try { clearTimeout(_coseatFlushTimer); } catch { /* ignore */ } _coseatFlushTimer = null; }
+    if (!_coseatQueue.length) return;
+    const batch = _coseatQueue; _coseatQueue = [];
     try {
       const dir = path.join(app.getPath('userData'), 'phom-captures'); fs.mkdirSync(dir, { recursive: true });
       const p = coseatLogPath();
-      // §ws-log — NEVER overwrite: on the first write of a run ARCHIVE the previous session's log (rename by time)
-      // so history is kept; and ROTATE (archive) when it grows large instead of dropping frames.
+      // NEVER overwrite: on the first write of a run ARCHIVE the previous session's log (rename by time) so
+      // history is kept; and ROTATE (archive) when it grows large instead of dropping frames.
       if (!_coseatInit) { _archiveCoseat(dir, 'start'); _coseatInit = true; }
       else { try { if (fs.statSync(p).size > 60 * 1024 * 1024) _archiveCoseat(dir, 'rotate'); } catch { /* file may not exist yet */ } }
-      fs.appendFileSync(coseatLogPath(), JSON.stringify(entry) + '\n', 'utf8');
+      fs.appendFileSync(p, batch.join('\n') + '\n', 'utf8');
     } catch { /* never throw from logging */ }
+  }
+  function appendCoseatLog(entry) {
+    let line; try { line = JSON.stringify(entry); } catch { return; }
+    _coseatQueue.push(line);
+    if (_coseatQueue.length >= COSEAT_MAX_QUEUE) _coseatFlush();
+    else if (!_coseatFlushTimer) _coseatFlushTimer = setTimeout(_coseatFlush, COSEAT_FLUSH_MS);
   }
   // §ws-inspect — export ALL captured WebSocket request/response to a readable .txt (one line per frame: time,
   // Player, → GỬI / ← NHẬN, and the raw frame) so the user can inspect exactly what the game sends/receives.
   function exportWsLog() {
     try {
+      _coseatFlush(); // §ws-log — the newest frames may still be queued; the export must include them
       const src = coseatLogPath();
       if (!fs.existsSync(src)) return { ok: false, error: { code: 'PHOM_NO_WS_LOG', message: 'Chưa có log — hãy thao tác trong game trước.' } };
       const lines = fs.readFileSync(src, 'utf8').split('\n');
@@ -670,9 +692,10 @@ else {
       const targets = browsers.filter((b) => b && String(b.profileId) !== String(finderRunId)
         && b.connected && b.socketReady && (b.channelCount || 0) > 0
         && b.manualState !== 'JOINED' && b.manualState !== 'JOINING');
-      // §co-seat — AUTO join the host's real số bàn + host KEY (token), retrying LÌ through "sai mật khẩu phòng"
-      // exactly like the reference tool does in the video (it hits that error many times before landing).
-      for (const b of targets) Promise.resolve(phomSessions.manualJoinByCode(b.profileId, rid, null, { maxRetries: 40 })).catch(() => {});
+      // §co-seat — AUTO join the host's real số bàn with the anchor's LIVE room key. The retry is bounded and
+      // REFRESHES the key between attempts (§key-refresh), so the old maxRetries:40 — which only ever replayed
+      // one stale key for minutes — is gone; the coordinator's own default applies.
+      for (const b of targets) Promise.resolve(phomSessions.manualJoinByCode(b.profileId, rid, null, {})).catch(() => {});
       headerLog('COSEAT_AUTO_JOIN', { finder: String(finderRunId), rid, targets: targets.map((b) => b.profileId) });
     } catch { /* best effort */ }
   }
@@ -733,16 +756,25 @@ else {
       const r = await client.Runtime.evaluate(args);
       try { return JSON.parse(r && r.result && r.result.value); } catch { return null; }
     }
-    const hit = (x) => x && ((x.lists && x.lists.length) || (x.cur && x.cur.length));
+    // A HIT = the probe found a room-shaped object: `both` (a 7-digit số bàn AND a key-like string on the SAME
+    // object — the room record we are after) or, failing that, `hits` (a 7-digit number somewhere). Those are the
+    // fields GAME_ROOM_PROBE actually returns. It used to test `lists`/`cur`, the shape of an EARLIER version of
+    // the probe, so hit() was false for every context: the walk (up to 800k objects) ran in EVERY frame instead
+    // of stopping at the game's, and the result kept below was the FIRST one — the outer page, cross-origin and
+    // holding no game state — so the game frame's findings were thrown away. `globals`/`scanned` come back from
+    // every context and must never count as a hit.
+    const hit = (x) => !!(x && ((x.both && x.both.length) || (x.hits && x.hits.length)));
+    // How informative a non-hit result is, so the fallback keeps the GAME frame's walk instead of the first one.
+    const score = (x) => (x ? ((x.both ? x.both.length : 0) * 1e6) + ((x.hits ? x.hits.length : 0) * 1e3) + Math.min(x.scanned || 0, 999) : -1);
     try {
-      let best = null;
+      let best = null, bestCid = null;
       const ids = [null, ...[..._probeCtx[rid].keys()]];
       for (const cid of ids) {
         let parsed = null; try { parsed = await run(cid); } catch { parsed = null; }
         if (hit(parsed)) { appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE', runId: rid, at: Date.now(), contextId: cid, ctx: _probeCtx[rid].get(cid) || null, result: parsed }); return parsed; }
-        best = best || parsed;
+        if (score(parsed) > score(best)) { best = parsed; bestCid = cid; }
       }
-      appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE', runId: rid, at: Date.now(), contexts: [..._probeCtx[rid].values()], frames, result: best });
+      appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE', runId: rid, at: Date.now(), contextId: bestCid, ctx: bestCid != null ? (_probeCtx[rid].get(bestCid) || null) : null, contexts: [..._probeCtx[rid].values()], frames, result: best });
       return best;
     } catch (e) { appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE_ERR', runId: rid, at: Date.now(), err: String(e && e.message || e) }); return null; }
   }
@@ -771,6 +803,7 @@ else {
       lastCapture: lastCaptureByRun[String(runId)] || null,
       searchAttempt: b.searchAttempt || 0,
       rid: b.rid != null ? b.rid : null,
+      joinedViaChannel: !!b.joinedViaChannel, // §stake-channel — label it KÊNH, never SS (see deriveHeaderState)
       lastRid: b.lastRid != null ? b.lastRid : null,
       // §co-seat — THIS browser's own room code (shown when it holds a table) + the shared code the followers use.
       roomCode: b.roomCode != null ? b.roomCode : null,
@@ -1526,7 +1559,11 @@ else {
       for (const b of browsers) { if (b && b.profileId != null) Object.assign(b, browserRuntimeStatus(b.profileId)); }
       // §38 — the SAME shared room the in-Chromium header publishes (single source), so the Tool never derives its own.
       const active = !!(phomSessions && phomSessions.active());
-      return { ok: true, browsers, sharedRid: active ? phomSessions.sharedRid() : null, sharedRidOwner: active ? phomSessions.sharedRidOwner() : null };
+      // §co-seat — the cluster verdict (all browsers proven in the SAME ps[]), so the Tool can state "ĐỦ 3
+      // BROWSER CÙNG BÀN" from server evidence instead of three independent JOINED flags.
+      return { ok: true, browsers, sharedRid: active ? phomSessions.sharedRid() : null, sharedRidOwner: active ? phomSessions.sharedRidOwner() : null,
+        sharedRidIsChannel: active ? phomSessions.sharedRidIsChannel() : false,
+        coSeat: active ? phomSessions.coSeatStatus() : null };
     });
     // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
     // saved preference + what each option currently resolves to (so SETUP can show availability).
@@ -1641,7 +1678,7 @@ else {
   });
   app.on('window-all-closed', () => { lifecycleLog('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', () => { lifecycleLog('APP_BEFORE_QUIT', { stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') }); });
-  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); });
+  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); _coseatFlush(); }); // §ws-log — never lose the last batch
 }
 
 module.exports = { PRODUCT_NAME, GAME_PRODUCT };
