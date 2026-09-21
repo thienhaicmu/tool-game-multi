@@ -25,10 +25,3 @@ test('preload bridges analyzeSafeCards(targetUid) → phom:analyze-safe-cards', 
   assert.match(preload, /analyzeSafeCards: \(targetPlayerUid\) => ipcRenderer\.invoke\('phom:analyze-safe-cards', targetPlayerUid\)/);
 });
 
-test('the phase adds NO game-action wiring to the renderer analyzer path (§28)', () => {
-  // the selector + analysis functions never send/join/find/play/click
-  for (const name of ['renderSafeCards', 'playerAnalysisSelector', 'renderSafeBody', 'refreshSafeAnalysis']) {
-    const body = rfn(name);
-    assert.equal(/manualEnterGame|onManualJoin|onManualLeave|onManualFind|headerAction|sendPlay|\.click\(/.test(body), false, `${name} has no game action`);
-  }
-});

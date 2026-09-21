@@ -57,8 +57,8 @@
   let localTest = false;     // LOCAL RUNTIME TEST (dev-only: open browsers without proxy)
   let clusterOpBusy = false; // guards RUN GAME against a duplicate click opening a 2nd cluster (§41)
   // PHASE-6.1 — manual per-browser control (Browser 1/2/3): search lock + shared Room/RID.
-  const MCS = (typeof window !== 'undefined' && window.ManualClusterState) ? window.ManualClusterState : null;
-  let manualCluster = MCS ? MCS.create() : { searchingBrowserId: null, sharedRid: null, sharedRidOwner: null };
+  // The group's table as the backend reports it (table-group.cjs is the single source; the renderer never derives).
+  let manualCluster = { sharedRid: null, sharedRidOwner: null, sharedStake: null };
   let manualBrowsers = [];   // last manualBrowserSnapshot() (per-browser independent state)
   // §co-seat — the CLUSTER verdict from the backend (coordinator.coSeatStatus()): are all browsers proven to be
   // in the SAME authoritative ps[]? Never derived here from three independent JOINED flags — three browsers can
@@ -72,15 +72,10 @@
   let autoStake = '';          // Tiền picked for TỰ ĐỘNG VÀO BÀN
   let autoBusy = false;        // an automatic create/gather is in flight
   // The legacy TÌM BÀN finder slot (B1/B2/B3) or null; kept for the old find flow only.
-  let selectedFinderPlayer = null;
-  let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
-  const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
-  const pwdDraft = {};       // §co-seat — per-browser table PASSWORD input draft (join a numbered table by code)
   const manualEntering = {}; // browserId -> true while VÀO GAME is in flight (real ENTERING state, §5)
   const manualEnterError = {}; // browserId -> message when VÀO GAME failed/timed out (retryable)
   const manualEnterTimers = {}; // browserId -> bounded entry timeout handle
   const manualJoining = {};  // browserId -> true while VÀO BÀN (join shared RID) is in flight (§4)
-  const selectedStakeByBrowser = {}; // PHASE 6.2.3 — the finder's chosen REAL stake (from server bet options)
   let activeTab = 'SETUP';   // PHASE 6.2.2 — two tabs: SETUP (config/open) and PHOM (control)
   // PHASE 6.3.1 — flexible N-profile SETUP: the profile LIST + the ordered selection (→ B1/B2/B3) + game URL.
   const PS = (typeof window !== 'undefined' && window.ProfileSelection) ? window.ProfileSelection : null;
@@ -256,7 +251,54 @@
   // bet dropdown mid-selection — that was the "picked a stake but can't press TÌM BÀN" bug. Skip the
   // rebuild while a bet <select> is focused; the next event re-renders once the user has committed.
   function betSelectFocused() { const a = document.activeElement; return !!(a && a.classList && a.classList.contains('bet-sel')); }
-  function bgRender() { if (betSelectFocused()) return; renderApp(); }
+  // A background re-render (a ui push, a poll tick) rebuilds the whole screen, and during a round those arrive
+  // several times a second. Coalesce them into ONE repaint per animation frame, and skip the repaint entirely when
+  // nothing that is actually displayed changed. A user click still renders immediately (renderApp).
+  let _bgQueued = false;
+  let _bgKey = '';
+  function bgRender() {
+    if (betSelectFocused()) return;              // never rebuild an open dropdown out from under the user
+    if (document.hidden) return;                 // the window is not visible: the next poll/push repaints
+    const key = renderKey();
+    if (key === _bgKey) return;
+    _bgKey = key;
+    if (_bgQueued) return;
+    _bgQueued = true;
+    requestAnimationFrame(() => { _bgQueued = false; renderApp(); });
+  }
+  // What the Phỏm screen actually shows. Cheap to build, and it changes only when a pixel would.
+  function renderKey() {
+    if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + (manualBrowsers.length);
+    const g = manualGroup;
+    const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.seat, b.ready, b.groupRole, b.isTableHost, b.username, b.connected, b.socketReady, b.channelCount, b.header, b.lastError && b.lastError.code].join(',')).join(';');
+    const cards = ['B1', 'B2', 'B3'].map((sl) => { const a = safeBySlot[sl]; return a ? a.roundSeq + ':' + (a.targetCards || []).map((c) => c.code + c.classification).join('') : '-'; }).join('|');
+    const rem = remaining ? (remaining.count + ':' + (cardsSnap && cardsSnap.remaining ? cardsSnap.remaining.count : '')) : '-';
+    return [uiState, activeTab, g && g.rid, g && g.key, g && g.auto, g && g.busy, g && g.recreating, autoStake, autoBusy,
+      coSeat && coSeat.result, coSeat && coSeat.seatedCount, browsers, cards, rem, noteText()].join('|');
+  }
+  function noteText() { const n = $('phq-note'); return n ? n.textContent : ''; }
+  // Plain-Vietnamese line for a table-group event (docs/phom-kich-ban.md). Unknown events are ignored, never
+  // shown as a raw code.
+  function noticeText(n) {
+    if (!n || !n.event) return '';
+    const who = playerLabelOf(n.id);
+    switch (n.event) {
+      case 'GROUP_CREATED': return 'Đã tạo bàn ' + n.rid + '.';
+      case 'GROUP_FORMED': return 'Cả nhóm đã vào bàn ' + n.rid + '.';
+      case 'JOINED': return who + ' đã vào bàn' + (n.role ? ' · ' + roleLabel(n.role) : '') + '.';
+      case 'JOIN_FAILED': return who + ' vào bàn không được: ' + errText({ error: n.error }) + '.';
+      case 'CREATE_FAILED': return 'Tạo bàn không được: ' + errText({ error: n.error }) + '.';
+      case 'LEAVE_FAILED': return who + ' chưa rời được bàn: ' + errText({ error: n.error }) + '.';
+      case 'KICKED': return who + ' bị đá khỏi bàn' + (n.message ? ' (' + n.message + ')' : '') + (n.auto ? ' — đang tự vào lại…' : ' — bấm ReJoin để vào lại.');
+      case 'REJOIN_EXHAUSTED': return who + ' bị đá quá nhiều lần trong 1 phút — tự vào lại đã dừng.';
+      case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang tạo bàn mới…' : ' — bấm Tạo để mở bàn mới.');
+      case 'GROUP_DISSOLVED': return 'Đã thoát bàn tất cả.';
+      case 'AUTO_OFF': return 'Đã tắt tự động.';
+      default: return '';
+    }
+  }
+  function playerLabelOf(runId) { const b = runId != null ? manualBrowserById(runId) : null; return b && b.browserIndex ? 'Player ' + b.browserIndex : 'Một acc'; }
+  function roleLabel(role) { const v = ROLE_VIEW[role]; return v ? v[0] : role; }
 
   function banners(r) {
     if (licenseMode === 'DEVELOPMENT_BYPASS') r.appendChild(el('div', { class: 'dev-banner' }, 'DEV MODE — LICENSE BYPASS'));
@@ -1228,88 +1270,16 @@
     }
     return row;
   }
-  // Run the read-only analyzer for ALL three accounts off the latest card snapshot (event-driven, no timers).
-  async function refreshSafeAnalysis() {
-    const next = {};
-    if (api.analyzeSafeCards && cardsSnap && cardsSnap.slotBinding) {
-      for (const slot of ['B1', 'B2', 'B3']) {
-        const uid = cardsSnap.slotBinding[slot];
-        if (!uid) continue;
-        try { const r = await api.analyzeSafeCards(uid); if (r && r.ok !== false) next[slot] = r; } catch { /* keep the others */ }
-      }
-    }
-    safeBySlot = next;
-  }
-  // Build the single business-action button from the browserAction decision.
-  function actionButton(act, b, runId, inGame) {
-    if (act.busy) return el('span', { class: 'chip yellow sm busy' }, spinner(), ' ' + act.label);
-    if (act.action === 'ENTER_GAME') return el('button', { class: 'btn primary bc-main', onclick: () => manualEnterGame(runId) }, icon('play', { sm: true }), ' ' + act.label);
-    if (act.action === 'FIND') return betFindGroup(b, runId, inGame); // PHASE 6.2.3 — real bet selector + TÌM BÀN
-    if (act.action === 'JOIN_SHARED') return el('button', { class: 'btn primary bc-main', onclick: () => onManualJoinShared(b) }, icon('logout', { sm: true }), ' ' + act.label); // VÀO BÀN → shared RID
-    if (act.action === 'LEAVE') return el('button', { class: 'btn danger bc-main', onclick: () => onManualLeave(b) }, act.label);       // THOÁT GAME
-    return el('span', { class: 'faint sm' }, act.label);
-  }
-  // A real spinning loader icon (§27) — no emoji, no heavy animation.
-  function spinner() { const s = icon('refresh', { sm: true }); try { s.classList.add('spin'); } catch {} return s; }
-  // PHASE 6.2.3 — the finder's bet selector (REAL server stakes) + TÌM BÀN. The stake list comes from this
-  // browser's own betOptions (distinct rs[].b); FIND is enabled only after a stake is chosen (§5/§11). No
-  // manual number input, no hard-coded list. While a search is running, FIND is search-locked as before.
-  function betFindGroup(b, runId, inGame) {
-    const group = el('div', { class: 'bet-find' });
-    // §38 — a persistent search runs up to a minute: show its live progress and the SAME HỦY the header has,
-    // instead of a locked button that cannot be told apart from a hang.
-    if (b && b.manualState === 'SEARCHING') {
-      const el_ = Number(b.searchElapsedSec) > 0 ? ` ${Number(b.searchElapsedSec)}s` : '';
-      const at = Number(b.searchAttempt) > 0 ? ` · lần ${Number(b.searchAttempt)}` : '';
-      group.appendChild(el('span', { class: 'chip yellow sm busy' }, spinner(), ` ĐANG TÌM BÀN…${el_}${at}`));
-      group.appendChild(el('button', { class: 'btn danger sm', title: 'Dừng tìm bàn ngay', onclick: () => onCancelFind(b) }, 'HỦY TÌM'));
-      return group;
-    }
-    const options = (b && Array.isArray(b.betOptions)) ? b.betOptions : [];
-    if (!options.length) {
-      group.appendChild(el('span', { class: 'chip yellow sm busy' }, spinner(), ' CƯỢC: đang tải…'));
-      group.appendChild(iconButton('refresh', 'Tải lại danh sách mức cược', () => onRefreshBets(runId)));
-      return group;
-    }
-    const selected = selectedStakeByBrowser[runId];
-    // The TÌM BÀN button is created up-front; picking a stake enables it IN PLACE (no renderApp), so a
-    // background re-render (2s poll / pushes) can never destroy the open dropdown mid-selection (bug fix).
-    const findBtn = el('button', { class: 'btn primary sm', onclick: () => onManualFind(b) }, 'TÌM BÀN');
-    const setEnabled = (val) => { findBtn.disabled = (!!MCS && MCS.canFind(manualCluster, b) && inGame && val != null) ? null : true; };
-    const sel = el('select', { class: 'sel sm bet-sel', onchange: (e) => { const v = e.target.value ? Number(e.target.value) : null; selectedStakeByBrowser[runId] = v; setEnabled(v); } },
-      el('option', { value: '' }, 'CƯỢC…'));
-    for (const s of options) { const o = el('option', { value: String(s) }, String(s)); if (selected != null && Number(selected) === Number(s)) o.setAttribute('selected', 'selected'); sel.appendChild(o); }
-    findBtn.insertBefore(icon('search', { sm: true }), findBtn.firstChild); // TÌM BÀN with a search icon
-    group.appendChild(sel);
-    setEnabled(selected); // §11 — FIND needs a chosen stake
-    group.appendChild(findBtn);
-    return group;
-  }
-  // Reload the real bet options (re-request the channel list; the server re-sends rs[]).
+
   async function onRefreshBets(runId) {
     note('Đang tải mức cược…');
     try { await api.requestChannels(runId); } catch {} // §35 — only THIS browser (never a seated one)
     await refreshManual(); renderApp();
   }
-  // VÀO BÀN — JOIN the shared RID (never a new discovery, §3/§4). Immediate ĐANG VÀO BÀN; confirmed by ps[].
-  async function onManualJoinShared(b) {
-    const rid = manualCluster.sharedRid;
-    if (rid == null) return note('Chưa có bàn dùng chung.', true);
-    manualJoining[b.profileId] = true; note(`Đang vào bàn ${rid}…`); renderApp();
-    // §38 — the SAME join the header's VÀO BÀN uses: bounded retry + proof of sitting with the room holder.
-    let res; try { res = await api.manualJoinShared(b.profileId, rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    if (MCS) manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
-    delete manualJoining[b.profileId];
-    if (res && res.ok === false) note(errText(res), true);
-    await refreshManual(); renderApp();
-  }
-  // ↻ WEB — reload the page in the SAME Chromium; if the page is gone, re-navigate. Never a new window (§6).
-  // After reload the browser has LEFT the game, so we clear its local entry state + refresh: the tool
-  // shows VÀO GAME again (backend also resets that browser's Phỏm context so slotInPhom goes false).
   async function onReloadWeb(runId) {
     note('Đang tải lại web…');
     let res; try { res = await api.reloadWeb(runId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    delete manualEntering[runId]; delete manualEnterError[runId]; delete selectedStakeByBrowser[runId];
+    delete manualEntering[runId]; delete manualEnterError[runId];
     if (manualEnterTimers[runId]) { clearTimeout(manualEnterTimers[runId]); manualEnterTimers[runId] = null; }
     await refreshManual();
     if (res && res.ok === false) note(errText(res), true); else note('Đã tải lại web — bấm VÀO GAME để vào lại.');
@@ -2082,97 +2052,6 @@
   }
   function stopEntryPolling() { if (entryPollTimer) { clearInterval(entryPollTimer); entryPollTimer = null; } }
 
-  // Primary CTA: start the session over the 3 opened runs, pick HOST + stake, then run
-  // §13 — Find-Table: the ONLY place a stake is chosen. Opens a compact modal, starts
-  // the session so the HOST can request the server channel list, then shows the
-  // AUTHORITATIVE distinct stakes. Confirm runs the full flow; Cancel sends nothing more.
-  async function openFindTable() {
-    // BUG #2 §9/§10 — never fail silently: report the exact gate reason on click.
-    const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
-    if (runIds.length !== 3) return note('Cần mở đủ 3 browser trước.', true);
-    if (!caps.authorized) return note('Không thể tìm bàn: môi trường chưa được cấp quyền QA (PHOM_QA_ENABLED=1 và PHOM_QA_AUTHORIZED=1).', true);
-    const host = hostId && runIds.includes(hostId) ? hostId : runIds[0];
-    hostId = host;
-    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
-    const overlay = el('div', { class: 'phq-analyzer' });
-    const close = () => overlay.remove();
-    const card = el('div', { class: 'anz-card ft-card' });
-    card.appendChild(el('div', { class: 'section-t' }, 'TÌM BÀN TRỐNG'));
-    const status = el('div', { class: 'note' }, 'Đang chờ danh sách mức cược từ game…');
-    const sel = el('select', { class: 'sel', id: 'ft-stake' }, el('option', { value: '' }, '— chọn mức cược —'));
-    const confirmBtn = el('button', { class: 'btn primary', disabled: 'disabled', onclick: async () => {
-      const stake = Number(($('ft-stake') || {}).value);
-      if (!stake) { status.textContent = 'Phải chọn mức cược.'; status.className = 'note warn'; return; }
-      close();
-      await runFindTable(stake);
-    } }, 'XÁC NHẬN TÌM BÀN');
-    card.appendChild(el('div', { class: 'phq-row' }, el('span', null, 'Mức cược'), sel));
-    card.appendChild(status);
-    card.appendChild(el('div', { class: 'phq-row' }, confirmBtn, el('button', { class: 'btn', onclick: close }, 'HỦY')));
-    overlay.appendChild(card); document.body.appendChild(overlay);
-
-    // The passive session was already started at VÀO GAME PHỎM; reuse it (never re-create —
-    // that would drop the per-profile game context). Only start here as a safety net if the
-    // gate was somehow bypassed. Channel request happens ONLY now (§5), on TÌM BÀN.
-    if (!phomSessionStarted) {
-      const start = await api.startSession({ runIds, hostId: host });
-      if (start && start.ok === false) { status.textContent = errText(start); status.className = 'note warn'; return; }
-      phomSessionStarted = true;
-    }
-    try { await api.requestChannels(); } catch {}
-    // Poll the authoritative stake list (no hard-coded fallback); typed timeout.
-    for (let i = 0; i < 8; i++) {
-      let res; try { res = await api.stakeChannels(); } catch { res = null; }
-      const stakes = (res && res.stakes) || [];
-      if (stakes.length) {
-        for (const s of stakes) sel.appendChild(el('option', { value: String(s) }, String(s)));
-        status.textContent = 'Chọn mức cược rồi bấm XÁC NHẬN.'; status.className = 'note';
-        confirmBtn.disabled = null; return;
-      }
-      await new Promise((r) => setTimeout(r, 700));
-    }
-    // Friendly message in the focused UI; the typed code stays in a tiny advanced line.
-    status.replaceChildren(document.createTextNode('Đang chờ danh sách mức cược từ game…'),
-      el('span', { class: 'ft-code' }, ' (PHOM_STAKE_LIST_UNAVAILABLE)'));
-    status.className = 'note warn';
-  }
-
-  // §44 — ONE find engine. This Tool-wide TÌM BÀN used to start the legacy HOST/FOLLOWER discovery loop
-  // (api.discover), while the per-browser buttons and the in-Chromium headers used the manual PHASE-6 flow:
-  // three buttons, two engines, two sets of rules. It now drives the SAME manual flow — the chosen finder
-  // searches, then the other browsers join that room — so every surface behaves identically and benefits from
-  // the same fixes (per-run blacklist, persistent search + HỦY, validated shared room, same-room proof).
-  async function runFindTable(stake) {
-    selectedStake = stake;
-    await refreshManual(); // the finder/followers come from the authoritative per-browser snapshot
-    // §51 — resolved by Player NUMBER from the snapshot. The old code indexed the A/B/C slot map with the finder
-    // value 'B1'/'B2'/'B3', got undefined, and threw before the try — so with a finder chosen this button did nothing.
-    const { finderId: finderRunId, followerIds } = MCS ? MCS.pickFinder(manualBrowsers, selectedFinderPlayer) : { finderId: null, followerIds: [] };
-    if (!finderRunId) { note('Chưa có browser nào sẵn sàng để tìm bàn.', true); return; }
-    note('Đang tìm bàn (mức cược ' + stake + ')…'); // FIND_TABLE_REQUESTED — immediate visible feedback
-    autoFlow = true; renderApp(); // FIND_TABLE_STARTED — button reflects the running search
-    try {
-      selectedStakeByBrowser[finderRunId] = stake;
-      const d = await api.findAndJoinGroup(finderRunId, { selectedStake: stake });
-      if (!d || d.ok === false) { note('Không thể tìm bàn: ' + errText(d), true); return; }
-      note((d.viaStakeChannel ? 'Đã vào kênh cược ' : 'Đã tìm được bàn ') + d.rid + ' — đang đưa các browser còn lại vào bàn…');
-      await refreshManual();
-      note('Đã vào bàn ' + d.rid + '.');
-    } catch (e) {
-      note('Lỗi tìm bàn: ' + String(e && e.message || e), true);
-    } finally {
-      // ALWAYS clear the running flag so the TÌM BÀN button re-enables — never leave it stuck
-      // "ĐANG CHẠY…" (that made the button look dead on the next click). BUG #2.
-      autoFlow = false; refresh();
-    }
-  }
-  // Advance the happy path when authoritative state confirms each stage.
-  // Re-entrant-safe automatic flow: HOST acquired -> followers join -> Ready policy is
-  // (re)applied whenever the authoritative controlledReadyCount is below the desired
-  // count. Because the desired count rises from 2 to 3 when a real 4th player sits, the
-  // waiting controlled account auto-Readies on the next snapshot. applyReady is
-  // idempotent in the domain, so re-issuing it never double-sends. Host loss / rejoin
-  // exhaustion stops orchestration (no follower promotion — §12/§15).
   let flowBusy = false;
   // The host-first discovery loop (main-process coordinator) now owns follower join, ready policy,
   // C-rejoin and invalid-table restart. The renderer must NOT drive join/ready itself (that caused
@@ -2353,151 +2232,26 @@
   // touch; usernames + cards come from authoritative snapshots only.
 
   // Refresh the manual snapshot + remaining cards, then reconcile the shared-room lifecycle (§18).
+  // ONE IPC for the whole screen (browsers + group + cards + remaining + the three analyses). Main builds it and
+  // also PUSHES the same object, so a live round costs one message per tick instead of six round-trips.
   async function refreshManual() {
-    let sharedAuth; // §38 — the coordinator's single shared room (undefined when the backend didn't send one)
-    try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; coSeat = (r && r.coSeat) || null; manualGroup = (r && r.group) || null; if (r && 'sharedRid' in r) sharedAuth = { sharedRid: r.sharedRid, sharedRidOwner: r.sharedRidOwner }; } catch { manualBrowsers = []; coSeat = null; }
-    try { const rc = await api.remainingCards(); remaining = rc && rc.ok !== false ? rc : null; } catch { remaining = null; }
-    // PHASE 6.3.3.2 — pull the card-observation snapshot (real observed data; empty/unknown when none).
-    if (api.cardsSnapshot) { try { const cs = await api.cardsSnapshot(); cardsSnap = cs && cs.ok !== false ? cs : null; } catch { cardsSnap = null; } }
-    // PHASE 6.3.3.3 — re-run the read-only analyzer for the selected target off the fresh snapshot (§21).
-    await refreshSafeAnalysis();
-    if (MCS) manualCluster = MCS.reconcile(manualCluster, manualBrowsers, sharedAuth);
+    let snap = null;
+    try { snap = await api.uiSnapshot(); } catch { snap = null; }
+    applyUiSnapshot(snap);
+  }
+  function applyUiSnapshot(snap) {
+    if (!snap) { manualBrowsers = []; coSeat = null; manualGroup = null; remaining = null; cardsSnap = null; safeBySlot = {}; return; }
+    manualBrowsers = snap.browsers || [];
+    coSeat = snap.coSeat || null;
+    manualGroup = snap.group || null;
+    remaining = snap.remaining && snap.remaining.ok !== false ? snap.remaining : (snap.remaining || null);
+    cardsSnap = snap.cards || null;
+    safeBySlot = snap.analyses || {};
+    const seatedStake = (manualBrowsers.find((b) => b.manualState === 'JOINED' && b.stake != null) || {}).stake;
+    manualCluster = { sharedRid: snap.sharedRid != null ? snap.sharedRid : null, sharedRidOwner: snap.sharedRidOwner || null, sharedStake: seatedStake != null ? seatedStake : null };
     reconcileEnterStates(); // clear ĐANG VÀO GAME once the browser is authoritatively in game
   }
   function manualBrowserById(id) { return manualBrowsers.find((b) => String(b.profileId) === String(id)) || null; }
-  function ownerIndex() { const o = manualCluster.sharedRidOwner; const b = o != null ? manualBrowserById(o) : null; return b ? b.browserIndex : null; }
-
-  // TÌM BÀN click: if a shared RID exists → JOIN it (never a new matchmaking, §31); else start a REAL
-  // search and lock the cluster immediately (§6). Terminal states always clear the lock (§13).
-  async function onManualFind(b) {
-    if (!MCS) return;
-    const dec = MCS.onFindStart(manualCluster, b.profileId);
-    if (dec.action === 'BLOCKED') { note('Một trình duyệt khác đang tìm bàn — vui lòng chờ.', true); return; }
-    manualCluster = dec.state; renderApp(); // immediate lock/label before any await (§4/§6)
-    let res;
-    if (dec.action === 'JOIN_SHARED') {
-      note(`Đang tham gia bàn ${dec.rid}…`);
-      try { res = await api.manualJoinShared(b.profileId, dec.rid); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; } // §38 same semantics as the header
-      manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
-    } else {
-      // PHASE 6.2.1/6.2.3 — REAL discovery filtered by the CHOSEN server stake: the backend requests the
-      // channel list, picks a qualifying EMPTY table whose b === selectedStake, and JOINs its actual RID.
-      // The RID + STAKE come from the SELECTED SERVER TABLE. The stake is chosen from real bet options.
-      const selectedStake = selectedStakeByBrowser[b.profileId];
-      if (selectedStake == null) { manualCluster = MCS.onFindResult(manualCluster, b.profileId, { ok: false }); renderApp(); return note('Chọn mức cược trước khi tìm bàn.', true); }
-      note('🔍 Đang tìm bàn theo mức cược ' + selectedStake + '…');
-      try { res = await api.findAndJoinGroup(b.profileId, { selectedStake }); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-      manualCluster = MCS.onFindResult(manualCluster, b.profileId, res && res.ok ? { ok: true, rid: res.rid, stake: res.stake } : { ok: false });
-      // §stake-channel — the other browsers still JOIN this id (that is how the server's fill-room window groups
-      // them); it simply is not a 7-digit SỐ BÀN, so do not let the user hunt for a code to copy.
-      if (res && res.ok && res.viaStakeChannel) note('Đã vào bàn qua KÊNH CƯỢC ' + res.rid + ' (chưa có số bàn riêng) — bấm VÀO BÀN trên các browser còn lại NGAY để cùng bàn.');
-    }
-    if (res && res.ok === false) note(errText(res), true);
-    await refreshManual(); renderApp();
-  }
-  async function onManualJoin(b) {
-    const rid = (ridDraft[b.profileId] != null ? ridDraft[b.profileId] : (MCS ? MCS.prefillRid(manualCluster, b) : '')).trim();
-    if (!rid) return note('Nhập Số bàn để vào bàn.', true);
-    const pwd = (pwdDraft[b.profileId] || '').trim(); // §co-seat — join by SỐ BÀN + KEY (mật khẩu); empty → host token
-    note(`Đang vào bàn ${rid}… (thử lì qua "sai mật khẩu")`);
-    // §co-seat — retry through the transient "sai mật khẩu phòng" (like the reference tool) until seated.
-    let res; try { res = await api.manualJoinCode(b.profileId, rid, pwd, {}); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    if (MCS) manualCluster = MCS.onJoinResult(manualCluster, b.profileId, res);
-    if (res && res.ok === false) note(errText(res), true);
-    await refreshManual(); renderApp();
-  }
-  async function onManualRejoin(b) {
-    note('Đang vào lại bàn…');
-    let res; try { res = await api.manualRejoin(b.profileId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    if (res && res.ok === false) note(errText(res), true);
-    await refreshManual(); renderApp();
-  }
-  // §38 — HỦY from the Tool window: the same coordinator cancel the header's HỦY uses.
-  async function onCancelFind(b) {
-    note('Đang hủy tìm bàn…');
-    let res; try { res = await api.cancelFind(b.profileId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    if (res && res.ok === false && !(res.error && res.error.code === 'PHOM_FIND_NOT_RUNNING')) note(errText(res), true);
-    else note('Đã hủy tìm bàn.');
-    await refreshManual(); renderApp();
-  }
-  // §49 — "BÀN SERVER TRẢ VỀ": the raw rows the lobby sent this browser for the stake it searched, with the
-  // reason each one was skipped. When the game's own lobby shows joinable tables and TÌM BÀN reports none, this
-  // is the only way to see WHICH picture is wrong — the tool's list or the screen's. Shown only after a failed
-  // search, collapsed by default, and it contains nothing but the protocol's channel fields.
-  function findRowsDetail(b) {
-    const rows = (b && Array.isArray(b.lastFindRows)) ? b.lastFindRows : [];
-    if (!b || !b.lastError || !rows.length) return null; // any failed search, not just "no table"
-    const box = el('details', { class: 'find-rows' });
-    box.appendChild(el('summary', { class: 'faint xs' }, `BÀN SERVER TRẢ VỀ (${b.lastFindTotal || rows.length}) — mức cược ${b.lastFindStake != null ? b.lastFindStake : '—'}`));
-    for (const r of rows) {
-      box.appendChild(el('div', { class: 'faint xs' },
-        `rid ${r.rid} · cược ${r.stake} · ${r.uC}/${r.Mu} người · trống ${r.freeSlots != null ? r.freeSlots : '?'} · ${r.reason}`));
-    }
-    return box;
-  }
-  async function onManualLeave(b) {
-    note('Đang rời bàn…');
-    // §37 — leaving is now CONFIRMED by the server; an unconfirmed leave is surfaced, never reported as clean.
-    let res; try { res = await api.manualLeave(b.profileId); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    if (res && res.ok === false && !res.superseded) note(errText(res), true); else note('Đã rời bàn.');
-    await refreshManual(); renderApp();
-  }
-
-  // The 3-browser control grid + shared-room indicator + Screen 2 (remaining cards).
-  function manualControlPanel() {
-    const wrap = el('div', { class: 'manual-cluster', id: 'phq-manual' });
-    wrap.appendChild(el('div', { class: 'section-t' }, 'ĐIỀU KHIỂN THỦ CÔNG — BROWSER 1 / 2 / 3'));
-    // shared stake/channel used by a real FIND (join uses the RID directly).
-    wrap.appendChild(el('div', { class: 'manual-stake' },
-      el('span', { class: 'faint sm' }, 'Mức cược/kênh để TÌM BÀN: '),
-      el('input', { class: 'f mono', id: 'phq-manual-stake', value: manualStake, placeholder: 'vd 100', oninput: (e) => { manualStake = e.target.value; } })));
-    if (manualCluster.sharedRid != null) {
-      wrap.appendChild(el('div', { class: 'shared-room' },
-        el('b', null, 'SHARED ROOM'), ' · RID: ', el('b', { class: 'shared-rid' }, String(manualCluster.sharedRid)),
-        ownerIndex() != null ? el('span', { class: 'faint' }, ` · Found by: Browser ${ownerIndex()}`) : null));
-    }
-    const grid = el('div', { class: 'manual-grid' });
-    for (const b of manualBrowsers) grid.appendChild(manualBrowserCard(b));
-    if (!manualBrowsers.length) grid.appendChild(el('div', { class: 'faint' }, 'Chưa có phiên — mở 3 trình duyệt và đăng nhập.'));
-    wrap.appendChild(grid);
-    wrap.appendChild(renderRemainingCards());
-    return wrap;
-  }
-
-  function manualBrowserCard(b) {
-    const searching = b.manualState === 'SEARCHING';
-    const canFind = MCS ? MCS.canFind(manualCluster, b) : false;
-    const draft = ridDraft[b.profileId] != null ? ridDraft[b.profileId] : (MCS ? MCS.prefillRid(manualCluster, b) : '');
-    const canJoin = MCS ? MCS.canJoin(manualCluster, b, draft) : false;
-    const canRejoin = MCS ? MCS.canRejoin(manualCluster, b) : false;
-    const canLeave = MCS ? MCS.canLeave(manualCluster, b) : false;
-    const uname = b.username && b.username !== 'USER_UNKNOWN' ? b.username : 'Chưa đăng nhập';
-    return el('div', { class: 'browser-card' + (searching ? ' searching' : ''), id: 'bcard-' + b.profileId },
-      el('div', { class: 'bc-head' }, el('b', null, 'BROWSER ' + b.browserIndex), el('span', { class: 'bc-status ' + manualStatusCls(b.manualState) }, b.manualState || 'READY')),
-      el('div', { class: 'bc-user' }, 'User: ', el('b', null, uname)),
-      el('button', { class: 'btn primary bc-find', disabled: canFind ? null : true, onclick: () => onManualFind(b) }, MCS ? MCS.findLabel(manualCluster, b) : 'TÌM BÀN'),
-      el('div', { class: 'bc-rid' }, el('span', { class: 'faint sm' }, 'Số bàn'),
-        el('input', { class: 'f mono', id: 'rid-' + b.profileId, value: draft, placeholder: manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : 'số bàn', oninput: (e) => { ridDraft[b.profileId] = e.target.value; } })),
-      // §co-seat — vào đúng bàn của người khác bằng SỐ BÀN + MẬT KHẨU (như hộp "VÀO BÀN" của game). Gửi
-      // [3,"Simms",<số bàn>,"<mật khẩu>"]. Để trống mật khẩu = vào bàn công khai theo số (nếu bàn cho phép).
-      el('div', { class: 'bc-rid' }, el('span', { class: 'faint sm' }, 'Mật khẩu'),
-        el('input', { class: 'f mono', id: 'pwd-' + b.profileId, value: pwdDraft[b.profileId] || '', placeholder: 'mật khẩu bàn (nếu có)', oninput: (e) => { pwdDraft[b.profileId] = e.target.value; } })),
-      el('div', { class: 'bc-actions' },
-        el('button', { class: 'btn', disabled: canJoin ? null : true, onclick: () => onManualJoin(b) }, 'JOIN BÀN'),
-        el('button', { class: 'btn', disabled: canRejoin ? null : true, onclick: () => onManualRejoin(b) }, 'REJOIN'),
-        el('button', { class: 'btn danger', disabled: canLeave ? null : true, onclick: () => onManualLeave(b) }, 'THOÁT')),
-      b.lastError ? el('div', { class: 'warnrow sm' }, errText({ error: b.lastError })) : null,
-      findRowsDetail(b),
-    );
-  }
-  function manualStatusCls(s) { return ({ JOINED: 'green', SEARCHING: 'yellow', JOINING: 'blue', RECONNECTING: 'blue', LEAVING: 'yellow', LEFT: 'gray', ERROR: 'red', READY: 'gray', CLOSED: 'gray' })[s] || 'gray'; }
-
-  // Screen 2 — CARDS REMAINING (= full deck − Browser1 − Browser2 − Browser3). Renders the backend
-  // result only (never recomputes); NOT "player 4".
-  // Screen 2 — LÁ BÀI CÒN LẠI (CARDS REMAINING). PHASE 6.3.3.2: prefer the card OBSERVER's remaining
-  // (canonical 52 − every card PROVEN out: hands + discards + melds); fall back to the 3-browser-hands
-  // backend view (remaining.cards / remaining.count). Both are REAL observed data — nothing fabricated.
-  // Until the observer has any evidence, show an explicit "Đang quan sát…" state (never a fake number).
   function renderRemainingCards() {
     // CARDS REMAINING (= LÁ BÀI CÒN LẠI): observer remaining preferred, else the backend 3-hands view.
     const box = el('div', { class: 'remaining-cards', id: 'phq-remaining' });
@@ -2538,11 +2292,13 @@
   // ---------- boot ----------
   if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); advanceAutoFlow(snap); if (!$('workspace').hidden) bgRender(); });
   // PHASE 6.1 — card state changed: refresh Screen 2 remaining cards + per-browser membership, then re-render.
-  if (api.onHands) api.onHands((h) => { hands = h; if (!$('workspace').hidden && uiState === UI.CONTROL) refreshManual().then(() => { if (uiState === UI.CONTROL) bgRender(); }); else bgRender(); });
+  if (api.onHands) api.onHands((h) => { hands = h; bgRender(); }); // the cards themselves arrive with the ui push
   // PHASE 6.3.3.2 — a fresh card-observation snapshot arrived (push). Store it + re-render Screen 2.
-  if (api.onCards) api.onCards((c) => { cardsSnap = c || null; refreshSafeAnalysis().then(() => { if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); }); });
+  // One push carries the whole screen state (main already coalesces it), so nothing is fetched on receipt.
+  if (api.onUi) api.onUi((snap) => { applyUiSnapshot(snap); if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
+  // The group flow reports what it just did; show it on the note line (one short sentence, never a code).
+  if (api.onNotice) api.onNotice((n) => { const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST|EXHAUST/.test(n.event)); });
   // PHASE 6.3.6 — reflect the current finder choice on load (main owns it; renderer mirrors for the selector UI).
-  if (api.getFinder) { api.getFinder().then((r) => { if (r && r.ok && r.finderIndex != null) { selectedFinderPlayer = 'B' + r.finderIndex; if (!$('workspace').hidden) bgRender(); } }).catch(() => {}); }
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the

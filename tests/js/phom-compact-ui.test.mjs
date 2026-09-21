@@ -33,13 +33,6 @@ test('renderControl renders the compact UI (header + compact browser row + card 
   assert.equal(/statusToolbar\(|commandToolbar\(|entryStatusBar\(|liveMonitor\(/.test(body), false, 'no legacy toolbars/monitor on the main screen');
 });
 
-test('real FIND uses discovery with the CHOSEN server stake; stake flows from the discovered table', () => {
-  const body = fn(js, 'onManualFind');
-  assert.match(body, /api\.findAndJoinGroup\(b\.profileId, \{ selectedStake \}\)/, 'real FIND calls discovery with the chosen stake');
-  assert.match(body, /rid: res\.rid, stake: res\.stake/, 'publishes the discovered rid + stake');
-  assert.equal(/api\.manualFind\(|Number\(stake\)|type: 'number'/.test(body), false, 'no manual/user-typed stake path in FIND');
-});
-
 // PHASE 6.3.2 — Screen 2 is READ-ONLY. The game action (VÀO GAME) + its ENTERING/failure states now live
 // in the in-Chromium header (game-header.cjs); the Tool cell only mirrors ACCOUNT/RID/STATE/WS.
 test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state (deriveHeaderState)', () => {
@@ -50,21 +43,6 @@ test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state
   // the main process tracks the transient entering flag + bounded evidence via slotInPhom-equivalent
   assert.match(main, /headerEntering/);
   assert.match(main, /if \(view\.inGame\) \{[\s\S]*?delete headerEntering\[rid\]/); // real in-game evidence clears ENTERING
-});
-
-test('the header gates TÌM BÀN behind VÀO GAME and renders a REAL bet selector (game-header.cjs)', () => {
-  const gh = read('desktop/protocol/phom/game-header.cjs');
-  // not in game yet -> the only action is ENTER_GAME (VÀO GAME), never FIND
-  assert.match(gh, /!view\.inGame[\s\S]*?action: 'ENTER_GAME'/);
-  // in game + no shared room -> FIND needs a bet chosen from the server betOptions (no hard-coded stake)
-  assert.match(gh, /action: 'FIND'[\s\S]*?needsBet: true[\s\S]*?betOptions/);
-  // the stake is picked ONCE in the Phỏm tool and pushed to the session; the bar only reuses it (never a typed
-  // or hard-coded value, and never its own picker)
-  assert.match(gh, /emit\('CREATE_TABLE'\)/);
-  assert.match(gh, /emit\('FIND',\{ stake:state\.stake \}\)/);
-  const main = read('desktop/phom-main.cjs');
-  assert.match(main, /const stake = phomSessions\.selectedStake\(\);/);
-  assert.match(main, /'phom:set-stake'[\s\S]*?phomSessions\.setStake\(/);
 });
 
 test('the header action router acts on ONE browser via the run-scoped coordinator API (no cross-browser)', () => {

@@ -36,19 +36,6 @@ test('socketMatches: true only for the bound target+host; false for a different 
   assert.equal(ctx.socketMatches({ targetId: 'T-A', url: 'wss://analytics.example.com/telemetry' }), false, 'different host does not match');
 });
 
-// ---- coordinator.markSocketClosed ----
-test('markSocketClosed on the HOST game socket -> HOST_LOST + disconnected', () => {
-  const { coord } = makeSession();
-  coord.ingest('A', { raw: JSON.stringify([5, { rs: [{ rid: 139, gid: 8, b: 1000, Mu: 4, uC: 0, zn: 'Simms' }] }]), direction: 'recv', seq: 1, targetId: 'T-A', url: GAME_URL });
-  const before = coord.snapshot().profiles.find((p) => p.id === 'A');
-  assert.equal(before.connected, true, 'host is connected after a server frame');
-  const flipped = coord.markSocketClosed('A', { targetId: 'T-A', url: GAME_URL });
-  assert.equal(flipped, true, 'a matching close is applied');
-  assert.equal(coord.state(), SESSION.HOST_LOST, 'host socket loss -> HOST_LOST');
-  const after = coord.snapshot().profiles.find((p) => p.id === 'A');
-  assert.equal(after.connected, false, 'host is now disconnected in the authoritative snapshot');
-});
-
 test('markSocketClosed ignores an unrelated socket (different target/host)', () => {
   const { coord } = makeSession();
   coord.ingest('A', { raw: JSON.stringify([5, { rs: [{ rid: 139, gid: 8, b: 1000, Mu: 4, uC: 0, zn: 'Simms' }] }]), direction: 'recv', seq: 1, targetId: 'T-A', url: GAME_URL });

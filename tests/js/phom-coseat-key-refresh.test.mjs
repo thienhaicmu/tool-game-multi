@@ -15,7 +15,6 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { HostTableCoordinator } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
-const { qualifyTable, pickQualifiedCandidate, describeNoTableReason } = require('../../desktop/protocol/phom/table-qualify.cjs');
 
 // A server sim where a room has a KEY: a JOIN carrying the wrong key is REFUSED with the real server message
 // ([3,false,<code>,-1,"Sai mật khẩu phòng"]); the right key seats you. `key` may be rotated mid-test.
@@ -170,42 +169,6 @@ test('SAME-03: co-seated with the anchor → ok with sameRoom proof', async () =
 });
 
 // ===================== §room-locked (the FIND qualifier) =====================
-
-test('LOCK-01: a password-protected rs[] row is skipped with reason ROOM_LOCKED', () => {
-  const q = qualifyTable({ rid: 700, b: 500, uC: 0, Mu: 4, zn: 'Simms', gid: 8, hpwd: true }, { selectedStake: 500, need: 3, zone: 'Simms', gid: 8 });
-  assert.equal(q.ok, false);
-  assert.equal(q.reason, 'ROOM_LOCKED');
-  assert.equal(q.freeSlots, 4, 'the seat count is still reported for diagnosis');
-});
-
-test('LOCK-02: hpwd false/absent stays joinable (the flag is a boolean, never a key)', () => {
-  for (const hpwd of [false, undefined, null]) {
-    const q = qualifyTable({ rid: 700, b: 500, uC: 0, Mu: 4, zn: 'Simms', gid: 8, hpwd }, { selectedStake: 500, need: 3, zone: 'Simms', gid: 8 });
-    assert.equal(q.ok, true, `hpwd=${String(hpwd)} must not lock the row`);
-  }
-});
-
-test('LOCK-03: the picker prefers an OPEN table over a locked emptier one', () => {
-  const rows = [
-    { rid: 700, b: 500, uC: 0, Mu: 4, zn: 'Simms', gid: 8, hpwd: true },  // emptiest, but locked
-    { rid: 701, b: 500, uC: 1, Mu: 4, zn: 'Simms', gid: 8, hpwd: false },
-  ];
-  const { candidate, rejects } = pickQualifiedCandidate(rows, { selectedStake: 500, need: 3, zone: 'Simms', gid: 8 });
-  assert.equal(candidate.rid, 701);
-  assert.equal(rejects.find((r) => r.rid === 700).reason, 'ROOM_LOCKED');
-});
-
-test('LOCK-04: only locked rooms at the stake → the ONLY_LOCKED_ROOMS diagnosis, explained in Vietnamese', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, key: 'K', seats: [] }]); // key ⇒ hpwd true in rs[]
-  const res = await coord.manualDiscoverTable('B2', { selectedStake: 500, budgetMs: 40, pollMs: 10, noStakeFallback: true, minSeats: 3 });
-  assert.equal(res.ok, false);
-  assert.equal(res.reason, 'ONLY_LOCKED_ROOMS');
-  const text = describeNoTableReason('ONLY_LOCKED_ROOMS');
-  assert.match(text, /MẬT KHẨU/);
-  assert.match(res.error.message, /MẬT KHẨU/, 'the user-visible failure must name the real cause');
-});
-
-// ===================== §co-seat verdict (verifySameTable revived) =====================
 
 test('VERIFY-01: the manual flow (no setHost) reaches a real verdict, not PHOM_TABLE_IDENTITY_MISSING', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [] }]);

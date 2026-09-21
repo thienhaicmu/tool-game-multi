@@ -100,30 +100,6 @@ test('TÌM BÀN is enabled ONLY when in the Phỏm lobby (ready); otherwise (re)
   assert.match(bar, /VÀO GAME PHỎM/); // (re)enter when not in Phỏm
 });
 
-test('stake appears ONLY in the Find-Table modal (never on Screen 1, never before TÌM BÀN)', () => {
-  const ft = between('async function openFindTable()', 'async function runFindTable(');
-  assert.match(ft, /ft-stake/);
-  assert.match(ft, /api\.requestChannels\(\)/);      // channels requested only inside TÌM BÀN
-  assert.match(ft, /api\.stakeChannels\(\)/);         // authoritative stake list (no hard-code)
-  // Screen 1 (setup) carries no stake input.
-  const setup = between('function renderSetup(r)', 'function panelGeneral()');
-  assert.equal(/stake|cược/i.test(setup), false, 'no stake on Screen 1');
-});
-
-test('TÌM BÀN reuses the already-started session (never re-creates it, which would drop context)', () => {
-  const ft = between('async function openFindTable()', 'async function runFindTable(');
-  assert.match(ft, /if \(!phomSessionStarted\)/);
-  assert.match(ft, /phomSessionStarted = true/);
-});
-
-test('Cancel of the stake modal sends no acquire/join/ready', () => {
-  const ft = between('async function openFindTable()', 'async function runFindTable(');
-  // HỦY just closes the overlay; acquire/join/ready live in runFindTable/advanceAutoFlow, reached
-  // only via XÁC NHẬN → runFindTable(stake).
-  assert.match(ft, /onclick: close \}, 'HỦY'/);
-  assert.equal(/acquireHost|joinFollowers|applyReady/.test(ft), false, 'the modal itself never acquires/joins/readies');
-});
-
 test('DỪNG and RUN-GAME reset touch entryPhase but never close browsers', () => {
   const stop = between('async function stopOrchestration()', 'async function closeBrowsers()');
   assert.equal(/api\.closeBrowsers|api\.clusterStop|closeRun/.test(stop), false, 'DỪNG never closes browsers');
@@ -167,36 +143,8 @@ test('BUG1: detection is prompt — poll actively requests the channel list when
   assert.equal(/600000|300000|sleep\(\s*[0-9]{6,}/.test(poll), false);
 });
 
-// BUG #2 — TÌM BÀN click always produces an observable action + never leaves the button stuck.
-test('BUG2: runFindTable emits immediate feedback and ALWAYS clears autoFlow (finally)', () => {
-  const fn = between('async function runFindTable(', 'function advanceAutoFlow(');
-  assert.match(fn, /Đang tìm bàn/);            // FIND_TABLE_REQUESTED visible feedback
-  // §44 — ONE engine: the Tool-wide TÌM BÀN drives the SAME manual flow as the per-browser buttons and the
-  // in-Chromium headers (it used to start the legacy HOST/FOLLOWER loop instead).
-  assert.match(fn, /await api\.findAndJoinGroup\(finderRunId, \{ selectedStake: stake \}\)/);
-  // §co-seat — the followers are joined AT ONCE (Promise.all over the ids), not one awaited call at a time:
-  // a sequential loop waits up to 8s per follower and misses the server's ~1.3s fill-room window. See CHAN-05.
-  assert.doesNotMatch(fn, /api\.manualJoinShared/);
-
-  assert.equal(/api\.discover\(\)/.test(fn), false, 'the legacy cluster discovery loop is no longer started here');
-  assert.match(fn, /finally \{[^]*autoFlow = false/); // never stuck "ĐANG CHẠY…"
-  assert.match(fn, /Không thể tìm bàn/);       // typed error, not silent
-});
-
 test('BUG2: TÌM BÀN button is disabled ONLY while running (not mute-disabled by auth/browser count)', () => {
   const bar = between('function commandToolbar(s)', 'function confirmLogin(');
   assert.match(bar, /disabled: running \? true : null, onclick: openFindTable/);
 });
 
-test('BUG2: openFindTable reports the authorization gate with a typed note (no silent failure)', () => {
-  const fn = between('async function openFindTable()', 'async function runFindTable(');
-  assert.match(fn, /caps\.authorized/);
-  assert.match(fn, /Không thể tìm bàn: môi trường chưa được cấp quyền QA/);
-});
-
-// §51 — the Tool-wide TÌM BÀN must never key the A/B/C slot map with a Player value ('B1'/'B2'/'B3').
-test('§51 runFindTable resolves the finder from the snapshot, never assign[selectedFinderPlayer]', () => {
-  const fn = between('async function runFindTable(', 'function advanceAutoFlow(');
-  assert.match(fn, /MCS\.pickFinder\(manualBrowsers, selectedFinderPlayer\)/);
-  assert.equal(/assign\[\s*(finderSlot|selectedFinderPlayer)/.test(fn), false);
-});

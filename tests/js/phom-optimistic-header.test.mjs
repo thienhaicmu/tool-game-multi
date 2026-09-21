@@ -9,31 +9,6 @@ const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 const gh = require('../../desktop/protocol/phom/game-header.cjs');
 
-// ---- pure optimistic logic ----
-test('optimistic labels: ENTER_GAME/FIND/JOIN/LEAVE map to the immediate busy status', () => {
-  assert.equal(gh.optimisticLabel('ENTER_GAME'), 'ĐANG VÀO GAME…');
-  assert.equal(gh.optimisticLabel('FIND'), 'ĐANG TÌM BÀN…');
-  assert.equal(gh.optimisticLabel('JOIN_SHARED'), 'ĐANG VÀO BÀN…');
-  assert.equal(gh.optimisticLabel('JOIN'), 'ĐANG VÀO BÀN…');
-  assert.equal(gh.optimisticLabel('REJOIN'), 'ĐANG VÀO BÀN…');
-  assert.equal(gh.optimisticLabel('LEAVE'), 'ĐANG THOÁT PHÒNG…');
-});
-
-test('optimistic state reuses ACCOUNT/RID from authoritative state and NEVER fabricates them (§15)', () => {
-  const auth = { account: 'Simms', rid: '700100', statusLabel: 'ĐÃ VÀO GAME', primary: { action: 'FIND' } };
-  const s = gh.optimisticState('FIND', auth);
-  assert.equal(s.statusLabel, 'ĐANG TÌM BÀN…');
-  assert.equal(s.account, 'Simms');   // reused, not invented
-  assert.equal(s.rid, '700100');      // reused, not invented
-  assert.equal(s.primary.busy, true);
-  assert.equal(s.primary.disabled, true); // disabled busy primary → a 2nd click is a no-op (single-flight UX)
-  assert.deepEqual(s.secondary, []);
-  // with NO authoritative base, account/rid are undefined — never fabricated
-  const bare = gh.optimisticState('ENTER_GAME', null);
-  assert.equal(bare.account, undefined);
-  assert.equal(bare.rid, undefined);
-});
-
 test('deriveEffectiveHeaderState: optimistic overlay when set, else authoritative (authoritative WINS)', () => {
   const auth = { account: 'A', rid: '5', statusLabel: 'ĐÃ VÀO BÀN', primary: { action: 'REJOIN' } };
   // optimistic overlay chosen while an action is pending

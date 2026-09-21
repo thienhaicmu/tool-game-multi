@@ -61,3 +61,14 @@ Chỉ chạy khi ô **được tích**. Acc KEY = acc đầu tiên (thứ tự A
 - Gửi token đăng nhập hoặc mã lấy từ bàn khác làm mật khẩu.
 - Hai acc gửi lệnh cùng một lúc, hoặc gửi lệnh không có nhịp.
 - Tự làm bất cứ việc gì khi ô TỰ ĐỘNG không tích (ngoài đúng nút người dùng bấm).
+
+## 5. Đã bỏ khỏi tool (2026-09-21)
+
+Luồng **TÌM BÀN theo danh sách sảnh** và mọi thứ đi kèm đã được gỡ: bằng chứng từ log Test D cho thấy hai acc
+vào **cùng một số bàn** trong danh sách vẫn bị server xếp vào **hai bàn khác nhau**, nên luồng đó không bao giờ
+gom được nhóm. Thay thế bằng T1 (tạo bàn) + T2 (vào theo số bàn).
+
+Kéo theo đó, các phần sau cũng đã gỡ vì không còn đường nào chạm tới: bộ lọc bàn (`table-qualify`), khoá tìm bàn
+(`find-lock`), máy trạng thái HOST/FOLLOWER cũ (acquireHost / joinFollowers / runDiscovery / recoverHost), hai
+thí nghiệm join (`join-experiment`, `host-anchored-join`), `room-scanner`, `shared-room-session`,
+`stake-catalog`, `phom-simulator-controller`, ô chọn "người tìm bàn" và bảng điều khiển thủ công cũ trong tool.

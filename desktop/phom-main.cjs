@@ -378,6 +378,9 @@ else {
     phomSessions.on('cards', (cards) => { scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
 
     phomSessions.on('kick', (k) => send('phom:kick', k));
+    // docs/phom-kich-ban.md — what the group flow just did (created, joined, kicked, table lost, rejoined…).
+    // The screen turns these into one plain-Vietnamese line, so a paced operation never looks like a freeze.
+    phomSessions.on('notice', (n) => send('phom:notice', n));
     phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') appendCoseatLog(l); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
     return phomSessions;
   }
@@ -629,17 +632,7 @@ else {
   const headerEnterTimer = Object.create(null);     // runId -> bounded ENTERING timeout handle (§10 not-stuck)
   // PHASE 6.3.6 — the USER-selected FINDER (room anchor), by Player index 1/2/3; null = none chosen yet (every
   // browser may FIND). NEVER defaulted to Player 1. Independent of the analyzer's selected player.
-  let selectedFinderIndex = null;
-  // Push the current finder choice into the live coordinator (its same-room-proof anchor). Best-effort: header
-  // derivation already uses selectedFinderIndex directly, so this only keeps the coordinator's anchor in sync.
-  function applyFinderToCoordinator() {
-    try {
-      if (!phomSessions) return;
-      let profileId = null;
-      if (selectedFinderIndex != null) { const b = (phomSessions.manualBrowserSnapshot() || []).find((x) => x.browserIndex === selectedFinderIndex); profileId = b ? b.profileId : null; }
-      phomSessions.setFinder(profileId);
-    } catch { /* best effort */ }
-  }
+
   const nowMs = () => { try { return require('node:perf_hooks').performance.now(); } catch { return Date.now(); } };
   // PHASE 6.3.6 — cancel a run's bounded ENTERING timeout (evidence arrived / failed / reset / re-enter).
   function clearHeaderEnterTimer(rid) { const t = headerEnterTimer[rid]; if (t) { try { clearTimeout(t); } catch { /* ignore */ } delete headerEnterTimer[rid]; } }
@@ -799,10 +792,6 @@ else {
       // §room-key — a table the tool created shows its own key (the user may need it); otherwise the masked hpwd.
       roomCode: b.roomKey != null ? b.roomKey : (b.roomCode != null ? b.roomCode : null),
       sharedRoomCode,
-      // PHASE 6.3.6 — FIND gating follows the USER's finder choice (selectedFinderIndex), NEVER browserIndex.
-      // No finder chosen → every browser may FIND; a finder chosen → only that Player, others show WAIT_ANCHOR.
-      isFinder: selectedFinderIndex == null ? true : (b.browserIndex === selectedFinderIndex),
-      finderIndex: selectedFinderIndex, // drives the dynamic "CHỜ PLAYER N TÌM BÀN" label
       sharedRid,
       betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
       // The session stake (picked in the tool) — shown on the bar and used by its TẠO.
@@ -916,8 +905,8 @@ else {
   function scheduleCardsBroadcast(cards) {
     _cardsPending = cards;
     if (_cardsTimer) return;
-    const c = _cardsPending; _cardsPending = null; if (c) send('phom:cards', c); // leading edge
-    _cardsTimer = setTimeout(() => { _cardsTimer = null; if (_cardsPending) { const t = _cardsPending; _cardsPending = null; send('phom:cards', t); } }, BROADCAST_MS);
+    const c = _cardsPending; _cardsPending = null; if (c) send('phom:ui', phomUiSnapshot()); // leading edge
+    _cardsTimer = setTimeout(() => { _cardsTimer = null; if (_cardsPending) { _cardsPending = null; send('phom:ui', phomUiSnapshot()); } }, BROADCAST_MS);
   }
 
   // PHASE 6.3.8 — shared RELOAD / CLOSE run helpers, reused by BOTH the IPC handlers (phom:reload-web /
@@ -1530,38 +1519,17 @@ else {
     // Browser + session lifecycle.
     ipcMain.handle('phom:open-profile', guarded((_e, cfg) => openProfile(cfg || {})));
     // HOST/FOLLOWER controlled-table flow.
-    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); const r = phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); applyFinderToCoordinator(); return r; }));
-    ipcMain.handle('phom:set-host', guarded((_e, hostId) => ensurePhomSessions().setHost(hostId)));
-    ipcMain.handle('phom:select-stake', guarded((_e, stake) => ensurePhomSessions().selectStake(stake)));
+    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
     // §13 — Find-Table stake source: request the server channel list + read the
     // AUTHORITATIVE distinct stakes it reports (never a hard-coded fallback).
     // §35 — optionally scoped to ONE browser; seated browsers are always skipped (coordinator).
     ipcMain.handle('phom:request-channels', guarded(async (_e, cfg) => { ensurePhomSessions(); return phomSessions.requestChannels({ profileId: cfg && cfg.browserId != null ? cfg.browserId : null }); }));
     ipcMain.handle('phom:stake-channels', guarded(() => { ensurePhomSessions(); return { ok: true, stakes: phomSessions.availableStakes(), sessionActive: !!(phomSessions && phomSessions.active()) }; }));
-    ipcMain.handle('phom:acquire-host', guarded(() => ensurePhomSessions().acquireHost()));
     // §18/§22 — host-first find-again discovery loop (single orchestrator; validates from ps[]).
-    ipcMain.handle('phom:discover', guarded(() => ensurePhomSessions().runDiscovery()));
-    ipcMain.handle('phom:join-followers', guarded(() => ensurePhomSessions().joinFollowers()));
-    ipcMain.handle('phom:apply-ready', guarded(() => ensurePhomSessions().applyReady()));
-    ipcMain.handle('phom:rejoin-follower', guarded((_e, id) => ensurePhomSessions().rejoinFollower(id)));
-    ipcMain.handle('phom:recover-host', guarded(() => ensurePhomSessions().recoverHost()));
     ipcMain.handle('phom:leave-all', guarded(() => { ensurePhomSessions(); return phomSessions.leaveAllTables(); }));
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
-    // PHASE 6.3.6 — USER selects which Player is the FINDER (room anchor). index null clears (every browser may
-    // FIND); 1/2/3 selects. It re-derives + re-pushes every in-Chromium header immediately, and syncs the choice
-    // to the coordinator (same-room proof anchor). It NEVER discovers/joins here — only ownership of the finder.
-    ipcMain.handle('phom:set-finder', (_e, index) => {
-      const idx = index == null ? null : Number(index);
-      selectedFinderIndex = (idx === 1 || idx === 2 || idx === 3) ? idx : null;
-      applyFinderToCoordinator(); // sync same-room-proof anchor (header derivation uses selectedFinderIndex directly)
-      pushHeaderStates();
-      return { ok: true, finderIndex: selectedFinderIndex };
-    });
-    ipcMain.handle('phom:get-finder', () => ({ ok: true, finderIndex: selectedFinderIndex }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
-    ipcMain.handle('phom:verify-table', () => (phomSessions ? phomSessions.verifySameTable() : { result: 'IDLE' }));
     // PHASE-2 — read the monotonic discovery/sync milestone timeline (telemetry for latency inspection).
-    ipcMain.handle('phom:trace', () => ({ ok: true, trace: phomSessions ? phomSessions.trace() : [] }));
     // TEST D — record the game client's own frames while the player acts by hand (e.g. clicks a table), then
     // write them to a file (secrets redacted) so the real protocol can be read instead of guessed.
     ipcMain.handle('phom:frames-record-start', (_e, cfg) => {
@@ -1575,17 +1543,12 @@ else {
     ipcMain.handle('phom:frames-open-folder', (_e, p) => { try { if (p) electronShell.showItemInFolder(String(p)); return { ok: true }; } catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: String(e && e.message || e) } }; } });
     // PHASE-3 · PART B — observe-only native-JOIN experiment (A→B→C, same stake, no room forcing).
     // Authorized+licensed only; observes server matchmaking from ps[], never changes production flow.
-    ipcMain.handle('phom:join-experiment', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.runJoinExperiment(cfg && cfg.channel, cfg && cfg.opts); }));
     // PHASE-4 — HOST ROOM ANCHOR test (A→room→B/C). Authorized+licensed; observe-only, does not touch
     // the production discovery flow. A native-joins, is confirmed in ps[], its room is bound, then B/C
     // join THAT exact room id and are confirmed co-seated.
-    ipcMain.handle('phom:host-anchored-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.runHostAnchoredJoin(cfg && cfg.channel, cfg && cfg.opts); }));
     // PHASE-6 — MANUAL per-browser table control (browserId === browserRunId). Each command targets ONE
     // browser; there is no host/follower role. Confirmation is authoritative (own ps[]). Observe-only wire.
-    ipcMain.handle('phom:manual-find', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualFindTable(cfg && cfg.browserId, cfg && cfg.channel, cfg && cfg.opts); }));
     // PHASE-6.2.1 — REAL discovery: qualifying empty table (rid + stake from the server table) → JOIN → ps[].
-    ipcMain.handle('phom:manual-discover', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualDiscoverTable(cfg && cfg.browserId, cfg && cfg.opts); }));
-    ipcMain.handle('phom:find-group', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.findAndJoinGroup(cfg && cfg.browserId, cfg && cfg.opts); }));
     // §create — TẠO BÀN (cmd 308): opts.gather=false creates on this browser only; default brings the others too.
     ipcMain.handle('phom:create-table', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.createTable(cfg && cfg.browserId, (cfg && cfg.opts) || {}); }));
     // §auto — the Phỏm tool's TỰ ĐỘNG checkbox. ON forms the group (creator = browserId, KEY; the others READY /
@@ -1622,10 +1585,31 @@ else {
     ipcMain.handle('phom:manual-join-code', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.joinTable(cfg && cfg.browserId, cfg && cfg.rid); }));
     // §38 — the Tool window joins the shared room with the SAME semantics as the header's VÀO BÀN (bounded retry +
     // same-room proof), and can cancel a persistent search just like the header's HỦY.
-    ipcMain.handle('phom:manual-join-shared', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.joinTable(cfg && cfg.browserId, cfg && cfg.rid); }));
-    ipcMain.handle('phom:manual-cancel-find', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.cancelFind(cfg && cfg.browserId); }));
     ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.rejoinTable(cfg && cfg.browserId); }));
     ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.leaveTable(cfg && cfg.browserId); }));
+    // ONE snapshot for the whole Phỏm screen. The renderer used to make six IPC round-trips per refresh
+    // (browsers + remaining + cards + one analyze per account) and repeat them on every push; now main builds the
+    // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
+    // reads or receives exactly one object.
+    function phomUiSnapshot() {
+      if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {} };
+      const browsers = phomSessions.manualBrowserSnapshot() || [];
+      for (const b of browsers) { if (b && b.profileId != null) Object.assign(b, browserRuntimeStatus(b.profileId)); }
+      const cards = phomSessions.cardObserverSnapshot();
+      const analyses = {};
+      const binding = (cards && cards.slotBinding) || {};
+      for (const slot of ['B1', 'B2', 'B3']) {
+        const uid = binding[slot];
+        if (uid) analyses[slot] = safeCardAnalyzer.analyze({ snapshot: cards, targetPlayerUid: uid });
+      }
+      return {
+        ok: true, browsers, cards, analyses,
+        remaining: phomSessions.remainingCards(),
+        sharedRid: phomSessions.sharedRid(), sharedRidOwner: phomSessions.sharedRidOwner(),
+        coSeat: phomSessions.coSeatStatus(), group: phomSessions.groupSnapshot(),
+      };
+    }
+    ipcMain.handle('phom:ui-snapshot', () => phomUiSnapshot());
     ipcMain.handle('phom:manual-snapshot', () => {
       const browsers = phomSessions ? phomSessions.manualBrowserSnapshot() : [];
       // PHASE 6.3.2.2 — merge the READ-ONLY runtime/CDP/header status per browser for Screen 2 (no actions).

@@ -30,12 +30,16 @@ test("the coordinator emits a 'cards' snapshot which the session manager re-emit
   assert.match(mgr, /cardObserverSnapshot\(\) \{[^\n]*c\.cardObserverSnapshot\(\)/);
 });
 
-test('main exposes a minimal phom:cards IPC (pull) + a throttled push; preload bridges both', () => {
+test('cards reach the screen inside ONE coalesced ui snapshot (pull + push), not four separate IPCs', () => {
+  // main still exposes the raw card snapshot for diagnostics, but the SCREEN is served by phom:ui-snapshot /
+  // 'phom:ui', which carries browsers + group + cards + remaining + the three analyses in a single message.
   assert.match(main, /ipcMain\.handle\('phom:cards'/);
-  assert.match(main, /phomSessions\.on\('cards', \(cards\) => \{ scheduleCardsBroadcast\(cards\); \}\)/);
+  assert.match(main, /function phomUiSnapshot\(\)/);
+  assert.match(main, /ipcMain\.handle\('phom:ui-snapshot'/);
   assert.match(main, /function scheduleCardsBroadcast\(/);
-  assert.match(main, /send\('phom:cards'/);
-  assert.match(preload, /cardsSnapshot: \(\) => ipcRenderer\.invoke\('phom:cards'\)/);
-  assert.match(preload, /onCards: \(cb\) => ipcRenderer\.on\('phom:cards'/);
+  assert.match(main, /send\('phom:ui', phomUiSnapshot\(\)\)/);
+  assert.match(main, /analyses\[slot\] = safeCardAnalyzer\.analyze\(/); // the analyzer runs in MAIN, memoised
+  assert.match(preload, /uiSnapshot: \(\) => ipcRenderer\.invoke\('phom:ui-snapshot'\)/);
+  assert.match(preload, /onUi: \(cb\) => ipcRenderer\.on\('phom:ui'/);
 });
 

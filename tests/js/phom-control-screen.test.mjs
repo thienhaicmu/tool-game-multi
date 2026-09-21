@@ -63,9 +63,10 @@ test('LỌC BÀI shows all three accounts at once, gets the larger share, and re
   assert.match(safe, /\['B1', 'B2', 'B3'\]\.forEach/);
   const col = fn('safeColumn');
   for (const label of ['NÊN ĐÁNH', 'CÓ THỂ AN TOÀN', 'ĐỪNG ĐÁNH — người sau ăn được', 'TRONG PHỎM — giữ lại', 'Chưa có bài']) assert.ok(col.includes(label), label);
-  const refresh = fn('refreshSafeAnalysis');
-  assert.match(refresh, /for \(const slot of \['B1', 'B2', 'B3'\]\)/);
-  assert.match(js, /api\.onCards\(\(c\) => \{ cardsSnap = c \|\| null; refreshSafeAnalysis\(\)/);
+  // the analyses arrive with the single ui snapshot (built in main, memoised); every push applies it as-is
+  assert.match(fn('applyUiSnapshot'), /safeBySlot = snap\.analyses \|\| \{\};/);
+  assert.match(js, /api\.onUi\(\(snap\) => \{ applyUiSnapshot\(snap\);/);
+  assert.match(fn('refreshManual'), /api\.uiSnapshot\(\)/);
   assert.match(css, /\.card-workspace \.safe-cards \{ flex: 3 1 0; \}/);
 });
 
@@ -101,4 +102,24 @@ test('bar: frames stopped arriving → MẤT DỮ LIỆU + TẢI LẠI (never a 
   assert.match(main, /attachCapture\(sess\.client, \{ cdpTargetId: t \}\)/);
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
   assert.match(coord, /lastFrameAt: c\.lastFrameAt != null \? c\.lastFrameAt : null,/);
+});
+
+test('group events reach the screen as one plain-Vietnamese line (never a raw code)', () => {
+  // table-group.cjs → session manager → main → the note line
+  assert.match(read('desktop/protocol/phom/table-group.cjs'), /this\.emit\('notice', \{ event: name/);
+  assert.match(read('desktop/protocol/phom/host-session-manager.cjs'), /group\.on\('notice', \(n\) => this\.emit\('notice', n\)\)/);
+  assert.match(main, /phomSessions\.on\('notice', \(n\) => send\('phom:notice', n\)\)/);
+  assert.match(preload, /onNotice: \(cb\) => ipcRenderer\.on\('phom:notice'/);
+  const t = fn('noticeText');
+  for (const ev of ['GROUP_CREATED', 'JOINED', 'KICKED', 'TABLE_LOST', 'REJOIN_EXHAUSTED', 'GROUP_DISSOLVED']) assert.ok(t.includes(ev), ev);
+  assert.match(t, /default: return '';/); // an unknown event is never shown as a code
+});
+
+test('a background update repaints at most once per frame, and not at all when nothing shown changed', () => {
+  const bg = fn('bgRender');
+  assert.match(bg, /requestAnimationFrame/);
+  assert.match(bg, /if \(key === _bgKey\) return;/);
+  assert.match(bg, /if \(document\.hidden\) return;/);
+  const key = fn('renderKey');
+  for (const part of ['manualBrowsers.map', 'safeBySlot[sl]', 'manualGroup']) assert.ok(key.includes(part), part);
 });

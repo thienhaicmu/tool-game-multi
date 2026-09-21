@@ -61,27 +61,6 @@ class HostSessionManager extends EventEmitter {
     coord.on('state', (s) => this.emit('state', s));
     coord.on('kick', (k) => this.emit('kick', k));
     coord.on('log', (l) => this.emit('log', l));
-    // §14 — autonomous C rejoin: a debounced kick of a confirmed follower triggers an immediate
-    // rejoin to the SAME host table. Only when a discovery loop is NOT running (the loop owns joins
-    // while active) — otherwise the two double-drive and flood join/leave. rejoinFollower itself has
-    // cooldown + a REJOINING guard against duplicates.
-    coord.on('kick', ({ id } = {}) => { if (id && this.authorized() && !coord.isStopped() && !coord.isRunning()) Promise.resolve(coord.manualRejoin(id)).catch(() => {}); });
-    // §12/§17 — global invalidation: all leave, then the host restarts discovery. Debounced + gated
-    // on NOT already running, so a per-frame stream of 'invalidated' can't spam leaveAll/restart.
-    coord.on('invalidated', async () => {
-      if (!this.authorized() || coord.isStopped() || coord.isRunning() || this._restartInFlight) return;
-      // A table the tool CREATED is never abandoned for a fresh TÌM BÀN: a listed rid cannot co-seat the group
-      // (Test D 2026-09-21), and mid-round the server refuses the leave anyway ("không thể rời phòng khi đang chơi").
-      if (this._group && this._group.active()) return;
-      this._restartInFlight = true;
-      this._restarts = (this._restarts || 0) + 1;
-      let left = false;
-      try { left = (await coord.leaveAll()).ok; } catch { /* remain blocked until leave is confirmed */ }
-      if (left && this._session?.coord === coord && this._restarts <= (this._maxRestarts || 20) && !coord.isStopped()) {
-        try { await coord.findAndJoinGroup(coord.finderId() || host, { selectedStake: coord.snapshot().selectedStake }); } catch {}
-      }
-      this._restartInFlight = false;
-    });
     this._session = { coord, runIds: new Set(ids) };
     this._restarts = 0;
     this.emit('update', coord.snapshot());
@@ -115,13 +94,6 @@ class HostSessionManager extends EventEmitter {
   selectStake(stake) { const c = this._c(); return c ? { ok: true, selected: c.selectStake(stake) } : { ok: false }; }
   requestChannels(opts) { return this._guarded((c) => c.requestChannels(opts || {})); }
   availableStakes() { const c = this._c(); return c && typeof c.availableStakes === 'function' ? c.availableStakes() : []; }
-  acquireHost() { return this._guarded((c) => c.acquireHost()); }
-  runDiscovery() { return this._guarded((c) => c.runDiscovery()); }
-  joinFollowers() { return this._guarded((c) => c.joinFollowers()); }
-  applyReady() { return this._guarded((c) => c.applyReady()); }
-  rejoinFollower(id) { return this._guarded((c) => c.rejoinFollower(id)); }
-  recoverHost() { return this._guarded((c) => c.recoverHost()); }
-  leaveAll() { return this._guarded((c) => c.leaveAll()); }
   stop() { const c = this._c(); if (c) c.stop(); }
   verifySameTable() { const c = this._c(); return c ? c.verifySameTable() : { result: 'IDLE' }; }
   coSeatStatus() { const c = this._c(); return c ? c.coSeatStatus() : { ok: false, result: 'IDLE', rid: null, seatedCount: 0, browserCount: 0 }; }
@@ -130,14 +102,9 @@ class HostSessionManager extends EventEmitter {
   // PHASE-2 — the monotonic discovery/sync milestone timeline (telemetry only; empty when no session).
   trace() { const c = this._c(); return c && typeof c.trace === 'function' ? c.trace() : []; }
   // PHASE-3 · PART B — observe-only native-JOIN experiment (A then B then C, same stake, no room forcing).
-  runJoinExperiment(channel, opts) { return this._guarded((c) => c.runJoinExperiment(channel, opts)); }
   // PHASE-4 — HOST ROOM ANCHOR test: A native-JOIN → confirm in ps[] → bind A's room → B/C JOIN that room.
-  runHostAnchoredJoin(channel, opts) { return this._guarded((c) => c.runHostAnchoredJoin(channel, opts)); }
   // PHASE-6 — MANUAL per-browser control (independent; no host/follower role).
-  manualFindTable(id, channel, opts) { return this._guarded((c) => c.manualFindTable(String(id), channel, opts)); }
   // PHASE-6.2.1 — REAL discovery: find a qualifying empty table (rid + stake from the server table), join it.
-  manualDiscoverTable(id, opts) { return this._guarded((c) => c.manualDiscoverTable(String(id), opts)); }
-  findAndJoinGroup(id, opts) { return this._guarded((c) => c.findAndJoinGroup(String(id), opts)); }
   // ---- docs/phom-kich-ban.md — every table/group action goes through the TableGroup (paced + serialized) ----
   _g() { return this._session ? this._group : null; }
   _grouped(fn) { const g = this._g(); if (!g) return Promise.resolve({ ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }); return Promise.resolve(fn(g)); }
@@ -155,20 +122,14 @@ class HostSessionManager extends EventEmitter {
   roomList(id) { const c = this._c(); return c && typeof c.roomList === 'function' ? c.roomList(id != null ? String(id) : null) : { rooms: [], at: null, ageSec: null }; }
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   // PHASE 6.3.5 — FOLLOWER JOIN of the shared anchor RID with bounded, generation-safe, single-flight retry.
-  manualJoinShared(id, rid, opts) { return this._guarded((c) => c.manualJoinShared(String(id), rid, opts)); }
   // §co-seat — join a specific SỐ BÀN + KEY (host token) with retry through "sai mật khẩu phòng".
-  manualJoinByCode(id, rid, key, opts) { return this._guarded((c) => c.manualJoinByCode(String(id), rid, key, opts)); }
-  hostKey() { const c = this._c(); return c && typeof c.hostKey === 'function' ? c.hostKey() : null; }
   gameSessionId(id) { const c = this._c(); return c && typeof c.gameSessionId === 'function' ? c.gameSessionId(String(id)) : null; }
   // §34 — cancel the in-flight persistent TÌM BÀN on one browser.
-  cancelFind(id) { return this._guarded((c) => c.cancelFind(String(id))); }
   // §38 — the single authoritative shared room (header + Tool read the same value).
   sharedRid() { const c = this._c(); return c && typeof c.sharedRid === 'function' ? c.sharedRid() : null; }
   sharedRidOwner() { const c = this._c(); return c && typeof c.sharedRidOwner === 'function' ? c.sharedRidOwner() : null; }
   // §co-seat — the shared room CODE (hpwd) the followers' JOIN carries to co-seat at the finder's exact table.
   sharedRoomCode() { const c = this._c(); return c && typeof c.sharedRoomCode === 'function' ? c.sharedRoomCode() : null; }
-  manualRejoin(id, opts) { return this._guarded((c) => c.manualRejoin(String(id), opts)); }
-  manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
   // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).
   resetBrowser(id) { const c = this._c(); return c && typeof c.resetBrowser === 'function' ? c.resetBrowser(String(id)) : false; }
   manualBrowserSnapshot() {

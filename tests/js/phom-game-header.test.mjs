@@ -35,43 +35,10 @@ test('opened + not in game -> VÀO GAME (ENTER_GAME)', () => {
   assert.equal(s.primary.disabled, undefined);
 });
 
-// §32/§34 — a persistent search reports progress and offers HỦY. A disabled "ĐANG TÌM BÀN…" held for up to a
-// minute is indistinguishable from a hang and left the user no way out of the operation.
-test('in game + SEARCHING -> ĐANG TÌM BÀN with a working HỦY button', () => {
-  const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'SEARCHING' });
-  assert.match(s.statusLabel, /ĐANG TÌM BÀN/);
-  assert.equal(s.primary.action, 'CANCEL_FIND');
-  assert.notEqual(s.primary.disabled, true, 'HỦY must be clickable while the search runs');
-});
-
-test('SEARCHING shows live progress (elapsed + how many times the server was asked)', () => {
-  const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'SEARCHING', searchElapsedSec: 12, searchAttempt: 6 });
-  assert.match(s.statusLabel, /12s/);
-  assert.match(s.statusLabel, /lần 6/);
-  // a just-started search has nothing to report yet and must not render "0s · lần 0"
-  const s0 = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'SEARCHING' });
-  assert.doesNotMatch(s0.statusLabel, /0s|lần 0/);
-});
-
 test('in game + JOINING -> busy ĐANG VÀO BÀN', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINING' });
   assert.match(s.statusLabel, /ĐANG VÀO BÀN/);
   assert.equal(s.primary.busy, true);
-});
-
-test('in game + no shared room -> TÌM BÀN needs a bet picked from the server betOptions', () => {
-  const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', betOptions: [50, 100, 500] });
-  assert.equal(s.primary.action, 'FIND');
-  assert.equal(s.primary.label, 'TÌM BÀN');
-  assert.equal(s.primary.needsBet, true);
-  assert.deepEqual(s.primary.betOptions, [50, 100, 500]);
-});
-
-test('in game + a cluster shared RID (not yet joined) -> VÀO BÀN for that RID (no re-discovery)', () => {
-  const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', sharedRid: 700100, betOptions: [100] });
-  assert.equal(s.primary.action, 'JOIN_SHARED');
-  assert.equal(s.primary.label, 'VÀO BÀN');
-  assert.equal(s.primary.rid, 700100);
 });
 
 test('JOINED -> REJOIN primary + THOÁT PHÒNG (danger) secondary; RID shown', () => {
@@ -267,21 +234,6 @@ test('inGame is derived like the renderer slotInPhom (socketReady + connected + 
   assert.match(coord, /rid: rec\._joinedRid != null \? rec\._joinedRid : null,/);
 });
 
-test('REJOIN uses lastRid and LEAVE (THOÁT PHÒNG) preserves it (coordinator, unchanged this phase)', () => {
-  const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
-  // rejoin falls back to _lastRid
-  assert.match(coord, /rec\._joinedRid != null \? rec\._joinedRid : rec\._lastRid/);
-  // leave clears _joinedRid but NOT _lastRid
-  // the whole method (it now waits for server confirmation, so it no longer fits a fixed-size window)
-  const leave = coord.slice(coord.indexOf('async manualLeave('), coord.indexOf('  resetBrowser(profileId)'));
-  assert.match(leave, /rec\._joinedRid = null/);
-  assert.equal(/_lastRid = null/.test(leave), false, 'LEAVE must preserve _lastRid for REJOIN');
-});
-
-// ---- PHASE 6.3.6 — HEADER STATE SYNCHRONIZATION (bounded ENTERING; transport/CDP/header ≠ IN_GAME) ----
-// The bug: the tile click is INVOKED != ENTERED, so a fired-but-never-entered ENTER left the header stuck on
-// "ĐANG VÀO GAME…" forever. The fix bounds the ENTERING state so it reverts to NOT_IN_GAME ("VÀO GAME").
-
 test('STATE-01 initial lobby (opened, not in game) -> VÀO GAME', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: false, entering: false });
   assert.equal(s.primary.action, 'ENTER_GAME');
@@ -294,12 +246,6 @@ test('STATE-02 during ENTER (entering) -> ĐANG VÀO GAME… (busy, disabled)', 
   assert.match(s.statusLabel, /ĐANG VÀO GAME/);
   assert.equal(s.primary.busy, true);
   assert.equal(s.primary.disabled, true);
-});
-
-test('STATE-03 authoritative IN_GAME (no manualState) -> TÌM BÀN', () => {
-  const s = gh.deriveHeaderState({ opened: true, inGame: true });
-  assert.equal(s.primary.action, 'FIND');
-  assert.equal(s.primary.label, 'TÌM BÀN');
 });
 
 test('STATE-04 authoritative non-game/lobby (entering cleared) -> VÀO GAME (never stuck)', () => {
@@ -339,14 +285,6 @@ test('STATE-08 transport/CDP/header health is NOT treated as IN_GAME', () => {
   assert.equal(gh.enteringActive({ pending: false }), false);
 });
 
-test('STATE-10/11/12 IN_GAME still exposes existing FIND / VÀO BÀN / THOÁT PHÒNG unchanged', () => {
-  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', betOptions: [100] }).primary.action, 'FIND'); // TÌM BÀN
-  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', sharedRid: 700100 }).primary.action, 'JOIN_SHARED'); // VÀO BÀN
-  const joined = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 700100, sharedRid: 700100 });
-  assert.equal(joined.primary.action, 'REJOIN');
-  assert.equal(joined.secondary[0].action, 'LEAVE'); // THOÁT PHÒNG
-});
-
 test('main: bounded ENTERING timeout is armed on ENTER and cancelled on authoritative evidence / failure', () => {
   assert.match(main, /const headerEnterTimer = Object\.create\(null\)/);
   assert.match(main, /function clearHeaderEnterTimer\(rid\)/);
@@ -362,93 +300,9 @@ test('main: bounded ENTERING timeout is armed on ENTER and cancelled on authorit
 // isFinder is a PROP of the derived view (true = may FIND). No finder chosen → true for every browser; a
 // finder chosen → true only for that browser. finderIndex drives the dynamic "CHỜ PLAYER N TÌM BÀN" label.
 
-test('FINDER-01 no finder chosen -> every Player may FIND (TÌM BÀN, not WAIT)', () => {
-  for (const idx of [1, 2, 3]) {
-    const s = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: null });
-    assert.equal(s.primary.action, 'FIND');
-    assert.equal(s.primary.label, 'TÌM BÀN');
-  }
-});
-
-test('FINDER-02 finder = Player 1 -> P1 FIND, P2/P3 WAIT "CHỜ PLAYER 1 TÌM BÀN"', () => {
-  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: 1 }).primary.action, 'FIND');
-  for (const p of [2, 3]) {
-    const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 1 });
-    assert.equal(w.primary.action, 'WAIT_ANCHOR');
-    assert.equal(w.primary.label, 'CHỜ PLAYER 1 TÌM BÀN');
-    assert.equal(w.primary.disabled, true);
-  }
-});
-
-test('FINDER-03 finder = Player 2 -> P2 FIND, P1/P3 WAIT "CHỜ PLAYER 2 TÌM BÀN"', () => {
-  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: 2 }).primary.action, 'FIND');
-  const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 2 });
-  assert.equal(w.primary.action, 'WAIT_ANCHOR');
-  assert.equal(w.primary.label, 'CHỜ PLAYER 2 TÌM BÀN');
-});
-
-test('FINDER-04 finder = Player 3 -> P3 FIND, P1/P2 WAIT "CHỜ PLAYER 3 TÌM BÀN"', () => {
-  assert.equal(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: 3 }).primary.action, 'FIND');
-  const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 3 });
-  assert.equal(w.primary.label, 'CHỜ PLAYER 3 TÌM BÀN');
-});
-
 test('FINDER-08 with no finder, NO browser is ever put in WAIT_ANCHOR', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: null });
   assert.notEqual(s.primary.action, 'WAIT_ANCHOR');
-});
-
-test('FINDER-09 once the finder has a shared RID, followers show VÀO BÀN (JOIN_SHARED), not WAIT', () => {
-  // sharedRid resolves BEFORE the isFinder gate, so a non-finder with the anchor RID joins it.
-  const s = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 2, sharedRid: 700100 });
-  assert.equal(s.primary.action, 'JOIN_SHARED');
-  assert.equal(s.primary.label, 'VÀO BÀN');
-  assert.equal(s.primary.rid, 700100);
-});
-
-test('FINDER-10 a non-finder WAIT_ANCHOR is DISABLED (it can never send CMD 300 / self-FIND)', () => {
-  const w = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 1 });
-  assert.equal(w.primary.disabled, true);
-  assert.equal(w.primary.needsBet, undefined); // no bet picker → no FIND path for a follower
-});
-
-test('main: FIND gating + shared RID + WAIT label follow selectedFinderIndex, NEVER browserIndex 1', () => {
-  // isFinder is derived from the user choice, not the browser index.
-  assert.match(main, /isFinder: selectedFinderIndex == null \? true : \(b\.browserIndex === selectedFinderIndex\)/);
-  assert.match(main, /finderIndex: selectedFinderIndex/);
-  // the old hard-coded Player-1 finder is GONE.
-  assert.equal(/isFinder: b\.browserIndex === 1/.test(main), false, 'must not hard-code finder = browserIndex 1');
-  // shared RID anchor = the selected finder (or first valid holder when none), never browserIndex 1 — §38 now derived
-  // once, in the coordinator (behaviour covered by FIND-SHARED-* in phom-find-resilience-v2); main only delegates.
-  assert.match(main, /phomSessions\.sharedRid\(\)/);
-  assert.equal(/browserIndex === 1 && valid\(b\)/.test(main), false, 'shared RID must not be keyed on browserIndex 1');
-  // the set-finder IPC syncs the coordinator anchor + re-pushes every header immediately.
-  assert.match(main, /ipcMain\.handle\('phom:set-finder'/);
-  assert.match(main, /applyFinderToCoordinator\(\);[\s\S]*?pushHeaderStates\(\);/);
-});
-
-test('BC: HEADER_ACTIONS exposes ONLY existing actions (no HOST/READY/KICK/DevTools invented)', () => {
-  const a = gh.HEADER_ACTIONS;
-  for (const k of ['ENTER_GAME', 'FIND', 'JOIN_SHARED', 'JOIN', 'REJOIN', 'LEAVE', 'WAIT_ANCHOR', 'RELOAD', 'STOP', 'FOCUS']) {
-    assert.ok(a[k] && a[k].icon && a[k].tip, 'has meta for ' + k);
-  }
-  for (const forbidden of ['HOST', 'READY', 'KICK', 'DEVTOOLS', 'SCREENSHOT', 'RESIZE', 'CLEAR_CACHE']) {
-    assert.equal(a[forbidden], undefined, 'must NOT invent action ' + forbidden);
-  }
-});
-
-test('BC: deriveHeaderState exposes an ordered GAME/TABLE icon set (actions), state-dependent', () => {
-  // not in game → [ENTER_GAME]
-  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: false }).actions.map((x) => x.action), ['ENTER_GAME']);
-  // finder in game, no shared rid → [FIND]
-  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: true }).actions.map((x) => x.action), ['FIND']);
-  // shared rid available (follower) → [JOIN_SHARED]
-  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: true, isFinder: false, finderIndex: 2, sharedRid: 700 }).actions.map((x) => x.action), ['JOIN_SHARED']);
-  // joined → [REJOIN, LEAVE]
-  assert.deepEqual(gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 700, sharedRid: 700 }).actions.map((x) => x.action), ['REJOIN', 'LEAVE']);
-  // each action carries an icon + tooltip
-  const find = gh.deriveHeaderState({ opened: true, inGame: true }).actions[0];
-  assert.equal(find.icon, '🔍'); assert.ok(find.tip);
 });
 
 test('BC: bootScript is a compact draggable single-row header with per-slot accent, collapse + quick menu', () => {

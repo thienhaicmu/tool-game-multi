@@ -179,29 +179,10 @@ test('the quick-proxy inputs are cleared after apply (no lingering credentials i
   assert.match(js, /el2\.value = ''/);
 });
 
-test('stake modal shows a friendly loading message, not a raw typed code, in the focused UI', () => {
-  assert.match(js, /Đang chờ danh sách mức cược từ game/);
-  // the typed code is only a tiny advanced hint (class ft-code), never the main text.
-  assert.match(js, /class: 'ft-code'/);
-  // stake list is polled from the authoritative channel seam (no hard-coded stakes).
-  assert.match(js, /api\.stakeChannels\(\)/);
-});
-
 test('LIVE QA MONITOR ROW 1 uses the engine cardsNotInMeld (renderer never recomputes)', () => {
   assert.match(js, /snap\.cardsNotInMeld/);
   // renderer must NOT rebuild the complement from hand.cards itself.
   assert.equal(/snap\.hand\.cards\.filter\(\(c\) => !meldCards/.test(js), false);
-});
-
-test('Screen 1 has NO stake input (stake is chosen only at Find Table)', () => {
-  const setupStart = js.indexOf('function renderSetup(r) {');
-  const setupEnd = js.indexOf('// ---- Quick 3-proxy');
-  const setupArea = js.slice(setupStart, setupEnd > setupStart ? setupEnd : setupStart + 4000);
-  assert.equal(/phq-setstake|phq-stake|Mức cược/.test(js.slice(js.indexOf('function renderGameLink'), js.indexOf('function renderGameLink') + 1200)), false, 'no stake input in the game-link section');
-  // stake only appears in the Find-Table modal (openFindTable).
-  assert.match(js, /function openFindTable\(/);
-  assert.match(js, /TÌM BÀN TRỐNG/);
-  assert.match(js, /ft-stake/);
 });
 
 test('the proxy edit modal never populates an existing password field', () => {

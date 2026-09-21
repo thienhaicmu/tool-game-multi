@@ -174,21 +174,6 @@ test('SETUP has a single Open-Cluster CTA and no per-slot open-game buttons', ()
     'the old per-slot browser cell / single-open helpers are gone');
 });
 
-// HOST / Join / Ready / kick controls belong to CONTROL, not SETUP.
-test('host/live controls are rendered by CONTROL, not SETUP', () => {
-  const setup = rendererSrc.slice(rendererSrc.indexOf('function renderSetup'), rendererSrc.indexOf('function footerRunGame'));
-  assert.equal(/acquireHost|joinFollowers|applyReady|HOST & MỨC CƯỢC/.test(setup), false,
-    'SETUP must not render HOST/stake/Join/Ready controls');
-  const control = rendererSrc.slice(rendererSrc.indexOf('function renderControl'));
-  // §44 — the table search is triggered from CONTROL, now through the ONE manual flow every surface uses
-  // (it used to start the separate legacy host-first discovery loop).
-  assert.match(control, /api\.findAndJoinGroup\(finderRunId/);
-  // Screen 2 is the LIVE QA workspace: status toolbar + minimal command bar + monitor.
-  assert.match(control, /LIVE QA MONITOR/);
-  assert.match(control, /function commandToolbar/);
-  assert.match(control, /function statusToolbar/);
-});
-
 // The dev-only red sandbox banner is wired to caps.chromiumSandbox.disabled.
 test('renderer shows the red DEV sandbox banner from capabilities', () => {
   assert.match(rendererSrc, /danger-banner/);
