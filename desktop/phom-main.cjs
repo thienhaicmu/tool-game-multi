@@ -796,7 +796,8 @@ else {
       joinedViaChannel: !!b.joinedViaChannel, // §stake-channel — label it KÊNH, never SS (see deriveHeaderState)
       lastRid: b.lastRid != null ? b.lastRid : null,
       // §co-seat — THIS browser's own room code (shown when it holds a table) + the shared code the followers use.
-      roomCode: b.roomCode != null ? b.roomCode : null,
+      // §room-key — a table the tool created shows its own key (the user may need it); otherwise the masked hpwd.
+      roomCode: b.roomKey != null ? b.roomKey : (b.roomCode != null ? b.roomCode : null),
       sharedRoomCode,
       // PHASE 6.3.6 — FIND gating follows the USER's finder choice (selectedFinderIndex), NEVER browserIndex.
       // No finder chosen → every browser may FIND; a finder chosen → only that Player, others show WAIT_ANCHOR.
@@ -804,8 +805,30 @@ else {
       finderIndex: selectedFinderIndex, // drives the dynamic "CHỜ PLAYER N TÌM BÀN" label
       sharedRid,
       betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
+      // The session stake (picked in the tool) — shown on the bar and used by its TẠO.
+      stake: phomSessions && phomSessions.active() ? phomSessions.selectedStake() : null,
+      // §group — role at the tool-created table + readiness + chủ bàn, for the bar's role chip. `seatedAtTable` says
+      // whether this browser is REALLY sitting at that table right now (a role alone never implies a seat).
+      groupRole: b.groupRole || null, ready: !!b.ready, isTableHost: !!b.isTableHost,
+      seatedAtTable: b.manualState === 'JOINED' && b.rid != null,
+      // Data freshness: frames were seen once but stopped (lost hook after a reload / target swap) → say it.
+      dataStale: !!(opened && b.lastFrameAt != null && (nowMs() - Number(b.lastFrameAt)) > HEADER_STALE_MS),
+      staleSec: b.lastFrameAt != null ? Math.round((nowMs() - Number(b.lastFrameAt)) / 1000) : null,
       error: headerError[String(runId)] || null,
+      // §create — the SỐ BÀN list for the ⋯ menu: tables with a free seat, emptiest first. `roomListAt` (not an
+      // age) so the pushed state stays byte-identical between frames and the push de-dup keeps working.
+      ...headerRoomList(runId),
     };
+  }
+  // A browser whose game frames stopped arriving is reported as such after this long (and re-hooked, see
+  // maybeRehookCapture) instead of silently reading "CHƯA VÀO GAME".
+  const HEADER_STALE_MS = 20000;
+  function headerRoomList(runId) {
+    let l = null; try { l = phomSessions && phomSessions.active() ? phomSessions.roomList(runId) : null; } catch { l = null; }
+    if (!l || !Array.isArray(l.rooms)) return { rooms: [], roomListAt: null };
+    const rooms = l.rooms.filter((r) => !r.locked && Number(r.uC) < Number(r.Mu || 4))
+      .sort((a, b) => (Number(a.uC) - Number(b.uC)) || (Number(a.b) - Number(b.b))).slice(0, 40);
+    return { rooms, roomListAt: l.at };
   }
 
   // Recompute + push the header state into every open Chromium (best-effort). Called after every session
@@ -816,9 +839,34 @@ else {
   function maybeProbeSeated(browsers) {
     try { for (const b of (browsers || [])) { if (!b || b.manualState !== 'JOINED') continue; const k = String(b.profileId); const now = nowMs(); if (!_lastProbeAt[k] || now - _lastProbeAt[k] > 30000) { _lastProbeAt[k] = now; setTimeout(() => { probeGameRoom(k).catch(() => {}); }, 400); } } } catch { /* best effort */ }
   }
+  // A browser whose game frames stopped arriving lost its capture hook (the page reloaded / the game swapped the
+  // target it runs in). Re-enable the CDP network events and re-inject the send hook on that run's CURRENT session
+  // instead of leaving the tool blind — at most once every 30s per browser, and only while its Chromium is open.
+  const _lastRehookAt = Object.create(null);
+  function maybeRehookCapture(browsers) {
+    const now = nowMs();
+    for (const b of (browsers || [])) {
+      if (!b || b.profileId == null || b.lastFrameAt == null) continue;
+      if (now - Number(b.lastFrameAt) <= HEADER_STALE_MS) continue;
+      const rid = String(b.profileId);
+      if (_lastRehookAt[rid] && now - _lastRehookAt[rid] < 30000) continue;
+      const run = runManager && runManager.get(rid);
+      if (!run || run.status === RUN_STATUS.CLOSED) continue;
+      const targets = runManager.targetsForRun(rid) || [];
+      for (const t of targets) {
+        const sess = run.targetManager && run.targetManager.getSession(t);
+        if (!sess || !sess.client) continue;
+        _lastRehookAt[rid] = now;
+        headerLog('capture-rehook', { runId: rid, targetId: t, staleSec: Math.round((now - Number(b.lastFrameAt)) / 1000) });
+        try { attachCapture(sess.client, { cdpTargetId: t }); } catch { /* best effort */ }
+        try { wsReplay.injectSession(sess.client, undefined).catch(() => {}); } catch { /* best effort */ }
+      }
+    }
+  }
   function pushHeaderStates() {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
+    maybeRehookCapture(browsers); // a browser whose frames stopped gets its hook re-installed (§data-stale)
     const sharedRid = headerSharedRid();
     const sharedRoomCode = maskSecret(phomSessions && phomSessions.active() && typeof phomSessions.sharedRoomCode === 'function' ? phomSessions.sharedRoomCode() : null);
     for (const run of runManager.list()) {
@@ -961,6 +1009,21 @@ else {
         // bàn chờ with **≥ 3 free seats** (need/minSeats = 3) so all three browsers can sit together. When such a
         // table appears in the list → its 7-digit số bàn → P1/P2 auto-join it (room for all).
         res = await phomSessions.findAndJoinGroup(rid, { selectedStake, emptyOnly: action === 'FIND_EMPTY', budgetMs: 300000, pollMs: 1500 });
+      } else if (action === 'CREATE_TABLE' || action === 'CREATE_SOLO') {
+        // T1 — TẠO BÀN at the stake chosen in the Phỏm tool (the bar has no picker; it never invents a stake).
+        ensurePhomSessions();
+        const stake = phomSessions.selectedStake();
+        // T1 — this browser creates the keyed table (KEY); the others join with VÀO (first READY, then NOT_READY).
+        res = await phomSessions.createTable(rid, { stake });
+      } else if (action === 'CHANGE_KEY') {
+        // ĐỔI KEY — the same group re-formed at a fresh table with a fresh key (the game has no key-change command).
+        ensurePhomSessions();
+        res = await phomSessions.changeKey();
+      } else if (action === 'JOIN_CODE') {
+        // §create — VÀO SỐ BÀN typed/picked in the header (no password is ever sent — §no-password).
+        ensurePhomSessions();
+        const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
+        res = await phomSessions.joinTable(rid, joinRid);
       } else if (action === 'CAPTURE_START') {
         // TEST D from the header: record THIS browser (the one the player is about to click in by hand).
         const run = runManager && runManager.get(rid);
@@ -977,17 +1040,17 @@ else {
         ensurePhomSessions();
         // PHASE 6.3.5 — a FOLLOWER joins the anchor's shared RID with bounded same-RID retry + same-room proof.
         const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
-        res = await phomSessions.manualJoinShared(rid, joinRid, { maxRetries: 25 }); // §co-seat — try many times
+        res = await phomSessions.joinTable(rid, joinRid);
       } else if (action === 'JOIN') {
         ensurePhomSessions();
         const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
         res = await phomSessions.manualJoinRoom(rid, joinRid, {});
       } else if (action === 'REJOIN') {
         ensurePhomSessions();
-        res = await phomSessions.manualRejoin(rid, {});
+        res = await phomSessions.rejoinTable(rid);
       } else if (action === 'LEAVE') {
         ensurePhomSessions();
-        res = await phomSessions.manualLeave(rid);
+        res = await phomSessions.leaveTable(rid);
       } else if (action === 'RELOAD') {
         // PHASE 6.3.8 — the header's ⟳ button reuses the SAME reload logic as phom:reload-web (no new action).
         res = await reloadWebRun(rid);
@@ -1482,7 +1545,7 @@ else {
     ipcMain.handle('phom:apply-ready', guarded(() => ensurePhomSessions().applyReady()));
     ipcMain.handle('phom:rejoin-follower', guarded((_e, id) => ensurePhomSessions().rejoinFollower(id)));
     ipcMain.handle('phom:recover-host', guarded(() => ensurePhomSessions().recoverHost()));
-    ipcMain.handle('phom:leave-all', guarded(() => ensurePhomSessions().leaveAll()));
+    ipcMain.handle('phom:leave-all', guarded(() => { ensurePhomSessions(); return phomSessions.leaveAllTables(); }));
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
     // PHASE 6.3.6 — USER selects which Player is the FINDER (room anchor). index null clears (every browser may
     // FIND); 1/2/3 selects. It re-derives + re-pushes every in-Chromium header immediately, and syncs the choice
@@ -1523,6 +1586,16 @@ else {
     // PHASE-6.2.1 — REAL discovery: qualifying empty table (rid + stake from the server table) → JOIN → ps[].
     ipcMain.handle('phom:manual-discover', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualDiscoverTable(cfg && cfg.browserId, cfg && cfg.opts); }));
     ipcMain.handle('phom:find-group', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.findAndJoinGroup(cfg && cfg.browserId, cfg && cfg.opts); }));
+    // §create — TẠO BÀN (cmd 308): opts.gather=false creates on this browser only; default brings the others too.
+    ipcMain.handle('phom:create-table', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.createTable(cfg && cfg.browserId, (cfg && cfg.opts) || {}); }));
+    // §auto — the Phỏm tool's TỰ ĐỘNG checkbox. ON forms the group (creator = browserId, KEY; the others READY /
+    // NOT_READY) unless one exists, then rejoins kicked members and re-creates a lost table. OFF stops all of it.
+    ipcMain.handle('phom:auto-set', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setAuto(!!(cfg && cfg.on), { creatorId: cfg && cfg.browserId, stake: cfg && cfg.stake != null ? Number(cfg.stake) : null }); }));
+    // THE mức cược lives in the Phỏm tool; the in-page bars create at this stake (they have no picker of their own).
+    ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setStake(cfg && cfg.stake); }));
+    ipcMain.handle('phom:group-snapshot', guarded(() => { ensurePhomSessions(); return { ok: true, group: phomSessions.groupSnapshot() }; }));
+    ipcMain.handle('phom:change-key', guarded(() => { ensurePhomSessions(); return phomSessions.changeKey(); }));
+    ipcMain.handle('phom:room-list', guarded((_e, cfg) => { ensurePhomSessions(); return { ok: true, ...phomSessions.roomList(cfg && cfg.browserId) }; }));
     ipcMain.handle('phom:token-keys', guarded(async () => {
       try { return { ok: true, ...await tokenKeyStore.snapshot() }; }
       catch { return { ok: false, error: { code: 'TOKEN_STORE_UNAVAILABLE', message: 'Không đọc được kho key đã mã hóa' } }; }
@@ -1546,13 +1619,13 @@ else {
     }));
     ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
     // §co-seat — join a số bàn + key with retry through "sai mật khẩu phòng" (key defaults to the host token).
-    ipcMain.handle('phom:manual-join-code', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinByCode(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.key, (cfg && cfg.opts) || {}); }));
+    ipcMain.handle('phom:manual-join-code', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.joinTable(cfg && cfg.browserId, cfg && cfg.rid); }));
     // §38 — the Tool window joins the shared room with the SAME semantics as the header's VÀO BÀN (bounded retry +
     // same-room proof), and can cancel a persistent search just like the header's HỦY.
-    ipcMain.handle('phom:manual-join-shared', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinShared(cfg && cfg.browserId, cfg && cfg.rid, (cfg && cfg.opts) || {}); }));
+    ipcMain.handle('phom:manual-join-shared', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.joinTable(cfg && cfg.browserId, cfg && cfg.rid); }));
     ipcMain.handle('phom:manual-cancel-find', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.cancelFind(cfg && cfg.browserId); }));
-    ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualRejoin(cfg && cfg.browserId, cfg && cfg.opts); }));
-    ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualLeave(cfg && cfg.browserId); }));
+    ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.rejoinTable(cfg && cfg.browserId); }));
+    ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.leaveTable(cfg && cfg.browserId); }));
     ipcMain.handle('phom:manual-snapshot', () => {
       const browsers = phomSessions ? phomSessions.manualBrowserSnapshot() : [];
       // PHASE 6.3.2.2 — merge the READ-ONLY runtime/CDP/header status per browser for Screen 2 (no actions).
@@ -1563,7 +1636,9 @@ else {
       // BROWSER CÙNG BÀN" from server evidence instead of three independent JOINED flags.
       return { ok: true, browsers, sharedRid: active ? phomSessions.sharedRid() : null, sharedRidOwner: active ? phomSessions.sharedRidOwner() : null,
         sharedRidIsChannel: active ? phomSessions.sharedRidIsChannel() : false,
-        coSeat: active ? phomSessions.coSeatStatus() : null };
+        coSeat: active ? phomSessions.coSeatStatus() : null,
+        // §group — the tool-created table: số bàn, key, stake, keep flag and each member's role/ready/host state.
+        group: active ? phomSessions.groupSnapshot() : null };
     });
     // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
     // saved preference + what each option currently resolves to (so SETUP can show availability).

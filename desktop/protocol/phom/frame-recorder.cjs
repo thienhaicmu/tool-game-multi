@@ -98,6 +98,7 @@ function summarize(raw, direction) {
   if (cls.cmd != null) parts.push(`cmd=${cls.cmd}`);
   if (cls.type === 'JOIN_REQUEST' && cls.channel != null) parts.push(`room=${cls.channel}`);
   if (cls.type === 'JOIN_ACCEPTED') parts.push(`accepted=${cls.accepted}`);
+  if (cls.type === 'CREATE_TABLE_RESULT') parts.push(cls.ok ? `số bàn=${cls.rid} b=${cls.stake}` : `từ chối: ${cls.message || '?'}`);
   if (Array.isArray(cls.rs)) {
     parts.push(`rs=${cls.rs.length}`);
     parts.push(cls.rs.slice(0, 12).map((r) => `[rid ${r.rid} b ${r.b} ${r.uC}/${r.Mu}]`).join(' '));

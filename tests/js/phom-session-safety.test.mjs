@@ -181,7 +181,7 @@ for (const method of ['manualJoinShared', 'manualJoinByCode']) {
   });
 }
 
-test('JOIN_SHARED automatically uses the current response hpwd, never a user supplied override', async () => {
+test('JOIN_SHARED sends an EMPTY room code — never the table hpwd, never a user supplied override', async () => {
   const { coord, sent } = setup(async (id, packet, c) => {
     if (packet[0] === 3) feed(c, id, table('A', 'B'));
     return { ok: true };
@@ -191,7 +191,7 @@ test('JOIN_SHARED automatically uses the current response hpwd, never a user sup
   Object.assign(coord._rec('A'), { manualState: 'JOINED', _joinedRid: 700, _joinedRidValidated: true });
   const result = await coord.manualJoinShared('B', 700, { roomCode: 'obsolete-manual-code' });
   assert.equal(result.ok, true);
-  assert.equal(sent.find(x => x.packet[0] === 3).packet[3], 'server-assigned-room-code');
+  assert.equal(sent.find(x => x.packet[0] === 3).packet[3], '');
   assert.equal(JSON.stringify(coord.snapshot()).includes('server-assigned-room-code'), false);
 });
 

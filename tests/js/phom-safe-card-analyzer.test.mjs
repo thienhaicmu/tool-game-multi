@@ -186,7 +186,9 @@ test('18. a card a controlled opponent can eat (known hand) is RISKY, not safe',
   const r = createSafeCardAnalyzer().analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' });
   const c = r.targetCards.find((x) => x.code === 48);
   assert.equal(c.classification, CLASS.RISKY);
-  assert.ok(c.reasonCodes.includes('KNOWN_EATABLE_BY_CONTROLLED'));
+  // next-player rule: the controlled player who plays next eats it (NEXT_CAN_EAT), or — turn order unknown — any
+  // controlled opponent holding the pair (KNOWN_EATABLE_BY_CONTROLLED).
+  assert.ok(c.reasonCodes.includes('NEXT_CAN_EAT') || c.reasonCodes.includes('KNOWN_EATABLE_BY_CONTROLLED'), c.reasonCodes.join(','));
   assert.equal(r.safeCards.find((x) => x.code === 48), undefined);
 });
 
@@ -297,4 +299,30 @@ test('Đ2-08: knowing the next player does NOT change how a card is classified (
   const b = createSafeCardAnalyzer().analyze({ snapshot: withNext.getSnapshot(), targetPlayerUid: 'uidA' });
   const cls = (r) => r.targetCards.filter((c) => c.code === C(6, 0)).map((c) => c.classification);
   assert.deepEqual(cls(b), cls(a));
+});
+
+// ================= next-player rule (only the player right after the discarder can eat) =================
+test('NEXT-01: next player is a controlled browser → exact verdict (SAFE / RISKY), no "unknown" cards', () => {
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', tableFrame(['uidA', 'uidB', 'uidC']));
+    feed('B1', 'uidA', dealFrame([48, 0, 20]));
+    feed('B2', 'uidB', dealFrame([49, 50, 5, 6]));
+    feed('B3', 'uidC', dealFrame([30, 31]));
+  });
+  const snap = { ...obs.getSnapshot(), nextOf: { uidA: 'uidB' } };
+  const r = createSafeCardAnalyzer().analyze({ snapshot: snap, targetPlayerUid: 'uidA' });
+  assert.equal(r.nextPlayerLabel, 'Player 2');
+  assert.equal(r.targetCards.find((x) => x.code === 48).classification, CLASS.RISKY, 'B2 holds K♣ K♦');
+  assert.equal(r.targetCards.find((x) => x.code === 20).classification, CLASS.SAFE);
+  assert.equal(r.unknownCards.length, 0);
+});
+
+test('NEXT-02: a STRANGER plays next → the hidden-hand reasoning still applies (not every card is SAFE)', () => {
+  const obs = observerWith((feed) => {
+    feed('B1', 'uidA', tableFrame(['uidA', 'uidX']));
+    feed('B1', 'uidA', dealFrame([20, 21, 24]));
+  });
+  const snap = { ...obs.getSnapshot(), nextOf: { uidA: 'uidX' } };
+  const r = createSafeCardAnalyzer().analyze({ snapshot: snap, targetPlayerUid: 'uidA' });
+  assert.ok(r.targetCards.some((c) => c.classification !== CLASS.SAFE));
 });

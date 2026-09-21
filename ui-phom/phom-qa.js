@@ -65,16 +65,13 @@
   // each be seated, happily, at three DIFFERENT tables, which is exactly the failure this indicator exists for.
   let coSeat = null;
   let remaining = null;      // last remainingCards() view for Screen 2
-  // PHASE 6.3.3.2 — last card-observation snapshot (players/discards/melds/remaining/capabilities). Read-only
-  // data binding for Screen 2; the analysis ANGLE (selectedAnalysisPlayer) never merges the three hands (§20).
+  // PHASE 6.3.3.2 — last card-observation snapshot (players/discards/melds/remaining/capabilities). Read-only.
   let cardsSnap = null;
-  // PHASE 6.3.3.3 — the SAFE CARD ANALYZER angle. `selectedAnalysisPlayer` is the CANONICAL target selection
-  // (a slot B1/B2/B3 = Player 1/2/3; presentation only). It resolves to an authoritative uid via
-  // cardsSnap.slotBinding and is passed to the read-only analyzer; the three hands are never merged (§5/§20).
-  let selectedAnalysisPlayer = null;
-  let safeAnalysis = null;     // last read-only analyzer result for the selected target
-  // PHASE 6.3.6 — the USER-selected FINDER (room anchor) slot (B1/B2/B3), or null = none chosen (every browser
-  // may FIND). SEPARATE from selectedAnalysisPlayer: Finder ≠ Analysis is fully valid (e.g. Finder B2, Analysis B3).
+  let safeBySlot = {};         // LỌC BÀI — the read-only analyzer result per account slot (B1/B2/B3)
+  let manualGroup = null;      // §group — the tool-created table: rid/key/stake/keep + each member's role
+  let autoStake = '';          // Tiền picked for TỰ ĐỘNG VÀO BÀN
+  let autoBusy = false;        // an automatic create/gather is in flight
+  // The legacy TÌM BÀN finder slot (B1/B2/B3) or null; kept for the old find flow only.
   let selectedFinderPlayer = null;
   let manualStake = '';      // (deprecated 6.2.1) — stake now comes from the discovered server table
   const ridDraft = {};       // per-browser Room/RID input draft (browserId -> string)
@@ -184,8 +181,14 @@
     await refreshClusterProfiles();
     await refreshProfilesX(); // PHASE 6.3.1 — load the flexible profile list
     await refreshBrowserRuntime(); // PHASE 6.3.2.2 — load the browser runtime preference/availability
-    // Land in CONTROL if a cluster is already open (e.g. renderer reload), else SETUP.
+    // Land in CONTROL if a cluster is already open (e.g. renderer reload), else SETUP. On a reload the slots must be
+    // re-bound to the open runs, or every row reads "CHƯA MỞ" while three browsers are running.
     uiState = clusterIsOpen() ? UI.CONTROL : UI.SETUP;
+    if (uiState === UI.CONTROL) {
+      for (const s of SLOTS) { const p = clusterSnap.profiles && clusterSnap.profiles[s]; if (p && p.profileId) assign[s].runId = p.profileId; }
+      activeTab = 'PHOM';
+      await refreshManual();
+    }
     renderApp();
   }
 
@@ -1037,189 +1040,184 @@
   // here (those functions stay defined for other flows/tests but are not rendered on the main screen).
   // PHASE 6.3.3 — Screen 2 priority is INVERTED: B1/B2/B3 shrink to a compact one-row status header at the
   // TOP; the CARD WORKSPACE (LÁ BÀI AN TOÀN + LÁ BÀI CÒN LẠI) becomes the dominant flex-growing area.
+  // ================= PHỎM control screen — the CARDS come first =================
+  //   top    compactHeader     — one line: số bàn · key · cược · cùng bàn
+  //          compactBrowserRow — one line of three account chips (role · state · ready · VÀO GAME / ↻ / ⏻)
+  //   middle renderCardWorkspace — LỌC BÀI for all three accounts + the remaining cards (takes the free height)
+  //   bottom controlFooter     — Tiền · ☐ TỰ ĐỘNG · ĐỔI KEY · THOÁT BÀN TẤT CẢ · XẾP CỬA SỔ · ⋯ · ĐÓNG TẤT CẢ
+  // Manual play is each Chromium's own bar (Tạo · Vào · ReJoin · Đổi Key · Thoát). Nothing automatic runs unless
+  // TỰ ĐỘNG is ticked here.
   function renderControl(r) {
     r.appendChild(compactHeader());
-    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
     r.appendChild(compactBrowserRow());
-    r.appendChild(finderSelector());
+    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
     r.appendChild(renderCardWorkspace());
+    r.appendChild(controlFooter());
   }
-  // PHASE 6.3.6 — USER picks which Player is the FINDER (room anchor). No finder → every Player may TÌM BÀN;
-  // pick one → only that Player finds, the others show "CHỜ PLAYER N TÌM BÀN". Re-clicking clears (back to all).
-  // SEPARATE from PHÂN TÍCH (analysis): a Finder ≠ Analysis player is fully valid. Reuses the analysis-pick style.
-  function finderSelector() {
-    const wrap = el('div', { class: 'analysis-pick finder-pick' }, el('span', { class: 'finder-label' }, 'Người tìm bàn'));
-    ['B1', 'B2', 'B3'].forEach((slot, i) => {
-      const active = selectedFinderPlayer === slot;
-      wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => onSelectFinder(active ? null : slot) }, 'Player ' + (i + 1)));
-    });
-    wrap.appendChild(el('span', { class: 'faint xs' }, selectedFinderPlayer ? '' : 'Chọn một Player hoặc tìm từ header trong game'));
-    return wrap;
-  }
-  function onSelectFinder(slot) {
-    selectedFinderPlayer = slot; // 'B1'/'B2'/'B3' or null (toggle off)
-    const index = slot ? Number(slot.slice(1)) : null;
-    if (api.setFinder) { try { api.setFinder(index); } catch (e) { /* header derivation still updates on next push */ } }
-    bgRender();
-  }
-  // The dominant content area: the two card sections, growing with the Tool window (§5).
   function renderCardWorkspace() {
     const ws = el('div', { class: 'card-workspace' });
     ws.appendChild(renderSafeCards());
     ws.appendChild(renderRemainingCards());
     return ws;
   }
-
-  // Low header: product · shared BÀN (RID) · CƯỢC (stake) · CÒN LẠI · overflow menu · ready dot. BÀN and
-  // CƯỢC are SERVER-DERIVED from the discovered table (never a user-entered stake — §8/§11/§12).
+  const BUSY_LABEL = { CREATE: '⏳ ĐANG TẠO BÀN…', JOIN: '⏳ ĐANG VÀO BÀN…', REJOIN: '⏳ ĐANG VÀO LẠI…', LEAVE: '⏳ ĐANG RỜI BÀN…', LEAVE_ALL: '⏳ ĐANG RỜI HẾT…', AUTO_ON: '⏳ ĐANG BẬT TỰ ĐỘNG…', REGROUP: '⏳ ĐANG ĐỔI KEY…' };
+  const ROLE_VIEW = { KEY: ['KEY', 'role-key', 'Chủ bàn — giữ key, KHÔNG tự bấm Bắt đầu'], READY: ['SẴN SÀNG', 'role-ready', 'Vào bàn trước → luôn sẵn sàng'], NOT_READY: ['CHƯA SS', 'role-wait', 'Vào bàn sau → không sẵn sàng'] };
+  function roleChip(role, host) {
+    const v = ROLE_VIEW[role];
+    if (!v) return host ? el('span', { class: 'role-chip role-key', title: 'Chủ bàn' }, '👑') : null;
+    return el('span', { class: 'role-chip ' + v[1], title: v[2] }, (host ? '👑 ' : '') + v[0]);
+  }
+  // Stakes offered for TỰ ĐỘNG: the server stakes seen by the browsers that are in the game.
+  function autoStakes() {
+    const set = new Set();
+    for (const b of manualBrowsers) for (const v of (b.betOptions || [])) set.add(Number(v));
+    return [...set].filter((n) => Number.isFinite(n) && n > 0).sort((a, b) => a - b);
+  }
+  // The creator for TỰ ĐỘNG = the first open browser (slot order) that is in the game.
+  function autoCreatorRunId() {
+    for (const slot of SLOTS) { const id = assign[slot].runId; if (id && slotInPhom(id)) return id; }
+    return null;
+  }
   function compactHeader() {
-    const rid = manualCluster.sharedRid != null ? String(manualCluster.sharedRid) : '—';
-    const stake = manualCluster.sharedStake != null ? String(manualCluster.sharedStake) : '—';
-    const anyOpen = SLOTS.some((s) => assign[s].runId);
-    // PHASE 6.3.9 — compact top line: BÀN (RID) · CƯỢC · 🂠 TỔNG LÁ ẨN. Brand lives in the header tab bar now.
-    // The ⋯ overflow is kept ONLY as the sole home of ĐÓNG 3 TRÌNH DUYỆT / Rời bàn / offline QA (no duplicate).
-    return el('div', { class: 'tool-header' },
-      el('div', { class: 'workspace-title' }, el('strong', null, 'Bàn Phỏm'), el('span', null, 'Theo dõi 3 browser')),
-      el('span', { class: 'th-rid' }, 'BÀN: ', el('b', null, rid)),
-      el('span', { class: 'th-bet' }, 'CƯỢC: ', el('b', null, stake)),
-      el('span', { class: 'th-still' }, '🂠 TỔNG LÁ ẨN: ', el('b', null, remaining ? String(remaining.count) : '—')),
+    const g = manualGroup;
+    const rid = g ? g.rid : manualCluster.sharedRid;
+    return el('div', { class: 'tool-header status-line' },
+      el('span', { class: 'th-rid' }, 'SỐ BÀN ', el('b', null, rid != null ? String(rid) : '—')),
+      el('span', { class: 'th-key' }, 'KEY ', el('b', null, g && g.key ? String(g.key) : '—')),
+      el('span', { class: 'th-bet' }, 'CƯỢC ', el('b', null, g && g.stake ? String(g.stake) : (manualCluster.sharedStake != null ? String(manualCluster.sharedStake) : '—'))),
       coSeatChip(),
-      el('button', { class: 'btn capture-launch', onclick: openFrameCapture, title: 'Ghi request / response WebSocket' }, 'GHI WS · TEST D'),
+      g && g.auto ? el('span', { class: 'chip green sm', title: 'Bị đá tự Rejoin · mất bàn tự tạo lại' }, g.recreating ? '⟳ ĐANG TẠO LẠI BÀN' : '● TỰ ĐỘNG') : null,
+      // Mỗi lệnh gửi lên server đều chờ ngẫu nhiên 0,8–2,5s (docs/phom-kich-ban.md) nên thao tác kéo dài vài giây:
+      // nói rõ tool đang làm gì thay vì để người dùng tưởng bị treo.
+      g && g.busy ? el('span', { class: 'chip yellow sm', title: 'Thao tác chạy tuần tự, mỗi lệnh cách nhau 0,8–2,5 giây' }, BUSY_LABEL[g.busy] || 'ĐANG XỬ LÝ…') : null);
+  }
+  // Bottom controls. TỰ ĐỘNG is a checkbox: ticking it forms the group at the chosen Tiền (or takes over the group
+  // the user built by hand) and keeps it; unticking stops every automatic action.
+  function controlFooter() {
+    const g = manualGroup;
+    const autoOn = !!(g && g.auto);
+    const stakes = autoStakes();
+    if (!autoStake && g && g.selectedStake != null) autoStake = String(g.selectedStake); // e.g. after a tool reload
+    if (autoStake && !stakes.includes(Number(autoStake))) autoStake = '';
+    const sel = el('select', { class: 'bet-sel auto-stake', title: 'Mức cược dùng cho TẠO BÀN (cả tool và thanh trong web)', onchange: (e) => onPickStake(e.target.value) },
+      el('option', { value: '' }, 'Tiền…'), ...stakes.map((v) => el('option', { value: String(v) }, String(v))));
+    sel.value = autoStake;
+    const box = el('input', { type: 'checkbox', id: 'phq-auto', disabled: autoBusy ? 'disabled' : null, onchange: (e) => onAutoToggle(e.target.checked) });
+    box.checked = autoOn;
+    return el('div', { class: 'control-footer' },
+      el('span', { class: 'cf-label' }, 'Tiền'), sel,
+      el('label', { class: 'auto-toggle' + (autoOn ? ' on' : ''), for: 'phq-auto', title: 'Bật: acc đầu tạo bàn có key, 2 acc kia vào (vào trước SẴN SÀNG, vào sau CHƯA SẴN SÀNG); bị đá tự Rejoin; mất bàn tự tạo lại. Tắt: không làm gì tự động.' },
+        box, autoBusy ? ' ĐANG XỬ LÝ…' : ' TỰ ĐỘNG'),
+      el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Tạo bàn mới với key mới cho cả nhóm', onclick: () => onChangeKey() }, 'ĐỔI KEY'),
+      el('button', { class: 'btn warn-btn', title: 'Cả 3 acc rời bàn (tắt tự động)', onclick: step(() => api.leaveAll(), 'Đã thoát bàn tất cả.') }, 'THOÁT BÀN TẤT CẢ'),
+      el('button', { class: 'btn', title: 'Sắp xếp cửa sổ game', onclick: step(() => api.restoreLayout(), 'Đã xếp lại bố cục.') }, 'XẾP CỬA SỔ'),
       moreMenuButton(),
-      el('button', { class: 'btn', title: 'Sắp xếp cửa sổ game', onclick: step(() => api.restoreLayout(), 'Đã xếp lại bố cục.') }, 'Xếp cửa sổ'),
-    );
+      el('button', { class: 'btn danger', title: 'Đóng cả 3 trình duyệt', onclick: () => closeBrowsers() }, 'ĐÓNG TẤT CẢ'));
+  }
+  // ONE stake for the whole session: the tool owns it, the in-page bars reuse it (they have no picker).
+  async function onPickStake(value) {
+    autoStake = value;
+    if (api.setStake) { try { await api.setStake(value ? Number(value) : null); } catch { /* the next pick retries */ } }
+    bgRender();
+  }
+  async function onAutoToggle(on) {
+    if (on && !manualGroup && !autoStake) { note('Chọn Tiền trước khi bật Tự động.', true); renderApp(); return; }
+    const creator = autoCreatorRunId();
+    if (on && !manualGroup && !creator) { note('Chưa có acc nào vào game.', true); renderApp(); return; }
+    autoBusy = true; note(on ? (manualGroup ? 'Bật tự động — giữ bàn hiện tại…' : 'Đang tạo bàn và gọi các acc vào…') : 'Tắt tự động.'); renderApp();
+    let res; try { res = await api.setAuto(on, creator, autoStake ? Number(autoStake) : null); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    autoBusy = false;
+    if (res && res.ok === false) note(errText(res), true);
+    else if (on) note('Tự động đang giữ bàn ' + (res && res.rid != null ? res.rid : '') + '.');
+    await refreshManual(); renderApp();
+  }
+  async function onChangeKey() {
+    const g = manualGroup; if (!g) return;
+    autoBusy = true; note('Đang tạo bàn mới với key mới…'); renderApp();
+    let res; try { res = await api.changeKey(g.members.find((m) => m.role === 'KEY')?.id || autoCreatorRunId()); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    autoBusy = false;
+    if (res && res.ok === false) note(errText(res), true); else note('Đã đổi sang bàn ' + (res && res.rid) + ' · key mới.');
+    await refreshManual(); renderApp();
   }
 
-  // §co-seat — "ĐỦ 3 BROWSER CÙNG BÀN", proven by the backend from EVERY browser's own TABLE_STATE ps[]
-  // (verifySameTable: same stake, the anchor's uid and all controlled uids present in each browser's view, one
-  // player-set fingerprint, no seat conflict). A per-browser JOINED badge cannot say this — that is why the
-  // verdict is computed once in the coordinator and only displayed here.
+  // §co-seat — "ĐỦ 3 ACC CÙNG BÀN", proven by the backend from EVERY browser's own TABLE_STATE ps[].
   function coSeatChip() {
-    if (!coSeat) return el('span', { class: 'chip gray sm', title: 'Chưa có phiên nào đang chạy' }, 'CÙNG BÀN: —');
+    if (!coSeat) return el('span', { class: 'chip gray sm', title: 'Chưa có phiên nào đang chạy' }, 'CÙNG BÀN —');
     const n = coSeat.browserCount || 0;
-    if (coSeat.ok) return el('span', { class: 'chip green sm', title: 'Cả ' + n + ' browser đã được máy chủ xác nhận trong CÙNG một bàn' + (coSeat.rid != null ? ' (' + coSeat.rid + ')' : '') }, '✓ ĐỦ ' + n + ' BROWSER CÙNG BÀN');
-    if (coSeat.result === 'TABLE_MISMATCH') return el('span', { class: 'chip red sm', title: 'Máy chủ xếp các browser vào những bàn KHÁC nhau: ' + (coSeat.reason || '') }, '⚠ KHÁC BÀN');
-    if (coSeat.result === 'PARTIAL_JOIN') return el('span', { class: 'chip yellow sm', title: 'Chưa đủ browser trong bàn: ' + (coSeat.reason || '') }, (coSeat.seatedCount || 0) + '/' + n + ' TRONG BÀN');
-    return el('span', { class: 'chip gray sm', title: 'Chưa có browser nào giữ bàn chung' }, 'CÙNG BÀN: —');
+    if (coSeat.ok) return el('span', { class: 'chip green sm', title: 'Cả ' + n + ' acc đã được máy chủ xác nhận trong CÙNG một bàn' + (coSeat.rid != null ? ' (' + coSeat.rid + ')' : '') }, '✓ ' + n + ' ACC CÙNG BÀN');
+    if (coSeat.result === 'TABLE_MISMATCH') return el('span', { class: 'chip red sm', title: 'Máy chủ xếp các acc vào những bàn KHÁC nhau: ' + (coSeat.reason || '') }, '⚠ KHÁC BÀN');
+    if (coSeat.result === 'PARTIAL_JOIN') return el('span', { class: 'chip yellow sm', title: 'Chưa đủ acc trong bàn: ' + (coSeat.reason || '') }, (coSeat.seatedCount || 0) + '/' + n + ' TRONG BÀN');
+    return el('span', { class: 'chip gray sm', title: 'Chưa có acc nào giữ bàn chung' }, 'CÙNG BÀN —');
   }
 
-  // A single horizontal row: Browser 1 / 2 / 3. One business action per card (VÀO GAME / TÌM BÀN / VÀO BÀN
-  // / THOÁT GAME) + lifecycle controls (↻ WEB, ⏻). Deterministic slot A/B/C -> Browser 1/2/3.
+  // Three compact account chips on ONE line (slot order A/B/C → B1/B2/B3).
   function compactBrowserRow() {
-    const row = el('div', { class: 'browser-row' });
+    const row = el('div', { class: 'acc-chips' });
     SLOTS.forEach((slot, i) => row.appendChild(compactBrowserCell(i + 1, slot, assign[slot].runId)));
     return row;
   }
-  // PHASE 6.3 — a professional browser PANEL (card): header (B# + status badge) · device meta · body
-  // (single business action) · footer (icon buttons). Presentation only — all handlers unchanged.
   function compactBrowserCell(index, slot, runId) {
     const cs = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
     const chromiumClosed = !!(cs.browserState && cs.browserState !== 'OPEN' && cs.browserState !== 'NOT_OPEN');
     const opened = !!runId && !chromiumClosed;
     const inGame = opened && slotInPhom(runId);
-    const mb = opened ? manualBrowserById(runId) : null;
-    const b = mb || { profileId: runId, manualState: opened ? 'READY' : 'CLOSED', canRejoin: false, rid: null, lastError: null };
+    const b = (opened ? manualBrowserById(runId) : null) || { manualState: opened ? 'READY' : 'CLOSED', rid: null, lastError: null };
     const entering = opened && !inGame && !!manualEntering[runId];
-    const joining = opened && inGame && !!manualJoining[runId];
     const enterErr = opened && !inGame && manualEnterError[runId];
-    const joinedShared = opened && inGame && b.manualState === 'JOINED' && manualCluster.sharedRid != null && Number(b.rid) === Number(manualCluster.sharedRid);
+    const inTable = inGame && b.manualState === 'JOINED' && b.rid != null;
     const st = !runId ? { label: 'CHƯA MỞ', cls: 'off' }
       : chromiumClosed ? { label: 'OFFLINE', cls: 'off' }
       : entering ? { label: 'ĐANG VÀO GAME', cls: 'warn' }
-      : joining ? { label: 'ĐANG VÀO BÀN', cls: 'warn' }
+      : b.manualState === 'RECONNECTING' ? { label: 'BỊ ĐÁ → REJOIN', cls: 'warn' }
+      : b.manualState === 'KICKED' ? { label: 'BỊ ĐÁ', cls: 'danger' }
+      : b.manualState === 'JOINING' ? { label: 'ĐANG VÀO BÀN', cls: 'warn' }
       : b.manualState === 'SEARCHING' ? { label: 'ĐANG TÌM BÀN', cls: 'warn' }
-      : joinedShared ? { label: 'ĐÃ VÀO BÀN', cls: 'ok' }
-      : inGame ? { label: 'ĐÃ VÀO GAME', cls: 'ok' }
+      : inTable ? { label: 'TRONG BÀN', cls: 'ok' }
+      : inGame ? { label: 'Ở SẢNH', cls: 'info' }
       : enterErr ? { label: 'LỖI VÀO GAME', cls: 'danger' }
-      : { label: 'ONLINE', cls: 'info' };
-    // PHASE 6.3.3 — COMPACT read-only status chip (ONE row). Screen 2 stays read-only: game actions live in
-    // the in-Chromium header. The chip mirrors only essentials — B# · ACCOUNT (truncated) · STATE badge ·
-    // WS/CDP/HEADER mini-dots — plus browser lifecycle (↻ / ⏻ / MỞ CHROMIUM). RID is NOT repeated here (it is
-    // shared and shown ONCE in the tool header, §3). No game-control buttons.
-    const cell = el('div', { class: 'browser-cell st-' + st.cls });
-    // PHASE 6.3.9 — compact identity: [open?] · colored B# badge · Player N (matches the mockup player row).
-    // Accent is by browser INDEX (1/2/3), not the internal slot id (A/B/C).
+      : { label: 'CHƯA VÀO GAME', cls: 'off' };
     const ACC = index === 1 ? '#2563eb' : index === 2 ? '#16a34a' : index === 3 ? '#ea580c' : '#6b7280';
-    cell.appendChild(el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'B' + index));
-    cell.appendChild(el('span', { class: 'bc-id' }, 'Player ' + index));
-    // PHASE 6.3.6 — mark which Player the USER chose as FINDER (room anchor); never defaulted to Player 1.
-    if (selectedFinderPlayer === 'B' + index) cell.appendChild(el('span', { class: 'gbadge good', title: 'Player này là FINDER (tìm bàn / room anchor)' }, 'FINDER'));
-    if (!runId) { cell.appendChild(el('span', { class: 'faint sm bc-hint' }, 'Mở ở SETUP')); return cell; }
-    if (chromiumClosed) {
-      cell.appendChild(el('span', { class: 'bc-badge off' }, el('span', { class: 'status-dot off' }), 'OFFLINE'));
-      cell.appendChild(el('div', { class: 'bc-life' }, iconButton('monitor', 'Mở lại Chromium này', () => onReopenBrowser(slot))));
-      return cell;
+    const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : '—';
+    const wsOk = !!(b.connected && b.socketReady);
+    const chip = el('div', { class: 'acc-chip st-' + st.cls, title: account + ' · ' + st.label + (wsOk ? ' · WS kết nối' : ' · WS mất kết nối') + (b.lastError ? ' · ' + (b.lastError.message || b.lastError.code) : '') },
+      el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'B' + index),
+      el('span', { class: 'bc-acc' }, account),
+      roleChip(b.groupRole, b.isTableHost),
+      el('span', { class: 'bc-badge ' + st.cls }, el('span', { class: 'status-dot ' + st.cls }), st.label),
+      inTable && b.ready ? el('span', { class: 'ready-yes', title: 'Đã sẵn sàng' }, '✓') : null);
+    if (!runId) chip.appendChild(el('span', { class: 'faint xs' }, 'mở ở PROFILE'));
+    else if (chromiumClosed) chip.appendChild(iconButton('monitor', 'Mở lại Chromium này', () => onReopenBrowser(slot)));
+    else {
+      if (!inGame) chip.appendChild(el('button', { class: 'btn sm primary', disabled: entering ? 'disabled' : null, onclick: () => manualEnterGame(runId) }, entering ? '…' : 'VÀO GAME'));
+      chip.appendChild(iconButton('refresh', 'Tải lại web trong Chromium này', () => onReloadWeb(runId)));
+      chip.appendChild(iconButton('power', 'Tắt Chromium này', () => onCloseBrowser(slot, runId), 'danger'));
     }
-    const account = (mb && mb.username && mb.username !== 'USER_UNKNOWN') ? mb.username : '—';
-    // RUNTIME kind (Chromium/Chrome) is diagnostic + rarely changes → kept compactly in the chip tooltip
-    // (not a visible row) so the compact header stays one line.
-    const rtKind = mb && mb.runtimeKind ? (mb.runtimeKind === 'chrome' ? 'Chrome' : 'Chromium') : '—';
-    cell.appendChild(el('span', { class: 'bc-acc', title: 'ACCOUNT: ' + account + ' · RUNTIME: ' + rtKind }, account));
-    cell.appendChild(el('span', { class: 'bc-badge ' + st.cls }, el('span', { class: 'status-dot ' + st.cls }), st.label));
-    // WS / CDP / HEADER as compact mini-dots (title carries the full text) — essential connection status only.
-    const wsOk = !!(mb && mb.connected && mb.socketReady);
-    const cdpOk = mb && mb.cdp === 'CONNECTED';
-    const hdr = mb && mb.header;
-    const hdrCls = hdr === 'READY' ? 'ok' : hdr === 'RECOVERING' ? 'warn' : 'off';
-    const dot = (label, cls, title) => el('span', { class: 'mini-dot ' + cls, title }, label);
-    cell.appendChild(el('div', { class: 'bc-dots' },
-      dot('WS', wsOk ? 'ok' : 'off', 'WebSocket: ' + (wsOk ? 'Kết nối' : 'Mất kết nối')),
-      dot('CDP', cdpOk ? 'ok' : 'off', 'CDP: ' + (cdpOk ? 'Kết nối' : 'Mất kết nối')),
-      dot('HDR', hdrCls, 'Header: ' + (hdr === 'READY' ? 'Sẵn sàng' : hdr === 'RECOVERING' ? 'Đang khôi phục' : 'Chưa sẵn sàng'))));
-    // lifecycle only (never game control): ↻ WEB + ⏻ — compact icon buttons.
-    cell.appendChild(el('div', { class: 'bc-life' },
-      iconButton('refresh', 'Tải lại / mở lại web trong chính Chromium này (Reload web)', () => onReloadWeb(runId)),
-      iconButton('power', 'Tắt Chromium này (không đóng Tool/các browser khác)', () => onCloseBrowser(slot, runId), 'danger')));
-    return cell;
+    return chip;
   }
-  // PHASE 6.3.3 — LÁ BÀI AN TOÀN placeholder region (UI structure only; the analysis is a future Monitor
-  // feature — no card logic added here). It reserves the top of the card workspace so the future feature
-  // fills it. Empty state is explicit; nothing is fabricated.
-  // PHASE 6.3.3.3 — LÁ BÀI AN TOÀN is now bound to the read-only SAFE CARD ANALYZER. The user picks ONE
-  // Player (1/2/3) as the analysis angle; the analyzer classifies THAT player's own cards from PUBLIC
-  // observed data. It only DISPLAYS — never plays, discards or clicks (§2/§18/§22). Nothing is shown SAFE
-  // without proof; insufficient evidence renders an explicit state, never a fake number (§13/§24).
+
+  // LỌC BÀI — for EACH of the three accounts: which cards the NEXT player cannot eat (only the next player may eat
+  // a discard). When the next player is one of our accounts the verdict is exact; a stranger → public evidence.
   function renderSafeCards() {
-    const box = el('div', { class: 'safe-cards', id: 'phq-safe' });
-    // PHASE 6.3.9 — title + subtitle ("Không ăn gà") + count · a subtle green-accent section (not a full green bg).
-    const a = safeAnalysis;
-    const safeCount = (selectedAnalysisPlayer && a) ? ((a.safeCards || []).length + (a.likelySafeCards || []).length) : 0;
-    box.appendChild(el('div', { class: 'safe-head' },
-      el('div', { class: 'sc-title' },
-        el('span', { class: 'section-t' }, '🛡 LÁ BÀI AN TOÀN'),
-        el('span', { class: 'faint xs sc-sub' }, selectedAnalysisPlayer ? ('Không ăn gà · ' + safeCount + ' lá') : 'Không ăn gà')),
-      playerAnalysisSelector()));
-    box.appendChild(renderSafeBody());
-    box.appendChild(el('div', { class: 'faint xs safe-src' }, 'Phân tích từ dữ liệu công khai đã quan sát'));
+    const box = el('div', { class: 'safe-cards', id: 'phq-safe' },
+      el('div', { class: 'safe-head' }, el('div', { class: 'sc-title' }, el('span', { class: 'section-t' }, '🛡 LỌC BÀI'), el('span', { class: 'faint xs sc-sub' }, 'Lá người đánh sau KHÔNG ăn được'))));
+    const cols = el('div', { class: 'safe-cols' });
+    ['B1', 'B2', 'B3'].forEach((slot, i) => cols.appendChild(safeColumn(slot, i + 1)));
+    box.appendChild(cols);
     return box;
   }
-  // PHÂN TÍCH CHO: [Tất cả] [B1] [B2] [B3]. "Tất cả" = no single player (aggregate remaining view; the SAFE
-  // analysis stays per-player — never merged, §20). SEPARATE from the finder selector.
-  function playerAnalysisSelector() {
-    const wrap = el('div', { class: 'analysis-pick' }, el('span', { class: 'faint xs' }, 'PHÂN TÍCH CHO:'));
-    wrap.appendChild(el('button', { class: 'btn sm' + (!selectedAnalysisPlayer ? ' primary' : ''), onclick: () => { selectedAnalysisPlayer = null; refreshSafeAnalysis().then(() => bgRender()); } }, 'Tất cả'));
-    ['B1', 'B2', 'B3'].forEach((slot, i) => {
-      const active = selectedAnalysisPlayer === slot;
-      wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => { selectedAnalysisPlayer = active ? null : slot; refreshSafeAnalysis().then(() => bgRender()); } }, 'B' + (i + 1)));
-    });
-    return wrap;
-  }
-  function renderSafeBody() {
-    if (!selectedAnalysisPlayer) return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'Chọn B1 / B2 / B3 để xem lá an toàn của player đó'));
-    const a = safeAnalysis;
-    if (!a || a.status === 'NO_HAND' || a.status === 'TARGET_NOT_FOUND' || a.status === 'NO_TARGET') return el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'ĐANG CHỜ DỮ LIỆU BÀI…'));
-    const safe = a.safeCards || []; const likely = a.likelySafeCards || []; const own = a.ownMeldCards || [];
-    const wrap = el('div');
-    // §40 — who plays right after this player (learned from public play). Context only.
-    if (a.nextPlayerLabel) wrap.appendChild(el('div', { class: 'faint xs' }, 'Lượt sau: ' + a.nextPlayerLabel));
-    if (!safe.length && !likely.length) wrap.appendChild(el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'CHƯA ĐỦ DỮ LIỆU')));
-    // §42 — highest-value PROVEN-safe card first; the first one is the suggestion (still only a display — the
-    // player decides; nothing is played).
-    if (safe.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'AN TOÀN — lá điểm cao trước')); wrap.appendChild(safeCardRow(safe, 'meld', a.recommendedCode)); }
-    if (likely.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'CÓ THỂ AN TOÀN')); wrap.appendChild(safeCardRow(likely, '')); }
-    // §41 — the player's own phỏm: shown so it is clear WHY those cards are never offered.
-    if (own.length) { wrap.appendChild(el('div', { class: 'faint xs' }, 'TRONG PHỎM — giữ lại' + (a.ownMeldSource === 'SERVER' ? '' : ' (tự tính)'))); wrap.appendChild(safeCardRow(own, 'own-meld')); }
-    return wrap;
+  function safeColumn(slot, index) {
+    const a = safeBySlot[slot];
+    const col = el('div', { class: 'safe-col' });
+    const who = a && a.targetPlayerLabel ? a.targetPlayerLabel : 'Player ' + index;
+    col.appendChild(el('div', { class: 'safe-col-head' }, el('b', null, 'B' + index), ' ', el('span', { class: 'faint xs' }, who + (a && a.nextPlayerLabel ? ' · lượt sau: ' + a.nextPlayerLabel : ''))));
+    if (!a || a.status !== 'OK') { col.appendChild(el('div', { class: 'faint sm' }, 'Chưa có bài')); return col; }
+    const safe = a.safeCards || []; const likely = a.likelySafeCards || []; const risky = a.riskyCards || []; const own = a.ownMeldCards || [];
+    if (safe.length) { col.appendChild(el('div', { class: 'faint xs' }, 'NÊN ĐÁNH (điểm cao trước)')); col.appendChild(safeCardRow(safe, 'meld', a.recommendedCode)); }
+    if (likely.length) { col.appendChild(el('div', { class: 'faint xs' }, 'CÓ THỂ AN TOÀN')); col.appendChild(safeCardRow(likely, '')); }
+    if (risky.length) { col.appendChild(el('div', { class: 'faint xs' }, 'ĐỪNG ĐÁNH — người sau ăn được')); col.appendChild(safeCardRow(risky, 'risky')); }
+    if (own.length) { col.appendChild(el('div', { class: 'faint xs' }, 'TRONG PHỎM — giữ lại')); col.appendChild(safeCardRow(own, 'own-meld')); }
+    if (!safe.length && !likely.length && !risky.length) col.appendChild(el('div', { class: 'faint sm' }, 'Chưa đủ dữ liệu'));
+    return col;
   }
   function safeCardRow(cards, extra, recommendedCode) {
     const row = el('div', { class: 'cards' });
@@ -1227,18 +1225,20 @@
       const rec = recommendedCode != null && c.code === recommendedCode;
       const tip = (rec ? 'NÊN ĐÁNH — ' : '') + (c.points != null ? c.points + ' điểm · ' : '') + (c.reasonCodes || []).join(', ');
       row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') + (extra ? ' ' + extra : '') + (rec ? ' recommended' : ''), title: tip }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
-      if (rec) row.appendChild(el('span', { class: 'chip green sm' }, 'NÊN ĐÁNH'));
     }
     return row;
   }
-  // Resolve the selected slot → authoritative uid (via the observer's binding) and run the read-only
-  // analyzer in main. Event-driven: called on selection change + every card snapshot update (§21). No timers.
+  // Run the read-only analyzer for ALL three accounts off the latest card snapshot (event-driven, no timers).
   async function refreshSafeAnalysis() {
-    const slot = selectedAnalysisPlayer;
-    if (!slot || !api.analyzeSafeCards) { safeAnalysis = null; return; }
-    const uid = cardsSnap && cardsSnap.slotBinding ? cardsSnap.slotBinding[slot] : null;
-    if (!uid) { safeAnalysis = null; return; } // Player not yet bound to a uid (waiting for table data)
-    try { const r = await api.analyzeSafeCards(uid); safeAnalysis = r && r.ok !== false ? r : null; } catch { safeAnalysis = null; }
+    const next = {};
+    if (api.analyzeSafeCards && cardsSnap && cardsSnap.slotBinding) {
+      for (const slot of ['B1', 'B2', 'B3']) {
+        const uid = cardsSnap.slotBinding[slot];
+        if (!uid) continue;
+        try { const r = await api.analyzeSafeCards(uid); if (r && r.ok !== false) next[slot] = r; } catch { /* keep the others */ }
+      }
+    }
+    safeBySlot = next;
   }
   // Build the single business-action button from the browserAction decision.
   function actionButton(act, b, runId, inGame) {
@@ -2355,7 +2355,7 @@
   // Refresh the manual snapshot + remaining cards, then reconcile the shared-room lifecycle (§18).
   async function refreshManual() {
     let sharedAuth; // §38 — the coordinator's single shared room (undefined when the backend didn't send one)
-    try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; coSeat = (r && r.coSeat) || null; if (r && 'sharedRid' in r) sharedAuth = { sharedRid: r.sharedRid, sharedRidOwner: r.sharedRidOwner }; } catch { manualBrowsers = []; coSeat = null; }
+    try { const r = await api.manualSnapshot(); manualBrowsers = (r && r.browsers) || []; coSeat = (r && r.coSeat) || null; manualGroup = (r && r.group) || null; if (r && 'sharedRid' in r) sharedAuth = { sharedRid: r.sharedRid, sharedRidOwner: r.sharedRidOwner }; } catch { manualBrowsers = []; coSeat = null; }
     try { const rc = await api.remainingCards(); remaining = rc && rc.ok !== false ? rc : null; } catch { remaining = null; }
     // PHASE 6.3.3.2 — pull the card-observation snapshot (real observed data; empty/unknown when none).
     if (api.cardsSnapshot) { try { const cs = await api.cardsSnapshot(); cardsSnap = cs && cs.ok !== false ? cs : null; } catch { cardsSnap = null; } }

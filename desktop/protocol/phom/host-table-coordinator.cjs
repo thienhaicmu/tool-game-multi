@@ -5,7 +5,7 @@ const { performance } = require('node:perf_hooks');
 const { PhomContext } = require('./phom-context.cjs');
 const { reduceHand, emptyHand, SYNC } = require('./hand-reducer.cjs');
 const { ZONE, GID } = require('./phom-frame-classify.cjs');
-const { buildChannelListFrame, buildFindTableFrame, buildJoinFrame, buildReadyFrame, buildLeaveFrame } = require('./phom-wire.cjs');
+const { buildTableReadyFrame, buildAutoReadyPrefFrame, buildCreateTableFrame, buildCreateOptionsFrame, newRoomKey, buildChannelListFrame, buildFindTableFrame, buildJoinFrame, buildReadyFrame, buildLeaveFrame } = require('./phom-wire.cjs');
 const { remainingCardsView } = require('./remaining-cards.cjs');
 const { pickQualifiedCandidate, describeNoTableReason } = require('./table-qualify.cjs');
 const { createCardObserver } = require('./phom-card-observer.cjs');
@@ -126,12 +126,20 @@ class HostTableCoordinator extends EventEmitter {
     this._leaveConfirmMs = deps.leaveConfirmMs != null ? Number(deps.leaveConfirmMs) : LEAVE_CONFIRM_MS; // §37
     this._rerollCooldownMs = deps.rerollCooldownMs != null ? Number(deps.rerollCooldownMs) : REROLL_COOLDOWN_MS; // §53
     this._joinRejectGraceMs = deps.joinRejectGraceMs != null ? Number(deps.joinRejectGraceMs) : JOIN_REJECT_GRACE_MS; // §53
+    // §create — how long TẠO BÀN gives the game client to JOIN its new table by itself before the tool sends the JOIN.
+    this._createAutoJoinMs = deps.createAutoJoinMs != null ? Number(deps.createAutoJoinMs) : 2500;
+    this._createOptionsMs = deps.createOptionsMs != null ? Number(deps.createOptionsMs) : 3000; // wait for the CMD 311 reply
     this._delay = deps.delay || ((ms) => new Promise((r) => setTimeout(r, ms)));
 
     this._state = SESSION.IDLE;
     this._stopped = false;
     this._hostTableIdentity = null;
     this._roundRunning = false;
+    // Table facts observed from the server: who the table host is (ps[].C / cmd 203) and who signalled READY since
+    // the last deal/end. The GROUP on top of them lives in table-group.cjs.
+    this._tableHostUid = null;
+    this._readyUids = new Set();
+    this._roomKeyResolver = null;
     this._gen = 0;                 // orchestration generation token (§22 single orchestrator)
     this._running = false;         // discovery loop active
     // §36 — true once a LEGACY HOST/FOLLOWER entry point (acquireHost / joinFollowers / runDiscovery /
@@ -234,8 +242,23 @@ class HostTableCoordinator extends EventEmitter {
       if (cls.type === 'CHANNEL_LIST') this._markOnce('channel-list', 'T2_CHANNEL_LIST_RECEIVED');
       if (cls.type === 'TABLE_STATE') this._markOnce('first-table-state', 'T5_FIRST_TABLE_STATE_RECEIVED');
     }
-    if (cls && cls.type === 'DEAL') { this._roundRunning = true; this._setState(SESSION.ROUND_RUNNING); this._mark('ROUND_DEAL'); }
-    if (cls && cls.type === 'ROUND_END') { this._roundRunning = false; this._setState(SESSION.ROUND_ENDED); this._mark('ROUND_END'); }
+    if (cls && cls.type === 'DEAL') { this._roundRunning = true; this._readyUids.clear(); this._setState(SESSION.ROUND_RUNNING); this._mark('ROUND_DEAL'); }
+    if (cls && cls.type === 'ROUND_END') { this._roundRunning = false; this._readyUids.clear(); this._setState(SESSION.ROUND_ENDED); this._mark('ROUND_END'); }
+    if (cls && cls.type === 'USER_READY') this._readyUids.add(cls.uid);
+    if (cls && cls.type === 'HOST_CHANGED') this._tableHostUid = cls.uid;
+    // The server removed this browser from the table (LEAVE ack code 2, e.g. "Bạn thoát vì không bắt đầu"). What to
+    // do about it is a GROUP decision (table-group.cjs) — here it is only observed and announced.
+    if (cls && cls.type === 'LEAVE_ACK' && cls.accepted === true && cls.resultCode === 2 && meta.direction !== 'send') {
+      rec._joinedRid = null; rec._joinedRidValidated = false; rec.confirmedInTable = false;
+      rec.manualState = 'KICKED'; rec.lastError = { code: 'PHOM_KICKED', message: cls.resultMessage || 'Bị máy chủ đưa ra khỏi bàn' };
+      this.emit('kicked', { id: rec.id, message: cls.resultMessage || null });
+    }
+    if (cls && cls.type === 'TABLE_STATE') {
+      const ts = rec.ctx.tableState();
+      const h = ts && ts.seats.find((s) => s.host);
+      if (h && h.uid) this._tableHostUid = h.uid;
+      if (ts) for (const s of ts.seats) if (s.ready && s.uid) this._readyUids.add(s.uid);
+    }
     // ALWAYS-ON co-seat wire evidence (JOIN response + resulting table): so "who landed where" can be read from a
     // file without the Test D recorder. The JOIN request side is logged in manualJoinRoom (M_JOIN_SENT below).
     if (cls && cls.type === 'JOIN_ACCEPTED') this._coseatLog('JOIN_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode != null ? cls.resultCode : null, msg: cls.resultMessage || null });
@@ -1402,6 +1425,13 @@ class HostTableCoordinator extends EventEmitter {
   // §co-seat — the shared room CODE + owner-id, published to BOTH surfaces alongside sharedRid() so the header
   // can show P1's "mã bàn" and the follower JOIN can target it. Null when no browser holds a room yet.
   sharedRoomCode() { return this._anchorRoomCode(); }
+  // §room-key — the key of a table one of THIS tool's browsers created (CMD 308), '' for any other table. It is the
+  // only password the tool ever sends without the user typing one.
+  roomKeyFor(rid) {
+    if (rid == null || !this._roomKeyResolver) return '';
+    const k = this._roomKeyResolver(Number(rid));
+    return k != null ? String(k) : '';
+  }
   // Which follower-JOIN failures are worth a same-RID retry (§12). A transient room race / not-yet-confirmed
   // membership is retryable; a dead/cancelled/invalid situation is NOT (retrying it is pointless).
   _isMissingRoom(res) {
@@ -1460,7 +1490,9 @@ class HostTableCoordinator extends EventEmitter {
           if (!lv.confirmed) return { ok: false, id: rec.id, error: rec.lastError };
           if (attempt > 0 || !lv.confirmed) { await this._waitManual(() => false, rec, g, this._rerollCooldownMs); if (rec._manualGen !== g || rec._followGen !== myGen) return { ok: false, id: rec.id, superseded: true }; }
         }
-        last = await this.manualJoinRoom(profileId, r, { ...opts, intent: 'JOIN', followGen: myGen, roomCode: this._anchorRoomCode(rec.id) });
+        // §room-key — the follower JOIN carries the key of a table the TOOL created (roomKeyFor), otherwise ''. Never
+        // the anchor's TABLE_STATE hpwd and never a login token.
+        last = await this.manualJoinRoom(profileId, r, { ...opts, intent: 'JOIN', followGen: myGen, roomCode: this.roomKeyFor(r) });
         if (last.ok) {
           // §13/§14 — SAME-ROOM PROOF from authoritative ps[]: own uid confirmed (manualJoinRoom) AND the
           // anchor (P1) uid present in the SAME table state. Otherwise it's a room mismatch → retryable.
@@ -1490,11 +1522,9 @@ class HostTableCoordinator extends EventEmitter {
     } finally { if (rec._followGen === myGen) { rec._followInFlight = false; } }
   }
 
-  // §co-seat — JOIN a specific SỐ BÀN (mã bàn) with a KEY. The target rid is the USER's số bàn (not the anchor
-  // rid); the key defaults to the anchor's LIVE room code, falling back to the host session token. Bounded,
-  // single-flight, generation-safe. Two rules the reference-tool video made explicit:
-  //   §key-refresh — a key the server refused is never re-sent; the anchor's live code is re-read each attempt
-  //                  (its "Đổi Key"), and the retry stops once every known key has been refused.
+  // §co-seat — JOIN a specific SỐ BÀN (mã bàn). The target rid is the USER's số bàn (not the anchor rid). The room
+  // code sent is '' unless the user typed a key (§no-password). Bounded, single-flight, generation-safe:
+  //   §key-refresh — a key the server refused is never re-sent, and the retry stops once every key is refused.
   //   §same-room   — success is own uid ∈ ps[] AND the anchor's uid in that SAME table state, never just
   //                  "seated somewhere"; a mismatch leaves the wrong table instead of reporting a join.
   async manualJoinByCode(profileId, rid, key, opts = {}) {
@@ -1505,16 +1535,15 @@ class HostTableCoordinator extends EventEmitter {
     if (!Number.isFinite(r)) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_RID', message: 'Số bàn trống/không hợp lệ' } }; }
     // §key-refresh — the KEY is re-decided on EVERY attempt, and a key the server has already REJECTED is never
     // re-sent. The old code computed it ONCE before the loop and then replayed the SAME value up to 41 times: if
-    // the key was stale, all 41 were stale, and each one cost a LEAVE + an 8s join wait. The known keys, in
-    // priority order, are: the one the user typed (pinned), the anchor's LIVE room code re-read from its own
-    // ps[].hpwd (so a rotated key is picked up mid-retry — the reference tool's "Đổi Key"), and the public empty
-    // code. When every one of them has been refused, the retry STOPS with a typed error instead of hammering.
+    // the key was stale, all 41 were stale, and each one cost a LEAVE + an 8s join wait. The keys, in order: the one
+    // the user typed (pinned), then the empty code. When both are refused the retry STOPS with a typed error.
     const pinnedKey = (key != null && String(key).trim() !== '') ? String(key).trim() : null;
-    const liveKey = () => { const a = this._anchorRoomCode(rec.id); if (a != null && String(a) !== '') return String(a); return ''; };
+    // §no-password — only a key the USER typed is ever sent; nothing is lifted from the anchor's table state or its
+    // login session. Without a typed key the JOIN carries '' exactly like the game's own table click.
     const rejectedKeys = new Set();
     const nextKey = () => {
       const seen = new Set(); const candidates = [];
-      for (const k of [pinnedKey, liveKey(), '']) { if (k == null || seen.has(k)) continue; seen.add(k); candidates.push(k); }
+      for (const k of [pinnedKey, this.roomKeyFor(r) || null, '']) { if (k == null || seen.has(k)) continue; seen.add(k); candidates.push(k); }
       const fresh = candidates.find((k) => !rejectedKeys.has(k));
       return { key: fresh, exhausted: fresh === undefined };
     };
@@ -1523,7 +1552,7 @@ class HostTableCoordinator extends EventEmitter {
     if (rec._followInFlight && Number(rec._followRid) === r) return { ok: false, id: rec.id, busy: true, error: { code: 'PHOM_FOLLOW_IN_FLIGHT', message: 'đang vào bàn' } };
     rec._followInFlight = true; rec._followRid = r;
     const myGen = (rec._followGen = (rec._followGen || 0) + 1);
-    this._findLog('C0_JOIN_BY_CODE_START', rec, myGen, { rid: r, pinnedKey: !!pinnedKey, hasLiveKey: !!liveKey(), maxRetries });
+    this._findLog('C0_JOIN_BY_CODE_START', rec, myGen, { rid: r, pinnedKey: !!pinnedKey, maxRetries });
     try {
       let last = null;
       for (let attempt = 0; attempt <= maxRetries; attempt++) {
@@ -1582,6 +1611,147 @@ class HostTableCoordinator extends EventEmitter {
     } finally { if (rec._followGen === myGen) rec._followInFlight = false; }
   }
 
+  // §create — TẠO BÀN on ONE browser: a FRESH empty table via the game's own CREATE_TABLE (cmd 308), instead of
+  // hunting the lobby for a table with room. Source of the protocol: the game client's requestcreateRoom +
+  // onReceiveQuickPlay (read from its code cache, 2026-09-21). The reply's ri.rid is the table's real SỐ BÀN.
+  // The game client JOINs that rid by itself when the reply arrives, so the tool waits for that JOIN first and only
+  // sends its own when the game did not (a second JOIN while seated makes the server move the player — §53).
+  // PRIMITIVE — create ONE keyed table for this browser (311 → 308 → the game joins it). The group flow on top of
+  // this lives in table-group.cjs (docs/phom-kich-ban.md); this method only talks to the server.
+  async createTable(profileId, opts = {}) {
+    return this._withFindLock(profileId, () => this._createTable(profileId, opts));
+  }
+  async _createTable(profileId, opts = {}) {
+    if (!this._guard()) return this._unauthorized();
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
+    const stake = Number(opts.stake);
+    if (!Number.isFinite(stake) || stake <= 0) return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_STAKE', message: 'Chọn mức cược để tạo bàn' } };
+    if (!rec.ctx.sendContext()) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
+    if (this._ownSeated(rec)) {
+      const g = (rec._manualGen = (rec._manualGen || 0) + 1);
+      const lv = await this._leaveConfirmed(rec, g);
+      if (!lv.confirmed) return { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError || { code: 'PHOM_OPERATION_CANCELLED' } };
+    }
+    const maxPlayers = opts.maxPlayers != null ? Number(opts.maxPlayers) : this._capacity;
+    const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+    // Step 1 — CMD 311, exactly what the game's TẠO BÀN button sends first. Its b[] is the list of stakes this
+    // account may create at (empty = not enough gold: the game says "Bạn không đủ tiền tạo bàn chơi!").
+    const optsBefore = rec.ctx.createOptionsSeq();
+    try { await rec.send(buildCreateOptionsFrame(), rec.ctx.sendContext()); } catch { /* the 308 below still reports */ }
+    const optReply = () => { const o = rec.ctx.createOptions(); return o && o.seq > optsBefore ? o : null; };
+    await this._waitManual(() => !!optReply(), rec, myGen, this._createOptionsMs);
+    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+    const allowed = optReply();
+    if (allowed && !allowed.stakes.length) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_CREATE_NO_GOLD', message: 'Không đủ tiền tạo bàn chơi' }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError }; }
+    if (allowed && !allowed.stakes.includes(stake)) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_CREATE_STAKE_NOT_ALLOWED', message: `Không tạo được bàn cược ${stake} — được tạo: ${allowed.stakes.join(', ')}` }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, allowedStakes: allowed.stakes }; }
+    if (typeof opts.pace === 'function') { const alive = await opts.pace(); if (alive === false || rec._manualGen !== myGen) return { ok: false, id: rec.id, superseded: true }; }
+    // Step 2 — CMD 308 WITH a room key: Phỏm tables cannot be created without one (the server drops the request).
+    // The key is generated here for this table only — never a login token — and only this tool's browsers get it.
+    const roomKey = opts.password != null && String(opts.password) !== '' ? String(opts.password) : newRoomKey();
+    const createBefore = rec.ctx.createSeq();
+    const tableBefore = rec.ctx.tableSeq();
+    const joinBefore = rec.ctx.joinSendSeq();
+    rec.manualState = 'JOINING'; rec.lastError = null;
+    this.emit('update', this.snapshot());
+    const fail = (code, message, extra = {}) => {
+      rec.manualState = 'ERROR'; rec.lastError = { code, message };
+      this._coseatLog('CREATE_FAIL', rec, { code, ...extra });
+      this.emit('update', this.snapshot());
+      return { ok: false, id: rec.id, error: rec.lastError, ...extra };
+    };
+    this._coseatLog('CREATE_SENT', rec, { stake, maxPlayers, allowedStakes: allowed ? allowed.stakes : null });
+    try {
+      const sent = await rec.send(buildCreateTableFrame({ stake, maxPlayers, password: roomKey }), rec.ctx.sendContext());
+      if (sent?.ok === false) throw new Error('CREATE_SEND_FAILED');
+    } catch (e) { return fail('PHOM_CREATE_FAILED', String(e && e.message || e)); }
+    const reply = () => { const r = rec.ctx.lastCreateResult(); return r && r.seq > createBefore ? r : null; };
+    await this._waitManual(() => !!reply(), rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
+    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+    const res = reply();
+    if (!res) return fail('PHOM_CREATE_NO_REPLY', 'Máy chủ không trả lời lệnh tạo bàn');
+    if (!res.ok) return fail('PHOM_CREATE_REJECTED', `Máy chủ từ chối tạo bàn: ${res.message || 'không rõ lý do'}`);
+    const rid = Number(res.rid);
+    this._coseatLog('CREATE_OK', rec, { rid, stake: res.stake, maxPlayers: res.maxPlayers });
+    const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
+    const gameJoined = () => { const j = rec.ctx.lastJoinSend(); return !!(j && j.seq > joinBefore && Number(j.rid) === rid); };
+    await this._waitManual(() => seatedFresh() || gameJoined(), rec, myGen, this._createAutoJoinMs);
+    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+    if (!seatedFresh() && gameJoined()) await this._waitManual(seatedFresh, rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
+    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+    if (!seatedFresh()) {
+      if (gameJoined()) return fail('PHOM_JOIN_NOT_CONFIRMED', `Đã tạo bàn ${rid} nhưng chưa thấy vào bàn`, { rid });
+      const j = await this.manualJoinRoom(profileId, rid, { intent: 'JOIN', roomCode: roomKey, timeoutMs: opts.timeoutMs });
+      if (!j.ok) return { ...j, rid, created: true };
+    }
+    rec._joinedRid = rid; rec._lastRid = rid; rec._createdRid = rid;
+    rec._joinedViaChannel = false; rec._joinedRidValidated = true;
+    rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+    this._mark('M_CREATE_CONFIRMED', { id: rec.id, rid, seat: rec.ctx.seat() });
+    this.emit('update', this.snapshot());
+    return { ok: true, id: rec.id, rid, roomKey, created: true, state: 'JOINED', seat: rec.ctx.seat() };
+  }
+
+  // ---- PRIMITIVES used by table-group.cjs (the group/role/auto flow lives there, not here) ----
+  // Is this browser in the game (its own socket + channel list), i.e. can it be told to do anything at all?
+  browserReady(profileId) { const r = this._rec(profileId); if (!r) return false; const c = r.ctx.get(); return !!(c.connected && c.socketReady); }
+  profileIds() { return [...this._profiles.keys()]; }
+  uidOf(profileId) { const r = this._rec(profileId); return r ? r.ctx.uid() : null; }
+  // Seated = own uid in this browser's authoritative ps[]; seatedRid = the room it last confirmed.
+  isSeated(profileId) { const r = this._rec(profileId); return !!(r && this._ownSeated(r)); }
+  seatedRid(profileId) { const r = this._rec(profileId); return r && this._ownSeated(r) && r._joinedRid != null ? Number(r._joinedRid) : null; }
+  lastRidOf(profileId) { const r = this._rec(profileId); return r ? (r._joinedRid != null ? Number(r._joinedRid) : (r._lastRid != null ? Number(r._lastRid) : null)) : null; }
+  isReady(profileId) { return this._isReady(this._rec(profileId)); }
+  // Ready = this browser signalled READY since the last deal/end, or its own seat row says so.
+  _isReady(rec) {
+    if (!rec) return false;
+    const uid = rec.ctx.uid();
+    if (uid != null && this._readyUids.has(uid)) return true;
+    const ts = rec.ctx.tableState();
+    const s = ts && uid != null ? ts.seats.find((x) => x.uid === uid) : null;
+    return !!(s && s.ready);
+  }
+  tableHostUid() { return this._tableHostUid; }
+  isTableHost(profileId) { const uid = this.uidOf(profileId); return uid != null && uid === this._tableHostUid && this.isSeated(profileId); }
+  roundRunning() { return this._roundRunning; }
+  // Leave the current table and WAIT for the server's confirmation (never a fire-and-forget leave).
+  async leaveTable(profileId) {
+    const rec = this._rec(profileId);
+    if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY' } };
+    if (!this._ownSeated(rec)) return { ok: true, already: true };
+    const gen = (rec._manualGen = (rec._manualGen || 0) + 1);
+    const left = await this._leaveConfirmed(rec, gen);
+    return left.confirmed ? { ok: true } : { ok: false, error: rec.lastError || { code: 'PHOM_LEAVE_NOT_CONFIRMED' } };
+  }
+  // The account's server-side "tự sẵn sàng" preference (CMD 363). Set BEFORE a browser sits down: with it on the
+  // game client readies by itself on join / after a round, and there is no un-ready command.
+  async setAutoReadyPref(profileId, on) {
+    const rec = this._rec(profileId);
+    if (!rec || !rec.ctx.sendContext()) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND' } };
+    try { const r = await rec.send(buildAutoReadyPrefFrame(on), rec.ctx.sendContext()); return { ok: r?.ok !== false }; }
+    catch (e) { return { ok: false, error: { code: 'PHOM_PREF_FAILED', message: String(e && e.message || e) } }; }
+  }
+  // SẴN SÀNG at the current table (never sent for the table HOST — for a host the same cmd means BẮT ĐẦU).
+  async sendTableReady(profileId, rid) {
+    const rec = this._rec(profileId);
+    if (!rec || !rec.ctx.sendContext()) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND' } };
+    if (this.isTableHost(profileId)) return { ok: false, error: { code: 'PHOM_HOST_NEVER_STARTS', message: 'Chủ bàn không tự bấm Bắt đầu' } };
+    try { const r = await rec.send(buildTableReadyFrame(rid), rec.ctx.sendContext()); return { ok: r?.ok !== false }; }
+    catch (e) { return { ok: false, error: { code: 'PHOM_READY_FAILED', message: String(e && e.message || e) } }; }
+  }
+  // table-group.cjs owns the room keys; a JOIN sent by any path asks it for the key of the room it targets.
+  setRoomKeyResolver(fn) { this._roomKeyResolver = typeof fn === 'function' ? fn : null; }
+
+  // The latest SỐ BÀN list one browser has received (real tables only, never stake channels), for the header's
+  // "Danh sách số bàn". `ageSec` because the server only broadcasts the full list about once a minute.
+  roomList(profileId) {
+    const rec = this._rec(profileId) || [...this._profiles.values()].find((r) => r.ctx.roomListAt() != null);
+    if (!rec) return { rooms: [], at: null, ageSec: null };
+    const at = rec.ctx.roomListAt();
+    const rooms = rec.ctx.roomList().map((c) => ({ rid: Number(c.rid), b: c.b, uC: c.uC, Mu: c.Mu, locked: !!c.hpwd }));
+    return { rooms, at, ageSec: at != null ? Math.max(0, Math.round((this._now() - at) / 1000)) : null };
+  }
+
   // FIND a table on ONE browser: native JOIN by the chosen channel/stake and report the RID it landed
   // in (that browser's own _joinedRid) for the user to share. No matchmaking coupling to other browsers.
   async manualFindTable(profileId, channel, opts = {}) {
@@ -1602,7 +1772,7 @@ class HostTableCoordinator extends EventEmitter {
     if (shared != null && this.sharedRidOwner() !== rec.id) return this.manualJoinShared(profileId, shared, opts);
     const rid = rec._joinedRid != null ? rec._joinedRid : rec._lastRid; // survives an intentional LEAVE
     if (rid == null) return { ok: false, id: rec.id, error: { code: 'PHOM_REJOIN_NO_RID', message: 'Chưa có Room/RID để Rejoin' } };
-    return this.manualJoinRoom(profileId, rid, { ...opts, intent: 'REJOIN', roomCode: this._anchorRoomCode() });
+    return this.manualJoinRoom(profileId, rid, { ...opts, intent: 'REJOIN', roomCode: this.roomKeyFor(rid) }); // §room-key
   }
 
   // §34 — CANCEL an in-flight TÌM BÀN on ONE browser. A persistent search can run for a whole minute, so the
@@ -1702,6 +1872,9 @@ class HostTableCoordinator extends EventEmitter {
         isSelectedFinder: this._finderId != null && rec.id === this._finderId,
         username: this._username(rec) || 'USER_UNKNOWN',
         connected: c.connected, socketReady: c.socketReady,
+        // When a frame from THIS browser's game socket last arrived. A browser that is in the game but whose frames
+        // stopped is NOT "chưa vào game" — it is a lost data stream, and the surfaces must say so (and re-hook).
+        lastFrameAt: c.lastFrameAt != null ? c.lastFrameAt : null,
         // channelCount > 0 == this browser received the Phỏm stake list, i.e. it is in the Phỏm lobby
         // (mirrors snapshot().channelCount). The header uses it to decide "inGame" (§6.3.2).
         channelCount: Array.isArray(c.channels) ? c.channels.length : 0,
@@ -1719,6 +1892,12 @@ class HostTableCoordinator extends EventEmitter {
         // Shown on the finder so the user can see "mã bàn"; it is what the followers' JOIN carries to co-seat.
         roomCode: maskSecret(ts && ts.roomCode),
         tableOwner: (ts && ts.cP) ? ts.cP : null,
+        // §room-key — the key of the table this browser is at, when the tool created it (shown as "KEY" in the bar).
+        roomKey: rec._joinedRid != null ? (this.roomKeyFor(rec._joinedRid) || null) : null,
+        // Table facts: is this browser ready, and does the server name it the table host (chủ bàn)? The group ROLE is
+        // merged in by the session manager (table-group.cjs owns it).
+        ready: this._isReady(rec),
+        isTableHost: rec.ctx.uid() != null && rec.ctx.uid() === this._tableHostUid && this._ownSeated(rec),
         // PHASE 6.3.5 §7 — a discover anchor is published to followers ONLY after its post-anchor capacity
         // check passes. A provisional (mid-check) FIND join reports anchorValid=false so headerSharedRid
         // never publishes an unverified RID. Non-discover joins are valid immediately.

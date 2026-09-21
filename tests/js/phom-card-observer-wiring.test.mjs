@@ -39,22 +39,3 @@ test('main exposes a minimal phom:cards IPC (pull) + a throttled push; preload b
   assert.match(preload, /onCards: \(cb\) => ipcRenderer\.on\('phom:cards'/);
 });
 
-test('Screen 2 consumes the snapshot read-only: LÁ BÀI CÒN LẠI uses observed data; AN TOÀN stays a placeholder', () => {
-  // onCards handler stores the snapshot + re-renders
-  assert.match(js, /api\.onCards\(\(c\) => \{ cardsSnap = c/);
-  // remaining prefers the observer's remaining, with an explicit "observing" state (no fake number)
-  const rem = rfn('renderRemainingCards');
-  assert.match(rem, /cardsSnap && cardsSnap\.remaining/);
-  assert.match(rem, /Đang quan sát/);
-  // PHASE 6.3.9 — the renderer READS the analyzer result (safeAnalysis) for the count/subtitle; the algorithm
-  // itself lives in main (safeCardAnalyzer). The renderer never RUNS a safe-card algorithm here.
-  const safe = rfn('renderSafeCards');
-  assert.match(safe, /LÁ BÀI AN TOÀN/);
-  assert.equal(/recommend|findMelds|safeCardsCompute/.test(safe), false, 'no safe-card algorithm in the renderer');
-});
-
-test('the three hands are never merged; an analysis angle is only PREPARED (§19/§20)', () => {
-  assert.match(js, /let selectedAnalysisPlayer = null/);
-  // no A+B+C hand concatenation anywhere in the renderer
-  assert.equal(/mergedHand|combinedHand|B1 \+ B2 \+ B3|hands\[0\]\.concat/.test(js), false);
-});

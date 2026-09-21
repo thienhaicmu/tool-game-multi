@@ -59,6 +59,9 @@ function deriveHeaderState(view = {}) {
   const joined = !!view.inGame && s === 'JOINED' && view.rid != null;
   let statusLabel, statusClass, primary, secondary = [];
   if (!view.opened) { statusLabel = 'CHƯA MỞ'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME', disabled: true }; }
+  // The tool stopped receiving this browser's game frames: it cannot know the real state, so it says exactly that
+  // and offers the only fix (reload the page in this Chromium) instead of claiming "CHƯA VÀO GAME".
+  else if (view.dataStale) { statusLabel = 'MẤT DỮ LIỆU' + (view.staleSec ? ' ' + view.staleSec + 's' : '') + ' · TẢI LẠI'; statusClass = 'danger'; primary = { action: 'RELOAD', label: 'TẢI LẠI WEB' }; }
   else if (view.entering) { statusLabel = 'ĐANG VÀO GAME'; statusClass = 'warn'; primary = { action: 'ENTER_GAME', label: 'ĐANG VÀO GAME…', busy: true, disabled: true }; }
   else if (!view.inGame) { statusLabel = 'CHƯA VÀO GAME'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME' }; }
   // §32/§34 — a persistent search can run for up to a minute, so it reports PROGRESS (elapsed + how many times
@@ -70,6 +73,7 @@ function deriveHeaderState(view = {}) {
     statusLabel = `ĐANG TÌM BÀN…${el}${at}`; statusClass = 'warn';
     primary = { action: 'CANCEL_FIND', label: 'HỦY TÌM', danger: true };
   }
+  else if (s === 'KICKED') { statusLabel = 'BỊ ĐÁ · bấm ReJoin'; statusClass = 'danger'; primary = { action: 'REJOIN', label: 'REJOIN' }; }
   else if (s === 'LEAVE_UNCONFIRMED') { statusLabel = 'CHƯA XÁC NHẬN RỜI'; statusClass = 'warn'; primary = { action: 'LEAVE', label: 'THỬ RỜI BÀN LẠI', danger: true }; }
   else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
   else if (joined) {
@@ -79,9 +83,12 @@ function deriveHeaderState(view = {}) {
     // §stake-channel — "SS" means the 7-digit SỐ BÀN. A seat taken through the lobby stake channel has no số bàn
     // yet (the server picked the table behind that id), so calling it SS sent users looking for a code to copy
     // that does not exist. It is still the id the other browsers JOIN — only the wording changes.
-    statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + (ss != null ? ss : '—') + (code ? ' · KEY ' + code : '');
+    statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + (ss != null ? ss : '—') + (code ? ' · KEY ' + code : '') + (view.groupRole === 'READY' || view.ready ? ' · ✓' : '');
     statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }];
   }
+  // In the game but NOT at the table, while this browser still holds a role at the group's table: say it is out of
+  // the table and make ReJoin the primary action (the role chip alone used to look like it was still seated).
+  else if (view.groupRole && view.sharedRid != null) { statusLabel = 'NGOÀI BÀN · SS ' + view.sharedRid; statusClass = 'warn'; primary = { action: 'REJOIN', label: 'VÀO LẠI BÀN' }; }
   else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_SHARED', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }
   // PHASE 6.3.6 — the finder is the USER's explicit choice (view.finderIndex), NEVER defaulted to Player 1.
   // A non-finder (isFinder === false, i.e. a finder WAS chosen and it isn't this browser) with no shared RID
@@ -95,7 +102,21 @@ function deriveHeaderState(view = {}) {
     // §co-seat — this browser's room CODE (hpwd) + the shared code, so the page/⋯ menu can show "mã bàn".
     roomCode: view.roomCode != null ? String(view.roomCode) : null, sharedRoomCode: view.sharedRoomCode != null ? String(view.sharedRoomCode) : null,
     // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
-    capturing: !!view.capturing, lastCapture: view.lastCapture || null };
+    capturing: !!view.capturing, lastCapture: view.lastCapture || null,
+    // §create — the header can create a table / join a số bàn whenever the browser is in the game (not mid-op).
+    canCreate: !!view.inGame && !view.dataStale && !['SEARCHING', 'JOINING', 'RECONNECTING', 'LEAVE_UNCONFIRMED'].includes(s) && !view.joining,
+    // The role chip is only "live" while this browser really sits at the table; otherwise it is shown dimmed.
+    seatedAtTable: !!view.seatedAtTable,
+    dataStale: !!view.dataStale,
+    // The stake comes from the Phỏm tool (one place), so the bar only displays it and TẠO is disabled without it.
+    stake: Number(view.stake) > 0 ? Number(view.stake) : null,
+    rooms: Array.isArray(view.rooms) ? view.rooms.map((r) => ({ rid: r.rid, b: r.b, uC: r.uC, Mu: r.Mu })) : [],
+    // §group — the reference-tool bar: role chip, SS pre-filled with this browser's / the group's số bàn, the table key.
+    groupRole: view.groupRole || null, isTableHost: !!view.isTableHost, inTable: joined,
+    canRejoin: joined || view.lastRid != null || view.sharedRid != null,
+    ssDefault: joined ? Number(view.rid) : (view.sharedRid != null ? Number(view.sharedRid) : null),
+    tableKey: view.roomCode != null && String(view.roomCode) !== '' ? String(view.roomCode) : null,
+    roomListAt: view.roomListAt != null ? view.roomListAt : null };
 }
 
 // The one-time page bootstrap script (injected via Page.addScriptToEvaluateOnNewDocument + evaluated
@@ -121,7 +142,7 @@ function bootScript(opts = {}) {
   // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
   function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } if(OPTIMISTIC_ACTIONS[action]) applyOptimistic(action); window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
   // Only the GAME/TABLE flow actions paint an optimistic busy overlay; lifecycle (RELOAD/STOP/FOCUS) do not.
-  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, FIND:1, JOIN_SHARED:1, JOIN:1, REJOIN:1, LEAVE:1, CANCEL_FIND:1 };
+  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, FIND:1, JOIN_SHARED:1, JOIN:1, REJOIN:1, LEAVE:1, CANCEL_FIND:1, CREATE_TABLE:1, CREATE_SOLO:1, JOIN_CODE:1, CHANGE_KEY:1 };
   // 6.3.2.11 OPTIMISTIC visual state (page-local only). __authState = last AUTHORITATIVE state pushed by main;
   // __optAction = a transient action the user just clicked. The click paints an immediate busy state with NO
   // CDP/main round-trip; the next authoritative __phomHeaderRender CLEARS it and wins. Only the status/action
@@ -129,6 +150,15 @@ function bootScript(opts = {}) {
   var __authState = null, __optAction = null;
   // Page-local UI state only (no persistent web storage — a new document resets it, F5-safe like optimistic).
   var __collapsed = false;
+  // §create — the SS (số bàn) box is created ONCE and re-attached on every paint, so a repaint never wipes what the
+  // user is typing.
+  var __ssValue = '';
+  var __ssAuto = null; // the last số bàn the header filled in by itself (a user edit is never overwritten)
+  var ssInput = document.createElement('input');
+  ssInput.setAttribute('style','width:62px;height:22px;padding:0 4px;box-sizing:border-box;border-radius:6px;border:1px solid #374151;background:#111827;color:#e5e7eb;font:600 11px Inter,Segoe UI,sans-serif;');
+  ssInput.placeholder = 'Số bàn'; ssInput.inputMode = 'numeric';
+  ssInput.addEventListener('input', function(){ __ssValue = ssInput.value; });
+  ssInput.addEventListener('mousedown', function(ev){ ev.stopPropagation(); });
   // Report the header's REAL DOM presence to main (once per mount/remount) so the Tool shows HEADER = Sẵn sàng.
   function emitStatus(){ try { window[BID] && window[BID](JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId })); } catch(e){} }
   // PHASE 6.3.8 — per-player accent (B1 blue / B2 green / B3 orange) + "Player N" derived from the slot id.
@@ -139,19 +169,19 @@ function bootScript(opts = {}) {
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
   // ---- the floating, compact, single-row header (mobile-landscape; never a full-width toolbar) ----
   const bar = document.createElement('div'); bar.id = '__phom_header';
-  bar.setAttribute('style','position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;align-items:center;gap:8px;flex-wrap:wrap;box-sizing:border-box;min-height:42px;max-width:calc(100vw - 16px);padding:7px 8px;background:rgba(17,24,39,.96);color:#e5e7eb;border:1px solid #374151;border-left:3px solid '+ACCENT+';border-radius:10px;font:600 12px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35);user-select:none;');
+  bar.setAttribute('style','position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;align-items:center;gap:4px;flex-wrap:nowrap;box-sizing:border-box;min-height:28px;max-width:calc(100vw - 16px);padding:3px 4px;background:rgba(17,24,39,.96);color:#e5e7eb;border:1px solid #374151;border-left:3px solid '+ACCENT+';border-radius:8px;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35);user-select:none;');
   // drag handle = badge + name + status (dragging the identity area moves the whole control).
-  const handle = mk('div','display:flex;align-items:center;gap:7px;cursor:move;min-width:0;');
-  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:20px;padding:0 6px;border-radius:6px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:11px;'); badge.textContent = ID.slotId||'B?';
-  const nameEl = mk('span','font-weight:700;color:#e5e7eb;white-space:nowrap;'); nameEl.textContent = SLOTN?('Player '+SLOTN):'Player';
+  const handle = mk('div','display:flex;align-items:center;gap:4px;cursor:move;min-width:0;');
+  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = ID.slotId||'B?';
+  const nameEl = mk('span','font-weight:700;color:#e5e7eb;white-space:nowrap;'); nameEl.textContent = ''; nameEl.style.display='none';
   const statusDot = mk('span','width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto;');
-  const stLabel = mk('span','color:#cbd5e1;font-weight:500;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
+  const stLabel = mk('span','color:#cbd5e1;font-weight:500;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
   handle.appendChild(badge); handle.appendChild(nameEl); handle.appendChild(statusDot); handle.appendChild(stLabel);
-  const act = mk('div','display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0;'); act.id='__ph_act';
-  const menuWrap = mk('div','position:relative;display:flex;align-items:center;gap:4px;');
-  const menuBtn = mk('button','width:26px;height:26px;border-radius:7px;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;'); menuBtn.textContent='⋮'; menuBtn.title='Tùy chọn';
-  const collapseBtn = mk('button','width:26px;height:26px;border-radius:7px;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:13px;line-height:1;'); collapseBtn.title='Thu gọn / mở rộng';
-  const menu = mk('div','position:absolute;top:30px;right:0;min-width:200px;background:#111827;border:1px solid #374151;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.4);padding:4px;display:none;z-index:2147483647;');
+  const act = mk('div','display:flex;align-items:center;gap:3px;flex-wrap:nowrap;min-width:0;'); act.id='__ph_act';
+  const menuWrap = mk('div','position:relative;display:flex;align-items:center;gap:3px;');
+  const menuBtn = mk('button','width:22px;height:22px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;'); menuBtn.textContent='⋮'; menuBtn.title='Tùy chọn';
+  const collapseBtn = mk('button','width:22px;height:22px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:13px;line-height:1;'); collapseBtn.title='Thu gọn / mở rộng';
+  const menu = mk('div','position:absolute;top:26px;right:0;min-width:200px;background:#111827;border:1px solid #374151;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.4);padding:4px;display:none;z-index:2147483647;');
   menuWrap.appendChild(menuBtn); menuWrap.appendChild(collapseBtn); menuWrap.appendChild(menu);
   bar.appendChild(handle); bar.appendChild(act); bar.appendChild(menuWrap);
   // Mount idempotently (floating overlay — does NOT push the game view). On a real (re)mount, tell main.
@@ -195,68 +225,85 @@ function bootScript(opts = {}) {
   // ---- one compact icon button (icon + optional short label + tooltip; disabled/busy aware) ----
   function iconBtn(icon, label, showLabel, dis, danger, onClick, tip){
     var bg = danger ? '#7f1d1d' : '#2563eb'; var bd = danger ? '#991b1b' : '#1d4ed8';
-    var b = mk('button', 'display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 '+(showLabel?'10px':'8px')+';border-radius:7px;border:1px solid '+bd+';background:'+bg+';color:#fff;font:600 12px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.5':'1')+';white-space:nowrap;');
+    var b = mk('button', 'display:inline-flex;align-items:center;justify-content:center;gap:3px;height:22px;min-width:22px;padding:0 '+(showLabel?'6px':'4px')+';border-radius:6px;border:1px solid '+bd+';background:'+bg+';color:#fff;font:600 11px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.5':'1')+';white-space:nowrap;');
     b.textContent = showLabel ? (icon+' '+label) : icon; b.title = tip || label || ''; b.setAttribute('aria-label', tip || label || '');
     if(dis) b.disabled = true; else if(onClick) b.onclick = onClick;
     return b;
-  }
-  function lifeBtn(icon, danger, onClick, tip){
-    var b = mk('button','width:26px;height:26px;border-radius:7px;border:1px solid '+(danger?'#991b1b':'#374151')+';background:'+(danger?'#7f1d1d':'#1f2937')+';color:#e5e7eb;cursor:pointer;font-size:13px;line-height:1;');
-    b.textContent = icon; b.title = tip || ''; b.onclick = onClick; return b;
   }
   function menuItem(label, onClick){ var it=mk('div','padding:8px 10px;border-radius:6px;cursor:pointer;color:#e5e7eb;font-weight:500;white-space:nowrap;'); it.textContent=label; it.onmouseenter=function(){it.style.background='#1f2937';}; it.onmouseleave=function(){it.style.background='transparent';}; it.onclick=function(){ try{onClick();}catch(e){} menu.style.display='none'; }; return it; }
   menuBtn.onclick = function(){ menu.style.display = menu.style.display==='none'?'block':'none'; };
   collapseBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'', statusClass:'off' }); };
   // Clicking outside closes the quick menu.
   window.addEventListener('mousedown', function(ev){ if(menu.style.display!=='none' && !menuWrap.contains(ev.target)) menu.style.display='none'; }, true);
-  // Paint ONE state object (authoritative OR optimistic). The GAME/TABLE actions come from state.actions
-  // (fallback: state.primary); the lifecycle (RELOAD/STOP) is ALWAYS available; the ⋮ menu holds FOCUS.
+  // Paint ONE state object (authoritative OR optimistic). Layout follows the reference tool's in-web bar:
+  //   [badge ● status] [vai trò] [Cược] [SS ____] Copy · Vào · ReJoin · Tạo · Đổi Key · Thoát  [⋮][─]
+  // Outside the lobby / while an operation runs, the row shows only the state's primary action (VÀO GAME, HỦY…).
+  function txtBtn(label, bg, onClick, tip, dis){
+    var b = mk('button','height:22px;padding:0 7px;border-radius:6px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.45':'1')+';');
+    b.textContent = label; b.title = tip || label;
+    if(dis) b.disabled = true; else b.onclick = onClick;
+    return b;
+  }
+  function chip(label, bg, fg, tip){ var c = mk('span','height:18px;padding:0 6px;border-radius:5px;background:'+bg+';color:'+(fg||'#fff')+';font:800 10px/18px Inter,Segoe UI,sans-serif;white-space:nowrap;'); c.textContent = label; if(tip) c.title = tip; return c; }
+  function ssRid(){ var v = String(ssInput.value||'').trim(); var n = Number(v); return v !== '' && isFinite(n) && n > 0 ? n : null; }
   function paint(state){
     if(!document.getElementById('__phom_header')) ready();
     var sc = state.statusClass;
     statusDot.style.background = sc==='ok'?'#34d399':sc==='warn'?'#fbbf24':sc==='danger'?'#f87171':'#9ca3af';
-    stLabel.textContent = state.statusLabel||'';
+    stLabel.textContent = state.statusLabel||''; stLabel.title = state.statusLabel||'';
     collapseBtn.textContent = __collapsed ? '▸' : '─';
     act.textContent='';
     act.style.display = __collapsed ? 'none' : 'flex';
     if(!__collapsed){
-      var acts = (Array.isArray(state.actions) && state.actions.length) ? state.actions : (state.primary ? [Object.assign({ icon:'•' }, state.primary)] : []);
-      if (Array.isArray(state.searchOptions) && state.searchOptions.length) acts = acts.concat([{ action:'CHANGE_TABLE', icon:'↻', short:'Đổi key', needsBet:true, betOptions:state.searchOptions, tip:'Tìm bàn khác đủ điều kiện rồi chuyển cả nhóm' }]);
-      acts.forEach(function(a, i){
-        var showLabel = true; // explicit labels distinguish rejoin from leaving the table
-        if (a.needsBet && Array.isArray(a.betOptions) && a.betOptions.length){
-          var sel = mk('select','height:26px;padding:0 6px;border-radius:7px;border:1px solid #374151;background:#111827;color:#e5e7eb;font:600 12px Inter,Segoe UI,sans-serif;');
-          var o0=mk('option'); o0.value=''; o0.textContent='CƯỢC…'; sel.appendChild(o0);
-          a.betOptions.forEach(function(v){ var o=mk('option'); o.value=String(v); o.textContent=String(v); sel.appendChild(o); });
-          act.appendChild(sel);
-          // BUGFIX (6.3.9) — the FIND button must ALWAYS carry its onclick (the click guards on a chosen stake).
-          // Creating it "disabled" dropped the handler, so picking a stake left FIND dead. Now it is always
-          // clickable; the empty-stake state is shown by style only, and the click is a no-op until a stake is set.
-          var fb=iconBtn(a.icon||'🔍',a.action==='CHANGE_TABLE'?'Đổi key':'Tìm Bàn', true, false, false, function(){ if(sel.value) emit(a.action,{ stake:Number(sel.value) }); }, a.tip);
-          var emptyBtn=iconBtn('+','Tạo bàn',true,false,false,function(){ if(sel.value) emit('FIND_EMPTY',{ stake:Number(sel.value) }); },'Tìm bàn trống rồi đưa cả nhóm vào');
-          var syncFb=function(){ var ok=!!sel.value; fb.style.opacity=ok?'1':'.5'; fb.style.cursor=ok?'pointer':'not-allowed'; emptyBtn.disabled=!ok; };
-          syncFb(); sel.onchange=syncFb;
-          act.appendChild(fb); act.appendChild(emptyBtn);
-        } else {
-          act.appendChild(iconBtn(a.icon||'•', a.short||a.label||a.action, showLabel, !!a.disabled, !!a.danger, (function(ac){ return function(){ emit(ac.action, ac.rid!=null?{ rid:ac.rid }:null); }; })(a), a.tip));
-        }
-      });
-      act.appendChild(iconBtn(state.capturing ? '■' : '●', state.capturing ? 'Lưu WS' : 'Ghi WS', true, false, false, function(){ emit(state.capturing ? 'CAPTURE_STOP' : 'CAPTURE_START'); }, 'Ghi request / response WebSocket'));
-      // Lifecycle (always available): RELOAD + STOP.
-      act.appendChild(lifeBtn('⟳', false, function(){ emit('RELOAD'); }, 'Tải lại web trong Chromium'));
-      act.appendChild(lifeBtn('⏻', true, function(){ emit('STOP'); }, 'Tắt Chromium này'));
+      if(state.canCreate){
+        if(state.groupRole){
+          var R = state.groupRole==='KEY' ? ['KEY','#b45309'] : state.groupRole==='READY' ? ['SẴN SÀNG','#15803d'] : ['CHƯA SS','#4b5563'];
+          var roleChip = chip((state.isTableHost?'👑 ':'')+R[0], state.seatedAtTable ? R[1] : '#374151', state.seatedAtTable ? '#fff' : '#9ca3af', state.seatedAtTable ? (state.isTableHost ? 'Chủ bàn' : 'Vai trò trong nhóm') : 'Vai trò ' + R[0] + ' — hiện KHÔNG ở trong bàn');
+          if(!state.seatedAtTable) roleChip.style.border = '1px dashed #6b7280';
+          act.appendChild(roleChip);
+        } else if(state.isTableHost){ act.appendChild(chip('👑 CHỦ BÀN','#b45309')); }
+        // CƯỢC is chosen ONCE in the Phỏm tool; here it is only shown (and TẠO is disabled until it is set).
+        act.appendChild(chip(state.stake != null ? 'CƯỢC ' + state.stake : 'CHƯA CHỌN CƯỢC', state.stake != null ? '#1f2937' : '#7f1d1d', '#e5e7eb', state.stake != null ? 'Mức cược đang chọn ở tool Phỏm' : 'Chọn Tiền ở tool Phỏm rồi mới tạo bàn được'));
+        // Auto-fill the SS box with this browser's / the group's số bàn unless the user typed something else.
+        if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
+        ssInput.value = __ssValue;
+        act.appendChild(ssInput);
+        act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v + (state.tableKey ? ' ' + state.tableKey : '')); }catch(e){} },'Copy số bàn' + (state.tableKey ? ' + key' : '')));
+        act.appendChild(txtBtn('Vào','#16a34a',function(){ var r=ssRid(); if(r!=null) emit('JOIN_CODE',{ rid:r }); },'Vào đúng số bàn trong ô SS (key tự điền nếu bàn do tool tạo)'));
+        act.appendChild(txtBtn('ReJoin','#dc2626',function(){ emit('REJOIN'); },'Vào lại bàn hiện tại / bàn chung', !state.canRejoin));
+        act.appendChild(txtBtn('Tạo','#7c3aed',function(){ emit('CREATE_TABLE'); },'Acc này tạo bàn trống có key ở mức cược của tool (làm KEY). Browser khác bấm Vào: acc vào trước SẴN SÀNG, acc vào sau CHƯA SẴN SÀNG', state.stake == null));
+        act.appendChild(txtBtn('Đổi Key','#be123c',function(){ emit('CHANGE_KEY'); },'Tạo lại bàn mới với key mới cho cả nhóm', !state.inTable));
+        act.appendChild(txtBtn('Thoát','#2563eb',function(){ emit('LEAVE'); },'Rời bàn (không tắt Chromium)', !state.inTable));
+      } else {
+        var p = state.primary;
+        if(p) act.appendChild(iconBtn(OPT_ICON[p.action]||'•', p.label||p.action, true, !!p.disabled, !!p.danger, function(){ emit(p.action, p.rid!=null?{ rid:p.rid }:null); }, p.label));
+      }
+      // Only a RECORDING indicator stays visible (stop with one click); recording itself starts from ⋮.
+      if(state.capturing) act.appendChild(iconBtn('■','Lưu WS',false,false,true,function(){ emit('CAPTURE_STOP'); },'Đang ghi WS — bấm để dừng & lưu'));
       if(state.error){ var e=mk('span','color:#f87171;font-size:13px;cursor:help;'); e.textContent='⚠'; e.title=String(state.error); act.appendChild(e); }
     }
-    // Quick menu (⋮): FOCUS + a read-only account line. Only actions that actually exist.
+    // Quick menu (⋮): secondary + lifecycle actions and the số bàn list.
     menu.textContent='';
+    if(state.canCreate){
+      if(state.stake != null) menu.appendChild(menuItem('🔍 Tìm bàn theo danh sách (cũ) · cược ' + state.stake, function(){ emit('FIND',{ stake:state.stake }); }));
+    }
     menu.appendChild(menuItem('↑ Đưa cửa sổ lên trên cùng', function(){ emit('FOCUS'); }));
     menu.appendChild(menuItem('⟳ Tải lại web', function(){ emit('RELOAD'); }));
     menu.appendChild(menuItem('⏻ Tắt Chromium', function(){ emit('STOP'); }));
-    // TEST D — record THIS browser's own game frames while the player acts by hand (e.g. clicks a table).
-    menu.appendChild(menuItem(state.capturing ? '⏹ Dừng & lưu ghi gói (Test D)' : '⏺ Bắt đầu ghi gói (Test D)', function(){ emit(state.capturing ? 'CAPTURE_STOP' : 'CAPTURE_START'); }));
+    menu.appendChild(menuItem(state.capturing ? '⏹ Dừng & lưu ghi gói WS' : '⏺ Ghi gói WS (chẩn đoán)', function(){ emit(state.capturing ? 'CAPTURE_STOP' : 'CAPTURE_START'); }));
+    // SỐ BÀN list (the server's table list, broadcast ~1/min): pick one → it fills the SS box.
+    if(Array.isArray(state.rooms)){
+      var age = state.roomListAt ? Math.max(0, Math.round((Date.now()-Number(state.roomListAt))/1000)) : null;
+      var hd=mk('div','padding:6px 10px;color:#93c5fd;font-weight:600;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
+      hd.textContent='📋 Số bàn còn chỗ: '+state.rooms.length+(age!=null?(' · '+age+'s trước'):' · chưa nhận danh sách');
+      menu.appendChild(hd);
+      var box=mk('div','max-height:220px;overflow:auto;');
+      state.rooms.forEach(function(r){ box.appendChild(menuItem(r.rid+' · cược '+r.b+' · '+r.uC+'/'+(r.Mu||4), function(){ __ssValue=String(r.rid); ssInput.value=__ssValue; })); });
+      menu.appendChild(box);
+    }
     if(state.lastCapture){ var cap=mk('div','padding:6px 10px;color:#86efac;font-weight:500;white-space:nowrap;'); cap.textContent='📄 Đã lưu: '+state.lastCapture; menu.appendChild(cap); }
     var info = mk('div','padding:8px 10px;color:#9ca3af;font-weight:500;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
-    info.textContent = (SLOTN?('Player '+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · RID '+state.rid : '') + (state.roomCode ? ' · MÃ '+state.roomCode : (state.sharedRoomCode ? ' · MÃ chung '+state.sharedRoomCode : ''));
+    info.textContent = (SLOTN?('Player '+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '') + (state.tableKey ? ' · KEY '+state.tableKey : '');
     menu.appendChild(info);
     // 6.3.2.10 PROFILING (gated) — click→visual in ONE (page) clock on the FIRST paint after a click.
     if(CLICKLOG && window.__phClickT!=null){ try{ console.log('[PHOM-CLK] CLICK_TO_RENDER', Math.round(CLK()-window.__phClickT)+'ms', 'action='+window.__phClickA, '->', state.statusLabel||''); }catch(e){} window.__phClickT=null; }
@@ -267,6 +314,8 @@ function bootScript(opts = {}) {
     var base = __authState || {};
     var label = action==='ENTER_GAME' ? 'ĐANG VÀO GAME…'
       : action==='FIND' ? 'ĐANG TÌM BÀN…'
+      : (action==='CREATE_TABLE'||action==='CREATE_SOLO'||action==='CHANGE_KEY') ? 'ĐANG TẠO BÀN…'
+      : action==='JOIN_CODE' ? 'ĐANG VÀO BÀN…'
       : (action==='JOIN_SHARED'||action==='JOIN') ? 'ĐANG VÀO BÀN…'
       : action==='REJOIN' ? 'ĐANG VÀO BÀN…'
       : action==='LEAVE' ? 'ĐANG THOÁT PHÒNG…'
@@ -290,6 +339,8 @@ function optimisticLabel(action) {
   switch (action) {
     case 'ENTER_GAME': return 'ĐANG VÀO GAME…';
     case 'FIND': return 'ĐANG TÌM BÀN…';
+    case 'CREATE_TABLE': case 'CREATE_SOLO': case 'CHANGE_KEY': return 'ĐANG TẠO BÀN…';
+    case 'JOIN_CODE': return 'ĐANG VÀO BÀN…';
     case 'JOIN_SHARED': case 'JOIN': return 'ĐANG VÀO BÀN…';
     case 'REJOIN': return 'ĐANG VÀO BÀN…';
     case 'LEAVE': return 'ĐANG THOÁT PHÒNG…';

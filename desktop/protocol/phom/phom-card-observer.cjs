@@ -127,6 +127,7 @@ class CardObserver {
     this._roundActive = true;
     this._startedAt = meta.now != null ? meta.now : this._now();
     this._currentTurnUid = null;
+    this._roundPlayers = [];
     // Clear per-round CARD data; KEEP identity (uid/seat/name/controlled/slot) and slot binding.
     for (const p of this._players.values()) {
       p.currentCards = []; p.currentCardsSource = null; p.currentCardsAt = null;
@@ -182,6 +183,9 @@ class CardObserver {
     if (!this._roundActive) this.resetRound({ now, reason: 'DEAL_NEW_ROUND' });
     else this._ensureRound(now);
     if (cls.tP && cls.tP.uid != null) this._currentTurnUid = String(cls.tP.uid);
+    // DEAL lpi[] = the players dealt into THIS round (live capture 2026-09-21: a kicked/spectating seat is absent).
+    const lpi = cls.json && Array.isArray(cls.json) && cls.json[1] && Array.isArray(cls.json[1].lpi) ? cls.json[1].lpi : null;
+    if (lpi && lpi.length) this._roundPlayers = lpi.map(String);
     const cards = normalizeCards(cls.cs);
     if (!cards.length) return;
     const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || null;
@@ -340,6 +344,7 @@ class CardObserver {
       startedAt: this._startedAt,
       currentTurnUid: this._currentTurnUid,
       nextOf: Object.fromEntries(this._nextOf), // §40 — learned public turn order (uid -> next uid)
+      roundPlayers: (this._roundPlayers || []).slice(), // DEAL lpi[] — who is actually playing this round
       slotBinding: { ...this._slotBinding },
       players,
       discardPile: this._discardPile.slice(),

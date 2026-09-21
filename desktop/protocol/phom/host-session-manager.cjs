@@ -1,6 +1,7 @@
 'use strict';
 
 const EventEmitter = require('node:events');
+const { createTableGroup } = require('./table-group.cjs');
 const { HostTableCoordinator } = require('./host-table-coordinator.cjs');
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,11 @@ class HostSessionManager extends EventEmitter {
 
     this.endSession();
     const coord = new HostTableCoordinator({ profiles, hostId: host, selectedStake, now: this._now, environmentAuthorized: () => this.authorized(), sessionId: `PHOMHOST-${this._now()}` });
+    // docs/phom-kich-ban.md — the group/role/auto flow (paced, one operation at a time) lives in its own module.
+    const group = createTableGroup({ coord, log: (event, data) => this.emit('log', { tag: 'PHOM-GROUP', event, ...data }) });
+    group.on('update', () => this.emit('update', coord.snapshot()));
+    group.on('notice', (n) => this.emit('notice', n));
+    this._group = group;
     coord.on('update', (snap) => this.emit('update', snap));
     coord.on('hands', (hands) => this.emit('hands', hands));
     coord.on('cards', (cards) => this.emit('cards', cards)); // PHASE 6.3.3.2 — card observation snapshot
@@ -64,6 +70,9 @@ class HostSessionManager extends EventEmitter {
     // on NOT already running, so a per-frame stream of 'invalidated' can't spam leaveAll/restart.
     coord.on('invalidated', async () => {
       if (!this.authorized() || coord.isStopped() || coord.isRunning() || this._restartInFlight) return;
+      // A table the tool CREATED is never abandoned for a fresh TÌM BÀN: a listed rid cannot co-seat the group
+      // (Test D 2026-09-21), and mid-round the server refuses the leave anyway ("không thể rời phòng khi đang chơi").
+      if (this._group && this._group.active()) return;
       this._restartInFlight = true;
       this._restarts = (this._restarts || 0) + 1;
       let left = false;
@@ -81,6 +90,7 @@ class HostSessionManager extends EventEmitter {
 
   endSession() {
     const old = this._session; this._session = null;
+    if (this._group) { this._group.reset(); this._group.removeAllListeners(); this._group = null; }
     if (old) { old.coord.stop(); old.coord.removeAllListeners(); }
   }
 
@@ -128,6 +138,21 @@ class HostSessionManager extends EventEmitter {
   // PHASE-6.2.1 — REAL discovery: find a qualifying empty table (rid + stake from the server table), join it.
   manualDiscoverTable(id, opts) { return this._guarded((c) => c.manualDiscoverTable(String(id), opts)); }
   findAndJoinGroup(id, opts) { return this._guarded((c) => c.findAndJoinGroup(String(id), opts)); }
+  // ---- docs/phom-kich-ban.md — every table/group action goes through the TableGroup (paced + serialized) ----
+  _g() { return this._session ? this._group : null; }
+  _grouped(fn) { const g = this._g(); if (!g) return Promise.resolve({ ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }); return Promise.resolve(fn(g)); }
+  createTable(id, opts) { return this._grouped((g) => g.createTable(String(id), opts || {})); }        // T1
+  joinTable(id, rid) { return this._grouped((g) => g.joinTable(String(id), rid)); }                    // T2
+  rejoinTable(id) { return this._grouped((g) => g.rejoin(String(id))); }                               // T3
+  leaveTable(id) { return this._grouped((g) => g.leave(String(id))); }                                 // T5
+  changeKey() { return this._grouped((g) => g.changeKey()); }                                          // T4 / A5
+  setAuto(on, opts) { return this._grouped((g) => g.setAuto(!!on, opts || {})); }                      // A1/A2/A6
+  leaveAllTables() { return this._grouped((g) => g.leaveAll()); }
+  setStake(stake) { const g = this._g(); return g ? g.setStake(stake) : { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }; }
+  selectedStake() { const g = this._g(); return g ? g.stake() : null; }
+  groupSnapshot() { const g = this._g(); return g ? g.snapshot() : null; }
+  groupRoleOf(id) { const g = this._g(); return g ? g.roleOf(id) : null; }
+  roomList(id) { const c = this._c(); return c && typeof c.roomList === 'function' ? c.roomList(id != null ? String(id) : null) : { rooms: [], at: null, ageSec: null }; }
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   // PHASE 6.3.5 — FOLLOWER JOIN of the shared anchor RID with bounded, generation-safe, single-flight retry.
   manualJoinShared(id, rid, opts) { return this._guarded((c) => c.manualJoinShared(String(id), rid, opts)); }
@@ -146,7 +171,12 @@ class HostSessionManager extends EventEmitter {
   manualLeave(id) { return this._guarded((c) => c.manualLeave(String(id))); }
   // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).
   resetBrowser(id) { const c = this._c(); return c && typeof c.resetBrowser === 'function' ? c.resetBrowser(String(id)) : false; }
-  manualBrowserSnapshot() { const c = this._c(); return c && typeof c.manualBrowserSnapshot === 'function' ? c.manualBrowserSnapshot() : []; }
+  manualBrowserSnapshot() {
+    // The coordinator reports the TABLE facts; the group ROLE (KEY / READY / NOT_READY) comes from table-group.cjs.
+    const c = this._c();
+    const list = c && typeof c.manualBrowserSnapshot === 'function' ? c.manualBrowserSnapshot() : [];
+    return list.map((b) => ({ ...b, groupRole: this.groupRoleOf(b.profileId) }));
+  }
   remainingCards(opts) { const c = this._c(); return c && typeof c.remainingCards === 'function' ? c.remainingCards(opts) : { count: 0, codes: [], cards: [] }; }
   // PHASE 6.3.3.2 — the card-observation snapshot (players/discards/melds/remaining/capabilities), or an
   // empty/unknown shape when there is no active session (never fabricated).

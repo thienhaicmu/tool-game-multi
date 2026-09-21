@@ -47,7 +47,7 @@ test('§13 header layout is a compact floating single row (badge/handle · actio
   const src = gh.bootScript();
   assert.match(src, /position:fixed;top:8px;right:8px/);          // floating top-right (not full-width)
   assert.match(src, /display:flex;align-items:center/);           // single flex row
-  assert.match(src, /const handle = mk\('div','display:flex;align-items:center;gap:7px;cursor:move/); // draggable identity area
+  assert.match(src, /const handle = mk\('div','display:flex;align-items:center;gap:4px;cursor:move/); // draggable identity area
   assert.match(src, /const act = mk\('div',/);                    // state-dependent action row
   assert.match(src, /bar\.appendChild\(handle\); bar\.appendChild\(act\); bar\.appendChild\(menuWrap\)/);
 });
@@ -90,7 +90,3 @@ test('NO CDP-storm regression: header DOM is NOT verified per WS frame (event-dr
   assert.equal(/verifyPresent|getElementById/.test(fn), false, 'no per-push DOM verify round-trip');
 });
 
-test('renderer shows the 3-state header (Sẵn sàng / Đang khôi phục / Chưa sẵn sàng)', () => {
-  const js = read('ui-phom/phom-qa.js');
-  assert.match(js, /hdr === 'READY' \? 'Sẵn sàng' : hdr === 'RECOVERING' \? 'Đang khôi phục' : 'Chưa sẵn sàng'/);
-});

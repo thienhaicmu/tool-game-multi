@@ -31,6 +31,7 @@ const CMD = Object.freeze({
   SELF_IDENTITY: 100,  // server push of the OWN session identity (uid + own wallet As) — live-captured
   SEAT_UPDATE: 200,    // server push: ONE player took/updated a seat at THIS table ({p:{seat}, t}) — live-captured
   CHANNEL_LIST: 300,   // client asks for stake channels; server replies with rs[]
+  CREATE_TABLE: 308,   // client creates a table ("TẠO BÀN"); server replies {ri:{rid,b,Mu,pwd}} or {mgs}
   FIND_TABLE: 311,     // client quick-find; server replies { b:[], mB }
   READY: 363,          // client marks ready (aRd:"true")
   DEAL: 850,           // server deals the opening 9 cards (cs[]) — per-session authoritative
@@ -45,6 +46,7 @@ const OP = Object.freeze({ JOIN: 3, LEAVE: 4, PUSH: 5, EXT_REQUEST: 6 });
 
 const CMD_TYPE = Object.freeze({
   [CMD.CHANNEL_LIST]: 'CHANNEL_LIST_REQUEST',
+  [CMD.CREATE_TABLE]: 'CREATE_TABLE_REQUEST',
   [CMD.FIND_TABLE]: 'FIND_TABLE_REQUEST',
   [CMD.READY]: 'READY_REQUEST',
   [CMD.DEAL]: 'DEAL',
@@ -61,7 +63,7 @@ const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'ROUND_E
 // game socket) when it is a recognised server push for this game.
 const SERVER_EVIDENCE_TYPES = Object.freeze(new Set([
   'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'SEAT_UPDATE', 'DEAL', 'PLAY', 'DRAW', 'ROUND_END', 'MELD',
-  'SELF_IDENTITY',
+  'SELF_IDENTITY', 'CREATE_TABLE_RESULT',
 ]));
 
 function base(raw) {
@@ -120,7 +122,7 @@ function classifyPhomFrame(raw) {
     // LEAVE_REQUEST. It is the proof that the player is out of the table (code 1 = left on request, code 2 =
     // moved out because a new JOIN was sent while seated).
     if (typeof json[1] === 'boolean') {
-      return finalize(out, { type: 'LEAVE_ACK', accepted: json[1], resultCode: Number.isFinite(json[2]) ? json[2] : null });
+      return finalize(out, { type: 'LEAVE_ACK', accepted: json[1], resultCode: Number.isFinite(json[2]) ? json[2] : null, resultMessage: typeof json[5] === 'string' && json[5] ? json[5] : null });
     }
     return finalize(out, { type: 'LEAVE_REQUEST', channel: Number.isFinite(json[2]) ? json[2] : null });
   }
@@ -148,6 +150,23 @@ function classifyPhomFrame(raw) {
     if (payload && Array.isArray(payload.rs) && (cmd == null || cmd === CMD.CHANNEL_LIST)) return finalize(out, { type: 'CHANNEL_LIST' });
     if (payload && Array.isArray(payload.ps) && (cmd == null || cmd === 202)) return finalize(out, { type: 'TABLE_STATE' });
     if (payload && Array.isArray(payload.b) && payload.mB !== undefined) return finalize(out, { type: 'FIND_TABLE' });
+    // CREATE_TABLE reply (game client onReceiveQuickPlay): ri = the NEW table ({rid,b,sid,Mu,gid,pwd}); no ri →
+    // refused, with the server's reason in mgs (e.g. not enough gold). ri.rid is the table's số bàn.
+    if (cmd === CMD.CREATE_TABLE && payload) {
+      const ri = payload.ri && typeof payload.ri === 'object' ? payload.ri : null;
+      const rid = ri && Number.isFinite(Number(ri.rid)) ? Number(ri.rid) : null;
+      return finalize(out, {
+        type: 'CREATE_TABLE_RESULT', ok: rid != null, rid,
+        stake: ri && Number.isFinite(Number(ri.b)) ? Number(ri.b) : null,
+        maxPlayers: ri && Number.isFinite(Number(ri.Mu)) ? Number(ri.Mu) : null,
+        hasPassword: !!(ri && typeof ri.pwd === 'string' && ri.pwd.length > 0),
+        message: typeof payload.mgs === 'string' && payload.mgs ? payload.mgs : null,
+      });
+    }
+    // In-table pushes (live capture 2026-09-21T12-06): [5,{uid,dn,cmd:5}] = that player is READY (the host's START is
+    // the same cmd 5 — Phỏm's TableCommand.START === READY === 5); [5,{uid,dn,cmd:203}] = the table's HOST changed.
+    if (cmd === 5 && payload && payload.uid != null && typeof json[1] === 'object') return finalize(out, { type: 'USER_READY', uid: String(payload.uid) });
+    if (cmd === 203 && payload && payload.uid != null) return finalize(out, { type: 'HOST_CHANGED', uid: String(payload.uid) });
     // Single-seat delta (live-captured [5,{p:{...seat...},t:1,cmd:200}]): ONE player took/updated a
     // seat at THIS table. `p` is a single seat object (same shape as a ps[] entry); `t===1` = present
     // (joined). This is how an EARLY joiner learns about LATER joiners (the full ps[] snapshot only
@@ -198,6 +217,12 @@ function finalize(out, extra) {
     seat: extra.seat !== undefined ? extra.seat : undefined,     // single seat object (SEAT_UPDATE)
     present: extra.present !== undefined ? extra.present : undefined,
     t: extra.t !== undefined ? extra.t : undefined,
+    // CREATE_TABLE_RESULT fields
+    ok: extra.ok !== undefined ? extra.ok : undefined,
+    rid: extra.rid !== undefined ? extra.rid : undefined,
+    stake: extra.stake !== undefined ? extra.stake : undefined,
+    maxPlayers: extra.maxPlayers !== undefined ? extra.maxPlayers : undefined,
+    message: extra.message !== undefined ? extra.message : undefined,
     // identity / table fields (surfaced verbatim; undefined when absent)
     aid: p.aid !== undefined ? p.aid : undefined,
     uid: extra.uid !== undefined ? extra.uid : (p.uid !== undefined ? p.uid : undefined),
@@ -262,6 +287,7 @@ function normalizeSeat(entry) {
     dn: entry.dn != null ? String(entry.dn) : null,
     m: entry.m != null ? entry.m : null,
     ready: entry.r === true,
+    host: entry.C === true, // ps[].C — the table owner ("chủ bàn"), the one who must press BẮT ĐẦU
     raw: entry,
   };
 }

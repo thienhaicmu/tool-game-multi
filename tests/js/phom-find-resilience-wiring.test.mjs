@@ -62,10 +62,12 @@ test('follower JOIN is bounded + generation-safe + single-flight, with authorita
   assert.equal(/buildChannelListFrame|_pickManualCandidate/.test(fn), false, 'a follower never discovers');
 });
 
-test('the session manager delegates manualJoinShared and main routes JOIN_SHARED to it', () => {
+// The coordinator keeps the follower-join primitive (same-room proof + bounded retry); what the surfaces call is
+// the group API (docs/phom-kich-ban.md), so every join carries the table key and the role rules.
+test('the session manager delegates manualJoinShared; VÀO BÀN routes through the group flow', () => {
   assert.match(mgr, /manualJoinShared\(id, rid, opts\) \{ return this\._guarded\(\(c\) => c\.manualJoinShared\(String\(id\), rid, opts\)\); \}/);
   assert.match(main, /action === 'JOIN_SHARED'/);
-  assert.match(main, /phomSessions\.manualJoinShared\(rid, joinRid, \{ maxRetries: 25 \}\)/);
+  assert.match(main, /phomSessions\.joinTable\(rid, joinRid\)/);
 });
 
 test('V2 FIND trace milestones present (gated by PHOM_FIND_LOG)', () => {

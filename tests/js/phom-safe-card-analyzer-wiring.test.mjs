@@ -25,40 +25,6 @@ test('preload bridges analyzeSafeCards(targetUid) → phom:analyze-safe-cards', 
   assert.match(preload, /analyzeSafeCards: \(targetPlayerUid\) => ipcRenderer\.invoke\('phom:analyze-safe-cards', targetPlayerUid\)/);
 });
 
-test('Screen 2 owns a ONE-of-three player selector (never ALL / combine / merge) resolving slot → uid', () => {
-  const sel = rfn('playerAnalysisSelector');
-  assert.match(sel, /\['B1', 'B2', 'B3'\]/);       // exactly the three players (B1/B2/B3)
-  assert.match(sel, /'B' \+ \(i \+ 1\)/);          // PHASE 6.3.9 — labelled B1/B2/B3 (matches the mockup)
-  // PHASE 6.3.9 — "Tất cả" is the DEFAULT no-target state (selectedAnalysisPlayer = null): it shows the
-  // aggregate remaining view but NEVER merges the three hands for the per-player SAFE analysis (§20).
-  assert.match(sel, /selectedAnalysisPlayer = null;.*'Tất cả'|'Tất cả'/);
-  assert.match(sel, /selectedAnalysisPlayer = null/);
-  // no MERGED-hand option anywhere (a combined/team hand is never fed to the analyzer).
-  assert.equal(/mergedHand|combinedHand|B1 \+ B2 \+ B3|P1\+P2\+P3/.test(js), false, 'no merged-hand option');
-  // the selection resolves through the authoritative slot→uid binding, not a browser index
-  const refresh = rfn('refreshSafeAnalysis');
-  assert.match(refresh, /cardsSnap\.slotBinding\[slot\]/);
-  assert.match(refresh, /api\.analyzeSafeCards\(uid\)/);
-});
-
-test('the analysis re-runs on every card snapshot (event-driven push + pull) — not a timer', () => {
-  // push: a fresh phom:cards snapshot triggers a re-analyse
-  assert.match(js, /api\.onCards\(\(c\) => \{ cardsSnap = c \|\| null; refreshSafeAnalysis\(\)/);
-  // pull: refreshManual re-analyses off the pulled snapshot
-  assert.match(js, /await refreshSafeAnalysis\(\);/);
-  // selection change also re-analyses immediately (event-driven, no wait for the next tick)
-  assert.match(js, /refreshSafeAnalysis\(\)\.then\(\(\) => bgRender\(\)\)/);
-});
-
-test('empty / waiting / insufficient states are explicit (no fabricated numbers) — §24', () => {
-  const body = rfn('renderSafeBody');
-  assert.match(body, /Chọn B1 \/ B2 \/ B3 để xem lá an toàn/); // PHASE 6.3.9 — "Tất cả" (no target) prompts a pick
-  assert.match(body, /ĐANG CHỜ DỮ LIỆU BÀI/);
-  assert.match(body, /CHƯA ĐỦ DỮ LIỆU/);
-  // transparency line present
-  assert.match(js, /Phân tích từ dữ liệu công khai đã quan sát/);
-});
-
 test('the phase adds NO game-action wiring to the renderer analyzer path (§28)', () => {
   // the selector + analysis functions never send/join/find/play/click
   for (const name of ['renderSafeCards', 'playerAnalysisSelector', 'renderSafeBody', 'refreshSafeAnalysis']) {

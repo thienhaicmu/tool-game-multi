@@ -85,8 +85,9 @@ const gh = require('../../desktop/protocol/phom/game-header.cjs');
 const { evaluateHeaderAction, isBusyExempt } = require('../../desktop/protocol/phom/header-action-guard.cjs');
 test('Test D in the header: the ⋯ menu toggles start/stop for THIS browser', () => {
   const src = gh.bootScript({ slotId: 'B' });
-  assert.match(src, /Bắt đầu ghi gói \(Test D\)/);
-  assert.match(src, /Dừng & lưu ghi gói \(Test D\)/);
+  // recording lives in the ⋮ menu (it was removed from the bar's main row)
+  assert.match(src, /Ghi gói WS \(chẩn đoán\)/);
+  assert.match(src, /Dừng & lưu ghi gói WS/);
   assert.match(src, /emit\(state\.capturing \? 'CAPTURE_STOP' : 'CAPTURE_START'\)/);
   const idle = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY' });
   assert.equal(idle.capturing, false);

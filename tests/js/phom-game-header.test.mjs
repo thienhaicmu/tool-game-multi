@@ -99,7 +99,7 @@ test('bootScript is idempotent, exposes the render hook + binding, and uses THO�
   assert.match(src, /__phomAction/);                     // default binding name
   assert.match(src, /id = '__phom_header'/);             // its OWN element, namespaced
   assert.match(src, /z-index:2147483647/);               // overlay on top
-  assert.match(src, /emit\(a\.action,\{ stake:Number\(sel\.value\) \}\)/); // server stake, numeric
+  assert.match(src, /emit\('CREATE_TABLE'\)/); // the stake is the Phỏm tool's; the bar never invents one
   // no game-DOM/canvas mutation beyond its own bar + a body margin offset for the bar
   assert.equal(/innerHTML|canvas|document\.title\s*=/.test(src), false);
 });
@@ -427,20 +427,6 @@ test('main: FIND gating + shared RID + WAIT label follow selectedFinderIndex, NE
   assert.match(main, /applyFinderToCoordinator\(\);[\s\S]*?pushHeaderStates\(\);/);
 });
 
-test('FINDER-05/06 Finder ownership is SEPARATE from the analyzer target (Finder ≠ Analysis is valid)', () => {
-  // main owns the finder; the analyzer takes a target uid independently — the two never share state.
-  assert.match(main, /let selectedFinderIndex = null/);
-  assert.match(main, /ipcMain\.handle\('phom:analyze-safe-cards', \(_e, targetPlayerUid\)/);
-  // renderer keeps two DISTINCT selections.
-  const ui = read('ui-phom/phom-qa.js');
-  assert.match(ui, /let selectedFinderPlayer = null/);
-  assert.match(ui, /let selectedAnalysisPlayer = null/);
-  assert.match(ui, /function finderSelector\(\)/);
-  assert.match(ui, /api\.setFinder/);
-});
-
-// ---- PHASE 6.3.8 — BROWSER CONTROL redesign (compact single-row floating header; state-dependent icons) ----
-
 test('BC: HEADER_ACTIONS exposes ONLY existing actions (no HOST/READY/KICK/DevTools invented)', () => {
   const a = gh.HEADER_ACTIONS;
   for (const k of ['ENTER_GAME', 'FIND', 'JOIN_SHARED', 'JOIN', 'REJOIN', 'LEAVE', 'WAIT_ANCHOR', 'RELOAD', 'STOP', 'FOCUS']) {
@@ -487,13 +473,15 @@ test('BC: bootScript is a compact draggable single-row header with per-slot acce
   assert.equal(/emit\('HOST'\)|emit\('READY'\)|emit\('KICK'\)/.test(src), false);
 });
 
-test('BC: the bet-picker FIND button always carries its onclick (picking a stake actually fires FIND)', () => {
+test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Tạo / Vào buttons always carry their onclick', () => {
   const src = gh.bootScript();
-  // REGRESSION: it must NOT be created disabled — iconBtn drops the handler when disabled, which left FIND dead.
-  assert.equal(/'Tìm Bàn', true, !sel\.value/.test(src), false, 'FIND must not be created disabled');
-  // always clickable; the click guards on a chosen stake; the empty state is shown by style only.
-  assert.match(src, /iconBtn\(a\.icon\|\|'🔍',a.action==='CHANGE_TABLE'\?'Đổi key':'Tìm Bàn', true, false, false, function\(\)\{ if\(sel\.value\) emit\(a\.action,\{ stake:Number\(sel\.value\) \}\); \}/);
-  assert.match(src, /var syncFb=function\(\)\{ var ok=!!sel\.value;/);
+  // one stake for the session: the bar only DISPLAYS it and TẠO is disabled until the tool has one
+  assert.doesNotMatch(src, /stakeSel/);
+  assert.match(src, /CHƯA CHỌN CƯỢC/);
+  assert.match(src, /txtBtn\('Tạo','#7c3aed',function\(\)\{ emit\('CREATE_TABLE'\); \}[\s\S]*?state\.stake == null\)/);
+  // Vào parses the SS box without a regex (a lost backslash once turned /^\\d+$/ into /^d+$/ and the button did nothing)
+  assert.match(src, /txtBtn\('Vào','#16a34a',function\(\)\{ var r=ssRid\(\); if\(r!=null\) emit\('JOIN_CODE',\{ rid:r \}\); \}/);
+  assert.doesNotMatch(src, /\^d\+\$/);
 });
 
 test('BC: the header router handles RELOAD/STOP/FOCUS by REUSING existing run helpers (no new IPC)', () => {

@@ -17,7 +17,11 @@
 // Card model is REUSED from card-codec.cjs (no new rank/suit mapping, §11):
 //   rankIndex = floor(code/4) in 0..12 (A..K, A low) · suitIndex = code%4 in 0..3.
 // A Phỏm meld is 3+ SAME-RANK (distinct suits) or 3+ SAME-SUIT CONSECUTIVE ranks.
-// An opponent "eats" a discard X by holding 2 cards that complete a meld with X.
+// An opponent "eats" a discard X by holding 2 cards that complete a meld with X — and in Phỏm ONLY the player
+// who plays right AFTER the discarder may eat it. So the analysis is about the NEXT player: when that is one of
+// the tool's own browsers its hand is known exactly and the verdict is exact (SAFE or RISKY); when it is a
+// stranger, the public-evidence reasoning below applies. Before the first play reveals the turn direction, both
+// seat neighbours are treated as possible next players.
 // ---------------------------------------------------------------------------
 
 const { decodeCard, encodeCard, isValidCardCode, MIN_CODE, MAX_CODE } = require('./card-codec.cjs');
@@ -114,8 +118,14 @@ function compute(snap, targetUid) {
   const controlledOpps = Object.values(players).filter((p) => p && p.controlled && p.uid !== targetUid)
     .map((p) => ({ uid: p.uid, slot: p.slot, hand: new Set((p.currentCards || []).filter(isValidCardCode)) }));
 
+  const nextSet = nextCandidates(snap, targetUid);
+  const threats = nextSet.map((uid) => {
+    const p = players[uid];
+    const known = !!(p && p.controlled && Array.isArray(p.currentCards) && p.currentCards.length);
+    return { uid, known, slot: p ? p.slot : null, hand: new Set(known ? p.currentCards.filter(isValidCardCode) : []) };
+  });
   const cards = hand.map((code) => {
-    const c = classifyCard(code, { possiblyHidden, statusOf, controlledOpps });
+    const c = classifyCard(code, { possiblyHidden, statusOf, controlledOpps, threats });
     const inOwnMeld = ownMeld.has(code);
     return { ...c, inOwnMeld, points: cardPoints(code), reasonCodes: inOwnMeld ? [...c.reasonCodes, 'IN_OWN_MELD'] : c.reasonCodes };
   });
@@ -129,7 +139,7 @@ function compute(snap, targetUid) {
   const byValue = (a, b) => (b.points - a.points) || (a.code - b.code);
   const pick = (cls) => cards.filter((c) => c.classification === cls && !c.inOwnMeld).sort(byValue).map(view);
   const safe = pick(CLASS.SAFE);
-  const next = snap.nextOf && snap.nextOf[targetUid] != null ? String(snap.nextOf[targetUid]) : null;
+  const next = nextSet.length === 1 ? nextSet[0] : null;
   const reasons = [...new Set(cards.flatMap((c) => c.reasonCodes))].sort();
 
   return freeze({
@@ -144,7 +154,8 @@ function compute(snap, targetUid) {
     laidCards: laid.slice().sort((a, b) => a - b).map((code) => ({ code, label: decodeCard(code).label })),
     // §40 — who plays right after the target (learned from public play). Context for the user only.
     nextPlayerUid: next,
-    nextPlayerLabel: next ? playerLabel(snap, next) : null,
+    nextPlayerLabel: next ? playerLabel(snap, next) : (nextSet.length ? nextSet.map((u) => playerLabel(snap, u)).join(' / ') + ' (chưa rõ chiều)' : null),
+    nextCandidates: nextSet.slice(),
     likelySafeCards: pick(CLASS.LIKELY_SAFE),
     unknownCards: pick(CLASS.UNKNOWN),
     riskyCards: pick(CLASS.RISKY),
@@ -154,10 +165,18 @@ function compute(snap, targetUid) {
 
 // Classify ONE candidate discard from the target's hand.
 function classifyCard(code, ctx) {
-  const { possiblyHidden, statusOf, controlledOpps } = ctx;
+  const { possiblyHidden, statusOf, controlledOpps, threats = [] } = ctx;
   const rank = rankPartners(code);          // 3 same-rank codes
   const runs = runWindows(code);            // run windows (each a pair of same-suit codes)
   const reasonCodes = [];
+  const eats = (handSet) => rank.filter((c) => handSet.has(c)).length >= 2 || runs.some(([a, b]) => handSet.has(a) && handSet.has(b));
+
+  // NEXT-player rule: only the next player can eat. Known next player(s) → exact; if none of them is a stranger
+  // the verdict is final.
+  if (threats.length) {
+    for (const t of threats) if (t.known && eats(t.hand)) { reasonCodes.push('NEXT_CAN_EAT'); return decorate(code, CLASS.RISKY, reasonCodes); }
+    if (threats.every((t) => t.known)) { reasonCodes.push('NEXT_CANNOT_EAT'); return decorate(code, CLASS.SAFE, reasonCodes); }
+  } else {
 
   // (a) KNOWN eat by a CONTROLLED opponent (their exact hand is observed) → RISKY, never recommended.
   for (const opp of controlledOpps) {
@@ -167,6 +186,7 @@ function classifyCard(code, ctx) {
       reasonCodes.push('KNOWN_EATABLE_BY_CONTROLLED');
       return decorate(code, CLASS.RISKY, reasonCodes);
     }
+  }
   }
 
   // (b) Can a HIDDEN opponent eat X? Only with partners that are POSSIBLY hidden (unseen). A partner in any
@@ -220,6 +240,28 @@ function slotLabel(snap, uid) {
   return { slot: p ? p.slot : null, label: p && p.slot ? 'Player ' + String(p.slot).slice(1) : null };
 }
 
+// Who can play right after the target: the learned turn order when known; otherwise the seat neighbours among the
+// players dealt into this round, narrowed to one once any observed play reveals the turn direction.
+function nextCandidates(snap, targetUid) {
+  const nextOf = snap.nextOf || {};
+  if (nextOf[targetUid] != null) return [String(nextOf[targetUid])];
+  const players = snap.players || {};
+  const inRound = Array.isArray(snap.roundPlayers) && snap.roundPlayers.length ? snap.roundPlayers.map(String) : Object.keys(players);
+  const seated = inRound.filter((u) => players[u] && Number.isFinite(Number(players[u].seat)))
+    .sort((a, b) => Number(players[a].seat) - Number(players[b].seat));
+  const i = seated.indexOf(String(targetUid));
+  if (i < 0 || seated.length < 2) return [];
+  const up = seated[(i + 1) % seated.length];
+  const down = seated[(i - 1 + seated.length) % seated.length];
+  // Direction from any observed pair a→b: does play move UP or DOWN the seat order?
+  for (const [a, b] of Object.entries(nextOf)) {
+    const j = seated.indexOf(String(a)); if (j < 0) continue;
+    if (seated[(j + 1) % seated.length] === String(b)) return [up];
+    if (seated[(j - 1 + seated.length) % seated.length] === String(b)) return [down];
+  }
+  return up === down ? [up] : [up, down];
+}
+
 // Content fingerprint for memoisation: target + round + the exact observation that affects the result.
 function fingerprint(snap, targetUid) {
   if (!snap) return `${targetUid}|nil`;
@@ -227,7 +269,7 @@ function fingerprint(snap, targetUid) {
   const tp = snap.players && snap.players[targetUid];
   const t = tp ? (tp.currentCards || []).slice().sort((a, b) => a - b).join(',') : '';
   const sm = tp ? `${tp.currentCardsSource || ''}:${(tp.serverMeldCards || []).slice().sort((a, b) => a - b).join(',')}` : '';
-  const nx = snap.nextOf && snap.nextOf[targetUid] != null ? String(snap.nextOf[targetUid]) : '';
+  const nx = nextCandidates(snap, targetUid).join(',') + '|' + Object.values(snap.players || {}).filter((p) => p.controlled && p.uid !== targetUid).map((p) => (p.currentCards || []).slice().sort((a, b) => a - b).join('.')).join(';');
   return `${targetUid}|r${snap.roundSeq}|H[${t}]|M[${sm}]|N[${nx}]|L[${led}]`;
 }
 

@@ -93,16 +93,16 @@ async function seatAnchor(coord, rid, key) {
 
 // ===================== §key-refresh =====================
 
-test('KEY-01: a refused key is NEVER re-sent — the retry moves on to the anchor live code', async () => {
+test('KEY-01: a refused key is NEVER re-sent, and the anchor table code is never lifted as a password', async () => {
   const { coord, sim } = mk([{ rid: 700, b: 500, key: 'LIVEKEY1', seats: [] }]);
   await seatAnchor(coord, 700, 'LIVEKEY1');
   // B2 is told to use a STALE key. It must be tried once, refused, and never sent again.
   const res = await coord.manualJoinByCode('B2', 700, 'STALEKEY', { timeoutMs: 60 });
-  assert.equal(res.ok, true, 'B2 should get in once it stops replaying the stale key');
+  assert.equal(res.ok, false);
+  assert.equal(res.error.code, 'PHOM_ROOM_KEY_REJECTED');
   const sent = sim.keysSeen.B2;
-  assert.equal(sent[0], 'STALEKEY', 'the pinned key is tried first');
-  assert.equal(sent.filter((k) => k === 'STALEKEY').length, 1, 'the refused key must be sent exactly once');
-  assert.ok(sent.includes('LIVEKEY1'), 'it must fall back to the anchor live room code');
+  assert.deepEqual(sent, ['STALEKEY', ''], 'the typed key once, then the empty code — nothing else');
+  assert.equal(sent.includes('LIVEKEY1'), false, '§no-password: the anchor ps[].hpwd is never sent');
 });
 
 test('KEY-02: every known key refused → stops with PHOM_ROOM_KEY_REJECTED, not 40 attempts', async () => {
@@ -117,17 +117,13 @@ test('KEY-02: every known key refused → stops with PHOM_ROOM_KEY_REJECTED, not
   assert.equal(new Set(sim.keysSeen.B2).size, sim.keysSeen.B2.length, 'no key is ever repeated');
 });
 
-test('KEY-03: a key ROTATED mid-retry is picked up from the anchor own ps[] ("Đổi Key")', async () => {
-  const { coord, sim } = mk([{ rid: 700, b: 500, key: 'OLDKEY', seats: [] }]);
-  await seatAnchor(coord, 700, 'OLDKEY');
-  // The server rotates the room key. The anchor's next TABLE_STATE carries the new one. (Mutate the SIM's own
-  // room object — mk() copies the rooms it is handed, so touching the literal would change nothing.)
-  const room = sim._room(700);
-  room.key = 'NEWKEY';
-  sim._feed('B1', sim._table(room));
+test('KEY-03: an OPEN table is joined with the empty code even when the anchor table state carries a code', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [] }]);
+  await seatAnchor(coord, 700, '');
+  sim._feed('B1', JSON.stringify([5, { b: 500, hpwd: 'TABLE-CODE', ps: sim._room(700).seats.map((s) => ({ uid: s.uid, sit: s.sit, r: false })), cmd: 202 }]));
   const res = await coord.manualJoinByCode('B2', 700, null, { timeoutMs: 60 });
   assert.equal(res.ok, true);
-  assert.equal(sim.keysSeen.B2.at(-1), 'NEWKEY', 'the join that succeeded used the rotated key');
+  assert.deepEqual(sim.keysSeen.B2, [''], '§no-password');
 });
 
 test('KEY-04: the default retry ceiling is bounded (6), not the old 40', async () => {

@@ -41,6 +41,19 @@ class PhomContext extends EventEmitter {
     // Bumped on every FULL table snapshot (ps[]). A join is only proven by a snapshot that arrived AFTER it was
     // sent — the old table's state must never count as 'seated at the new one'.
     this._tableSeq = 0;
+    // CREATE_TABLE (cmd 308) replies and the JOINs sent on this socket (by the tool OR by the game client, which
+    // JOINs the created table by itself). The seq lets the creator tell a fresh reply from an old one.
+    this._createResult = null;  // { ok, rid, stake, maxPlayers, message, at, seq }
+    this._createSeq = 0;
+    this._lastJoinSend = null;  // { rid, at, seq }
+    this._createOptions = null; // CMD 311 reply: { stakes:[…], mB, at, seq } — the stakes this account may create at
+    this._createOptionsSeq = 0;
+    this._joinSendSeq = 0;
+    // The SỐ BÀN list: rs[] rows that are real tables (7-digit rid, rn without '#'), kept apart from the stake
+    // channels. The server sends the full table list rarely (~every 60s) while every CMD 300 reply carries only the
+    // 14 channels — storing both in _channels meant the table list was overwritten seconds after it arrived.
+    this._roomList = [];
+    this._roomListAt = null;
   }
 
   // Inject identity known from the authenticated runtime/login context (§4). Never
@@ -108,9 +121,24 @@ class PhomContext extends EventEmitter {
       changed = true;
     }
 
+    if (cls.type === 'CREATE_TABLE_RESULT' && meta.direction !== 'send') {
+      this._createResult = { ok: cls.ok === true, rid: cls.rid != null ? cls.rid : null, stake: cls.stake != null ? cls.stake : null, maxPlayers: cls.maxPlayers != null ? cls.maxPlayers : null, message: cls.message || null, at: now, seq: ++this._createSeq };
+      changed = true;
+    }
+    if (cls.type === 'FIND_TABLE' && meta.direction !== 'send') {
+      const stakes = Array.isArray(cls.b) ? cls.b.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
+      this._createOptions = { stakes, mB: cls.mB != null ? cls.mB : null, at: now, seq: ++this._createOptionsSeq };
+      changed = true;
+    }
+    if (cls.type === 'JOIN_REQUEST' && meta.direction === 'send') {
+      this._lastJoinSend = { rid: cls.channel != null ? Number(cls.channel) : null, at: now, seq: ++this._joinSendSeq };
+    }
+
     if (cls.type === 'CHANNEL_LIST' && Array.isArray(cls.rs)) {
       this._channels = cls.rs.map(normalizeChannel).filter(Boolean);
       this._channelsAt = now;
+      const tables = this._channels.filter(isTableRow);
+      if (tables.length) { this._roomList = tables; this._roomListAt = now; }
       // A list response may arrive AFTER JOIN. It is discovery data, not proof
       // of leaving. Only LEAVE_ACK or a fresh membership snapshot can do that.
       changed = true;
@@ -195,6 +223,15 @@ class PhomContext extends EventEmitter {
   lastJoinAck() { return this._lastJoinAck ? { ...this._lastJoinAck } : null; }
   lastLeaveAck() { return this._lastLeaveAck ? { ...this._lastLeaveAck } : null; }
   ackSeq() { return this._ackSeq; }
+  lastCreateResult() { return this._createResult ? { ...this._createResult } : null; }
+  createSeq() { return this._createSeq; }
+  createOptions() { return this._createOptions ? { ...this._createOptions, stakes: this._createOptions.stakes.slice() } : null; }
+  createOptionsSeq() { return this._createOptionsSeq; }
+  lastJoinSend() { return this._lastJoinSend ? { ...this._lastJoinSend } : null; }
+  joinSendSeq() { return this._joinSendSeq; }
+  // The latest SỐ BÀN list (real tables only) + when it arrived.
+  roomList() { return this._roomList.slice(); }
+  roomListAt() { return this._roomListAt; }
   tableSeq() { return this._tableSeq; }
   tableState() { return this._tableState; }
 
@@ -285,4 +322,12 @@ function foldSeat(ts, seat) {
 
 function hostOf(u) { try { return new URL(u).host; } catch { return String(u || ''); } }
 
-module.exports = { PhomContext, buildTableState };
+// A real TABLE row of rs[] (a số bàn), not a stake channel: channels are named "Phom#<n>" with small rids
+// (139…152); tables are named "Phom" with 7-digit rids (live capture 2026-09-21: 3673500, 3538594, …).
+function isTableRow(c) {
+  if (!c || !Number.isFinite(Number(c.rid)) || Number(c.rid) < 100000) return false;
+  if ((c.zn != null && c.zn !== ZONE) || (c.gid != null && Number(c.gid) !== GID)) return false;
+  return !(c.rn && c.rn.includes('#'));
+}
+
+module.exports = { PhomContext, buildTableState, isTableRow };

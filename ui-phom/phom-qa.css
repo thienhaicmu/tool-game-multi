@@ -562,3 +562,44 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .safe-head .analysis-pick { margin-left: 0; }
 #phq-note:empty { display: none; }
 @media(max-width:700px) { .browser-row { gap: 6px; } .browser-cell { padding: 8px; } .browser-cell .bc-dots { grid-column: 1 / -1; } .browser-cell .bc-life { grid-row: 5; } .workspace-title { width: 100%; } }
+
+/* ================= PHỎM control screen — cards first ================= */
+.status-line { flex: 0 0 auto; gap: 14px; padding: 2px 2px 4px; border-bottom: 0; font-size: 12px; flex-wrap: wrap; }
+.status-line .th-rid { margin-left: 0; }
+.status-line .th-rid, .status-line .th-key, .status-line .th-bet { color: var(--text-faint); }
+.status-line b { color: var(--text); font-variant-numeric: tabular-nums; }
+.acc-chips { flex: 0 0 auto; display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 4px; }
+.acc-chip { flex: 1 1 240px; min-width: 0; display: flex; align-items: center; gap: 5px; padding: 3px 6px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; min-height: 30px; }
+.acc-chip .bc-acc { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.acc-chip .bc-badge { white-space: nowrap; }
+.acc-chip .btn.sm { padding: 2px 7px; }
+.acc-chip.st-warn { background: #fffaf0; }
+.acc-chip.st-danger { background: #fff5f5; }
+.acc-chip .ready-yes { color: var(--success); font-weight: 800; }
+.role-chip { display: inline-block; font-size: 10px; font-weight: 800; padding: 1px 6px; border-radius: 5px; white-space: nowrap; letter-spacing: .2px; }
+.role-key   { background: #fff2df; color: #b45309; border: 1px solid #f0dcb0; }
+.role-ready { background: #e7f6ec; color: #15803d; border: 1px solid #bfe6cd; }
+.role-wait  { background: var(--panel-2); color: var(--text-2); border: 1px solid var(--border); }
+
+.control-footer { flex: 0 0 auto; display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: 6px; padding: 6px 8px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
+.control-footer .cf-label { font-weight: 700; color: var(--text-2); }
+.control-footer .auto-stake { height: 28px; min-width: 84px; margin-right: 4px; }
+.control-footer .auto-toggle { display: inline-flex; align-items: center; gap: 4px; height: 28px; padding: 0 10px; margin-right: auto; border-radius: 8px; border: 1px solid #e6b4b4; color: #b91c1c; font-weight: 800; cursor: pointer; user-select: none; }
+.control-footer .auto-toggle.on { background: #dc2626; border-color: #dc2626; color: #fff; }
+.control-footer .auto-toggle input { margin: 0; }
+.btn.warn-btn { background: #f59e0b; border-color: #f59e0b; color: #fff; font-weight: 700; }
+.btn.warn-btn:hover { background: #d97706; }
+.control-footer .btn.danger { font-weight: 700; }
+
+/* cards get the space: LỌC BÀI wider than the remaining-cards panel */
+.card-workspace .safe-cards { flex: 3 1 0; }
+.card-workspace .remaining-cards { flex: 2 1 0; }
+.safe-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6px; flex: 1 1 auto; min-height: 0; overflow-y: auto; align-content: start; }
+.safe-col { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--panel-2); min-width: 0; }
+.safe-col-head { margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.safe-col .cards { flex-wrap: wrap; }
+.card-face.risky { border-color: #c62828; opacity: .7; }
+@media (max-width: 900px) {
+  .safe-cols { grid-template-columns: 1fr; }
+}
+.status-line .th-rid, .status-line .th-key, .status-line .th-bet { border: 0; padding: 0; background: transparent; box-shadow: none; min-height: 0; }
