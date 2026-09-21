@@ -31,6 +31,9 @@ const USER = 'phomuser', PASS = 'phom-secret-pw';
 // The site behind the proxy.
 function startOrigin() {
   const server = http.createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>t</title><body>OK-PROXIED</body>'); });
+  // Same rule as the proxy below: a browser-dropped socket must never escape as an uncaught ECONNRESET.
+  server.on('clientError', (_err, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
+  server.on('connection', (socket) => socket.on('error', () => {}));
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => resolve({ server, port: server.address().port })));
 }
 // A forward HTTP proxy that REQUIRES Basic credentials — exactly what a paid proxy does (407 until answered).
@@ -47,9 +50,15 @@ function startAuthProxy() {
     up.on('error', () => { res.writeHead(502); res.end(); });
     req.pipe(up);
   });
+  // A browser drops these sockets whenever it likes (a 407 it will retry, a tunnel it no longer needs), which
+  // surfaces here as ECONNRESET. Without a listener Node throws it out of the http server and the whole test file
+  // dies — which is exactly how this test failed intermittently under load. The proxy simply ignores them.
+  server.on('clientError', (_err, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
+  server.on('connection', (socket) => socket.on('error', () => {}));
   // HTTPS / WSS go through a CONNECT tunnel — the path the real game (https + wss) uses. Same 407 rule.
   const CRLF = '\r\n';
   server.on('connect', (req, sock) => {
+    sock.on('error', () => {}); // the browser may reset the tunnel at any point; never let it escape
     const auth = req.headers['proxy-authorization'];
     if (auth !== expected) {
       seen.connectChallenged = (seen.connectChallenged || 0) + 1;
