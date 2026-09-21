@@ -39,7 +39,7 @@ class Sim {
       if (j[0] === 4) {
         for (const r of this.rooms) r.seats = r.seats.filter((s) => s.uid !== uid);
         // back in the LOBBY → the lobby channel list arrives (§37 evidence that THOÁT BÀN took effect)
-        if (!this.silentLeave) this._feed(id, this._channelList());
+        if (!this.silentLeave) { this._feed(id, '[4,true,1,-1,0,""]'); this._feed(id, this._channelList()); }
         return { ok: true };
       }
       return { ok: true };
@@ -66,17 +66,13 @@ test('RES-02: P1 anchor with exactly 2 free slots after seating → VALID', asyn
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
   assert.equal(r.ok, true); assert.equal(r.freeAfter, 2); assert.equal(r.anchorValid, true);
 });
-test('RES-03: a table that fits only SOME browsers is KEPT as a fallback and published (§53b)', async () => {
-  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]); // after P1: 3 seated → freeAfter=1
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, true, 'the best joinable table is kept rather than leaving the group with nothing');
-  assert.equal(r.fallbackBest, true);
-  assert.equal(r.rid, 700);
-  assert.equal(r.fitsAll, false);
-  assert.equal(r.rerolls, 1);
-  assert.equal(snapB(coord, 'B1').manualState, 'JOINED');
-  assert.equal(sim.rooms[0].seats.some((s) => s.uid === '1_1'), true, 'the browser ends up seated at the fallback table');
-  assert.equal(coord.sharedRid(), 700, 'the best table IS published so the others can join what seats remain');
+test('RES-03: capacity loss never publishes a partial room, even with the old override', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, rerollUntilFit: false });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.rooms[0].seats.some((seat) => seat.uid === '1_1'), false);
 });
 test('RES-04: a table that fills on join is left and the search re-rolls onto one that fits (§53)', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 3 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'y' }] }]);
@@ -86,10 +82,13 @@ test('RES-04: a table that fills on join is left and the search re-rolls onto on
   assert.equal(r.fitsAll, true);
   assert.equal(r.rerolls, 1);
 });
-test('RES-04b: rerollUntilFit:false keeps the old keep-the-seat behaviour for callers that want it', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 3 }]);
+test('RES-04b: capacity loss never publishes a partial room, even with the old override', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]);
   const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, rerollUntilFit: false });
-  assert.equal(r.ok, true); assert.equal(r.freeAfter, 0); assert.equal(r.fitsAll, false);
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.rooms[0].seats.some((seat) => seat.uid === '1_1'), false);
 });
 test('RES-05: a browser that could NOT join publishes no shared room', async () => {
   const { coord } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B1: 99 } }]);
@@ -186,7 +185,7 @@ test('RES-26: concurrent P1 discovery is single-flight even under recovery (only
   const p1 = coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1 });
   const p2 = coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1 });
   const [r1, r2] = await Promise.all([p1, p2]);
-  assert.ok((r1.ok && r2.error && r2.error.code === 'PHOM_FIND_IN_FLIGHT') || (r2.ok && r1.error && r1.error.code === 'PHOM_FIND_IN_FLIGHT'));
+  assert.ok((r1.ok && r2.error && r2.error.code === 'FIND_ALREADY_RUNNING') || (r2.ok && r1.error && r1.error.code === 'FIND_ALREADY_RUNNING'));
 });
 test('RES-27: a permanently-failing follower JOIN terminates (bounded, never loops forever)', async () => {
   const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], failJoins: { B2: 99 } }]);
@@ -205,20 +204,21 @@ test('RES-21/22: same-room proof P1+P2 then P1+P2+P3 from authoritative ps[]', a
   const c = await coord.manualJoinShared('B3', rid, { timeoutMs: 120 });
   assert.ok(c.membership.includes('1_1') && c.membership.includes('1_2') && c.membership.includes('1_3'));
 });
-test('RES-23: capacity race — qualifies at discovery but fills on JOIN → kept as fallback, published (§53b)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }], injectOnJoin: 1 }]); // uC1; +inject+P1 → 3
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0 });
-  assert.equal(r.ok, true, 'the room filled during the join, but it is the best seat available → kept & published (§53b)');
-  assert.equal(r.fallbackBest, true);
-  assert.equal(r.fitsAll, false);
-  assert.equal(snapB(coord, 'B1').rid, 700);
-  assert.equal(coord.sharedRid(), 700);
+test('RES-23: capacity loss never publishes a partial room, even with the old override', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, rerollUntilFit: false });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.rooms[0].seats.some((seat) => seat.uid === '1_1'), false);
 });
-test('RES-24: capacity change right after P1 JOIN is caught by the authoritative post-anchor check', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }, { rid: 701, b: 500, seats: [{ sit: 0, uid: 'y' }] }]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 1, budgetMs: 500 });
-  // §53 — the emptiest table is tried first; it filled during the join, so it is left and the next one fits
-  assert.equal(r.ok, true); assert.equal(r.rid, 701); assert.equal(r.freeAfter, 2); assert.equal(r.fitsAll, true); assert.equal(r.rerolls, 1);
+test('RES-24: capacity loss never publishes a partial room, even with the old override', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [], injectOnJoin: 2 }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, rerollUntilFit: false });
+  assert.equal(r.ok, false);
+  assert.equal(r.error.code, 'PHOM_NO_FITTING_TABLE');
+  assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.rooms[0].seats.some((seat) => seat.uid === '1_1'), false);
 });
 
 // ================= SAFETY (RES-28/29/30) — source scan =================
@@ -355,23 +355,18 @@ test('FIND-MSG-01: the NO_EMPTY_TABLE message names the reason and how many tabl
   assert.equal(r.tablesAtStake, 1);
   assert.equal(r.bestFreeSlots, 0);
   assert.equal(r.need, 3, 'it still reports how many seats the group wanted');
-  assert.equal(r.minSeats, 1, 'but only one was required to sit down');
+  assert.equal(r.minSeats, 3, 'the whole group must fit');
   assert.match(r.error.message, /xét 1 bàn/);
   // §32 — it also says how hard it looked, so "tìm không ra bàn" can be told apart from "hỏi đúng 1 lần"
   assert.match(r.error.message, /đã hỏi máy chủ \d+ lần/);
   assert.ok(r.attempts >= 2, `a persistent search re-asks the server (attempts=${r.attempts})`);
 });
 
-test('FIND-MSG-02: a lobby holding only the stake CHANNEL is attempted, and an honest verdict if it fails', async () => {
-  // §50 — a stake channel reports uC >> Mu, so it is not a joinable TABLE row; it is the lobby entry a player
-  // clicks. The search now tries it. When even that cannot seat us, the verdict says every candidate failed.
-  const channel = { rid: 140, b: 500, Mu: 4, uC: 70, seats: [], failJoins: { B1: 99 } };
-  const { coord, sim } = mk([channel]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, timeoutMs: 60, budgetMs: 500 });
-  assert.ok(sim.attemptsFor(140, 'B1') >= 1, 'the stake channel was actually tried');
-  assert.equal(r.ok, false);
-  assert.equal(r.viaStakeChannel, true, 'and the verdict says the attempt went through the stake channel');
-  assert.ok(r.rows.length >= 1, 'the rows the lobby offered are still reported');
+test('FIND-MSG-02: channel-only response is diagnosed without matchmaking', async () => {
+  const { coord, sim } = mk([{ rid: 140, b: 500, Mu: 4, uC: 70, seats: [] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 30 });
+  assert.equal(r.ok, false); assert.equal(r.reason, 'ONLY_STAKE_BUCKETS');
+  assert.equal(sim.attemptsFor(140, 'B1'), 0);
 });
 
 // ================= SHARED ANCHOR (FIND-ANC) — who the same-room proof compares against =================
@@ -585,7 +580,7 @@ test('LEAVE-02: a leave the server never confirms is surfaced, never claimed as 
   assert.equal(r.confirmed, false);
   assert.equal(r.error.code, 'PHOM_LEAVE_NOT_CONFIRMED');
   assert.ok(Date.now() - t0 >= 70, 'it actually waited for evidence');
-  assert.equal(snapB(coord, 'B1').manualState, 'LEFT', 'still treated as left — nothing better can be known');
+  assert.equal(snapB(coord, 'B1').manualState, 'LEAVE_UNCONFIRMED', 'membership remains uncertain until evidence');
 });
 
 test('LEAVE-03: the local table is kept until the server proves the exit (not dropped at send time)', async () => {
@@ -600,12 +595,12 @@ test('LEAVE-03: the local table is kept until the server proves the exit (not dr
 });
 
 // §36 — the game sending ONE browser back to the lobby resets only that browser.
-test('LOBBY-01: a lobby channel list for ONE seated browser resets only that browser; the others keep their room', async () => {
+test('LOBBY-01: a LEAVE acknowledgement for ONE seated browser resets only that browser; the others keep their room', async () => {
   const { coord, sim } = mk([{ rid: 555, b: 500, seats: [] }]);
   await coord.manualJoinRoom('B1', 555, { timeoutMs: 60 });
   await coord.manualJoinShared('B2', 555, { timeoutMs: 60 });
   await coord.manualJoinShared('B3', 555, { timeoutMs: 60 });
-  sim._feed('B2', sim._channelList()); // the game itself put B2 back in the lobby
+  sim._feed('B2', '[4,true,1,-1,0,""]'); // explicit server proof that B2 left
   assert.equal(snapB(coord, 'B2').manualState, 'READY');
   assert.equal(snapB(coord, 'B2').rid, null);
   assert.equal(snapB(coord, 'B2').lastRid, 555, 'REJOIN can still return');
@@ -632,16 +627,11 @@ test('SEATS-01: with all three alive the search PREFERS the table that fits the 
   assert.equal(r.fitsAll, true);
 });
 
-test('SEATS-01b: when nothing fits the group the best joinable table is kept as a fallback (§53b)', async () => {
-  const { coord } = mk([{ rid: 700, b: 500, seats: [{ sit: 0, uid: 'x' }, { sit: 1, uid: 'y' }] }]); // only 2 free
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 2, budgetMs: 2000 });
-  assert.equal(r.ok, true, 'no table fit all three, but the emptiest joinable one is kept so the group sits where seats allow');
-  assert.equal(r.fallbackBest, true);
-  assert.equal(r.rid, 700);
-  assert.equal(r.fitsAll, false);
-  assert.equal(r.freeAfter, 1);
-  assert.equal(r.rerolls, 3, 'bounded: one re-roll per pass before falling back');
-  assert.equal(coord.sharedRid(), 700);
+test('SEATS-01b: no room with enough seats means no JOIN and no shared RID', async () => {
+  const { coord, sim } = mk([{ rid: 700, b: 500, seats: [{ uid: 'x', sit: 0 }, { uid: 'y', sit: 1 }] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 30 });
+  assert.equal(r.ok, false); assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.attemptsFor(700, 'B1'), 0);
 });
 
 test('SEATS-02: a closed browser lowers the requirement, so a 2-seat table now fits the two still playing', async () => {
@@ -741,17 +731,10 @@ test('ROWS-02: the rows stay on the browser snapshot so the Tool can show them a
 // §50 — the lobby list can expose only the STAKE CHANNEL ("bàn 100"), not the individual tables behind it. The
 // table qualifier rejects that row (its uC counts everyone at the stake, so uC > Mu), which is why TÌM BÀN could
 // report "no table" for a stake a player walks straight into. Joining the channel is what the game itself does.
-test('CHAN-01: with no joinable table row, the search enters the STAKE CHANNEL and gets seated', async () => {
-  const { coord, sim } = mk([
-    { rid: 141, b: 500, Mu: 4, uC: 87, seats: [], seatsAt: 900 },  // the stake channel a player clicks
-    { rid: 900, b: 500, Mu: 4, seats: [], hidden: true },          // the real table, not in rs[]
-  ]);
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, maxRecovery: 0, budgetMs: 600 });
-  assert.equal(r.ok, true, 'TÌM BÀN gets in exactly like clicking the lobby does');
-  assert.equal(r.viaStakeChannel, true);
-  assert.equal(r.rid, 141, 'it joined the stake channel');
-  assert.equal(snapB(coord, 'B1').manualState, 'JOINED');
-  assert.ok(sim.rooms[1].seats.some((x) => x.uid === '1_1'), 'the server seated it at the real table');
+test('CHAN-01: FIND never treats a stake channel as the group RID', async () => {
+  const { coord, sim } = mk([{ rid: 139, b: 500, uC: 99, Mu: 4, seatsAt: 700 }, { rid: 700, b: 500, hidden: true, seats: [] }]);
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 30, stakeFallbackAfterMs: 0 });
+  assert.equal(r.ok, false); assert.equal(sim.attemptsFor(139, 'B1'), 0); assert.equal(coord.sharedRid(), null);
 });
 
 test('CHAN-02: a joinable table row is still preferred — the channel is only a fallback', async () => {

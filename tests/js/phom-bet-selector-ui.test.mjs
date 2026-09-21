@@ -40,10 +40,10 @@ test('no bet options yet => "đang tải" + refresh (never a default stake)', ()
   assert.match(js, /api\.requestChannels\(\)/);
 });
 
-test('FIND passes the CHOSEN stake to discovery (api.manualDiscover with selectedStake)', () => {
+test('FIND passes the CHOSEN stake to discovery (api.findAndJoinGroup with selectedStake)', () => {
   const h = fn(js, 'onManualFind');
   assert.match(h, /selectedStakeByBrowser\[b\.profileId\]/);
-  assert.match(h, /api\.manualDiscover\(b\.profileId, \{ selectedStake \}\)/);
+  assert.match(h, /api\.findAndJoinGroup\(b\.profileId, \{ selectedStake \}\)/);
   // refuse to find without a chosen stake
   assert.match(h, /selectedStake == null[\s\S]*?Chọn mức cược/);
 });

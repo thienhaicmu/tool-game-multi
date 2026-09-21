@@ -72,12 +72,12 @@ test('§27 HOST/FOLLOWER controlled-table mock end-to-end', async () => {
   // 20-23. authorized 4th (D) joins -> player count 4 -> C readies -> 3/3 controlled ready
   const four = [UID.A, UID.B, UID.C, UID.D];
   table('A', four, 5); table('B', four, 5); table('C', four, 5);
-  assert.equal(coord.readyPolicy().desired.get('C'), true);
+  assert.equal(coord.readyPolicy().desired.get('C'), false);
   await coord.applyReady();
-  assert.ok(sent.C.includes(buildReadyFrame()));
-  const rmap4 = { [UID.A]: true, [UID.B]: true, [UID.C]: true, [UID.D]: false };
+  assert.ok(!sent.C.includes(buildReadyFrame()));
+  const rmap4 = { [UID.A]: true, [UID.B]: true, [UID.C]: false, [UID.D]: false };
   table('A', four, 6, rmap4); table('B', four, 6, rmap4); table('C', four, 6, rmap4);
-  assert.equal(coord.snapshot().controlledReadyCount, 3);
+  assert.equal(coord.snapshot().controlledReadyCount, 2);
 
   // 24. cmd 850 deals three independent hands (own sessions)
   push('A', { cs: [40, 44, 48, 3, 2, 6, 8, 27, 42], cmd: 850, tP: { uid: UID.A } }, 7);

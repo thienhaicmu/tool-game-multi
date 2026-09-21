@@ -97,39 +97,25 @@ test('REAL-P2: the context records join/leave answers and a leave ack drops the 
 });
 
 // ---------------- bug 1: a misfit table is left and re-rolled ----------------
-test('REAL-01: the finder leaves a table without room for the group and re-joins the stake until one fits', async () => {
-  // 1st seat: a table with two strangers (1 seat left for 2 browsers) → misfit; 2nd: the same again; 3rd: empty.
-  const { coord, sim } = mk({ tables: [{ others: ['s1', 's2'] }, { others: [] }], placement: (id, n) => (n <= 2 ? 0 : 1) });
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 100 });
-  assert.equal(r.ok, true, JSON.stringify(r.error));
-  assert.equal(r.rerolls, 2);
-  assert.equal(r.fitsAll, true); assert.equal(r.freeAfter, 3);
-  assert.equal(sim.seatedAt('1_1'), 1, 'seated at the table that fits');
-  assert.equal(sim.log.filter((e) => e.op === 'LEAVE').length, 2, 'each misfit was LEFT before joining again');
-  noJoinWhileSeated(sim);
-  assert.equal(coord.sharedRid(), 139);
+test('REAL-01: channel-only discovery cannot prove a physical RID and must not JOIN', async () => {
+  const { coord, sim } = mk({ tables: [{ others: [] }], placement: () => 0 });
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 100, budgetMs: 20, pollMs: 5 });
+  assert.equal(r.ok, false); assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.log.some((entry) => entry.op === 'JOIN'), false);
 });
 
-test('REAL-02: when no table fits the group, the best joinable one is kept as a fallback and published (§53b)', async () => {
-  const { coord, sim } = mk({ tables: [{ others: ['s1', 's2'] }], placement: () => 0 });
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 100, maxRecovery: 3 });
-  assert.equal(r.ok, true, 'the finder never ends empty-handed — it re-joins the emptiest table it saw');
-  assert.equal(r.fallbackBest, true);
-  assert.equal(r.rerolls, 4);
-  assert.equal(r.fitsAll, false);
-  assert.equal(r.freeAfter, 1, 'one seat is left for the two other browsers to contend for');
-  assert.equal(sim.seatedAt('1_1'), 0, 'seated at the best (only) table as a fallback');
-  assert.equal(coord.sharedRid(), 139);
-  noJoinWhileSeated(sim);
+test('REAL-02: channel-only discovery cannot prove a physical RID and must not JOIN', async () => {
+  const { coord, sim } = mk({ tables: [{ others: [] }], placement: () => 0 });
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 100, budgetMs: 20, pollMs: 5 });
+  assert.equal(r.ok, false); assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.log.some((entry) => entry.op === 'JOIN'), false);
 });
 
-test('REAL-03: a server refusal fails the JOIN fast with the server message, and the stake is tried again (never blacklisted)', async () => {
-  const { coord, sim } = mk({ tables: [{ others: [] }], placement: (id, n) => (n === 1 ? { refuse: 'Phòng đầy' } : 0) });
-  const t0 = Date.now();
-  const r = await coord.manualDiscoverTable('B1', { selectedStake: 100, timeoutMs: 5000 });
-  assert.equal(r.ok, true, 'the second JOIN of the same stake channel seats the browser');
-  assert.ok(Date.now() - t0 < 2000, 'the refusal did not wait out the 5s join timeout');
-  assert.equal(sim.joins.B1, 2);
+test('REAL-03: channel-only discovery cannot prove a physical RID and must not JOIN', async () => {
+  const { coord, sim } = mk({ tables: [{ others: [] }], placement: () => 0 });
+  const r = await coord.manualDiscoverTable('B1', { selectedStake: 100, budgetMs: 20, pollMs: 5 });
+  assert.equal(r.ok, false); assert.equal(coord.sharedRid(), null);
+  assert.equal(sim.log.some((entry) => entry.op === 'JOIN'), false);
 });
 
 test('REAL-04: manualJoinRoom reports the refusal reason instead of a timeout', async () => {
@@ -153,7 +139,7 @@ test('REAL-05: a JOIN while seated is refused locally — it would get the playe
 
 test('REAL-06: follower lands with the anchor → confirmed; no JOIN is ever sent while seated', async () => {
   const { coord, sim } = mk({ tables: [{ others: [] }], placement: () => 0 });
-  const f = await coord.manualDiscoverTable('B1', { selectedStake: 100 });
+  const f = await coord.manualFindTable('B1', 139);
   assert.equal(f.ok, true);
   const r = await coord.manualJoinShared('B2', coord.sharedRid());
   assert.equal(r.ok, true); assert.equal(r.sameRoom, true);
@@ -163,7 +149,7 @@ test('REAL-06: follower lands with the anchor → confirmed; no JOIN is ever sen
 test('REAL-07: follower seated at a DIFFERENT table leaves it before every retry, and does not stay there at the end', async () => {
   // Test D: the server seated the follower alone at a fresh table on every try.
   const { coord, sim } = mk({ tables: [{ others: [] }, { others: [] }, { others: [] }, { others: [] }], placement: (id, n) => (id === 'B1' ? 0 : n) });
-  assert.equal((await coord.manualDiscoverTable('B1', { selectedStake: 100 })).ok, true);
+  assert.equal((await coord.manualFindTable('B1', 139)).ok, true);
   const r = await coord.manualJoinShared('B2', 139, { maxRetries: 2 });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'PHOM_FOLLOWER_ROOM_MISMATCH');
@@ -176,7 +162,7 @@ test('REAL-07: follower seated at a DIFFERENT table leaves it before every retry
 
 test('REAL-08: follower that lands with the anchor on a retry is confirmed', async () => {
   const { coord, sim } = mk({ tables: [{ others: [] }, { others: [] }], placement: (id, n) => (id === 'B1' ? 0 : (n === 1 ? 1 : 0)) });
-  assert.equal((await coord.manualDiscoverTable('B1', { selectedStake: 100 })).ok, true);
+  assert.equal((await coord.manualFindTable('B1', 139)).ok, true);
   const r = await coord.manualJoinShared('B2', 139, { maxRetries: 2 });
   assert.equal(r.ok, true); assert.equal(r.sameRoom, true); assert.equal(r.attempts, 2);
   noJoinWhileSeated(sim);
@@ -184,7 +170,7 @@ test('REAL-08: follower that lands with the anchor on a retry is confirmed', asy
 
 test('REAL-09: a follower already seated with the anchor is confirmed without sending anything', async () => {
   const { coord, sim } = mk({ tables: [{ others: [] }], placement: () => 0 });
-  assert.equal((await coord.manualDiscoverTable('B1', { selectedStake: 100 })).ok, true);
+  assert.equal((await coord.manualFindTable('B1', 139)).ok, true);
   assert.equal((await coord.manualJoinShared('B2', 139)).ok, true);
   const joins = sim.joins.B2;
   const again = await coord.manualJoinShared('B2', 139);
@@ -207,7 +193,7 @@ test('REAL-10: a new top-level document resets the browser (header back to VÀO 
 test('REAL-11: after resetBrowser the browser is no longer in game or at a table', async () => {
   const { coord } = mk({ tables: [{ others: [] }], placement: () => 0 });
   coord.ingest('B1', { raw: JSON.stringify([5, { rs: [{ rid: 139, b: 100, uC: 14, Mu: 4, zn: 'Simms', gid: 8 }], cmd: 300 }]), direction: 'recv', targetId: 'B1', url: 'wss://sim', now: 2 });
-  assert.equal((await coord.manualDiscoverTable('B1', { selectedStake: 100 })).ok, true);
+  assert.equal((await coord.manualFindTable('B1', 139)).ok, true);
   coord.resetBrowser('B1');
   const b = snapB(coord, 'B1');
   assert.equal(b.rid, null); assert.equal(b.socketReady, false); assert.equal(b.channelCount || 0, 0);

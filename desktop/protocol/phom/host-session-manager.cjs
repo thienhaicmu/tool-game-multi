@@ -47,6 +47,7 @@ class HostSessionManager extends EventEmitter {
       };
     });
 
+    this.endSession();
     const coord = new HostTableCoordinator({ profiles, hostId: host, selectedStake, now: this._now, environmentAuthorized: () => this.authorized(), sessionId: `PHOMHOST-${this._now()}` });
     coord.on('update', (snap) => this.emit('update', snap));
     coord.on('hands', (hands) => this.emit('hands', hands));
@@ -58,15 +59,18 @@ class HostSessionManager extends EventEmitter {
     // rejoin to the SAME host table. Only when a discovery loop is NOT running (the loop owns joins
     // while active) — otherwise the two double-drive and flood join/leave. rejoinFollower itself has
     // cooldown + a REJOINING guard against duplicates.
-    coord.on('kick', ({ id } = {}) => { if (id && this.authorized() && !coord.isStopped() && !coord.isRunning()) Promise.resolve(coord.rejoinFollower(id)).catch(() => {}); });
+    coord.on('kick', ({ id } = {}) => { if (id && this.authorized() && !coord.isStopped() && !coord.isRunning()) Promise.resolve(coord.manualRejoin(id)).catch(() => {}); });
     // §12/§17 — global invalidation: all leave, then the host restarts discovery. Debounced + gated
     // on NOT already running, so a per-frame stream of 'invalidated' can't spam leaveAll/restart.
     coord.on('invalidated', async () => {
       if (!this.authorized() || coord.isStopped() || coord.isRunning() || this._restartInFlight) return;
       this._restartInFlight = true;
       this._restarts = (this._restarts || 0) + 1;
-      try { await coord.leaveAll(); } catch { /* best effort */ }
-      if (this._restarts <= (this._maxRestarts || 20) && !coord.isStopped()) { try { await coord.runDiscovery(); } catch {} }
+      let left = false;
+      try { left = (await coord.leaveAll()).ok; } catch { /* remain blocked until leave is confirmed */ }
+      if (left && this._session?.coord === coord && this._restarts <= (this._maxRestarts || 20) && !coord.isStopped()) {
+        try { await coord.findAndJoinGroup(coord.finderId() || host, { selectedStake: coord.snapshot().selectedStake }); } catch {}
+      }
       this._restartInFlight = false;
     });
     this._session = { coord, runIds: new Set(ids) };
@@ -75,7 +79,10 @@ class HostSessionManager extends EventEmitter {
     return { ok: true, sessionId: coord.sessionId(), hostId: host, state: coord.state() };
   }
 
-  endSession() { this._session = null; }
+  endSession() {
+    const old = this._session; this._session = null;
+    if (old) { old.coord.stop(); old.coord.removeAllListeners(); }
+  }
 
   routeFrame(run, req) {
     if (!this._session || !run || !req || !req.isWebSocket || !req.wsDirection) return;
@@ -120,6 +127,7 @@ class HostSessionManager extends EventEmitter {
   manualFindTable(id, channel, opts) { return this._guarded((c) => c.manualFindTable(String(id), channel, opts)); }
   // PHASE-6.2.1 — REAL discovery: find a qualifying empty table (rid + stake from the server table), join it.
   manualDiscoverTable(id, opts) { return this._guarded((c) => c.manualDiscoverTable(String(id), opts)); }
+  findAndJoinGroup(id, opts) { return this._guarded((c) => c.findAndJoinGroup(String(id), opts)); }
   manualJoinRoom(id, rid, opts) { return this._guarded((c) => c.manualJoinRoom(String(id), rid, opts)); }
   // PHASE 6.3.5 — FOLLOWER JOIN of the shared anchor RID with bounded, generation-safe, single-flight retry.
   manualJoinShared(id, rid, opts) { return this._guarded((c) => c.manualJoinShared(String(id), rid, opts)); }

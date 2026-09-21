@@ -515,3 +515,50 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .find-rows > div { font-family: ui-monospace, Consolas, monospace; padding-left: 10px; }
 
 .capture-preview { max-height: 320px; overflow: auto; font: 11px/1.4 ui-monospace, Consolas, monospace; background: #f7f7f9; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; white-space: pre; }
+
+/* Capture and options live outside the frequently refreshed control root. */
+.tool-header { flex-wrap: wrap; }
+.capture-launch { white-space: nowrap; border-color: var(--blue, #2563eb); color: var(--blue, #2563eb); }
+.more-card { width: min(360px, 94vw); }
+.qa-more-menu.menu-dialog { position: static; display: grid; box-shadow: none; border: 0; margin: 12px 0 0; padding: 0; min-width: 0; gap: 4px; }
+.menu-dialog .menu-item { min-height: 40px; text-align: left; }
+.capture-card { width: min(640px, 94vw); }
+.capture-heading, .capture-actions { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.capture-heading { margin-bottom: 14px; }
+.capture-scope { display: grid; gap: 8px; margin: 16px 0; }
+.capture-scope select { min-height: 40px; width: 100%; }
+.capture-status { padding: 14px; border: 1px solid var(--border); border-radius: 8px; margin: 14px 0; }
+.capture-status.recording { color: #b42318; background: #fff1f0; border-color: #fda29b; }
+.capture-actions { justify-content: flex-start; flex-wrap: wrap; }
+.capture-actions .btn { min-height: 42px; padding: 8px 18px; }
+.capture-stop { border-color: #d92d20; color: #b42318; }
+.capture-saved { overflow-wrap: anywhere; display: grid; gap: 10px; }
+.capture-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
+
+/* Phom workspace: clear hierarchy with stable three-column player cards. */
+#phq-root.mode-control { overflow: auto; }
+.tool-header { gap: 10px; padding: 12px 0 16px; align-items: center; }
+.workspace-title { display: grid; gap: 4px; margin-right: auto; }
+.workspace-title strong { font-size: 18px; color: var(--text); }
+.workspace-title span { font-size: 11px; color: var(--text-faint); }
+.tool-header .th-rid { margin-left: 0; }
+.tool-header .th-rid, .tool-header .th-bet { padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }
+.tool-header .th-still { display: none; }
+.browser-row { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin: 12px 0; }
+.browser-cell { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; padding: 12px; align-items: center; box-shadow: none; }
+.browser-cell .b-badge { grid-column: 1; grid-row: 1; }
+.browser-cell .bc-id { grid-column: 2; grid-row: 1; letter-spacing: 0; }
+.browser-cell .gbadge { grid-column: 3; grid-row: 1; }
+.browser-cell .bc-acc { grid-column: 1 / -1; grid-row: 2; }
+.browser-cell .bc-badge { grid-column: 1 / -1; grid-row: 3; justify-self: start; border-radius: 6px; white-space: nowrap; padding: 4px 8px; }
+.browser-cell .bc-dots { grid-column: 1 / 3; grid-row: 4; margin: 0; }
+.browser-cell .bc-life { grid-column: 3; grid-row: 4; display: flex; }
+.finder-pick { display: flex; flex-wrap: wrap; justify-content: flex-start; margin: 0 0 12px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; gap: 8px; }
+.finder-label { margin-right: 8px; color: var(--text-2); font-size: 12px; font-weight: 600; }
+.finder-pick .btn { min-height: 30px; }
+.card-workspace { gap: 14px; min-height: 220px; }
+.card-workspace .safe-cards, .card-workspace .remaining-cards { background: var(--panel); padding: 14px; }
+.safe-head { gap: 12px; margin-bottom: 14px; }
+.safe-head .analysis-pick { margin-left: 0; }
+#phq-note:empty { display: none; }
+@media(max-width:700px) { .browser-row { gap: 6px; } .browser-cell { padding: 8px; } .browser-cell .bc-dots { grid-column: 1 / -1; } .browser-cell .bc-life { grid-row: 5; } .workspace-title { width: 100%; } }

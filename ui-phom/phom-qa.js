@@ -304,9 +304,55 @@
     // PHASE 6.3.9/6.3.10 — Profile is the compact table + a COMPACT quick bulk-proxy import (one line = one
     // proxy, mapped B1→B2→B3 by profile order). Per-profile proxy still edits in the row's Edit modal.
     page.appendChild(profileTablePanel());
-    page.appendChild(bulkProxyQuickPanel());
+    page.appendChild(el('div', { class: 'note' }, 'Mã phòng được lấy tự động từ response WS khi có. Không cần nhập hoặc import mã chữ.'));
     r.appendChild(page);
     r.appendChild(runGameFooter());
+  }
+
+  let tokenKeyRows = null;
+  let tokenKeyPanelOpen = false;
+  function tokenKeyPanel() {
+    const body = el('div', { style: 'padding:10px 12px' });
+    const status = el('div', { class: 'note' }, 'Key được lưu mã hóa. Chức năng quét theo danh sách key chưa sẵn sàng.');
+    const rows = el('div', { style: 'max-height:180px;overflow:auto' });
+    const panel = el('details', { class: 'setup-panel', open: tokenKeyPanelOpen ? true : null },
+      el('summary', { class: 'setup-section-h' }, 'QUẢN LÝ TOKEN KEY'), body);
+    function draw() {
+      rows.replaceChildren();
+      for (const key of tokenKeyRows || []) {
+        const toggle = el('input', { type: 'checkbox', checked: key.enabled ? true : null, 'aria-label': 'Bật ' + key.label,
+          onchange: async () => {
+            toggle.disabled = true;
+            try {
+              const result = await api.setTokenEnabled(key.id, toggle.checked);
+              if (!result?.ok) { toggle.checked = key.enabled; status.textContent = errText(result); return; }
+              tokenKeyRows = result.keys; draw();
+            } catch { toggle.checked = key.enabled; status.textContent = 'Không lưu được trạng thái key.'; }
+            finally { toggle.disabled = false; }
+          } });
+        rows.appendChild(el('label', { style: 'display:flex;gap:10px;align-items:center;padding:4px 0' }, toggle, key.label, el('span', { class: 'faint xs' }, key.status)));
+      }
+    }
+    const importButton = el('button', { class: 'btn sm', onclick: async () => {
+      importButton.disabled = true;
+      try {
+        const result = await api.importTokenKeys();
+        if (result?.cancelled) return;
+        if (!result?.ok) { status.textContent = errText(result); return; }
+        tokenKeyRows = result.keys;
+        status.textContent = `Đã thêm ${result.added} key, bỏ qua ${result.duplicates} key trùng. Quét theo key chưa sẵn sàng.`;
+        draw();
+      } catch { status.textContent = 'Không import được danh sách key.'; }
+      finally { importButton.disabled = false; }
+    } }, 'IMPORT TXT / JSON');
+    body.appendChild(importButton); body.appendChild(status); body.appendChild(rows); draw();
+    panel.ontoggle = async () => {
+      tokenKeyPanelOpen = panel.open;
+      if (!panel.open || tokenKeyRows !== null) return;
+      try { const result = await api.tokenKeys(); if (result?.ok) { tokenKeyRows = result.keys; draw(); } else status.textContent = errText(result); }
+      catch { status.textContent = 'Không đọc được danh sách key.'; }
+    };
+    return panel;
   }
 
   // PHASE 6.3.2.2 — BROWSER RUNTIME selector (AUTO / Custom Chromium / Google Chrome). AUTO prefers the
@@ -1002,12 +1048,12 @@
   // pick one → only that Player finds, the others show "CHỜ PLAYER N TÌM BÀN". Re-clicking clears (back to all).
   // SEPARATE from PHÂN TÍCH (analysis): a Finder ≠ Analysis player is fully valid. Reuses the analysis-pick style.
   function finderSelector() {
-    const wrap = el('div', { class: 'analysis-pick finder-pick' }, el('span', { class: 'faint xs' }, 'FINDER:'));
+    const wrap = el('div', { class: 'analysis-pick finder-pick' }, el('span', { class: 'finder-label' }, 'Người tìm bàn'));
     ['B1', 'B2', 'B3'].forEach((slot, i) => {
       const active = selectedFinderPlayer === slot;
       wrap.appendChild(el('button', { class: 'btn sm' + (active ? ' primary' : ''), onclick: () => onSelectFinder(active ? null : slot) }, 'Player ' + (i + 1)));
     });
-    wrap.appendChild(el('span', { class: 'faint xs' }, selectedFinderPlayer ? '' : ' (chưa chọn — mọi Player đều TÌM BÀN)'));
+    wrap.appendChild(el('span', { class: 'faint xs' }, selectedFinderPlayer ? '' : 'Chọn một Player hoặc tìm từ header trong game'));
     return wrap;
   }
   function onSelectFinder(slot) {
@@ -1033,12 +1079,14 @@
     // PHASE 6.3.9 — compact top line: BÀN (RID) · CƯỢC · 🂠 TỔNG LÁ ẨN. Brand lives in the header tab bar now.
     // The ⋯ overflow is kept ONLY as the sole home of ĐÓNG 3 TRÌNH DUYỆT / Rời bàn / offline QA (no duplicate).
     return el('div', { class: 'tool-header' },
+      el('div', { class: 'workspace-title' }, el('strong', null, 'Bàn Phỏm'), el('span', null, 'Theo dõi 3 browser')),
       el('span', { class: 'th-rid' }, 'BÀN: ', el('b', null, rid)),
       el('span', { class: 'th-bet' }, 'CƯỢC: ', el('b', null, stake)),
       el('span', { class: 'th-still' }, '🂠 TỔNG LÁ ẨN: ', el('b', null, remaining ? String(remaining.count) : '—')),
       coSeatChip(),
+      el('button', { class: 'btn capture-launch', onclick: openFrameCapture, title: 'Ghi request / response WebSocket' }, 'GHI WS · TEST D'),
       moreMenuButton(),
-      el('span', { class: 'chip ' + (anyOpen ? 'green' : 'gray') }, anyOpen ? '● READY' : '○'),
+      el('button', { class: 'btn', title: 'Sắp xếp cửa sổ game', onclick: step(() => api.restoreLayout(), 'Đã xếp lại bố cục.') }, 'Xếp cửa sổ'),
     );
   }
 
@@ -1092,11 +1140,10 @@
     // PHASE 6.3.9 — compact identity: [open?] · colored B# badge · Player N (matches the mockup player row).
     // Accent is by browser INDEX (1/2/3), not the internal slot id (A/B/C).
     const ACC = index === 1 ? '#2563eb' : index === 2 ? '#16a34a' : index === 3 ? '#ea580c' : '#6b7280';
-    cell.appendChild(el('input', { type: 'checkbox', class: 'bc-cb', checked: opened ? 'checked' : null, disabled: true, title: opened ? 'Đang mở' : 'Chưa mở' }));
     cell.appendChild(el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'B' + index));
     cell.appendChild(el('span', { class: 'bc-id' }, 'Player ' + index));
     // PHASE 6.3.6 — mark which Player the USER chose as FINDER (room anchor); never defaulted to Player 1.
-    if (selectedFinderPlayer === slot) cell.appendChild(el('span', { class: 'gbadge good', title: 'Player này là FINDER (tìm bàn / room anchor)' }, 'FINDER'));
+    if (selectedFinderPlayer === 'B' + index) cell.appendChild(el('span', { class: 'gbadge good', title: 'Player này là FINDER (tìm bàn / room anchor)' }, 'FINDER'));
     if (!runId) { cell.appendChild(el('span', { class: 'faint sm bc-hint' }, 'Mở ở SETUP')); return cell; }
     if (chromiumClosed) {
       cell.appendChild(el('span', { class: 'bc-badge off' }, el('span', { class: 'status-dot off' }), 'OFFLINE'));
@@ -1590,10 +1637,18 @@
       el('button', { class: 'menu-item danger', onclick: (e) => { closeMore(e); closeBrowsers(); } }, 'ĐÓNG 3 TRÌNH DUYỆT'),
     );
     const wrap = el('div', { class: 'qa-more' },
-      el('button', { class: 'btn', onclick: () => { menu.hidden = !menu.hidden; } }, '⋯'),
-      menu,
+      el('button', { class: 'btn', title: 'Tùy chọn', 'aria-label': 'Mở tùy chọn', onclick: () => {
+        const overlay = el('div', { class: 'phq-analyzer more-overlay' });
+        const close = () => { overlay.remove(); };
+        menu.hidden = false; menu.classList.add('menu-dialog');
+        overlay.appendChild(el('div', { class: 'anz-card more-card', role: 'dialog', 'aria-label': 'Tùy chọn' },
+          el('div', { class: 'capture-heading' }, el('strong', null, 'Tùy chọn'), el('button', { class: 'btn sm', onclick: close }, 'Đóng')), menu));
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
+        overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
+        document.body.appendChild(overlay); menu.querySelector('button')?.focus();
+      } }, '⋯'),
     );
-    function closeMore() { menu.hidden = true; }
+    function closeMore() { menu.closest('.more-overlay')?.remove(); }
     return wrap;
   }
   function toggleAdvancedDebug() {
@@ -1786,53 +1841,61 @@
   // then save them to a file (secrets redacted). This is how the real protocol for entering a table is read
   // instead of guessed. Passive: nothing is sent; it only watches the frames the tool already sees.
   async function openFrameCapture() {
-    document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
-    try { await refreshManual(); } catch {}
-    const overlay = el('div', { class: 'phq-analyzer' });
-    const card = el('div', { class: 'anz-card ft-card' });
-    let timer = null;
-    const close = () => { if (timer) clearInterval(timer); overlay.remove(); };
-    card.appendChild(el('div', { class: 'section-t' }, 'GHI GÓI — TEST D'));
-    card.appendChild(el('div', { class: 'note' }, 'Chọn browser → BẮT ĐẦU → thao tác tay trong game (ví dụ bấm vào bàn 100) → DỪNG & LƯU. Mật khẩu/token được che trước khi lưu.'));
-    const choices = el('div', { class: 'phq-row' });
-    let chosen = null;
-    const list = (manualBrowsers || []).slice().sort((a, b) => a.browserIndex - b.browserIndex);
-    const mkChoice = (id, text) => {
-      const b = el('button', { class: 'btn sm', onclick: () => { chosen = id; [...choices.children].forEach((c) => c.classList.remove('primary')); b.classList.add('primary'); } }, text);
-      return b;
+    if (document.getElementById('ws-capture-dialog')) return;
+    const overlay = el('div', { id: 'ws-capture-dialog', class: 'phq-analyzer' });
+    const card = el('div', { class: 'anz-card capture-card', role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Ghi WebSocket — Test D' });
+    let timer = null, busy = false, recording = false;
+    const close = () => { clearInterval(timer); overlay.remove(); };
+    const status = el('div', { class: 'capture-status', role: 'status', 'aria-live': 'polite' }, 'Đang kiểm tra trạng thái ghi…');
+    const scope = el('select', { 'aria-label': 'Browser cần ghi' }, el('option', { value: '' }, 'Tất cả browser (khuyên dùng)'));
+    for (const b of (manualBrowsers || []).slice().sort((a, b) => a.browserIndex - b.browserIndex)) scope.appendChild(el('option', { value: b.profileId }, `Player ${b.browserIndex}`));
+    const out = el('pre', { class: 'capture-preview', hidden: true });
+    const saved = el('div', { class: 'capture-saved' });
+    const sync = () => { startBtn.disabled = busy || recording; stopBtn.disabled = busy || !recording; scope.disabled = busy || recording; };
+    const poll = async () => {
+      if (busy || !overlay.isConnected) return;
+      try {
+        const st = await api.framesRecordStatus();
+        if (!overlay.isConnected || busy) return;
+        if (!st || st.ok === false) throw new Error(errText(st));
+        recording = !!st.recording;
+        status.textContent = recording ? `● ĐANG GHI · ${st.frames || 0} gói${st.dropped ? ` · bỏ ${st.dropped} gói` : ''} · ${st.runIds?.length ? st.runIds.join(', ') : 'Tất cả browser'}` : 'Chưa ghi. Chọn browser rồi bấm BẮT ĐẦU GHI.';
+        status.classList.toggle('recording', recording); sync();
+      } catch { status.textContent = 'Không đọc được trạng thái ghi. Đóng và mở lại để thử lại.'; startBtn.disabled = true; stopBtn.disabled = true; }
     };
-    for (const b of list) choices.appendChild(mkChoice(b.profileId, `Player ${b.browserIndex}` + (b.username && b.username !== 'USER_UNKNOWN' ? ' · ' + b.username : '')));
-    choices.appendChild(mkChoice(null, 'Tất cả'));
-    card.appendChild(choices);
-    // Co-seat investigation: keep the table-routing tokens (hpwd + mã vào bàn) instead of redacting them, so a
-    // "tạo bàn riêng / vào bàn bằng mã" capture reveals the exact JOIN frame. Real credentials stay redacted.
-    const keepChk = el('input', { type: 'checkbox' });
-    card.appendChild(el('label', { class: 'note', style: 'display:flex;align-items:center;gap:6px;cursor:pointer;' }, keepChk, 'Giữ mã bàn (điều tra co-seat — không che hpwd / mã vào bàn)'));
-    const status = el('div', { class: 'note' }, 'Chưa ghi.');
-    const out = el('pre', { class: 'capture-preview', hidden: 'hidden' });
-    const startBtn = el('button', { class: 'btn primary', onclick: async () => {
-      const who = chosen == null ? 'Tất cả' : ((list.find((x) => x.profileId === chosen) || {}).username || chosen);
-      const r = await api.framesRecordStart({ runIds: chosen == null ? null : [chosen], label: 'Test D — ' + who, keepRoomCodes: !!keepChk.checked });
-      if (!r || r.ok === false) { status.textContent = errText(r); status.className = 'note warn'; return; }
-      startBtn.disabled = true; stopBtn.disabled = null; out.hidden = true;
-      status.textContent = 'ĐANG GHI… hãy thao tác trong game.'; status.className = 'note warn';
-      timer = setInterval(async () => { try { const st = await api.framesRecordStatus(); if (st && st.recording) status.textContent = `ĐANG GHI… ${st.frames} gói — hãy thao tác trong game.`; } catch {} }, 1000);
-    } }, 'BẮT ĐẦU');
-    const stopBtn = el('button', { class: 'btn', disabled: 'disabled', onclick: async () => {
-      if (timer) { clearInterval(timer); timer = null; }
-      const r = await api.framesRecordStop();
-      startBtn.disabled = null; stopBtn.disabled = true;
-      if (!r || r.ok === false) { status.textContent = errText(r); status.className = 'note warn'; return; }
-      status.replaceChildren(document.createTextNode(`Đã lưu ${r.frameCount} gói${r.dropped ? ` (bỏ ${r.dropped})` : ''}: ${r.txtPath}  `),
-        el('button', { class: 'btn sm', onclick: () => api.framesOpenFolder(r.txtPath) }, 'Mở thư mục'));
-      status.className = 'note ok';
-      out.textContent = (r.preview || []).join(String.fromCharCode(10)); out.hidden = false;
+    const startBtn = el('button', { class: 'btn primary', disabled: true, onclick: async () => {
+      if (busy || recording) return;
+      busy = true; sync();
+      try {
+        const r = await api.framesRecordStart({ runIds: scope.value ? [scope.value] : null, label: 'Test D — WS', keepRoomCodes: false });
+        if (!r || r.ok === false) throw new Error(errText(r));
+        recording = true; if (!timer) timer = setInterval(poll, 1000); saved.replaceChildren(); out.hidden = true;
+        status.textContent = '● ĐANG GHI · Hãy thao tác trong game.'; status.classList.add('recording');
+      } catch (e) { status.textContent = 'Không bắt đầu được: ' + e.message; }
+      finally { busy = false; sync(); }
+    } }, 'BẮT ĐẦU GHI');
+    const stopBtn = el('button', { class: 'btn capture-stop', disabled: true, onclick: async () => {
+      if (busy || !recording) return;
+      busy = true; sync();
+      try {
+        const r = await api.framesRecordStop();
+        if (!r || r.ok === false) throw new Error(errText(r));
+        recording = false; status.classList.remove('recording'); status.textContent = `Đã lưu ${r.frameCount} gói${r.dropped ? ` · bỏ ${r.dropped} gói` : ''}.`;
+        saved.replaceChildren(el('div', null, r.txtPath || r.path), el('button', { class: 'btn sm', onclick: () => api.framesOpenFolder(r.txtPath || r.path) }, 'MỞ THƯ MỤC'));
+        out.textContent = (r.preview || []).join('\n'); out.hidden = false;
+        clearInterval(timer); timer = null;
+      } catch (e) { status.textContent = 'Không lưu được: ' + e.message; }
+      finally { busy = false; sync(); }
     } }, 'DỪNG & LƯU');
-    card.appendChild(el('div', { class: 'phq-row' }, startBtn, stopBtn, el('button', { class: 'btn', onclick: close }, 'ĐÓNG')));
+    card.appendChild(el('div', { class: 'capture-heading' }, el('strong', null, 'GHI WEBSOCKET · TEST D'), el('button', { class: 'btn sm', onclick: close }, 'Đóng')));
+    card.appendChild(el('p', { class: 'note' }, '1. Bắt đầu ghi → 2. Thao tác trong game → 3. Dừng & lưu. Mã phòng được che; file JSON giữ dấu đối chiếu request/response.'));
+    card.appendChild(el('label', { class: 'capture-scope' }, 'Phạm vi ghi', scope));
     card.appendChild(status);
-    card.appendChild(out);
-    overlay.appendChild(card);
-    document.body.appendChild(overlay);
+    card.appendChild(el('div', { class: 'capture-actions' }, startBtn, stopBtn));
+    card.appendChild(el('p', { class: 'note' }, 'Đóng cửa sổ này vẫn tiếp tục ghi. Mở lại GHI WS · TEST D để dừng và lưu.'));
+    card.appendChild(saved); card.appendChild(out); overlay.appendChild(card); document.body.appendChild(overlay);
+    await poll();
+    if (overlay.isConnected) timer = setInterval(poll, 1000);
   }
   async function openAnalyzer() {
     let status = {}; try { status = await api.analyzerStatus(); } catch { status = {}; }
@@ -2090,18 +2153,9 @@
     autoFlow = true; renderApp(); // FIND_TABLE_STARTED — button reflects the running search
     try {
       selectedStakeByBrowser[finderRunId] = stake;
-      const d = await api.manualDiscover(finderRunId, { selectedStake: stake });
+      const d = await api.findAndJoinGroup(finderRunId, { selectedStake: stake });
       if (!d || d.ok === false) { note('Không thể tìm bàn: ' + errText(d), true); return; }
       note((d.viaStakeChannel ? 'Đã vào kênh cược ' : 'Đã tìm được bàn ') + d.rid + ' — đang đưa các browser còn lại vào bàn…');
-      // §co-seat — fire the followers' JOINs AT ONCE, not one after another. The capture behind autoJoinGroupToShared
-      // measured the server's fill-room window at ~1.3s (a browser joining ~2.8s later never landed with the group),
-      // and a sequential loop spends up to 8s per follower waiting for ps[] — so by the time the second one was
-      // asked, the window had closed. The header path already fires them in parallel; this one did not, which is
-      // why the same FIND co-seated from the Chromium bar and scattered from the Tool. Each JOIN still proves
-      // co-seating from ps[] on its own (manualJoinShared), so racing them changes the timing, never the proof.
-      const results = await Promise.all(followerIds.map((runId) =>
-        Promise.resolve(api.manualJoinShared(runId, d.rid)).catch((e) => ({ ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }))));
-      for (const r of results) if (r && r.ok === false) note(errText(r), true);
       await refreshManual();
       note('Đã vào bàn ' + d.rid + '.');
     } catch (e) {
@@ -2332,7 +2386,7 @@
       const selectedStake = selectedStakeByBrowser[b.profileId];
       if (selectedStake == null) { manualCluster = MCS.onFindResult(manualCluster, b.profileId, { ok: false }); renderApp(); return note('Chọn mức cược trước khi tìm bàn.', true); }
       note('🔍 Đang tìm bàn theo mức cược ' + selectedStake + '…');
-      try { res = await api.manualDiscover(b.profileId, { selectedStake }); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+      try { res = await api.findAndJoinGroup(b.profileId, { selectedStake }); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
       manualCluster = MCS.onFindResult(manualCluster, b.profileId, res && res.ok ? { ok: true, rid: res.rid, stake: res.stake } : { ok: false });
       // §stake-channel — the other browsers still JOIN this id (that is how the server's fill-room window groups
       // them); it simply is not a 7-digit SỐ BÀN, so do not let the user hunt for a code to copy.
@@ -2493,7 +2547,7 @@
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   // Auto ReJoin: when the domain reports a kicked controlled profile, recover it (the
   // coordinator enforces debounce/cooldown/bounded retry + round-active defer — §15).
-  if (api.onKick) api.onKick(() => { if (uiState === UI.CONTROL) rejoinKicked(); });
+  if (api.onKick) api.onKick(() => { if (uiState === UI.CONTROL) refreshManual().then(bgRender); });
   document.addEventListener('DOMContentLoaded', boot);
   if (document.readyState !== 'loading') boot();
 })();

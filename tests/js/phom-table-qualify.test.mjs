@@ -58,13 +58,13 @@ test('pickQualifiedCandidate prefers the EMPTIEST qualifying table and reports r
 test('coordinator uses the qualifier BEFORE join and logs NOT_ENOUGH_FREE_SLOTS rejects (§B5/§B6)', () => {
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
   assert.match(coord, /pickQualifiedCandidate\(chans, \{/);
-  assert.match(coord, /need, selectedStake, zone: ZONE, gid: GID, isFailedRid/);
+  assert.match(coord, /need, selectedStake, emptyOnly, zone: ZONE, gid: GID, isFailedRid/);
   assert.match(coord, /_mark\('TABLE_REJECT', \{[^}]*reason: r\.reason/);
   // discovery still qualifies BEFORE manualJoinRoom (pick → then JOIN)
   // §47 — the picker is given the MINIMUM seats needed to sit down (one), not the number of browsers: wanting a
   // seat for everyone orders the candidates, it never blocks joining.
-  assert.match(coord, /_pickManualCandidate\(rec, minSeats, selectedStake, runFailedRids\)[\s\S]*?manualJoinRoom\(profileId, candidate\.rid/);
-  assert.match(coord, /const MIN_SEATS_TO_JOIN = 1;/);
+  assert.match(coord, /_pickManualCandidate\(rec, minSeats, selectedStake, runFailedRids, opts\.emptyOnly === true\)[\s\S]*?manualJoinRoom\(profileId, candidate\.rid/);
+  assert.match(coord, /const minSeats = need;/);
 });
 
 // Every diagnosis code FIND can produce must have a human explanation — that text is what the header's ⚠

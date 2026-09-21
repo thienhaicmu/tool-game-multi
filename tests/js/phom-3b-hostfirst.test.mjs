@@ -142,7 +142,7 @@ test('T13 only one discovery orchestrator runs', async () => {
   const coord = mkCoord({ maxHostSearchAttempts: 1, selectedStake: 100 });
   const p1 = coord.runDiscovery();
   const r2 = await coord.runDiscovery();
-  assert.equal(r2.already, true);
+  assert.equal(r2.error.code, 'FIND_ALREADY_RUNNING');
   await p1;
 });
 
@@ -235,7 +235,7 @@ test('A + one follower with a full table (no room for the third) => INVALID (all
 
 // LOBBY RESET — returning to the Phỏm lobby (CHANNEL_LIST arrives) clears stale table state so a
 // fresh TÌM BÀN starts clean (no sticky BÀN / SAME_TABLE / MISMATCH / HOST_LOST).
-test('lobby reset: CHANNEL_LIST after leaving clears stale table state', () => {
+test('lobby reset: explicit LEAVE_ACK followed by channel list clears table state', () => {
   const coord = mkCoord(); ident(coord);
   coord.ingest('A', frame(tableState(100, [[0, A], [1, B], [2, C]])));
   coord.ingest('B', frame(tableState(100, [[0, A], [1, B], [2, C]])));
@@ -243,6 +243,7 @@ test('lobby reset: CHANNEL_LIST after leaving clears stale table state', () => {
   coord._hostTableIdentity = { channelRid: 500, selectedStake: 100 }; // simulate an acquired table
   assert.equal(coord.verifySameTable().result, 'SAME_TABLE');
   const chan = '[5,{"rs":[{"rid":500,"b":100,"uC":0,"zn":"Simms","gid":8}],"cmd":300}]';
+  for (const id of ['A', 'B', 'C']) coord.ingest(id, frame('[4,true,1,-1,0,""]'));
   coord.ingest('A', frame(chan)); coord.ingest('B', frame(chan)); coord.ingest('C', frame(chan));
   assert.equal(coord.state(), SESSION.LOBBY_WAITING);
   assert.equal(coord.hostTableIdentity(), null);

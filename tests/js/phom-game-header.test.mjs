@@ -99,7 +99,7 @@ test('bootScript is idempotent, exposes the render hook + binding, and uses THO�
   assert.match(src, /__phomAction/);                     // default binding name
   assert.match(src, /id = '__phom_header'/);             // its OWN element, namespaced
   assert.match(src, /z-index:2147483647/);               // overlay on top
-  assert.match(src, /emit\('FIND',\{ stake:Number\(sel\.value\) \}\)/); // server stake, numeric
+  assert.match(src, /emit\(a\.action,\{ stake:Number\(sel\.value\) \}\)/); // server stake, numeric
   // no game-DOM/canvas mutation beyond its own bar + a body margin offset for the bar
   assert.equal(/innerHTML|canvas|document\.title\s*=/.test(src), false);
 });
@@ -492,7 +492,7 @@ test('BC: the bet-picker FIND button always carries its onclick (picking a stake
   // REGRESSION: it must NOT be created disabled — iconBtn drops the handler when disabled, which left FIND dead.
   assert.equal(/'Tìm Bàn', true, !sel\.value/.test(src), false, 'FIND must not be created disabled');
   // always clickable; the click guards on a chosen stake; the empty state is shown by style only.
-  assert.match(src, /iconBtn\(a\.icon\|\|'🔍','Tìm Bàn', true, false, false, function\(\)\{ if\(sel\.value\) emit\('FIND',\{ stake:Number\(sel\.value\) \}\); \}/);
+  assert.match(src, /iconBtn\(a\.icon\|\|'🔍',a.action==='CHANGE_TABLE'\?'Đổi key':'Tìm Bàn', true, false, false, function\(\)\{ if\(sel\.value\) emit\(a\.action,\{ stake:Number\(sel\.value\) \}\); \}/);
   assert.match(src, /var syncFb=function\(\)\{ var ok=!!sel\.value;/);
 });
 
@@ -506,4 +506,10 @@ test('BC: the header router handles RELOAD/STOP/FOCUS by REUSING existing run he
   // the IPC handlers reuse the SAME helpers (unchanged contract)
   assert.match(main, /ipcMain\.handle\('phom:reload-web', guarded\(async \(_e, cfg\) => reloadWebRun\(cfg && cfg\.browserId\)\)\)/);
   assert.match(main, /ipcMain\.handle\('phom:close-browser', guarded\(async \(_e, cfg\) => closeBrowserRun\(cfg && cfg\.browserId\)\)\)/);
+});
+
+test('unconfirmed leave must retry leave before offering another join', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'LEAVE_UNCONFIRMED', sharedRid: 123 });
+  assert.equal(s.primary.action, 'LEAVE');
+  assert.equal(s.statusClass, 'warn');
 });

@@ -72,15 +72,15 @@ for (const host of ['A', 'B', 'C']) {
     assert.equal(sent[f2].includes(buildReadyFrame()), false, 'follower2 not readied');
   });
 
-  test(`HOST=${host}: 4 players => all three controlled READY; 4th leaving reconciles`, async () => {
+  test(`HOST=${host}: 4 players => two READY and one WAITING; 4th leaving reconciles`, async () => {
     const { coord, sent, channelList, table } = makeSession(host);
     channelList(host, 139, 1000); await coord.acquireHost(); table(host, [UID[host]], 2);
     await coord.joinFollowers();
     const four = [...allUids, UID.D];
     for (const id of allIds) table(id, four, 3);
-    assert.equal(coord.readyPolicy().desired.get(f2), true, 'follower2 ready with a 4th present');
+    assert.equal(coord.readyPolicy().desired.get(f2), false, 'follower2 remains waiting');
     await coord.applyReady();
-    assert.ok(sent[f2].includes(buildReadyFrame()));
+    assert.ok(!sent[f2].includes(buildReadyFrame()));
     const f2SentBefore = sent[f2].length;
     // 4th leaves before round start -> follower2 reconciles back to not-desired-ready.
     for (const id of allIds) table(id, allUids, 4);

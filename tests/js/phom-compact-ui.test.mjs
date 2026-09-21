@@ -47,7 +47,7 @@ test('header shows server-derived BÀN (RID) + CƯỢC (stake) + CÒN LẠI; NO 
 
 test('real FIND uses discovery with the CHOSEN server stake; stake flows from the discovered table', () => {
   const body = fn(js, 'onManualFind');
-  assert.match(body, /api\.manualDiscover\(b\.profileId, \{ selectedStake \}\)/, 'real FIND calls discovery with the chosen stake');
+  assert.match(body, /api\.findAndJoinGroup\(b\.profileId, \{ selectedStake \}\)/, 'real FIND calls discovery with the chosen stake');
   assert.match(body, /rid: res\.rid, stake: res\.stake/, 'publishes the discovered rid + stake');
   assert.equal(/api\.manualFind\(|Number\(stake\)|type: 'number'/.test(body), false, 'no manual/user-typed stake path in FIND');
 });
@@ -93,7 +93,7 @@ test('the header gates TÌM BÀN behind VÀO GAME and renders a REAL bet selecto
   // in game + no shared room -> FIND needs a bet chosen from the server betOptions (no hard-coded stake)
   assert.match(gh, /action: 'FIND'[\s\S]*?needsBet: true[\s\S]*?betOptions/);
   // the injected bar sends FIND with the picked stake (Number), never a typed/hard-coded value
-  assert.match(gh, /emit\('FIND',\{ stake:Number\(sel\.value\) \}\)/);
+  assert.match(gh, /emit\(a\.action,\{ stake:Number\(sel\.value\) \}\)/);
 });
 
 test('main screen shows NO Host/Follower/player-4 terminology (ACCOUNT is now shown read-only, §6.3.2)', () => {
@@ -112,7 +112,7 @@ test('the header action router acts on ONE browser via the run-scoped coordinato
   // the single runId the click came from (never a leave-all / cross-browser action).
   const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
   assert.match(r, /ENTER_GAME'[\s\S]*?phomEnterGame\(rid\)/);
-  assert.match(r, /FIND'[\s\S]*?manualDiscoverTable\(rid, \{ selectedStake/); // §co-seat — plus budget/poll/fallback opts
+  assert.match(r, /FIND'[\s\S]*?findAndJoinGroup\(rid, \{ selectedStake/); // §co-seat — plus budget/poll/fallback opts
   assert.match(r, /manualRejoin\(rid/);
   assert.match(r, /manualLeave\(rid\)/);
 });
@@ -210,9 +210,9 @@ test('Profile: Select-All (header checkbox + Chọn/Bỏ chọn tất cả butto
   assert.match(footer, /api\.browserRuntimeSet/);           // the REAL runtime selector, now compact in the footer
 });
 
-test('Phỏm: the compact player cell has an open-state checkbox + a colored B# badge (mockup row)', () => {
+test('Phỏm: player cards retain identity and lifecycle controls without a redundant disabled checkbox', () => {
   const cell = fn(js, 'compactBrowserCell');
-  assert.match(cell, /class: 'bc-cb'/);
+  assert.doesNotMatch(cell, /class: 'bc-cb'/);
   assert.match(cell, /index === 1 \? '#2563eb' : index === 2 \? '#16a34a' : index === 3 \? '#ea580c'/); // B1/B2/B3 accents by index
   assert.match(cell, /'b-badge'[\s\S]*?'B' \+ index/); // badge shows B1/B2/B3
   assert.match(cell, /onReloadWeb\(runId\)/); assert.match(cell, /onCloseBrowser\(slot, runId\)/); // ↻ / ⏻ per cell
@@ -225,15 +225,10 @@ test('index.html loads the bulk-proxy parser before the renderer', () => {
   assert.ok(html.indexOf('bulk-proxy.js') < html.indexOf('phom-qa.js'));
 });
 
-test('SETUP renders a COMPACT bulk-proxy import (THÊM NHANH PROXY), separate from the old big panel', () => {
+test('SETUP omits quick proxy import while retaining the profile table', () => {
   const setup = fn(js, 'renderSetup');
-  assert.match(setup, /bulkProxyQuickPanel\(\)/);
-  const panel = fn(js, 'bulkProxyQuickPanel');
-  assert.match(panel, /THÊM NHANH PROXY/);
-  assert.match(panel, /mỗi dòng = 1 proxy · theo thứ tự B1 → B2 → B3/);
-  assert.match(panel, /'MẪU'/); assert.match(panel, /⚡ ÁP DỤNG/);
-  assert.match(panel, /HTTP\|host\|port\|user\|pass/); // placeholder shows the field format
-  assert.equal(/bulkProxyPanel\(\)/.test(setup), false, 'the OLD large bulk-proxy panel is not rendered');
+  assert.doesNotMatch(setup, /bulkProxyQuickPanel\(\)|bulkProxyPanel\(\)/);
+  assert.match(setup, /profileTablePanel\(\)/);
 });
 
 test('bulk apply is all-or-nothing, maps by PROFILE ORDER (not selection), reuses profileSetProxy, no new IPC', () => {

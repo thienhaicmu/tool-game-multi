@@ -13,9 +13,10 @@
 // Account ids and display names are kept on purpose: they are what shows who sat where.
 // ---------------------------------------------------------------------------
 
+const { randomBytes, createHmac } = require('node:crypto');
 const { classifyPhomFrame } = require('./phom-frame-classify.cjs');
 
-const SECRET_KEY = /pass|pwd|token|sess|secret|auth|cookie|sig/i;
+const SECRET_KEY = /pass|pwd|token|sess|secret|auth|cookie|sig|roomcode|sharedcode|hostkey|^key$/i;
 // TABLE-ROUTING tokens, NOT user credentials: `hpwd` (a table's host/room password) and the positional JOIN
 // room-code are exactly what decides WHICH table you land in — the evidence a private-table co-seat needs. When
 // `keepRoomCodes` is set (Test D "giữ mã bàn" mode) these are preserved while real credentials (accessToken /
@@ -46,12 +47,46 @@ function redactFrame(raw, opts = {}) {
   let json;
   try { json = JSON.parse(text.trim()); } catch { return { raw: null, note: `non-JSON frame (${text.length} chars)` }; }
   let clean = redactValue(json, keep);
+  // Positional login token and the token-shaped cmd:100 identity must also be
+  // removed, including when a diagnostic capture preserves room passwords.
+  if (Array.isArray(clean) && clean[0] === 1 && typeof clean[1] === 'boolean' && clean.length > 3) clean[3] = REDACTED;
+  if (Array.isArray(clean) && clean[0] === 5 && clean[1] && clean[1].cmd === 100 && clean[1].id === 1) {
+    if ('uid' in clean[1]) clean[1].uid = REDACTED;
+    if ('u' in clean[1]) clean[1].u = REDACTED;
+  }
   // op 3 JOIN request: [3, zone, roomId, roomCode] — the room-code is positional, not keyed. It is the token
   // that routes a JOIN to a specific (private) table, so keepRoomCodes preserves it; otherwise it is redacted.
   if (Array.isArray(clean) && clean[0] === 3 && typeof clean[1] === 'string' && clean.length > 3) {
     clean = clean.slice(); clean[3] = (clean[3] === '' || keep) ? clean[3] : REDACTED;
   }
   return { raw: JSON.stringify(clean), note: null };
+}
+
+// Per-recording keyed references permit equality checks without exposing a reusable hash
+// of a short password. The random HMAC key stays in memory and is never exported.
+function roomEvidence(raw, direction, key) {
+  let packet;
+  try { packet = JSON.parse(raw); } catch { return []; }
+  if (!Array.isArray(packet)) return [];
+  const evidence = [];
+  const add = (path, value, rid = null) => {
+    const kind = value === null ? 'null' : typeof value;
+    const item = { path, kind, rid };
+    if (typeof value === 'string') {
+      item.empty = value.length === 0;
+      if (value && value !== REDACTED) item.ref = createHmac('sha256', key).update(value, 'utf8').digest('hex');
+    }
+    evidence.push(item);
+  };
+  if (direction === 'send' && packet[0] === 3 && typeof packet[1] === 'string') add('$[3]', packet[3], packet[2]);
+  if (direction === 'recv' && packet[0] === 5) {
+    const body = packet[1];
+    if (body?.cmd === 202 && Object.hasOwn(body, 'hpwd')) add('$[1].hpwd', body.hpwd);
+    if (body?.cmd === 300 && Array.isArray(body.rs)) body.rs.forEach((row, i) => {
+      if (row && Object.hasOwn(row, 'hpwd')) add(`$[1].rs[${i}].hpwd`, row.hpwd, row.rid ?? null);
+    });
+  }
+  return evidence;
 }
 
 // A one-line human summary of a frame, so the file reads as a story (who asked what, what came back).
@@ -86,7 +121,7 @@ function createFrameRecorder(opts = {}) {
     // table-routing tokens (hpwd + positional JOIN room-code) for a private-table co-seat investigation.
     start({ runIds = null, label = null, keepRoomCodes = false } = {}) {
       const ids = Array.isArray(runIds) && runIds.length ? new Set(runIds.map(String)) : null;
-      session = { runIds: ids, label: label != null ? String(label) : null, keepRoomCodes: !!keepRoomCodes, startedAt: now(), frames: [], dropped: 0 };
+      session = { evidenceKey: randomBytes(32), runIds: ids, label: label != null ? String(label) : null, keepRoomCodes: !!keepRoomCodes, startedAt: now(), frames: [], dropped: 0 };
       return this.status();
     },
 
@@ -104,6 +139,7 @@ function createFrameRecorder(opts = {}) {
         direction, url: frame.url || null,
         summary: raw ? summarize(raw, direction) : `${direction === 'send' ? '→ GỬI' : '← NHẬN'} ${note}`,
         raw, clipped,
+        roomEvidence: clipped ? [] : roomEvidence(text, direction, session.evidenceKey),
       });
       return true;
     },

@@ -113,3 +113,25 @@ test('the header shows the Player number for both slot schemes', () => {
   const src = gh.bootScript({ slotId: 'B' });
   assert.match(src, /abc=\{A:1,B:2,C:3\}/);
 });
+
+test('room references correlate response and JOIN across browsers without exposing secrets', () => {
+  const rec = createFrameRecorder();
+  const response = JSON.stringify([5, { cmd: 202, hpwd: 'private-room-value', ps: [] }]);
+  const join = JSON.stringify([3, 'Simms', 3588738, 'private-room-value']);
+  rec.start();
+  rec.record('B1', { raw: response, direction: 'recv' });
+  rec.record('B2', { raw: join, direction: 'send' });
+  rec.record('B3', { raw: JSON.stringify([3, 'Simms', 3588738, 'different-value']), direction: 'send' });
+  rec.record('B1', { raw: JSON.stringify([5, { cmd: 300, rs: [{ rid: 139, hpwd: true }] }]), direction: 'recv' });
+  const out = rec.stop();
+  const refs = out.frames.map(f => f.roomEvidence[0]);
+  assert.equal(refs[0].ref, refs[1].ref);
+  assert.notEqual(refs[1].ref, refs[2].ref);
+  assert.equal(refs[3].kind, 'boolean');
+  assert.equal(refs[3].ref, undefined);
+  assert.equal(JSON.stringify(out).includes('private-room-value'), false);
+  assert.equal(JSON.stringify(out).includes('different-value'), false);
+  assert.equal(JSON.stringify(out).includes('evidenceKey'), false);
+  rec.start(); rec.record('B1', { raw: response, direction: 'recv' });
+  assert.notEqual(rec.stop().frames[0].roomEvidence[0].ref, refs[0].ref);
+});

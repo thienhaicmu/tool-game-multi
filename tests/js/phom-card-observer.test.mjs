@@ -13,7 +13,7 @@ const dealFrame = (cs, tp) => classifyPhomFrame(JSON.stringify([5, { cs, cmd: 85
 const drawFrame = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 852 }]));
 const playFrame = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 851 }]));
 const meldFrame = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 854 }]));
-const tableStateFrame = (ps, b) => classifyPhomFrame(JSON.stringify([5, { ps, b, cmd: 0 }]));
+const tableStateFrame = (ps, b) => classifyPhomFrame(JSON.stringify([5, { ps, b, cmd: 202 }]));
 
 let clock = 1000;
 const feed = (obs, cls, extra = {}) => obs.ingestFrame({ cls, now: clock++, ...extra });

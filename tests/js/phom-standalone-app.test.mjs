@@ -182,7 +182,7 @@ test('host/live controls are rendered by CONTROL, not SETUP', () => {
   const control = rendererSrc.slice(rendererSrc.indexOf('function renderControl'));
   // §44 — the table search is triggered from CONTROL, now through the ONE manual flow every surface uses
   // (it used to start the separate legacy host-first discovery loop).
-  assert.match(control, /api\.manualDiscover\(finderRunId/);
+  assert.match(control, /api\.findAndJoinGroup\(finderRunId/);
   // Screen 2 is the LIVE QA workspace: status toolbar + minimal command bar + monitor.
   assert.match(control, /LIVE QA MONITOR/);
   assert.match(control, /function commandToolbar/);

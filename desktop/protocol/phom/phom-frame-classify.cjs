@@ -143,8 +143,10 @@ function classifyPhomFrame(raw) {
     // and MUST be checked BEFORE the CMD_TYPE map (which holds CLIENT-request semantics).
     // Otherwise the channel-list reply is misread as CHANNEL_LIST_REQUEST and misses server
     // evidence (the PHASE-2 blocker).
-    if (payload && Array.isArray(payload.rs)) return finalize(out, { type: 'CHANNEL_LIST' });
-    if (payload && Array.isArray(payload.ps)) return finalize(out, { type: 'TABLE_STATE' });
+    // The shared socket also carries other games' rs[] (observed cmd:2011).
+    // A known foreign command cannot become Phỏm evidence just by its shape.
+    if (payload && Array.isArray(payload.rs) && (cmd == null || cmd === CMD.CHANNEL_LIST)) return finalize(out, { type: 'CHANNEL_LIST' });
+    if (payload && Array.isArray(payload.ps) && (cmd == null || cmd === 202)) return finalize(out, { type: 'TABLE_STATE' });
     if (payload && Array.isArray(payload.b) && payload.mB !== undefined) return finalize(out, { type: 'FIND_TABLE' });
     // Single-seat delta (live-captured [5,{p:{...seat...},t:1,cmd:200}]): ONE player took/updated a
     // seat at THIS table. `p` is a single seat object (same shape as a ps[] entry); `t===1` = present

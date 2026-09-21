@@ -103,17 +103,17 @@ test('ready policy: 3 controlled => host + follower1 ready, follower2 not ready'
 });
 
 // §16 — with an authorized 4th present, all three controlled become ready.
-test('ready policy: 4 players => all three controlled ready', async () => {
+test('ready policy: 4 players still leaves the third controlled browser waiting', async () => {
   const { coord, sent, channelList, table } = makeSession();
   channelList('A', 139, 1000); await coord.acquireHost(); table('A', [UID.A], 2);
   await coord.joinFollowers();
   const four = [UID.A, UID.B, UID.C, UID.D];
   table('A', four, 3); table('B', four, 3); table('C', four, 3);
   const rp = coord.readyPolicy();
-  assert.equal(rp.desired.get('C'), true, 'follower2 now ready with a 4th present');
+  assert.equal(rp.desired.get('C'), false, 'a fourth player cannot trigger automatic READY for C');
   const res = await coord.applyReady();
   assert.equal(res.ok, true);
-  assert.ok(sent.C.includes(buildReadyFrame()));
+  assert.ok(!sent.C.includes(buildReadyFrame()));
 });
 
 // §16 — never report ready-on-send: readyCount comes from ps[].r.

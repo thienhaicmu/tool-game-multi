@@ -24,17 +24,17 @@ test('post-join capacity comes from authoritative ps[] occupancy, and a misfit t
   assert.match(coord, /const ts = rec\.ctx\.tableState\(\);/);
   assert.match(coord, /seatsPerTable - occupancy/);
   // §53 — a table without a seat for every other browser is LEFT (confirmed) and the stake joined again
-  assert.match(coord, /if \(fitsAll === false && rerollUntilFit\)/);
+  assert.match(coord, /if \(fitsAll !== true && rerollUntilFit\)/);
   assert.match(coord, /F16_TABLE_REROLL/);
   assert.match(coord, /PHOM_NO_FITTING_TABLE/);
   assert.match(coord, /const fitsAll = freeAfter == null \? null : freeAfter >= needAfter;/);
-  assert.match(coord, /const MIN_SEATS_TO_JOIN = 1;/);
+  assert.match(coord, /const minSeats = need;/);
   assert.equal(/F13_ANCHOR_INVALID/.test(coord), false);
   // invalid anchor: blacklist + leave + bounded re-FIND, never publish. The blacklist is scoped to THIS
   // discovery run (runFailedRids) — a coordinator-wide set was never cleared in the manual flow and
   // permanently hid every table that lost a race. §47 — only a FAILED JOIN blacklists a rid now.
   assert.match(coord, /runFailedRids\.add\(candidate\.rid\)/);
-  assert.match(coord, /const runFailedRids = new Set\(\);/);
+  assert.match(coord, /const runFailedRids = new Set\(opts\.excludeRids \|\| \[\]\);/);
   assert.match(coord, /PHOM_FIND_RESILIENCE_EXHAUSTED/);
 });
 

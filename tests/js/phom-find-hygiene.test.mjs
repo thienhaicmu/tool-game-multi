@@ -45,7 +45,7 @@ class Sim {
         if (!room.seats.find((s) => s.uid === uid) && room.seats.length < room.Mu) room.seats.push({ uid, sit: room.seats.length });
         this._feed(id, this._table(room)); return { ok: true };
       }
-      if (j[0] === 4) { for (const r of this.rooms) r.seats = r.seats.filter((s) => s.uid !== uid); this._feed(id, this._channelList()); return { ok: true }; }
+      if (j[0] === 4) { this._feed(id, '[4,true,1,-1,0,""]'); for (const r of this.rooms) r.seats = r.seats.filter((s) => s.uid !== uid); this._feed(id, this._channelList()); return { ok: true }; }
       return { ok: true };
     };
   }
@@ -103,6 +103,9 @@ test('FLAG-01: a superseded FIND unwinding late does not release the NEW search 
   const first = coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 60, pollMs: 10, minSeats: 3 });
   assert.equal(rec._discovering, true);
   await coord.cancelFind('B1');                 // HỦY clears the flag itself
+  coord._rec('B1').ctx._channels = [];
+  coord._rec('B1').ctx._channelsAt = null;
+  coord._rec('B1').send = async () => ({ ok: true });
   assert.equal(rec._discovering, false);
   // The user immediately starts a new search while the cancelled one is still unwinding.
   const second = coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 60, pollMs: 10, minSeats: 3 });
@@ -124,18 +127,10 @@ test('FLAG-02: the owning run still releases the flag normally', async () => {
 
 // ===================== CHAN: a stake-channel seat is not a shareable room =====================
 
-test('CHAN-01: a stake-channel seat IS still published (the followers join that id) but flagged as a channel', async () => {
-  // Only the stake bucket exists (uC 99 > Mu 4) — no real table row to take, so the fallback is the channel.
+test('CHAN-01: a channel-only response never produces a shared room', async () => {
   const { coord } = mk([{ rid: 139, b: 500, uC: 99, Mu: 4, seatsAt: 700 }, { rid: 700, b: 500, seats: [], hidden: true }]);
-  const res = await coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 80, pollMs: 10, minSeats: 1, stakeFallbackAfterMs: 0 });
-  assert.equal(res.ok, true, 'the browser IS seated — the seat is kept');
-  assert.equal(res.viaStakeChannel, true);
-  // It must stay published: REAL-06 proves a follower JOINing this same id lands with the anchor.
-  assert.equal(coord.sharedRid(), 139);
-  assert.equal(coord.sharedRidOwner(), 'B1');
-  assert.equal(coord.sharedRidIsChannel(), true, 'but it is a CHANNEL id, not a 7-digit số bàn');
-  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1').joinedViaChannel, true);
-  assert.equal(coord._rec('B1').lastError, null, 'a channel seat is not an error state');
+  const res = await coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 30, stakeFallbackAfterMs: 0 });
+  assert.equal(res.ok, false); assert.equal(coord.sharedRid(), null);
 });
 
 test('CHAN-02: a FIND that lands on a REAL table row is published as a số bàn', async () => {
@@ -147,14 +142,12 @@ test('CHAN-02: a FIND that lands on a REAL table row is published as a số bàn
   assert.equal(coord.sharedRidIsChannel(), false);
 });
 
-test('CHAN-03: the channel flag is re-decided by every join, so it can never go stale', async () => {
+test('CHAN-03: explicit diagnostic channel JOIN is flagged and a later room JOIN clears the flag', async () => {
   const { coord } = mk([{ rid: 139, b: 500, uC: 99, Mu: 4, seatsAt: 700 }, { rid: 700, b: 500, seats: [], hidden: true }]);
-  await coord.manualDiscoverTable('B1', { selectedStake: 500, budgetMs: 80, pollMs: 10, minSeats: 1, stakeFallbackAfterMs: 0 });
+  await coord.manualJoinRoom('B1', 139, { viaStakeChannel: true });
   assert.equal(coord._rec('B1')._joinedViaChannel, true);
-  await coord.manualLeave('B1');
-  await coord.manualJoinRoom('B1', 700, { timeoutMs: 60 }); // a plain JOIN of a real rid
-  assert.equal(coord._rec('B1')._joinedViaChannel, false, 'the next join clears it');
-  assert.equal(coord.sharedRidIsChannel(), false);
+  await coord.manualLeave('B1'); await coord.manualJoinRoom('B1', 700);
+  assert.equal(coord._rec('B1')._joinedViaChannel, false);
 });
 
 test('CHAN-04: the header calls a channel id KÊNH, never SS', () => {
@@ -164,12 +157,10 @@ test('CHAN-04: the header calls a channel id KÊNH, never SS', () => {
   assert.match(deriveHeaderState({ ...base, rid: 1234567, sharedRid: 1234567 }).statusLabel, /^SS 1234567/);
 });
 
-test('CHAN-05: the Tool fires the follower JOINs in PARALLEL so the fill-room window is not missed', () => {
+test('CHAN-05: the Tool delegates the group operation to one backend intent', () => {
   const ui = readFileSync('ui-phom/phom-qa.js', 'utf8');
   const fn = ui.slice(ui.indexOf('async function runFindTable'), ui.indexOf('// Advance the happy path'));
-  assert.ok(/Promise\.all\(followerIds\.map\(/.test(fn), 'the followers must be joined at once');
-  assert.ok(!/for \(const runId of followerIds\)[\s\S]{0,120}await api\.manualJoinShared/.test(fn),
-    'a sequential await loop spends up to 8s per follower — the ~1.3s grouping window closes before the second');
+  assert.match(fn, /api\.findAndJoinGroup/); assert.doesNotMatch(fn, /api\.manualJoinShared/);
 });
 
 // ===================== NOISE: no per-frame reject storm =====================

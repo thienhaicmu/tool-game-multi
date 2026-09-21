@@ -18,9 +18,11 @@
 // Aviator UI/coordinator, or any Control/Analytics singleton.
 // ===========================================================================
 
-const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session, shell: electronShell } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session, dialog, shell: electronShell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
+const { redactDiagnostic, maskSecret } = require('./protocol/phom/diagnostic-redaction.cjs');
+const { TokenKeyStore } = require('./protocol/phom/token-key-store.cjs');
 
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
 const { lifecycleLog } = require('./browser/chrome-launcher.cjs');
@@ -114,6 +116,8 @@ else {
   const SLOTS_ABC = ['A', 'B', 'C'];
 
   const phomRoot = () => path.join(PHOM_USERDATA, 'phom');
+  const tokenKeyStore = new TokenKeyStore({ file: path.join(phomRoot(), 'token-keys.enc'),
+    available: () => safeStorage.isEncryptionAvailable(), encrypt: (s) => safeStorage.encryptString(s), decrypt: (b) => safeStorage.decryptString(b) });
   const ensureDir = (d) => { try { fs.mkdirSync(d, { recursive: true }); } catch { /* best effort */ } };
 
   // ---- capture + send seam (shared, target-keyed) ----
@@ -180,7 +184,7 @@ else {
     } catch { /* never throw from logging */ }
   }
   function appendCoseatLog(entry) {
-    let line; try { line = JSON.stringify(entry); } catch { return; }
+    let line; try { line = JSON.stringify(redactDiagnostic(entry)); } catch { return; }
     _coseatQueue.push(line);
     if (_coseatQueue.length >= COSEAT_MAX_QUEUE) _coseatFlush();
     else if (!_coseatFlushTimer) _coseatFlushTimer = setTimeout(_coseatFlush, COSEAT_FLUSH_MS);
@@ -685,20 +689,6 @@ else {
   // the grouping window is short (~1.3s co-seats, ~2.8s misses forever), so slow manual clicks are the problem.
   // Only browsers that are IN GAME and not already seated/joining are fired; each JOIN still proves co-seating
   // from ps[] (manualJoinShared). Best-effort, fire-and-forget.
-  function autoJoinGroupToShared(finderRunId, rid) {
-    try {
-      if (!phomSessions) return;
-      let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
-      const targets = browsers.filter((b) => b && String(b.profileId) !== String(finderRunId)
-        && b.connected && b.socketReady && (b.channelCount || 0) > 0
-        && b.manualState !== 'JOINED' && b.manualState !== 'JOINING');
-      // §co-seat — AUTO join the host's real số bàn with the anchor's LIVE room key. The retry is bounded and
-      // REFRESHES the key between attempts (§key-refresh), so the old maxRetries:40 — which only ever replayed
-      // one stale key for minutes — is gone; the coordinator's own default applies.
-      for (const b of targets) Promise.resolve(phomSessions.manualJoinByCode(b.profileId, rid, null, {})).catch(() => {});
-      headerLog('COSEAT_AUTO_JOIN', { finder: String(finderRunId), rid, targets: targets.map((b) => b.profileId) });
-    } catch { /* best effort */ }
-  }
 
   // §co-seat — the real số bàn + key are ONLY in the game's ENCRYPTED binary channel, decoded inside the game's
   // JS. So (like the reference tool) read them from the running game's memory: a bounded walk of `window`/the
@@ -829,9 +819,8 @@ else {
   function pushHeaderStates() {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
-    maybeProbeSeated(browsers);
     const sharedRid = headerSharedRid();
-    const sharedRoomCode = phomSessions && phomSessions.active() && typeof phomSessions.sharedRoomCode === 'function' ? phomSessions.sharedRoomCode() : null;
+    const sharedRoomCode = maskSecret(phomSessions && phomSessions.active() && typeof phomSessions.sharedRoomCode === 'function' ? phomSessions.sharedRoomCode() : null);
     for (const run of runManager.list()) {
       if (run.status === RUN_STATUS.CLOSED) continue;
       const client = runClientFor(run.id);
@@ -963,7 +952,7 @@ else {
         res = await phomEnterGame(rid); // T8 — the in-engine tile click was fired (INVOKED != ENTERED)
         if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; clearHeaderEnterTimer(rid); }
         headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, actionId, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
-      } else if (action === 'FIND') {
+      } else if (action === 'FIND' || action === 'FIND_EMPTY' || action === 'CHANGE_TABLE') {
         ensurePhomSessions();
         const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
         // §co-seat (option A) — wait AGGRESSIVELY for the server's full 7-digit table list (broadcast rarely) so
@@ -971,18 +960,7 @@ else {
         // §co-seat (option A) — POLL relentlessly (up to 300s), NEVER settle for kênh 139, and only accept a REAL
         // bàn chờ with **≥ 3 free seats** (need/minSeats = 3) so all three browsers can sit together. When such a
         // table appears in the list → its 7-digit số bàn → P1/P2 auto-join it (room for all).
-        res = await phomSessions.manualDiscoverTable(rid, { selectedStake, budgetMs: 300000, pollMs: 1500, noStakeFallback: true, need: 3, minSeats: 3 });
-        // §co-seat — REAL capture (coseat.jsonl): the server groups players who JOIN the stake within a short
-        // window (~1.3s co-seated, ~2.8s did not, and a late joiner never gets back). So the moment the finder is
-        // seated, fire the OTHER in-game browsers' JOINs to its rid IMMEDIATELY + in PARALLEL, instead of waiting
-        // for slow manual clicks. Best-effort, fire-and-forget; each still proves co-seating from ps[].
-        // §co-seat AUTO — only auto-join the followers when the finder landed a REAL TABLE (a 7-digit số bàn from
-        // the server list), NEVER when it fell back to the stake channel (rid 139 via matchmaking — that has no
-        // shareable số bàn and would just scatter them). No real số bàn → the user joins by hand (nhập ô SS).
-        if (res && res.ok && res.rid != null && !res.viaStakeChannel) autoJoinGroupToShared(rid, res.rid);
-        // §co-seat — probe the finder's game JS for the REAL số bàn + key (the game decoded them from the binary
-        // channel and holds them in memory). Small delay so the room state is populated. Results → coseat.jsonl.
-        if (res && res.ok) { setTimeout(() => { probeGameRoom(rid).catch(() => {}); }, 5000); setTimeout(() => { probeGameRoom(rid).catch(() => {}); }, 9000); }
+        res = await phomSessions.findAndJoinGroup(rid, { selectedStake, emptyOnly: action === 'FIND_EMPTY', budgetMs: 300000, pollMs: 1500 });
       } else if (action === 'CAPTURE_START') {
         // TEST D from the header: record THIS browser (the one the player is about to click in by hand).
         const run = runManager && runManager.get(rid);
@@ -1525,7 +1503,7 @@ else {
     // write them to a file (secrets redacted) so the real protocol can be read instead of guessed.
     ipcMain.handle('phom:frames-record-start', (_e, cfg) => {
       const runIds = cfg && Array.isArray(cfg.runIds) ? cfg.runIds.filter((x) => x != null).map(String) : null;
-      return { ok: true, ...frameRecorder.start({ runIds, label: cfg && cfg.label != null ? String(cfg.label) : null, keepRoomCodes: !!(cfg && cfg.keepRoomCodes) }) };
+      return { ok: true, ...frameRecorder.start({ runIds, label: cfg && cfg.label != null ? String(cfg.label) : null, keepRoomCodes: false }) };
     });
     // §ws-inspect — export ALL captured WebSocket request/response to a readable .txt and reveal it.
     ipcMain.handle('phom:export-ws-log', () => exportWsLog());
@@ -1544,6 +1522,28 @@ else {
     ipcMain.handle('phom:manual-find', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualFindTable(cfg && cfg.browserId, cfg && cfg.channel, cfg && cfg.opts); }));
     // PHASE-6.2.1 — REAL discovery: qualifying empty table (rid + stake from the server table) → JOIN → ps[].
     ipcMain.handle('phom:manual-discover', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualDiscoverTable(cfg && cfg.browserId, cfg && cfg.opts); }));
+    ipcMain.handle('phom:find-group', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.findAndJoinGroup(cfg && cfg.browserId, cfg && cfg.opts); }));
+    ipcMain.handle('phom:token-keys', guarded(async () => {
+      try { return { ok: true, ...await tokenKeyStore.snapshot() }; }
+      catch { return { ok: false, error: { code: 'TOKEN_STORE_UNAVAILABLE', message: 'Không đọc được kho key đã mã hóa' } }; }
+    }));
+    ipcMain.handle('phom:token-import', guarded(async () => {
+      const picked = await dialog.showOpenDialog({ title: 'Import Token Key', properties: ['openFile'], filters: [{ name: 'Danh sách key', extensions: ['txt', 'json'] }] });
+      if (picked.canceled || !picked.filePaths[0]) return { ok: true, cancelled: true };
+      try {
+        const file = picked.filePaths[0];
+        if ((await fs.promises.stat(file)).size > 1024 * 1024) throw new Error('TOO_LARGE');
+        const text = (await fs.promises.readFile(file, 'utf8')).replace(/^\uFEFF/, '');
+        const values = text.trimStart().startsWith('[') ? JSON.parse(text) : text.split(/\r?\n/);
+        if (!Array.isArray(values) || values.length > 10000 || values.some((v) => typeof v !== 'string' || v.length > 4096)) throw new Error('INVALID_KEYS');
+        return { ok: true, ...await tokenKeyStore.import(values) };
+      } catch { return { ok: false, error: { code: 'TOKEN_IMPORT_FAILED', message: 'Không import được key. Dùng file TXT mỗi dòng một key hoặc JSON gồm danh sách chuỗi, tối đa 1 MB.' } }; }
+    }));
+    ipcMain.handle('phom:token-enabled', guarded(async (_e, cfg) => {
+      if (typeof cfg?.id !== 'string' || typeof cfg?.enabled !== 'boolean') return { ok: false, error: { code: 'INVALID_TOKEN_CONFIG' } };
+      try { return { ok: true, ...await tokenKeyStore.setEnabled(cfg.id, cfg.enabled) }; }
+      catch { return { ok: false, error: { code: 'TOKEN_UPDATE_FAILED', message: 'Không lưu được trạng thái key' } }; }
+    }));
     ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
     // §co-seat — join a số bàn + key with retry through "sai mật khẩu phòng" (key defaults to the host token).
     ipcMain.handle('phom:manual-join-code', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinByCode(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.key, (cfg && cfg.opts) || {}); }));

@@ -1,0 +1,10 @@
+{
+  "source": "test-D-2026-09-19T09-09-15-406Z.json",
+  "note": "Observed command and public room metadata only. Account IDs replaced. No login or room passwords included.",
+  "listRequest": [6, "Simms", "channelPlugin", { "aid": "fixture-account", "cmd": 300, "gid": 8 }],
+  "channelRow": { "rid": 145, "b": 20000, "rn": "Phom#6", "gid": 8, "zn": "Simms", "Mu": 4, "uC": 0 },
+  "foreignListShape": [5, { "cmd": 2011, "rs": [] }],
+  "tableStateFields": ["Mu", "ahp", "aid", "b", "cP", "cmd", "gS", "hpwd", "inc", "mes", "ns", "ps", "re", "rmT", "tfeg", "tft"],
+  "readyRequest": [6, "Simms", "channelPlugin", { "cmd": 363, "aRd": "true" }],
+  "unverified": ["tokenKey list request", "betId mapping", "explicit table RID in TABLE_STATE", "unready request", "request-response correlation"]
+}

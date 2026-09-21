@@ -25,9 +25,9 @@ const HEADER_ACTIONS = Object.freeze({
   JOIN_SHARED: { icon: '🚪', short: 'Vào Bàn', tip: 'Vào bàn đã tìm được (RID chia sẻ)' },
   JOIN:        { icon: '🚪', short: 'Vào Bàn', tip: 'Vào bàn' },
   REJOIN:      { icon: '↻', short: 'Rejoin', tip: 'Vào lại bàn hiện tại' },
-  LEAVE:       { icon: '✕', short: 'Leave', tip: 'Rời bàn hiện tại (không tắt Chromium)' },
+  LEAVE:       { icon: '✕', short: 'Thoát bàn', tip: 'Rời bàn hiện tại (không tắt Chromium)' },
   WAIT_ANCHOR: { icon: '⏳', short: 'Chờ', tip: 'Chờ Player được chọn tìm bàn' },
-  RELOAD:      { icon: '⟳', short: 'Reload', tip: 'Tải lại web trong Chromium (giữ profile)' },
+  RELOAD:      { icon: '⟳', short: 'Tải lại', tip: 'Tải lại web trong Chromium (giữ profile)' },
   STOP:        { icon: '⏻', short: 'Tắt', tip: 'Tắt Chromium này (không xóa profile)' },
   FOCUS:       { icon: '↑', short: 'Lên trước', tip: 'Đưa cửa sổ Chromium lên trên cùng' },
 });
@@ -70,6 +70,7 @@ function deriveHeaderState(view = {}) {
     statusLabel = `ĐANG TÌM BÀN…${el}${at}`; statusClass = 'warn';
     primary = { action: 'CANCEL_FIND', label: 'HỦY TÌM', danger: true };
   }
+  else if (s === 'LEAVE_UNCONFIRMED') { statusLabel = 'CHƯA XÁC NHẬN RỜI'; statusClass = 'warn'; primary = { action: 'LEAVE', label: 'THỬ RỜI BÀN LẠI', danger: true }; }
   else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
   else if (joined) {
     // §co-seat — show SS (số bàn = the rid this browser is seated in) + the key, like the reference tool's "SS".
@@ -90,7 +91,7 @@ function deriveHeaderState(view = {}) {
   else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND', label: 'TÌM BÀN', needsBet: true, betOptions }; }
   // PHASE 6.3.8 — the ordered GAME/TABLE icon set (primary first, then secondary). Lifecycle is added by the page.
   const actions = [toActionIcon(primary), ...secondary.map(toActionIcon)].filter(Boolean);
-  return { account, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null, joinedShared,
+  return { account, rid, statusLabel, statusClass, primary, secondary, actions, searchOptions: joined ? betOptions : [], error: view.error || null, joinedShared,
     // §co-seat — this browser's room CODE (hpwd) + the shared code, so the page/⋯ menu can show "mã bàn".
     roomCode: view.roomCode != null ? String(view.roomCode) : null, sharedRoomCode: view.sharedRoomCode != null ? String(view.sharedRoomCode) : null,
     // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
@@ -138,7 +139,7 @@ function bootScript(opts = {}) {
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
   // ---- the floating, compact, single-row header (mobile-landscape; never a full-width toolbar) ----
   const bar = document.createElement('div'); bar.id = '__phom_header';
-  bar.setAttribute('style','position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;align-items:center;gap:6px;height:36px;max-width:calc(100vw - 16px);padding:0 6px 0 8px;background:rgba(17,24,39,.96);color:#e5e7eb;border:1px solid #374151;border-left:3px solid '+ACCENT+';border-radius:10px;font:600 12px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35);user-select:none;');
+  bar.setAttribute('style','position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;align-items:center;gap:8px;flex-wrap:wrap;box-sizing:border-box;min-height:42px;max-width:calc(100vw - 16px);padding:7px 8px;background:rgba(17,24,39,.96);color:#e5e7eb;border:1px solid #374151;border-left:3px solid '+ACCENT+';border-radius:10px;font:600 12px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35);user-select:none;');
   // drag handle = badge + name + status (dragging the identity area moves the whole control).
   const handle = mk('div','display:flex;align-items:center;gap:7px;cursor:move;min-width:0;');
   const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:24px;height:20px;padding:0 6px;border-radius:6px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:11px;'); badge.textContent = ID.slotId||'B?';
@@ -146,7 +147,7 @@ function bootScript(opts = {}) {
   const statusDot = mk('span','width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto;');
   const stLabel = mk('span','color:#cbd5e1;font-weight:500;max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
   handle.appendChild(badge); handle.appendChild(nameEl); handle.appendChild(statusDot); handle.appendChild(stLabel);
-  const act = mk('div','display:flex;align-items:center;gap:5px;'); act.id='__ph_act';
+  const act = mk('div','display:flex;align-items:center;gap:5px;flex-wrap:wrap;min-width:0;'); act.id='__ph_act';
   const menuWrap = mk('div','position:relative;display:flex;align-items:center;gap:4px;');
   const menuBtn = mk('button','width:26px;height:26px;border-radius:7px;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;'); menuBtn.textContent='⋮'; menuBtn.title='Tùy chọn';
   const collapseBtn = mk('button','width:26px;height:26px;border-radius:7px;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:13px;line-height:1;'); collapseBtn.title='Thu gọn / mở rộng';
@@ -195,7 +196,7 @@ function bootScript(opts = {}) {
   function iconBtn(icon, label, showLabel, dis, danger, onClick, tip){
     var bg = danger ? '#7f1d1d' : '#2563eb'; var bd = danger ? '#991b1b' : '#1d4ed8';
     var b = mk('button', 'display:inline-flex;align-items:center;gap:4px;height:26px;padding:0 '+(showLabel?'10px':'8px')+';border-radius:7px;border:1px solid '+bd+';background:'+bg+';color:#fff;font:600 12px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.5':'1')+';white-space:nowrap;');
-    b.textContent = showLabel ? (icon+' '+label) : icon; b.title = tip || label || '';
+    b.textContent = showLabel ? (icon+' '+label) : icon; b.title = tip || label || ''; b.setAttribute('aria-label', tip || label || '');
     if(dis) b.disabled = true; else if(onClick) b.onclick = onClick;
     return b;
   }
@@ -220,8 +221,9 @@ function bootScript(opts = {}) {
     act.style.display = __collapsed ? 'none' : 'flex';
     if(!__collapsed){
       var acts = (Array.isArray(state.actions) && state.actions.length) ? state.actions : (state.primary ? [Object.assign({ icon:'•' }, state.primary)] : []);
+      if (Array.isArray(state.searchOptions) && state.searchOptions.length) acts = acts.concat([{ action:'CHANGE_TABLE', icon:'↻', short:'Đổi key', needsBet:true, betOptions:state.searchOptions, tip:'Tìm bàn khác đủ điều kiện rồi chuyển cả nhóm' }]);
       acts.forEach(function(a, i){
-        var showLabel = i===0; // primary shows a label; the rest are icon-only (compact)
+        var showLabel = true; // explicit labels distinguish rejoin from leaving the table
         if (a.needsBet && Array.isArray(a.betOptions) && a.betOptions.length){
           var sel = mk('select','height:26px;padding:0 6px;border-radius:7px;border:1px solid #374151;background:#111827;color:#e5e7eb;font:600 12px Inter,Segoe UI,sans-serif;');
           var o0=mk('option'); o0.value=''; o0.textContent='CƯỢC…'; sel.appendChild(o0);
@@ -230,14 +232,16 @@ function bootScript(opts = {}) {
           // BUGFIX (6.3.9) — the FIND button must ALWAYS carry its onclick (the click guards on a chosen stake).
           // Creating it "disabled" dropped the handler, so picking a stake left FIND dead. Now it is always
           // clickable; the empty-stake state is shown by style only, and the click is a no-op until a stake is set.
-          var fb=iconBtn(a.icon||'🔍','Tìm Bàn', true, false, false, function(){ if(sel.value) emit('FIND',{ stake:Number(sel.value) }); }, a.tip);
-          var syncFb=function(){ var ok=!!sel.value; fb.style.opacity=ok?'1':'.5'; fb.style.cursor=ok?'pointer':'not-allowed'; };
+          var fb=iconBtn(a.icon||'🔍',a.action==='CHANGE_TABLE'?'Đổi key':'Tìm Bàn', true, false, false, function(){ if(sel.value) emit(a.action,{ stake:Number(sel.value) }); }, a.tip);
+          var emptyBtn=iconBtn('+','Tạo bàn',true,false,false,function(){ if(sel.value) emit('FIND_EMPTY',{ stake:Number(sel.value) }); },'Tìm bàn trống rồi đưa cả nhóm vào');
+          var syncFb=function(){ var ok=!!sel.value; fb.style.opacity=ok?'1':'.5'; fb.style.cursor=ok?'pointer':'not-allowed'; emptyBtn.disabled=!ok; };
           syncFb(); sel.onchange=syncFb;
-          act.appendChild(fb);
+          act.appendChild(fb); act.appendChild(emptyBtn);
         } else {
           act.appendChild(iconBtn(a.icon||'•', a.short||a.label||a.action, showLabel, !!a.disabled, !!a.danger, (function(ac){ return function(){ emit(ac.action, ac.rid!=null?{ rid:ac.rid }:null); }; })(a), a.tip));
         }
       });
+      act.appendChild(iconBtn(state.capturing ? '■' : '●', state.capturing ? 'Lưu WS' : 'Ghi WS', true, false, false, function(){ emit(state.capturing ? 'CAPTURE_STOP' : 'CAPTURE_START'); }, 'Ghi request / response WebSocket'));
       // Lifecycle (always available): RELOAD + STOP.
       act.appendChild(lifeBtn('⟳', false, function(){ emit('RELOAD'); }, 'Tải lại web trong Chromium'));
       act.appendChild(lifeBtn('⏻', true, function(){ emit('STOP'); }, 'Tắt Chromium này'));

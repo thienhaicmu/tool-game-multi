@@ -18,9 +18,9 @@ test('index.html loads the shared search-lock/shared-RID module before the rende
 });
 
 test('renderer consumes the manual backend contract (discover/join/rejoin/leave/snapshot/remaining)', () => {
-  // PHASE 6.2.1 — a REAL find goes through discovery (api.manualDiscover); §co-seat — JOIN a số bàn + key uses
+  // PHASE 6.2.1 — a REAL find goes through discovery (api.findAndJoinGroup); §co-seat — JOIN a số bàn + key uses
   // api.manualJoinCode (retry through "sai mật khẩu phòng"); JOIN_SHARED uses api.manualJoinShared.
-  for (const call of ['api.manualDiscover(', 'api.manualJoinCode(', 'api.manualRejoin(', 'api.manualLeave(', 'api.manualSnapshot(', 'api.remainingCards(']) {
+  for (const call of ['api.findAndJoinGroup(', 'api.manualJoinCode(', 'api.manualRejoin(', 'api.manualLeave(', 'api.manualSnapshot(', 'api.remainingCards(']) {
     assert.ok(js.includes(call), `renderer should call ${call}`);
   }
   for (const bridge of ['manualDiscover:', 'manualJoin:', 'manualRejoin:', 'manualLeave:', 'manualSnapshot:', 'remainingCards:']) {

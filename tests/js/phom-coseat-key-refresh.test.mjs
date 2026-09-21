@@ -61,7 +61,8 @@ class KeySim {
         const left = this.rooms.filter((r) => r.seats.find((s) => s.uid === uid));
         for (const r of this.rooms) r.seats = r.seats.filter((s) => s.uid !== uid);
         for (const r of left) this._broadcast(r);      // the people still at the table see the seat free up
-        this._feed(id, this._channelList());           // the leaver is back in the lobby
+        this._feed(id, '[4,true,1,-1,0,""]');
+        this._feed(id, this._channelList());           // discovery metadata, not exit evidence
         return { ok: true };
       }
       return { ok: true };

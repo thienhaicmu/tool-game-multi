@@ -107,7 +107,7 @@ test('FIND-03/23: duplicate concurrent FIND is single-flight (one CMD 300, secon
   const p2 = coord.manualDiscoverTable('B1', { selectedStake: 500 }); // fired while p1 in flight
   const [r1, r2] = await Promise.all([p1, p2]);
   assert.equal(r2.ok, false);
-  assert.equal(r2.error.code, 'PHOM_FIND_IN_FLIGHT');
+  assert.equal(r2.error.code, 'FIND_ALREADY_RUNNING');
   assert.equal(r1.ok, true);
   assert.equal(sim.channelReqs, 1, 'exactly ONE CMD 300 for the duplicate clicks');
 });
