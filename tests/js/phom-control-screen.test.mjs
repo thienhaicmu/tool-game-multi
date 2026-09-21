@@ -123,3 +123,17 @@ test('a background update repaints at most once per frame, and not at all when n
   const key = fn('renderKey');
   for (const part of ['manualBrowsers.map', 'safeBySlot[sl]', 'manualGroup']) assert.ok(key.includes(part), part);
 });
+
+test('PROFILE: ⚡ DÁN PROXY is reachable again — one line per proxy, mapped by profile order, all-or-nothing', () => {
+  // The bulk import existed but nothing rendered it any more; three accounts normally mean three proxies.
+  assert.match(fn('profileTablePanel'), /onclick: openBulkProxy \}, '⚡ DÁN PROXY'/);
+  const dlg = fn('openBulkProxy');
+  assert.match(dlg, /BP\.parse\(bulkProxyText\)/);
+  assert.match(dlg, /BP\.mapToProfiles\(parsed\.proxies, profilesX\.map\(\(p\) => p\.id\)\)/);
+  assert.match(dlg, /api\.profileSetProxy\(m\.profileId, m\.proxy\)/); // the existing IPC, no new storage
+  assert.equal(/password|m\.proxy\.pass/.test(dlg.replace('PASSWORD', '')), false, 'a password is never echoed back');
+});
+
+test('the background poll only runs for the screen that is visible', () => {
+  assert.match(fn('startEntryPolling'), /uiState !== UI\.CONTROL \|\| activeTab !== 'PHOM' \|\| document\.hidden/);
+});

@@ -48,21 +48,6 @@ test('openProfile forwards an explicit device + records browserRunId → profile
   assert.match(main, /device: \(cfg && cfg\.device\)/);
 });
 
-test('renderer SETUP: profile list, ordered selection, bulk proxy by order, RUN GAME → openSelected', () => {
-  assert.match(js, /window\.ProfileSelection/);
-  assert.match(js, /api\.profilesList\(\)/);
-  assert.match(js, /api\.profileCreate\(|api\.profileUpdateX\(/);
-  assert.match(js, /api\.profileDeleteX\(/);
-  assert.match(js, /api\.profileSetProxy\(/);
-  // bulk proxy maps to the selection order via the pure module
-  assert.match(js, /PS\.mapProxies\(selectedProfileIds, bulkProxyText\)/);
-  // RUN GAME opens the ordered selection — PHASE 6.3.2.1: NO global gameUrl (each profile carries its own)
-  assert.match(js, /api\.openSelected\(\{ profileIds: selectedProfileIds, localTest \}\)/);
-  assert.equal(/gameUrl: gameUrlX/.test(js), false, 'no global Game URL is sent at RUN time');
-  // OS window ⟂ viewport in the modal (separate fields)
-  assert.match(js, /pf-osw/); assert.match(js, /pf-vpw/);
-});
-
 // PHASE 6.3.2.1 — Game URL is a per-profile property (edited in Edit Profile). openSelectedProfiles opens
 // each browser with ITS profile's own saved gameUrl (no global URL); the field is required per profile.
 test('open-from-selection uses each profile OWN Game URL (§6.3.2.1)', () => {

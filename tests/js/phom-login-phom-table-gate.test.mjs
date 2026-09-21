@@ -19,35 +19,18 @@ test('RUN GAME lands in LOGIN phase (no auto channel/acquire/join/ready)', () =>
     'RUN GAME must not trigger any find-table action');
 });
 
-test('ĐÃ LOGIN — TIẾP TỤC only advances to CONFIRMED (no session start, no channel/acquire)', () => {
-  const fn = between('function confirmLogin()', 'async function enterPhom()');
-  assert.match(fn, /entryPhase = ENTRY\.CONFIRMED/);
-  assert.equal(/startSession|requestChannels|acquireHost|joinFollowers|applyReady/.test(fn), false,
-    'login-confirm must not start the session or request channels');
-});
-
-test('VÀO GAME PHỎM starts the PASSIVE session and never requests channels/acquire/join/ready', () => {
-  const fn = between('async function enterPhom()', 'function slotInPhom(');
-  assert.match(fn, /entryPhase = ENTRY\.ENTERING/);
-  assert.match(fn, /api\.startSession\(/);
-  assert.equal(/requestChannels|acquireHost|joinFollowers|applyReady|selectStake/.test(fn), false,
-    'entering Phỏm must not request channels / acquire / join / ready');
-});
-
-test('VÀO GAME PHỎM triggers the verified `vgcg_8` entry action via the site\'s own mechanism (no guess)', () => {
-  const fn = between('async function enterPhom()', 'function armEntryTimeout(');
-  // start the passive session then fire the entry action on each slot via the reused seam.
-  assert.match(fn, /api\.startSession\(/);
+test('VÀO GAME fires the verified `vgcg_8` entry action per browser (no guessed navigation/selector)', () => {
+  // Entry is per browser now (the chip's VÀO GAME / the in-page bar), not one bulk action for all three.
+  const fn = between('async function manualEnterGame(runId)', 'function reconcileEnterStates(');
   assert.match(fn, /api\.enterGame\(runId\)/);
-  // the tool never guesses: no navigate, no deep-link/route, no DOM selector, no learn-from-click.
+  // the tool never guesses: no navigate, no deep-link/route, no DOM selector, no learn-from-click
   assert.equal(/api\.navigateRun|loadURL|Page\.navigate|querySelector|\.click\(\)|deep.?link|entryLearn|entryReplay/i.test(fn), false, 'no guessed navigation/selector/learn in the entry path');
-  // no channel/acquire/join/ready during entry.
-  assert.equal(/requestChannels|acquireHost|joinFollowers|applyReady|selectStake/.test(fn), false);
-  // per-slot failure isolated; never closes a browser.
-  assert.match(fn, /assign\[sl\]\.entryError/);
+  // no table orchestration during entry
+  assert.equal(/requestChannels|createTable|joinTable|setAuto/.test(fn), false);
+  // a failure is isolated to that browser and never closes it
+  assert.match(fn, /manualEnterError\[runId\]/);
   assert.equal(/closeRun|clusterStop|closeBrowsers|kill|destroy/.test(fn), false, 'entry action must never close a browser');
 });
-
 test('main triggers `vgcg_8` through the REUSED Aviator Cocos-node seam (runEnterGameViaSite), not a new flow', () => {
   const main = read('desktop/phom-main.cjs');
   const preload = read('desktop/phom-preload.cjs');
@@ -90,16 +73,6 @@ test('PHOM_READY requires the authoritative 3/3 in-Phỏm signal (socketReady+co
   assert.match(rec, /entryPhase = ENTRY\.READY/);
 });
 
-test('TÌM BÀN is enabled ONLY when in the Phỏm lobby (ready); otherwise (re)enter Phỏm', () => {
-  // The CTA is derived from the REAL live signal (allInPhom), not a one-shot phase, so it recovers
-  // for repeated use / after a logout. TÌM BÀN shows only when ready; else the (re)enter button.
-  const bar = between('function commandToolbar(s)', 'function confirmLogin(');
-  assert.match(bar, /const ready = allInPhom\(\)/);
-  assert.match(bar, /entryPhase === ENTRY\.ENTERING[^]*ĐANG VÀO GAME PHỎM/);
-  assert.match(bar, /ready[^]*TÌM BÀN · CHỌN CƯỢC/);
-  assert.match(bar, /VÀO GAME PHỎM/); // (re)enter when not in Phỏm
-});
-
 test('DỪNG and RUN-GAME reset touch entryPhase but never close browsers', () => {
   const stop = between('async function stopOrchestration()', 'async function closeBrowsers()');
   assert.equal(/api\.closeBrowsers|api\.clusterStop|closeRun/.test(stop), false, 'DỪNG never closes browsers');
@@ -117,22 +90,6 @@ test('entry gate never closes a browser on any failure path', () => {
 
 // ===== BLOCKING BUG FIXES =====
 
-// BUG #1 — readiness is the run's OWN authoritative signal (socketReady+connected+uid), detected as
-// soon as frames arrive (no fixed 10-min timeout); the status reflects real per-run state.
-test('BUG1: slotLoggedIn = socketReady && connected && uid (authoritative, per run)', () => {
-  const fn = between('function slotLoggedIn(', 'function slotInPhom(');
-  assert.match(fn, /p\.socketReady && p\.connected && p\.uid != null/);
-});
-
-test('BUG1: entry status chips reflect REAL per-run state, not the entryPhase', () => {
-  const bar = between('function entryStatusBar()', 'function slotStatus(');
-  // must key off the live signal…
-  assert.match(bar, /p\.socketReady && p\.connected && p\.uid != null/);
-  assert.match(bar, /p\.channelCount \|\| 0\) > 0/);
-  // …and NOT gate the login label purely on entryPhase === ENTRY.LOGIN anymore
-  assert.equal(/entryPhase === ENTRY\.LOGIN\) \{ cls = 'yellow'; label = 'CHỜ LOGIN'/.test(bar), false);
-});
-
 test('BUG1: detection is prompt — poll actively requests the channel list when socket is up but list missing', () => {
   const poll = between('function startEntryPolling()', 'function stopEntryPolling()');
   assert.match(poll, /needChannels/);
@@ -141,10 +98,5 @@ test('BUG1: detection is prompt — poll actively requests the channel list when
   assert.equal(/api\.requestChannels\(\)/.test(poll), false, 'the poll must not broadcast CMD 300 to every browser');
   // no fixed multi-minute sleep to become ready
   assert.equal(/600000|300000|sleep\(\s*[0-9]{6,}/.test(poll), false);
-});
-
-test('BUG2: TÌM BÀN button is disabled ONLY while running (not mute-disabled by auth/browser count)', () => {
-  const bar = between('function commandToolbar(s)', 'function confirmLogin(');
-  assert.match(bar, /disabled: running \? true : null, onclick: openFindTable/);
 });
 

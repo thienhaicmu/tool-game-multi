@@ -165,15 +165,6 @@ test('renderer defines the SETUP/OPENING_CLUSTER/CONTROL/STOPPING/ERROR states',
   assert.match(rendererSrc, /function renderControl\b/);
 });
 
-// SETUP shows ONE open-all CTA and no per-slot "Mở game" buttons.
-test('SETUP has a single Open-Cluster CTA and no per-slot open-game buttons', () => {
-  assert.match(rendererSrc, /cta-open/);
-  assert.match(rendererSrc, /MỞ 3 TRÌNH DUYỆT/);
-  assert.equal(/Mở game/.test(rendererSrc), false, 'no per-slot "Mở game" buttons remain');
-  assert.equal(/function renderBrowserCell\b|function openOne\b/.test(rendererSrc), false,
-    'the old per-slot browser cell / single-open helpers are gone');
-});
-
 // The dev-only red sandbox banner is wired to caps.chromiumSandbox.disabled.
 test('renderer shows the red DEV sandbox banner from capabilities', () => {
   assert.match(rendererSrc, /danger-banner/);

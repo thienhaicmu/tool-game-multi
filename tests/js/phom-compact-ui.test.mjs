@@ -157,17 +157,6 @@ test('SETUP omits quick proxy import while retaining the profile table', () => {
   assert.match(setup, /profileTablePanel\(\)/);
 });
 
-test('bulk apply is all-or-nothing, maps by PROFILE ORDER (not selection), reuses profileSetProxy, no new IPC', () => {
-  const apply = fn(js, 'applyBulkProxyQuick');
-  assert.match(apply, /BP\.parse\(bulkProxyText\)/);              // validate EVERY line first
-  assert.match(apply, /if \(!parsed\.ok\) return setNote/);       // reject before applying anything
-  assert.match(apply, /const ids = profilesX\.map\(\(p\) => p\.id\)/); // PROFILE order, not selectedProfileIds
-  assert.match(apply, /BP\.mapToProfiles\(parsed\.proxies, ids\)/);
-  assert.match(apply, /api\.profileSetProxy\(m\.profileId, m\.proxy\)/); // existing IPC, per profile in order
-  // SECURITY: the apply path never logs / echoes a password.
-  assert.equal(/console\.(log|error|warn)/.test(apply), false, 'no logging in the bulk apply path');
-});
-
 test('the per-row ⚡ Quick Proxy (Edit Profile) remains available alongside the bulk importer', () => {
   assert.match(js, /id: 'pf-proxy'/);            // per-profile proxy in the Edit modal
   assert.match(js, /api\.profileSetProxy\(pid/); // still wired

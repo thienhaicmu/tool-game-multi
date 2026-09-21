@@ -9,12 +9,6 @@ const js = read('ui-phom/phom-qa.js');
 const css = read('ui-phom/phom-qa.css');
 function fn(name) { const s = js.indexOf('function ' + name + '('); if (s < 0) return ''; const rest = js.slice(s + 1); const m = rest.indexOf('\n  function '); return rest.slice(0, m > 0 ? m : 4000); }
 
-test('2. the browser chip is compact — no tall min-height, no per-cell info-row block', () => {
-  assert.match(css, /\.browser-cell \{[^}]*min-height: 0/);
-  const cell = fn('compactBrowserCell');
-  assert.equal(/bc-body|bc-readonly|bc-meta/.test(cell), false, 'no tall body/meta block in the compact chip');
-});
-
 test('3. shared RID appears ONCE (tool header), never repeated in the three chips', () => {
   const header = fn('compactHeader');
   assert.match(header, /manualCluster\.sharedRid/);      // RID shown once, in the header

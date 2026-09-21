@@ -126,17 +126,11 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 .note { font-size: 12px; margin: 4px 0; color: var(--text-2); } .note.ok { color: var(--success); } .note.warn { color: var(--warning); }
 details.adv { margin-top: 10px; } details.adv summary { cursor: pointer; color: var(--text-2); font-size: 12px; }
 details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
-
-/* profile / status rows */
-.prow { display: flex; flex-direction: column; gap: 4px; font-size: 12px; margin: 6px 0; padding: 8px 10px; background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); box-shadow: var(--shadow); }
 .prow.compact { padding: 6px 8px; }
 
 /* banners */
 .dev-banner { background: var(--warning-bg); color: var(--warning); border: 1px solid #f0dcb0; border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 700; letter-spacing: .3px; margin-bottom: 6px; text-align: center; }
 .danger-banner { background: var(--error-bg); color: var(--error); border: 1px solid #f0c2c2; border-radius: 8px; padding: 6px 10px; font-size: 12px; font-weight: 800; letter-spacing: .3px; margin-bottom: 6px; text-align: center; }
-
-/* the single Open-Cluster CTA (SETUP) — visually the one primary action */
-.cta-open { display: block; width: 100%; font-size: 15px; padding: 11px; margin: 14px 0 4px; }
 
 /* modal overlay (light scrim) */
 .phq-analyzer { position: fixed; inset: 0; background: rgba(31, 39, 51, .35); display: flex; align-items: center; justify-content: center; z-index: 50; padding: 12px; }
@@ -148,13 +142,6 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .phq-row { display: flex; gap: 8px; align-items: center; margin: 6px 0; font-size: 12px; }
 .phq-row > span:first-child { min-width: 84px; color: var(--text-2); }
 .phq-row .f, .phq-row .sel { flex: 1; }
-
-/* quick-3-proxy panel (§4) */
-.qp-panel { background: var(--panel); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; margin: 6px 0; box-shadow: var(--shadow); }
-.qp-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-.qp-ta { width: 100%; min-height: 84px; margin-top: 8px; font-family: ui-monospace, Consolas, monospace; resize: vertical; }
-.qp-actions { display: flex; gap: 8px; margin-top: 8px; flex-wrap: wrap; }
-.qp-hint { color: var(--text-faint); font-size: 11px; margin-top: 4px; }
 
 /* ---- Offline REALTIME simulator (§7-§11) ---- */
 .sim-card { width: min(960px, 97vw); }
@@ -188,9 +175,6 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 
 /* ================= SCREEN 2 — LIVE QA WORKSPACE ================= */
 .mode-control { display: flex; flex-direction: column; height: 100%; min-height: 0; }
-.qa-status { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 4px 0; }
-.qa-chips { display: flex; flex-wrap: wrap; gap: 5px; }
-.qa-badges { display: flex; flex-wrap: wrap; gap: 5px; margin-left: auto; }
 /* status chips — color keyed by state, text label ALWAYS present (§9) */
 .chip { font-size: 11px; font-weight: 700; padding: 3px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text-2); white-space: nowrap; }
 .chip.sm { font-size: 10px; padding: 1px 5px; }
@@ -203,35 +187,16 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .gbadge { font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 9px; background: var(--panel-2); border: 1px solid var(--border); color: var(--text-2); }
 .gbadge.good { background: #e7f6ec; color: #15803d; border-color: #bfe6cd; }
 .gbadge.live { background: #fdecec; color: #b91c1c; border-color: #f2c9c9; }
-.qa-cmd { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 0; border-bottom: 1px solid var(--border); }
 .qa-more { position: relative; display: inline-block; }
 .qa-more-menu { position: absolute; z-index: 30; top: 100%; left: 0; margin-top: 2px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; box-shadow: 0 6px 20px rgba(24,39,75,.16); min-width: 190px; padding: 4px; }
 .qa-more-menu[hidden] { display: none; }
 .menu-item { display: block; width: 100%; text-align: left; background: none; border: none; padding: 7px 10px; font-size: 12px; color: var(--text); cursor: pointer; border-radius: 6px; }
 .menu-item:hover { background: var(--panel-2); }
-/* the monitor fills the remaining height (~80%) */
-.qa-monitor { flex: 1; min-height: 0; display: flex; flex-direction: column; margin-top: 6px; overflow: auto; }
 .qa-mon-banner { background: #eef3ff; color: #1d4ed8; border: 1px solid #c7d8fb; border-radius: 8px; padding: 5px 10px; font-size: 12px; font-weight: 700; letter-spacing: .3px; text-align: center; margin-bottom: 6px; }
-.mon-row1 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.mon-col { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 8px; min-width: 0; }
-.mon-col-h { display: flex; align-items: center; gap: 6px; font-size: 13px; margin-bottom: 4px; }
-.mon-line { display: flex; align-items: center; gap: 5px; font-size: 11px; margin: 3px 0; flex-wrap: wrap; }
-.mon-sms { margin-top: 3px; }
 .mon-row2 { margin-top: 8px; background: var(--panel-2); border: 1px solid var(--border); border-radius: 8px; padding: 8px; }
 .warnrow.sm { font-size: 11px; padding: 3px 6px; }
 .adv-debug { margin-top: 8px; }
 .adv-debug pre { font-size: 11px; color: var(--text-2); max-height: 200px; overflow: auto; white-space: pre-wrap; background: var(--panel-2); border: 1px solid var(--border); border-radius: 6px; padding: 6px; }
-
-/* ---- Quick Proxy — 3 labeled rows (§4F) ---- */
-.qp-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; }
-.qp-slot { width: 22px; height: 22px; flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; border-radius: 6px; background: #e8f0fe; color: #1d4ed8; font-weight: 800; font-size: 12px; }
-.qp-proto { flex: 0 0 auto; max-width: 92px; }
-.qp-in { flex: 1; min-width: 0; }
-.qp-hint { font-size: 11px; color: var(--text-2); margin-bottom: 4px; }
-.qp-actions { display: flex; gap: 6px; margin-top: 6px; }
-
-/* ---- Find-Table stake modal (§13) ---- */
-.ft-card { width: min(380px, 94vw); }
 
 /* ---- QA RULE MONITOR · D MÔ PHỎNG (§19-§21) ---- */
 .qa-mon-banner.qa-rule { display: flex; align-items: center; gap: 6px; justify-content: flex-start; background: #eef3ff; color: #1d4ed8; }
@@ -267,18 +232,11 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .setup-page::-webkit-scrollbar-thumb { background: var(--border); border-radius: 6px; border: 3px solid var(--bg); }
 .setup-page::-webkit-scrollbar-thumb:hover { background: var(--text-faint); }
 .setup-page::-webkit-scrollbar-track { background: transparent; }
-.s1-header { display: flex; align-items: center; gap: 6px; flex: 0 0 auto; }
 .s1-note { flex: 0 0 auto; margin: 2px 0; } .s1-note:empty { display: none; }
 /* the two-column grid fills the remaining height; each column stacks its panels */
 .setup { display: grid; grid-template-columns: 1fr 0.95fr; gap: 8px; flex: 1 1 auto; min-height: 0; margin-top: 4px; }
-.s1-col { display: flex; flex-direction: column; gap: 8px; min-height: 0; min-width: 0; }
-.s1-panel { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 7px 9px; box-shadow: var(--shadow); }
-.s1-panel-t { font-size: 11px; font-weight: 700; color: var(--text-2); letter-spacing: .6px; text-transform: uppercase; margin-bottom: 5px; }
-.s1-panel-t .qp-hint { font-weight: 500; letter-spacing: 0; text-transform: none; color: var(--text-faint); }
-.s1-row { display: flex; align-items: center; gap: 6px; margin: 5px 0; }
 .s1-row > .lbl { flex: 0 0 auto; min-width: 30px; color: var(--text-2); font-size: 12px; font-weight: 600; }
 .s1-row .f, .s1-row .phq-in { flex: 1 1 auto; min-width: 0; }
-.s1-host { flex: 0 0 auto; max-width: 92px; }
 /* left panel 2 — A/B/C DISPLAY rows (device + assigned redacted proxy + status). No
    proxy selector / Test here (that lives in the right Quick Proxy panel). */
 .prow.s1 { flex-direction: row; align-items: center; gap: 6px; padding: 5px 7px; margin: 5px 0 0; min-height: 40px; box-shadow: none; }
@@ -297,11 +255,6 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .qp-panel.compact .qp-in { flex: 1 1 auto; min-width: 0; }
 .qp-panel.compact .qp-actions { display: flex; align-items: center; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .qp-panel.compact .qp-actions .note { margin: 0; font-size: 11px; }
-/* right footer — pinned to the bottom of the right column, single CTA always visible */
-.s1-footer { margin-top: auto; padding-top: 6px; border-top: 1px solid var(--border); display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.s1-localtest { font-size: 11px; color: var(--text-2); display: inline-flex; align-items: center; gap: 3px; flex: 1 1 100%; }
-.s1-footer .cta-open { flex: 1 1 auto; width: auto; margin: 0; padding: 10px; font-size: 14px; }
-.s1-warn { flex: 1 1 100%; margin: 2px 0 0; font-size: 11px; }
 
 /* Screen 2 monitor source badge + friendly stake code */
 .mon-srcbadge { font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 9px; background: #fff2df; color: #b45309; border: 1px solid #f0dcb0; margin-left: 6px; }
@@ -317,29 +270,15 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .mon-wait .section-t { margin: 0 0 4px; }
 .mon-live-row { display: flex; align-items: center; gap: 8px; margin: 6px 0; }
 .mon-live-row .slot-tag { flex: 0 0 auto; }
-.ft-code { font-size: 10px; color: var(--text-faint); }
-
-/* PHASE 6.1 — manual per-browser control + Screen 2 remaining cards (light theme; reuses tokens) */
-.manual-cluster { margin-top: 10px; }
-.manual-stake { display: flex; align-items: center; gap: 6px; margin: 4px 0 8px; }
 .manual-stake .f { max-width: 120px; }
 .shared-room { background: var(--panel-2); border: 1px solid var(--success); border-radius: 8px; padding: 6px 10px; margin-bottom: 8px; font-size: 13px; }
 .shared-room .shared-rid { color: var(--success); }
-.manual-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
-.browser-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 6px; }
-.browser-card.searching { border-color: var(--warning); box-shadow: 0 0 0 2px color-mix(in srgb, var(--warning) 25%, transparent); }
-.bc-head { display: flex; justify-content: space-between; align-items: center; }
-.bc-status { font-size: 11px; padding: 1px 6px; border-radius: 10px; }
 .bc-status.green { background: color-mix(in srgb, var(--success) 20%, transparent); color: var(--success); }
 .bc-status.yellow { background: color-mix(in srgb, var(--warning) 20%, transparent); color: var(--warning); }
 .bc-status.blue { background: color-mix(in srgb, var(--primary) 18%, transparent); color: var(--primary); }
 .bc-status.red { background: color-mix(in srgb, var(--error) 20%, transparent); color: var(--error); }
 .bc-status.gray { background: var(--panel-2); color: var(--text-faint); }
-.bc-user { font-size: 12px; }
-.bc-find { width: 100%; }
-.bc-rid { display: flex; flex-direction: column; gap: 2px; }
 .bc-rid .f { width: 100%; }
-.bc-actions { display: flex; gap: 4px; }
 .bc-actions .btn { flex: 1; }
 .warnrow.sm { font-size: 11px; padding: 4px 6px; }
 .remaining-cards { margin-top: 12px; border-top: 1px solid var(--border); padding-top: 8px; }
@@ -352,8 +291,6 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .tool-header .th-stake { width: 56px; padding: 2px 4px; }
 .tool-header .th-rid { margin-left: auto; }
 .tool-header .th-still { color: var(--text-faint); }
-.browser-row { display: flex; gap: 8px; margin: 8px 0; }
-.browser-cell { flex: 1; display: flex; align-items: center; gap: 4px; border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--panel); min-height: 34px; }
 .browser-cell .bl { font-weight: 600; white-space: nowrap; }
 .browser-cell .btn.sm { padding: 2px 8px; }
 .chip.sm { font-size: 11px; }
@@ -367,12 +304,7 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .tab-content { min-height: 40px; }
 /* PHASE 6.3.9 — Select-All / Unselect-All + count row under the profile table; compact open-state checkbox. */
 .table-actions { display: flex; align-items: center; gap: 8px; padding: 8px 2px 2px; }
-.browser-cell .bc-cb { margin-right: 2px; }
-.browser-cell { flex-direction: column; align-items: stretch; gap: 4px; }
-.bc-line { display: flex; align-items: center; justify-content: space-between; }
-.bc-life { display: flex; gap: 4px; }
 .bc-life .btn { flex: 1; }
-.bet-find { display: flex; gap: 4px; align-items: center; }
 .bet-find .bet-sel { flex: 1; min-width: 64px; padding: 2px 4px; font-size: 12px; }
 .sel.sm { padding: 2px 4px; font-size: 12px; }
 
@@ -387,7 +319,6 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .icon-btn2:hover { background: var(--panel-2); color: var(--text); border-color: var(--border-strong); }
 .icon-btn2.danger:hover { color: var(--error); border-color: #e7b7b7; background: var(--error-bg); }
 .btn .lucide, .bc-main .lucide { margin-right: 5px; }
-.spin { animation: phq-spin .9s linear infinite; }
 @keyframes phq-spin { to { transform: rotate(360deg); } }
 
 /* status dots + badges (semantic; §22) */
@@ -434,42 +365,18 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .safe-head .section-t { margin: 0; }
 .sc-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
 .sc-sub { font-weight: 500; }
-.analysis-pick { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; }
 .analysis-pick .btn.sm { padding: 2px 8px; }
-.safe-src { margin-top: 4px; }
-
-/* PHỎM tab: browser STATUS chips — compact, ONE horizontal row (redesigned B1/B2/B3, §1/§8) */
-.browser-row { display: flex; gap: 8px; margin: 6px 0 2px; flex: 0 0 auto; align-items: stretch; }
-.browser-cell { flex: 1 1 0; min-width: 0; display: flex; flex-direction: row; align-items: center; gap: 8px; border: 1px solid var(--border); border-radius: var(--radius); padding: 5px 9px; background: var(--panel); box-shadow: var(--shadow); min-height: 0; }
-.browser-cell.st-ok { border-color: #bfe3ca; }
-.browser-cell.st-warn { border-color: #f0d9ab; }
-.browser-cell.st-danger { border-color: #f0c4c4; }
-.bc-id { font-size: 13px; font-weight: 700; letter-spacing: .5px; flex: 0 0 auto; white-space: nowrap; }
 .bc-acc { font-size: 11px; color: var(--text-2); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bc-hint { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* WS / CDP / HEADER mini-dots — compact connection status */
-.bc-dots { display: flex; gap: 4px; margin-left: auto; flex: 0 0 auto; }
-.mini-dot { font-size: 9px; font-weight: 700; letter-spacing: .3px; padding: 1px 4px; border-radius: 4px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text-faint); }
 .mini-dot.ok { color: var(--success); background: var(--success-bg); border-color: #bfe3ca; }
 .mini-dot.warn { color: var(--warning); background: var(--warning-bg); border-color: #f0d9ab; }
 .mini-dot.off { color: var(--text-faint); }
-.bc-life { display: flex; gap: 4px; flex: 0 0 auto; }
 .bc-life .btn { flex: none; }
-/* PHASE 6.3.2 — Screen 2 read-only mirror (ACCOUNT/RID/STATE/WS). Game actions live in the Chromium header. */
-.bc-readonly { gap: 3px; }
-.bc-kv { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; font-size: 12px; }
-.bc-k { color: var(--text-faint); font-weight: 500; letter-spacing: .02em; }
-.bc-v { font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; text-align: right; }
 .bc-v.ok { color: var(--ok, #16a34a); }
 .bc-v.off { color: var(--text-faint); }
 .bc-v.warn { color: var(--warn, #d97706); }
 .bc-v.danger { color: var(--danger, #dc2626); }
-.bc-note { margin-top: 4px; }
 .xs { font-size: 10.5px; }
 .chip.busy { display: inline-flex; align-items: center; gap: 6px; }
-
-/* bet selector inside a panel */
-.bet-find { display: flex; gap: 6px; align-items: center; }
 .bet-find .bet-sel { flex: 1; min-width: 60px; height: 30px; }
 .bet-find .btn { height: 30px; }
 
@@ -510,15 +417,10 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .phq-row > span:first-child { min-width: 60px; color: var(--text-2); font-size: 12px; }
 .phq-row .f { flex: 1; }
 
-.find-rows { margin-top: 4px; }
-.find-rows summary { cursor: pointer; }
-.find-rows > div { font-family: ui-monospace, Consolas, monospace; padding-left: 10px; }
-
 .capture-preview { max-height: 320px; overflow: auto; font: 11px/1.4 ui-monospace, Consolas, monospace; background: #f7f7f9; border: 1px solid #e5e7eb; border-radius: 6px; padding: 8px; white-space: pre; }
 
 /* Capture and options live outside the frequently refreshed control root. */
 .tool-header { flex-wrap: wrap; }
-.capture-launch { white-space: nowrap; border-color: var(--blue, #2563eb); color: var(--blue, #2563eb); }
 .more-card { width: min(360px, 94vw); }
 .qa-more-menu.menu-dialog { position: static; display: grid; box-shadow: none; border: 0; margin: 12px 0 0; padding: 0; min-width: 0; gap: 4px; }
 .menu-dialog .menu-item { min-height: 40px; text-align: left; }
@@ -538,30 +440,19 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 /* Phom workspace: clear hierarchy with stable three-column player cards. */
 #phq-root.mode-control { overflow: auto; }
 .tool-header { gap: 10px; padding: 12px 0 16px; align-items: center; }
-.workspace-title { display: grid; gap: 4px; margin-right: auto; }
-.workspace-title strong { font-size: 18px; color: var(--text); }
-.workspace-title span { font-size: 11px; color: var(--text-faint); }
 .tool-header .th-rid { margin-left: 0; }
 .tool-header .th-rid, .tool-header .th-bet { padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }
 .tool-header .th-still { display: none; }
-.browser-row { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: 12px; margin: 12px 0; }
-.browser-cell { display: grid; grid-template-columns: auto 1fr auto; gap: 8px; padding: 12px; align-items: center; box-shadow: none; }
 .browser-cell .b-badge { grid-column: 1; grid-row: 1; }
-.browser-cell .bc-id { grid-column: 2; grid-row: 1; letter-spacing: 0; }
 .browser-cell .gbadge { grid-column: 3; grid-row: 1; }
 .browser-cell .bc-acc { grid-column: 1 / -1; grid-row: 2; }
 .browser-cell .bc-badge { grid-column: 1 / -1; grid-row: 3; justify-self: start; border-radius: 6px; white-space: nowrap; padding: 4px 8px; }
-.browser-cell .bc-dots { grid-column: 1 / 3; grid-row: 4; margin: 0; }
-.browser-cell .bc-life { grid-column: 3; grid-row: 4; display: flex; }
-.finder-pick { display: flex; flex-wrap: wrap; justify-content: flex-start; margin: 0 0 12px; padding: 10px 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; gap: 8px; }
-.finder-label { margin-right: 8px; color: var(--text-2); font-size: 12px; font-weight: 600; }
 .finder-pick .btn { min-height: 30px; }
 .card-workspace { gap: 14px; min-height: 220px; }
 .card-workspace .safe-cards, .card-workspace .remaining-cards { background: var(--panel); padding: 14px; }
 .safe-head { gap: 12px; margin-bottom: 14px; }
 .safe-head .analysis-pick { margin-left: 0; }
 #phq-note:empty { display: none; }
-@media(max-width:700px) { .browser-row { gap: 6px; } .browser-cell { padding: 8px; } .browser-cell .bc-dots { grid-column: 1 / -1; } .browser-cell .bc-life { grid-row: 5; } .workspace-title { width: 100%; } }
 
 /* ================= PHỎM control screen — cards first ================= */
 .status-line { flex: 0 0 auto; gap: 14px; padding: 2px 2px 4px; border-bottom: 0; font-size: 12px; flex-wrap: wrap; }

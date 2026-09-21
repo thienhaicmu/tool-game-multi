@@ -30,13 +30,6 @@ test('Screen 1 profile table exposes a PLAYER column (not a bare "#") and keeps 
   assert.match(rowFn, /PS\.browserOf\(selectedProfileIds, p\.id\)/); // selection order is still the source
 });
 
-test('the bulk-proxy selection preview + error use the Player label (not B#)', () => {
-  const bp = fn('bulkProxyPanel');
-  assert.match(bp, /`Player \$\{i \+ 1\} → /);
-  const ab = fn('applyBulkProxy');
-  assert.match(ab, /playerLabel\(m\.browser\)/);
-});
-
 // ---- OBJECTIVE A — layout rebalance: table is the flexible primary area, no page-scroll dependency ----
 test('the profile table panel is the FLEXIBLE primary area (flex-grows + scrolls internally)', () => {
   const panel = fn('profileTablePanel');

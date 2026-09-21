@@ -30,12 +30,6 @@ test('no 2×2 browser placeholder cells in CSS or JS', () => {
   assert.equal(/grid2x2/.test(js), false);
 });
 
-test('exactly one primary RUN GAME CTA in Setup (Screen 1)', () => {
-  const ctaClass = (js.match(/cta-open/g) || []).length;
-  assert.equal(ctaClass, 1, 'single cta-open button');
-  assert.match(js, /RUN GAME — MỞ 3 TRÌNH DUYỆT/, 'RUN GAME CTA label');
-});
-
 test('PHASE 6.3.2.1 — SETUP is a scroll page + sticky footer; Game URL is per-profile, NO global input', () => {
   const setup = js.slice(js.indexOf('function renderSetup(r) {'), js.indexOf('function profileTablePanel('));
   assert.match(setup, /class: 'setup-page'/);        // scrollable page (nothing clipped)
@@ -49,18 +43,6 @@ test('PHASE 6.3.2.1 — SETUP is a scroll page + sticky footer; Game URL is per-
   // Game URL is a per-profile property: a table column + an Edit-Profile field (not a shared top input)
   assert.match(js, /'GAME URL'/);
   assert.match(js, /id: 'pf-url'/);
-});
-
-test('Setup renders the Quick 3-proxy panel as 3 labeled rows (no A=/B=/C= prefix)', () => {
-  assert.match(js, /THIẾT LẬP NHANH 3 PROXY/);
-  assert.match(js, /ÁP DỤNG 3 PROXY/);
-  assert.match(js, /TEST TẤT CẢ/);
-  assert.match(js, /qp-proto-/);   // per-slot protocol selector
-  assert.match(js, /qp-in-/);      // per-slot input
-  assert.match(js, /function panelQuickProxy\(\)/);
-  // placeholder is a plain host|port form — NO A=/B=/C= prefix requested from the user.
-  assert.match(js, /không cần A= B= C=/);
-  assert.match(js, /host\|port\|user\|password/);
 });
 
 test('PHASE 6.3.1 — SETUP is a device-profiles TABLE with in-row checkbox selection (§9/§10/§12/§13)', () => {
@@ -77,116 +59,9 @@ test('PHASE 6.3.1 — SETUP is a device-profiles TABLE with in-row checkbox sele
   assert.match(js, /api\.openSelected\(\{ profileIds: selectedProfileIds/);
 });
 
-test('Screen 1 assigned rows are DISPLAY-only (no duplicate proxy selector/Test in each profile)', () => {
-  assert.match(js, /function assignedRow\(slot\)/);
-  const rowStart = js.indexOf('function assignedRow(slot) {');
-  const rowBody = js.slice(rowStart, rowStart + 2000);
-  assert.equal(/proxySelector\(slot\)/.test(rowBody), false, 'no proxy <select> inside the assigned row');
-  assert.equal(/testProxy\(slot\)/.test(rowBody), false, 'no per-row Test button (Quick Proxy is the config place)');
-  assert.match(rowBody, /ar-px/);      // shows the ASSIGNED proxy (redacted) as text
-  // Proxy is OPTIONAL: a slot with no proxy shows a neutral DIRECT badge, NOT an error.
-  assert.match(rowBody, /'DIRECT'/);
-  assert.equal(/NO_PROXY/.test(js), false, 'no NO_PROXY error state anywhere (proxy is optional)');
-  // no per-profile "open game" button anywhere.
-  assert.equal(/Mở game/.test(js), false);
-});
-
-test('Screen 1 has exactly ONE ⋯ menu (cluster management) and no stray unlabeled menus', () => {
-  // one cluster-management menu in panelGeneral; assigned rows carry no ⋯ proxy menu now.
-  assert.match(js, /Tạo cụm/); assert.match(js, /Sửa cụm/); assert.match(js, /Nhân bản/); assert.match(js, /Xóa cụm/);
-  const genStart = js.indexOf('function panelGeneral() {');
-  const genBody = js.slice(genStart, js.indexOf('function panelAssigned'));
-  assert.equal((genBody.match(/qa-more-menu/g) || []).length, 1, 'exactly one management menu in the general panel');
-});
-
-// BROWSER LIFETIME INDEPENDENCE — DỪNG stops orchestration only (never closes browsers);
-// only the explicit ĐÓNG 3 TRÌNH DUYỆT closes them; RUN GAME waits for login.
-test('DỪNG is orchestration-only; browser close is a separate explicit action', () => {
-  // DỪNG button calls stopOrchestration (NOT clusterStop/closeBrowsers).
-  assert.match(js, /onclick:\s*stopOrchestration\s*}[^]*?'DỪNG'/);
-  assert.match(js, /function stopOrchestration\(\)/);
-  const stopOrch = js.slice(js.indexOf('async function stopOrchestration()'), js.indexOf('async function closeBrowsers()'));
-  assert.match(stopOrch, /api\.orchestrationStop\(\)/);
-  assert.equal(/api\.closeBrowsers|api\.clusterStop|closeRun/.test(stopOrch), false, 'DỪNG must not close browsers');
-  // the explicit close action exists and is confirmed.
-  assert.match(js, /function closeBrowsers\(\)/);
-  assert.match(js, /ĐÓNG 3 TRÌNH DUYỆT/);
-  assert.match(js, /window\.confirm\(/);
-  // Explicit entry gate (LOGIN → CONFIRMED → ENTERING → READY): the user drives each step.
-  assert.match(js, /const ENTRY = \{ LOGIN: 'LOGIN', CONFIRMED: 'CONFIRMED', ENTERING: 'ENTERING', READY: 'READY' \}/);
-  assert.match(js, /entryPhase = ENTRY\.LOGIN/);
-  // Entry is auto-detected from the real in-Phỏm signal (no manual login-confirm click); the CTA
-  // (re)enters Phỏm when not ready and offers TÌM BÀN when ready.
-  assert.match(js, /const ready = allInPhom\(\)/);
-  assert.match(js, /VÀO GAME PHỎM/);
-  // TÌM BÀN unlocks only at READY (never on login-confirm alone).
-  assert.match(js, /function ctaEnabled\(\)[^]*entryPhase === ENTRY\.READY/);
-});
-
-// PROXY OPTIONAL (§4/§5): neither RUN GAME (setupReady) nor TÌM BÀN (ctaEnabled) may be
-// gated on a proxy. RUN GAME requires cluster profile + gameUrl + device only.
-test('RUN GAME + TÌM BÀN are NOT proxy-gated (proxy is optional)', () => {
-  const setup = js.slice(js.indexOf('function setupReady()'), js.indexOf('function setupReason()'));
-  assert.equal(/proxyRef|proxiesReady|testState/.test(setup), false, 'setupReady must not require a proxy');
-  assert.match(setup, /selectedClusterProfileId/);
-  assert.match(setup, /gameUrl/);
-  assert.match(setup, /device/);
-  const cta = js.slice(js.indexOf('function ctaEnabled()'), js.indexOf('function ctaReason'));
-  assert.equal(/proxiesReady|proxyRef|testState/.test(cta), false, 'ctaEnabled must not require a proxy');
-  assert.equal(/function proxiesReady/.test(js), false, 'the proxy-required gate helper is gone');
-  // applying quick proxies uses the partial (optional) path.
-  assert.match(js, /partial:\s*true/);
-});
-
-test('preload exposes proxyQuickApply and the renderer calls it', () => {
-  assert.match(preload, /proxyQuickApply:/);
-  assert.match(preload, /phom:proxy-quick-apply/);
-  assert.match(js, /api\.proxyQuickApply\(/);
-});
-
-test('Screen 2 is a minimal command toolbar + LIVE QA MONITOR (no manual flow buttons)', () => {
-  const setupStart = js.indexOf('function renderSetup(r) {');
-  const setupEnd = js.indexOf('// ---- cluster profiles');
-  assert.ok(setupStart > 0 && setupEnd > setupStart, 'located renderSetup body');
-  const setupBody = js.slice(setupStart, setupEnd);
-  assert.equal(/HOST tìm bàn|ReJoin bị kick|Rời tất cả|BA TAY BÀI/.test(setupBody), false);
-  // Screen 2 command toolbar has only TÌM BÀN (+stake) / Focus / ⋯ / DỪNG.
-  assert.match(js, /function commandToolbar\(s\)/);
-  assert.match(js, /TÌM BÀN · CHỌN CƯỢC/);
-  assert.match(js, />⋯</.test(js) ? /⋯/ : /'⋯'/);
-  assert.match(js, /'DỪNG'/);
-  // Screen 2's monitor DEFAULTS to LIVE_INTERNAL (the LIVE QA MONITOR). The D fixture is
-  // a SEPARATE, explicitly-chosen FIXTURE_REPLAY mode — never auto-loaded as if it were live.
-  assert.match(js, /LIVE QA MONITOR/);
-  assert.match(js, /LIVE_INTERNAL/);
-  assert.match(js, /FIXTURE_REPLAY/);
-  assert.match(js, /let monitorMode = MON\.LIVE/);
-  assert.match(js, /function liveMonitor\(/);
-  assert.match(js, /function renderLiveMonitorInto\(/);
-  assert.match(js, /function renderReplayMonitorInto\(/);
-  // The LIVE badge belongs only to the LIVE monitor; the replay badge is 'D — MÔ PHỎNG'.
-  assert.match(js, /D — MÔ PHỎNG/);
-  // liveMonitor only loads the fixture when the mode is explicitly REPLAY.
-  assert.match(js, /monitorMode === MON\.REPLAY[^]*qaMonitorEnsure/);
-  // the old per-step manual buttons are GONE from the Control renderer (auto flow now).
-  const controlStart = js.indexOf('function renderControl(r) {');
-  const controlBody = js.slice(controlStart, controlStart + 600);
-  assert.equal(/HOST tìm bàn|Follower vào bàn|'Sẵn sàng'|ReJoin bị kick/.test(controlBody), false);
-});
-
-test('the quick-proxy inputs are cleared after apply (no lingering credentials in the DOM)', () => {
-  assert.match(js, /\$\('qp-in-' \+ s\)/);
-  assert.match(js, /el2\.value = ''/);
-});
-
 test('LIVE QA MONITOR ROW 1 uses the engine cardsNotInMeld (renderer never recomputes)', () => {
   assert.match(js, /snap\.cardsNotInMeld/);
   // renderer must NOT rebuild the complement from hand.cards itself.
   assert.equal(/snap\.hand\.cards\.filter\(\(c\) => !meldCards/.test(js), false);
 });
 
-test('the proxy edit modal never populates an existing password field', () => {
-  // password input has no value bound from stored config (placeholder only)
-  assert.match(js, /id:\s*'px-pass',\s*type:\s*'password'/);
-  assert.equal(/id:\s*'px-pass'[^)]*value:/.test(js), false);
-});

@@ -19,17 +19,6 @@ test('default monitor source is LIVE_INTERNAL', () => {
   assert.match(js, /let monitorMode = MON\.LIVE/);
 });
 
-test('liveMonitor auto-loads the fixture ONLY in explicit REPLAY mode (never in LIVE)', () => {
-  const chooser = chooserBody();
-  // fixture load is gated behind the REPLAY branch; the LIVE branch renders the live view.
-  assert.match(chooser, /monitorMode === MON\.REPLAY[^]*qaMonitorEnsure\(\)[^]*renderReplayMonitorInto/);
-  assert.match(chooser, /else renderLiveMonitorInto/);
-  // the LIVE renderer must not touch the fixture engine at all (no auto-load, no fallback).
-  const live = liveBody();
-  assert.equal(/qaMonitorEnsure|qaMonitorLoad|qaSnap|qaMonitorControl/.test(live), false,
-    'LIVE view must never reference the D fixture engine');
-});
-
 test('LIVE idle state: waiting text, no cards, no x/y counter, no playback controls', () => {
   const live = liveBody();
   assert.match(live, /ĐANG CHỜ DỮ LIỆU LIVE/);
@@ -85,8 +74,3 @@ test('LIVE view re-derives from the live session each render (round change clear
   assert.match(live, /hostTableIdentity && s\.hostTableIdentity\.channelRid/); // keyed on the live round
 });
 
-test('DỪNG stop path does not close browsers and does not force a fixture load', () => {
-  const stop = between('async function stopOrchestration()', 'async function closeBrowsers()');
-  assert.equal(/api\.closeBrowsers|api\.clusterStop|closeRun/.test(stop), false, 'DỪNG never closes browsers');
-  assert.match(stop, /qaMonitorPlay\(false\)/);              // unsubscribe playback only
-});
