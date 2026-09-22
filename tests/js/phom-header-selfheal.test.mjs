@@ -45,7 +45,7 @@ test('bootScript exposes DEBUG-only observer counters (no per-mutation productio
 // draggable identity handle (badge+name+status), the state-dependent action row, then the ⋮/─ controls.
 test('§13 header layout is a compact floating single row (badge/handle · actions · menu)', () => {
   const src = gh.bootScript();
-  assert.match(src, /position:fixed;top:8px;right:8px/);          // floating top-right (not full-width)
+  assert.match(src, /position:fixed;top:4px;left:4px/);          // compact floating top-left
   assert.match(src, /display:flex;align-items:center/);           // single flex row
   assert.match(src, /const handle = mk\('div','display:flex;align-items:center;gap:4px;cursor:move/); // draggable identity area
   assert.match(src, /const act = mk\('div',/);                    // state-dependent action row
@@ -89,4 +89,3 @@ test('NO CDP-storm regression: header DOM is NOT verified per WS frame (event-dr
   assert.match(fn, /if \(headerLastPushed\[rid\] === json\) continue;/);
   assert.equal(/verifyPresent|getElementById/.test(fn), false, 'no per-push DOM verify round-trip');
 });
-

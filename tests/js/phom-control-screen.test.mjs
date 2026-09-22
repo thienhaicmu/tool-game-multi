@@ -26,7 +26,7 @@ test('layout order: status line · account chips · cards · controls at the bot
 
 test('bottom controls: Tiền + TỰ ĐỘNG checkbox + the reference-tool action set; Tiền is the server stakes', () => {
   const f = fn('controlFooter');
-  for (const label of ["'Tiền'", "type: 'checkbox'", ' TỰ ĐỘNG', 'ĐỔI KEY', 'THOÁT BÀN TẤT CẢ', 'XẾP CỬA SỔ', 'ĐÓNG TẤT CẢ']) assert.ok(f.includes(label), label);
+  for (const label of ["'Mức cược'", "type: 'checkbox'", ' TỰ ĐỘNG', 'ĐỔI KEY', 'THOÁT BÀN TẤT CẢ', 'XẾP CỬA SỔ', 'ĐÓNG TẤT CẢ']) assert.ok(f.includes(label), label);
   assert.match(fn('autoStakes'), /betOptions/);
   assert.equal(fn('compactHeader').includes('GHI WS'), false, 'Ghi WS lives in ⋯, not on the main screen');
 });

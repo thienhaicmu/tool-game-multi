@@ -128,8 +128,8 @@
   }
   const pill = (l, v, c) => el('span', { class: 'pill ' + (c || '') }, l + ' ', el('b', null, String(v)));
   // PHASE 6.3.3.1 — USER-FACING browser naming. Internal slot ids stay B1/B2/B3 (stable, §14); only the
-  // displayed label becomes "Player N". browserOf()/mapProxies() are unchanged — this maps at render time.
-  const playerLabel = (b) => { const m = /^B(\d+)$/.exec(String(b == null ? '' : b)); return m ? 'Player ' + m[1] : String(b == null ? '' : b); };
+  // displayed label is P1/P2/P3. browserOf()/mapProxies() are unchanged — this maps at render time.
+  const playerLabel = (b) => { const m = /^(?:B|P|Player\s+)(\d+)$/i.exec(String(b == null ? '' : b)); return m ? 'P' + m[1] : String(b == null ? '' : b); };
 
   // ---------- boot / license ----------
   async function boot() {
@@ -297,7 +297,7 @@
       default: return '';
     }
   }
-  function playerLabelOf(runId) { const b = runId != null ? manualBrowserById(runId) : null; return b && b.browserIndex ? 'Player ' + b.browserIndex : 'Một acc'; }
+  function playerLabelOf(runId) { const b = runId != null ? manualBrowserById(runId) : null; return b && b.browserIndex ? 'P' + b.browserIndex : 'Một acc'; }
   function roleLabel(role) { const v = ROLE_VIEW[role]; return v ? v[0] : role; }
 
   function banners(r) {
@@ -383,7 +383,7 @@
     // PHASE 6.3.9/6.3.10 — Profile is the compact table + a COMPACT quick bulk-proxy import (one line = one
     // proxy, mapped B1→B2→B3 by profile order). Per-profile proxy still edits in the row's Edit modal.
     page.appendChild(profileTablePanel());
-    page.appendChild(el('div', { class: 'note' }, 'Mã phòng được lấy tự động từ response WS khi có. Không cần nhập hoặc import mã chữ.'));
+    page.appendChild(el('div', { class: 'note' }, 'Chọn tối đa 3 profile rồi mở trình duyệt. Sau khi vào Phỏm, chọn mức cược để tạo bàn hoặc nhập số bàn trên thanh điều khiển trong game.'));
     r.appendChild(page);
     r.appendChild(runGameFooter());
   }
@@ -711,11 +711,12 @@
     if (autoStake && !stakes.includes(Number(autoStake))) autoStake = '';
     const sel = el('select', { class: 'bet-sel auto-stake', title: 'Mức cược dùng cho TẠO BÀN (cả tool và thanh trong web)', onchange: (e) => onPickStake(e.target.value) },
       el('option', { value: '' }, 'Tiền…'), ...stakes.map((v) => el('option', { value: String(v) }, String(v))));
+    sel.id = 'phq-stake';
     sel.value = autoStake;
     const box = el('input', { type: 'checkbox', id: 'phq-auto', disabled: autoBusy ? 'disabled' : null, onchange: (e) => onAutoToggle(e.target.checked) });
     box.checked = autoOn;
     return el('div', { class: 'control-footer' },
-      el('span', { class: 'cf-label' }, 'Tiền'), sel,
+      el('label', { class: 'cf-label', for: 'phq-stake' }, 'Mức cược'), sel,
       el('label', { class: 'auto-toggle' + (autoOn ? ' on' : ''), for: 'phq-auto', title: 'Bật: acc đầu tạo bàn có key, 2 acc kia vào (vào trước SẴN SÀNG, vào sau CHƯA SẴN SÀNG); bị đá tự Rejoin; mất bàn tự tạo lại. Tắt: không làm gì tự động.' },
         box, autoBusy ? ' ĐANG XỬ LÝ…' : ' TỰ ĐỘNG'),
       el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Tạo bàn mới với key mới cho cả nhóm', onclick: () => onChangeKey() }, 'ĐỔI KEY'),
@@ -790,15 +791,15 @@
     const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : '—';
     const wsOk = !!(b.connected && b.socketReady);
     const chip = el('div', { class: 'acc-chip st-' + st.cls, title: account + ' · ' + st.label + (wsOk ? ' · WS kết nối' : ' · WS mất kết nối') + (b.lastError ? ' · ' + (b.lastError.message || b.lastError.code) : '') },
-      el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'B' + index),
-      el('span', { class: 'bc-acc' }, account),
+      el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'P' + index),
+      account !== '—' ? el('span', { class: 'bc-acc', title: account }, account) : null,
       roleChip(b.groupRole, b.isTableHost),
-      el('span', { class: 'bc-badge ' + st.cls }, el('span', { class: 'status-dot ' + st.cls }), st.label),
+      el('span', { class: 'bc-badge ' + st.cls, title: st.label, 'aria-label': st.label }, el('span', { class: 'status-dot ' + st.cls })),
       inTable && b.ready ? el('span', { class: 'ready-yes', title: 'Đã sẵn sàng' }, '✓') : null);
-    if (!runId) chip.appendChild(el('span', { class: 'faint xs' }, 'mở ở PROFILE'));
+    if (!runId) chip.appendChild(el('span', { class: 'faint xs', title: 'Mở player ở tab PROFILE' }, 'Chưa mở'));
     else if (chromiumClosed) chip.appendChild(iconButton('monitor', 'Mở lại Chromium này', () => onReopenBrowser(slot)));
     else {
-      if (!inGame) chip.appendChild(el('button', { class: 'btn sm primary', disabled: entering ? 'disabled' : null, onclick: () => manualEnterGame(runId) }, entering ? '…' : 'VÀO GAME'));
+      if (!inGame) chip.appendChild(el('button', { class: 'btn sm primary', title: entering ? 'Đang vào game' : 'Vào game', 'aria-label': entering ? 'Đang vào game' : 'Vào game', disabled: entering ? 'disabled' : null, onclick: () => manualEnterGame(runId) }, entering ? '…' : '▶'));
       chip.appendChild(iconButton('refresh', 'Tải lại web trong Chromium này', () => onReloadWeb(runId)));
       chip.appendChild(iconButton('power', 'Tắt Chromium này', () => onCloseBrowser(slot, runId), 'danger'));
     }
@@ -818,8 +819,8 @@
   function safeColumn(slot, index) {
     const a = safeBySlot[slot];
     const col = el('div', { class: 'safe-col' });
-    const who = a && a.targetPlayerLabel ? a.targetPlayerLabel : 'Player ' + index;
-    col.appendChild(el('div', { class: 'safe-col-head' }, el('b', null, 'B' + index), ' ', el('span', { class: 'faint xs' }, who + (a && a.nextPlayerLabel ? ' · lượt sau: ' + a.nextPlayerLabel : ''))));
+    const who = a && a.targetPlayerLabel ? playerLabel(a.targetPlayerLabel) : '';
+    col.appendChild(el('div', { class: 'safe-col-head' }, el('b', null, 'P' + index), ' ', el('span', { class: 'faint xs' }, (who === 'P' + index ? '' : who) + (a && a.nextPlayerLabel ? ' · lượt sau: ' + playerLabel(a.nextPlayerLabel) : ''))));
     if (!a || a.status !== 'OK') { col.appendChild(el('div', { class: 'faint sm' }, 'Chưa có bài')); return col; }
     const safe = a.safeCards || []; const likely = a.likelySafeCards || []; const risky = a.riskyCards || []; const own = a.ownMeldCards || [];
     if (safe.length) { col.appendChild(el('div', { class: 'faint xs' }, 'NÊN ĐÁNH (điểm cao trước)')); col.appendChild(safeCardRow(safe, 'meld', a.recommendedCode)); }
@@ -1112,7 +1113,7 @@
     const close = () => { clearInterval(timer); overlay.remove(); };
     const status = el('div', { class: 'capture-status', role: 'status', 'aria-live': 'polite' }, 'Đang kiểm tra trạng thái ghi…');
     const scope = el('select', { 'aria-label': 'Browser cần ghi' }, el('option', { value: '' }, 'Tất cả browser (khuyên dùng)'));
-    for (const b of (manualBrowsers || []).slice().sort((a, b) => a.browserIndex - b.browserIndex)) scope.appendChild(el('option', { value: b.profileId }, `Player ${b.browserIndex}`));
+    for (const b of (manualBrowsers || []).slice().sort((a, b) => a.browserIndex - b.browserIndex)) scope.appendChild(el('option', { value: b.profileId }, `P${b.browserIndex}`));
     const out = el('pre', { class: 'capture-preview', hidden: true });
     const saved = el('div', { class: 'capture-saved' });
     const sync = () => { startBtn.disabled = busy || recording; stopBtn.disabled = busy || !recording; scope.disabled = busy || recording; };

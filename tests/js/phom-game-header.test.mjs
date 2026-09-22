@@ -310,7 +310,7 @@ test('BC: bootScript is a compact draggable single-row header with per-slot acce
   // per-player accent (B1 blue / B2 green / B3 orange) + "Player N" badge from the slot id
   assert.match(src, /SLOTN===1\?'#2563eb':SLOTN===2\?'#16a34a':SLOTN===3\?'#ea580c'/);
   // single FLOATING row (fixed, not a full-width bar; no body margin push)
-  assert.match(src, /position:fixed;top:8px;right:8px/);
+  assert.match(src, /position:fixed;top:4px;left:4px/);
   assert.equal(/marginTop\s*=\s*'34px'/.test(src), false, 'no longer pushes the game with a full-width bar');
   // draggable (page-local; clamped inside the viewport). No storage → F5-safe like the optimistic overlay.
   assert.match(src, /handle\.addEventListener\('mousedown'/);
@@ -332,7 +332,8 @@ test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Tạo / 
   // one stake for the session: the bar only DISPLAYS it and TẠO is disabled until the tool has one
   assert.doesNotMatch(src, /stakeSel/);
   assert.match(src, /CHƯA CHỌN CƯỢC/);
-  assert.match(src, /txtBtn\('Tạo','#7c3aed',function\(\)\{ emit\('CREATE_TABLE'\); \}[\s\S]*?state\.stake == null\)/);
+  assert.match(src, /txtBtn\('Tạo','#7c3aed',function\(\)\{\s*if\(state\.stake == null\)\{ showFeedback\([^\n]+return; \}/);
+  assert.match(src, /feedback\.style\.display='none';\s*emit\('CREATE_TABLE'\)/);
   // Vào parses the SS box without a regex (a lost backslash once turned /^\\d+$/ into /^d+$/ and the button did nothing)
   assert.match(src, /txtBtn\('Vào','#16a34a',function\(\)\{ var r=ssRid\(\); if\(r!=null\) emit\('JOIN_CODE',\{ rid:r \}\); \}/);
   assert.doesNotMatch(src, /\^d\+\$/);

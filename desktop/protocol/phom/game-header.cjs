@@ -152,14 +152,14 @@ function bootScript(opts = {}) {
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
   // ---- the floating, compact, single-row header (mobile-landscape; never a full-width toolbar) ----
   const bar = document.createElement('div'); bar.id = '__phom_header';
-  bar.setAttribute('style','position:fixed;top:8px;right:8px;z-index:2147483647;display:flex;align-items:center;gap:4px;flex-wrap:nowrap;box-sizing:border-box;min-height:28px;max-width:calc(100vw - 16px);padding:3px 4px;background:rgba(17,24,39,.96);color:#e5e7eb;border:1px solid #374151;border-left:3px solid '+ACCENT+';border-radius:8px;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 2px 10px rgba(0,0,0,.35);user-select:none;');
+  bar.setAttribute('style','position:fixed;top:4px;left:4px;z-index:2147483647;display:flex;align-items:center;gap:3px;flex-wrap:nowrap;box-sizing:border-box;min-height:22px;max-width:calc(100vw - 8px);padding:0;background:transparent;color:#e5e7eb;border:0;border-radius:0;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:none;user-select:none;pointer-events:none;');
   // drag handle = badge + name + status (dragging the identity area moves the whole control).
   const handle = mk('div','display:flex;align-items:center;gap:4px;cursor:move;min-width:0;');
-  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = ID.slotId||'B?';
+  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = SLOTN ? 'P'+SLOTN : 'P?';
   const nameEl = mk('span','font-weight:700;color:#e5e7eb;white-space:nowrap;'); nameEl.textContent = ''; nameEl.style.display='none';
   const statusDot = mk('span','width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto;');
   const stLabel = mk('span','color:#cbd5e1;font-weight:500;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
-  handle.appendChild(badge); handle.appendChild(nameEl); handle.appendChild(statusDot); handle.appendChild(stLabel);
+  handle.appendChild(badge); handle.appendChild(nameEl); handle.appendChild(statusDot); handle.appendChild(stLabel); stLabel.style.display='none';
   const act = mk('div','display:flex;align-items:center;gap:3px;flex-wrap:nowrap;min-width:0;'); act.id='__ph_act';
   const menuWrap = mk('div','position:relative;display:flex;align-items:center;gap:3px;');
   const menuBtn = mk('button','width:22px;height:22px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;'); menuBtn.textContent='⋮'; menuBtn.title='Tùy chọn';
@@ -167,6 +167,34 @@ function bootScript(opts = {}) {
   const menu = mk('div','position:absolute;top:26px;right:0;min-width:200px;background:#111827;border:1px solid #374151;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.4);padding:4px;display:none;z-index:2147483647;');
   menuWrap.appendChild(menuBtn); menuWrap.appendChild(collapseBtn); menuWrap.appendChild(menu);
   bar.appendChild(handle); bar.appendChild(act); bar.appendChild(menuWrap);
+  const feedback = mk('div','position:absolute;left:0;top:28px;max-width:280px;padding:8px 10px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
+  feedback.setAttribute('role','alert');
+  bar.appendChild(feedback);
+  var feedbackTimer = null;
+  function showFeedback(message){
+    clearTimeout(feedbackTimer);
+    feedback.textContent=message; feedback.style.display='block';
+    feedbackTimer=setTimeout(function(){ feedback.style.display='none'; },6000);
+  }
+  // Scoped presentation applies only to the tool-owned header.
+  const uiStyle = document.createElement('style');
+  uiStyle.textContent = '#__phom_header button{min-height:22px;min-width:22px}#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}#__phom_header button:hover:not(:disabled){filter:brightness(1.15)}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header input{flex-shrink:0}#__phom_header #__ph_act>*{flex-shrink:0}#__phom_header [data-quick-menu]{max-width:calc(100vw - 16px);max-height:calc(100vh - 40px);overflow:auto}';
+  bar.appendChild(uiStyle);
+  bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Điều khiển Phỏm');
+  handle.title = 'Kéo để di chuyển thanh điều khiển';
+  handle.style.pointerEvents = 'auto';
+  handle.style.flexShrink = '0';
+  stLabel.style.maxWidth = '100px';
+  stLabel.style.textShadow = '0 1px 3px #000,0 0 2px #000';
+  act.style.pointerEvents = 'auto';
+  menuWrap.style.pointerEvents = 'auto';
+  menuWrap.style.flexShrink = '0';
+  ssInput.setAttribute('aria-label', 'Số bàn muốn vào');
+  menu.setAttribute('data-quick-menu', '');
+  menu.style.top = '26px';
+  menuBtn.setAttribute('aria-label', 'Tùy chọn trình duyệt');
+  menuBtn.setAttribute('aria-expanded', 'false');
+  collapseBtn.setAttribute('aria-label', 'Thu gọn thanh điều khiển');
   // Mount idempotently (floating overlay — does NOT push the game view). On a real (re)mount, tell main.
   function ready(){ if(document.body){ if(!document.getElementById('__phom_header')){ document.body.appendChild(bar); emitStatus(); } } else { requestAnimationFrame(ready); } }
   window.__phomHeaderMount = ready; // allow the bridge / render to re-mount after an SPA body swap
@@ -208,21 +236,23 @@ function bootScript(opts = {}) {
   // ---- one compact icon button (icon + optional short label + tooltip; disabled/busy aware) ----
   function iconBtn(icon, label, showLabel, dis, danger, onClick, tip){
     var bg = danger ? '#7f1d1d' : '#2563eb'; var bd = danger ? '#991b1b' : '#1d4ed8';
-    var b = mk('button', 'display:inline-flex;align-items:center;justify-content:center;gap:3px;height:22px;min-width:22px;padding:0 '+(showLabel?'6px':'4px')+';border-radius:6px;border:1px solid '+bd+';background:'+bg+';color:#fff;font:600 11px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.5':'1')+';white-space:nowrap;');
+    var b = mk('button', 'display:inline-flex;align-items:center;justify-content:center;gap:3px;height:22px;min-width:22px;padding:0 '+(showLabel?'6px':'4px')+';border-radius:6px;border:1px solid '+bd+';background:'+bg+';color:#fff;font:600 11px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:1;white-space:nowrap;');
     b.textContent = showLabel ? (icon+' '+label) : icon; b.title = tip || label || ''; b.setAttribute('aria-label', tip || label || '');
     if(dis) b.disabled = true; else if(onClick) b.onclick = onClick;
     return b;
   }
-  function menuItem(label, onClick){ var it=mk('div','padding:8px 10px;border-radius:6px;cursor:pointer;color:#e5e7eb;font-weight:500;white-space:nowrap;'); it.textContent=label; it.onmouseenter=function(){it.style.background='#1f2937';}; it.onmouseleave=function(){it.style.background='transparent';}; it.onclick=function(){ try{onClick();}catch(e){} menu.style.display='none'; }; return it; }
-  menuBtn.onclick = function(){ menu.style.display = menu.style.display==='none'?'block':'none'; };
+  function closeMenu(){ menu.style.display='none'; menuBtn.setAttribute('aria-expanded','false'); }
+  function menuItem(label, onClick){ var it=mk('button','display:block;width:100%;text-align:left;border:0;background:transparent;padding:8px 10px;border-radius:6px;cursor:pointer;color:#e5e7eb;font-weight:500;white-space:normal;'); it.type='button'; it.textContent=label; it.onmouseenter=function(){it.style.background='#1f2937';}; it.onmouseleave=function(){it.style.background='transparent';}; it.onclick=function(){ try{onClick();}catch(e){} closeMenu(); }; return it; }
+  menuBtn.onclick = function(){ var open=menu.style.display==='none'; menu.style.display=open?'block':'none'; menuBtn.setAttribute('aria-expanded',String(open)); if(open){ var bounds=menu.getBoundingClientRect(); if(bounds.left<4){ menu.style.right='auto'; menu.style.left=(4-menuWrap.getBoundingClientRect().left)+'px'; } } };
+  bar.addEventListener('keydown', function(ev){ if(ev.key==='Escape'){ closeMenu(); menuBtn.focus(); } });
   collapseBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'', statusClass:'off' }); };
   // Clicking outside closes the quick menu.
-  window.addEventListener('mousedown', function(ev){ if(menu.style.display!=='none' && !menuWrap.contains(ev.target)) menu.style.display='none'; }, true);
+  window.addEventListener('mousedown', function(ev){ if(menu.style.display!=='none' && !menuWrap.contains(ev.target)) closeMenu(); }, true);
   // Paint ONE state object (authoritative OR optimistic). Layout follows the reference tool's in-web bar:
   //   [badge ● status] [vai trò] [Cược] [SS ____] Copy · Vào · ReJoin · Tạo · Đổi Key · Thoát  [⋮][─]
   // Outside the lobby / while an operation runs, the row shows only the state's primary action (VÀO GAME, HỦY…).
   function txtBtn(label, bg, onClick, tip, dis){
-    var b = mk('button','height:22px;padding:0 7px;border-radius:6px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';opacity:'+(dis?'.45':'1')+';');
+    var b = mk('button','height:22px;padding:0 7px;border-radius:6px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';opacity:1;');
     b.textContent = label; b.title = tip || label;
     if(dis) b.disabled = true; else b.onclick = onClick;
     return b;
@@ -235,6 +265,8 @@ function bootScript(opts = {}) {
     statusDot.style.background = sc==='ok'?'#34d399':sc==='warn'?'#fbbf24':sc==='danger'?'#f87171':'#9ca3af';
     stLabel.textContent = state.statusLabel||''; stLabel.title = state.statusLabel||'';
     collapseBtn.textContent = __collapsed ? '▸' : '─';
+    collapseBtn.setAttribute('aria-label', __collapsed ? 'Mở rộng thanh điều khiển' : 'Thu gọn thanh điều khiển');
+    collapseBtn.setAttribute('aria-expanded', String(!__collapsed));
     act.textContent='';
     act.style.display = __collapsed ? 'none' : 'flex';
     if(!__collapsed){
@@ -245,7 +277,7 @@ function bootScript(opts = {}) {
           if(!state.seatedAtTable) roleChip.style.border = '1px dashed #6b7280';
           act.appendChild(roleChip);
         } else if(state.isTableHost){ act.appendChild(chip('👑 CHỦ BÀN','#b45309')); }
-        // CƯỢC is chosen ONCE in the Phỏm tool; here it is only shown (and TẠO is disabled until it is set).
+        // CƯỢC is chosen in the tool. A missing stake shows guidance without sending a create command.
         act.appendChild(chip(state.stake != null ? 'CƯỢC ' + state.stake : 'CHƯA CHỌN CƯỢC', state.stake != null ? '#1f2937' : '#7f1d1d', '#e5e7eb', state.stake != null ? 'Mức cược đang chọn ở tool Phỏm' : 'Chọn Tiền ở tool Phỏm rồi mới tạo bàn được'));
         // Auto-fill the SS box with this browser's / the group's số bàn unless the user typed something else.
         if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
@@ -253,10 +285,13 @@ function bootScript(opts = {}) {
         act.appendChild(ssInput);
         act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v + (state.tableKey ? ' ' + state.tableKey : '')); }catch(e){} },'Copy số bàn' + (state.tableKey ? ' + key' : '')));
         act.appendChild(txtBtn('Vào','#16a34a',function(){ var r=ssRid(); if(r!=null) emit('JOIN_CODE',{ rid:r }); },'Vào đúng số bàn trong ô SS (key tự điền nếu bàn do tool tạo)'));
-        act.appendChild(txtBtn('ReJoin','#dc2626',function(){ emit('REJOIN'); },'Vào lại bàn hiện tại / bàn chung', !state.canRejoin));
-        act.appendChild(txtBtn('Tạo','#7c3aed',function(){ emit('CREATE_TABLE'); },'Acc này tạo bàn trống có key ở mức cược của tool (làm KEY). Browser khác bấm Vào: acc vào trước SẴN SÀNG, acc vào sau CHƯA SẴN SÀNG', state.stake == null));
-        act.appendChild(txtBtn('Đổi Key','#be123c',function(){ emit('CHANGE_KEY'); },'Tạo lại bàn mới với key mới cho cả nhóm', !state.inTable));
-        act.appendChild(txtBtn('Thoát','#2563eb',function(){ emit('LEAVE'); },'Rời bàn (không tắt Chromium)', !state.inTable));
+        act.appendChild(txtBtn('Vào lại','#334155',function(){ emit('REJOIN'); },'Vào lại bàn hiện tại / bàn chung', !state.canRejoin));
+        act.appendChild(txtBtn('Tạo','#7c3aed',function(){
+          if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm Tạo.'); return; }
+          feedback.style.display='none';
+          emit('CREATE_TABLE');
+        },state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước khi tạo bàn' : 'Tạo bàn riêng ở mức cược ' + state.stake));
+        act.appendChild(txtBtn('Rời bàn','#991b1b',function(){ emit('LEAVE'); },'Rời bàn (không tắt Chromium)', !state.inTable));
       } else {
         var p = state.primary;
         if(p) act.appendChild(iconBtn(OPT_ICON[p.action]||'•', p.label||p.action, true, !!p.disabled, !!p.danger, function(){ emit(p.action, p.rid!=null?{ rid:p.rid }:null); }, p.label));
@@ -267,7 +302,10 @@ function bootScript(opts = {}) {
     }
     // Quick menu (⋮): secondary + lifecycle actions and the số bàn list.
     menu.textContent='';
+    var statusInfo=mk('div','padding:6px 10px;color:#e5e7eb;'); statusInfo.textContent=state.statusLabel||''; menu.appendChild(statusInfo);
+    badge.title = (SLOTN ? 'Player '+SLOTN : 'Player') + ' · ' + (state.statusLabel||'');
     if(state.canCreate){
+      if(state.inTable) menu.appendChild(menuItem('Đổi key · tạo bàn mới cho nhóm', function(){ emit('CHANGE_KEY'); }));
     }
     menu.appendChild(menuItem('↑ Đưa cửa sổ lên trên cùng', function(){ emit('FOCUS'); }));
     menu.appendChild(menuItem('⟳ Tải lại web', function(){ emit('RELOAD'); }));
@@ -285,7 +323,7 @@ function bootScript(opts = {}) {
     }
     if(state.lastCapture){ var cap=mk('div','padding:6px 10px;color:#86efac;font-weight:500;white-space:nowrap;'); cap.textContent='📄 Đã lưu: '+state.lastCapture; menu.appendChild(cap); }
     var info = mk('div','padding:8px 10px;color:#9ca3af;font-weight:500;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
-    info.textContent = (SLOTN?('Player '+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '') + (state.tableKey ? ' · KEY '+state.tableKey : '');
+    info.textContent = (SLOTN?('P'+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '') + (state.tableKey ? ' · KEY '+state.tableKey : '');
     menu.appendChild(info);
     // 6.3.2.10 PROFILING (gated) — click→visual in ONE (page) clock on the FIRST paint after a click.
     if(CLICKLOG && window.__phClickT!=null){ try{ console.log('[PHOM-CLK] CLICK_TO_RENDER', Math.round(CLK()-window.__phClickT)+'ms', 'action='+window.__phClickA, '->', state.statusLabel||''); }catch(e){} window.__phClickT=null; }

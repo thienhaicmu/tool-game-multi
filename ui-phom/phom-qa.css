@@ -11,7 +11,7 @@
   --border-strong: #c2c9de;
   --text: #1f2733;        /* primary text — dark grey */
   --text-2: #5b6577;      /* secondary text — neutral grey */
-  --text-faint: #8b93a6;  /* faint text */
+  --text-faint: #667085;  /* secondary labels remain readable on light surfaces */
   --primary: #2563eb;     /* blue */
   --primary-hover: #1d4ed8;
   --primary-ink: #ffffff;
@@ -438,7 +438,7 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .capture-preview { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow: auto; }
 
 /* Phom workspace: clear hierarchy with stable three-column player cards. */
-#phq-root.mode-control { overflow: auto; }
+#phq-root.mode-control { overflow: hidden; }
 .tool-header { gap: 10px; padding: 12px 0 16px; align-items: center; }
 .tool-header .th-rid { margin-left: 0; }
 .tool-header .th-rid, .tool-header .th-bet { padding: 6px 10px; border-radius: 8px; background: var(--panel); border: 1px solid var(--border); }
@@ -448,7 +448,7 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 .browser-cell .bc-acc { grid-column: 1 / -1; grid-row: 2; }
 .browser-cell .bc-badge { grid-column: 1 / -1; grid-row: 3; justify-self: start; border-radius: 6px; white-space: nowrap; padding: 4px 8px; }
 .finder-pick .btn { min-height: 30px; }
-.card-workspace { gap: 14px; min-height: 220px; }
+.card-workspace { gap: 10px; min-height: 0; overflow: hidden; }
 .card-workspace .safe-cards, .card-workspace .remaining-cards { background: var(--panel); padding: 14px; }
 .safe-head { gap: 12px; margin-bottom: 14px; }
 .safe-head .analysis-pick { margin-left: 0; }
@@ -493,4 +493,35 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 @media (max-width: 900px) {
   .safe-cols { grid-template-columns: 1fr; }
 }
-.status-line .th-rid, .status-line .th-key, .status-line .th-bet { border: 0; padding: 0; background: transparent; box-shadow: none; min-height: 0; }
+.status-line .th-rid, .status-line .th-key, .status-line .th-bet { border: 1px solid var(--border); padding: 6px 10px; background: var(--panel); box-shadow: none; min-height: 34px; border-radius: 8px; }
+
+/* Usability refresh: readable status, stable account rows and clear action hierarchy. */
+.status-line { gap: 8px; padding-bottom: 8px; }
+.status-line b { font-size: 15px; }
+.acc-chips { gap: 8px; margin-bottom: 4px; flex-wrap: wrap; }
+.acc-chip { flex: 0 1 auto; max-width: 260px; flex-wrap: nowrap; gap: 5px; padding: 3px 5px; align-content: center; overflow: hidden; }
+.acc-chip .bc-acc { flex: 0 1 auto; max-width: 96px; min-width: 0; font-size: 11px; }
+.acc-chip .b-badge { flex-shrink: 0; min-width: 24px; padding: 1px 5px; }
+.acc-chip .role-chip { flex: 0 1 auto; max-width: 42px; min-width: 0; overflow: hidden; text-overflow: ellipsis; padding: 1px 3px; }
+.acc-chip .bc-badge { flex: 0 0 8px; display: flex; padding: 0; border: 0; background: transparent; }
+.acc-chip .status-dot { margin: 0; }
+.acc-chip .btn { flex-shrink: 0; min-width: 24px; min-height: 24px; padding: 2px 4px; margin: 0; }
+.acc-chip .btn.sm { padding: 2px 4px; font-size: 10px; }
+.control-footer { gap: 5px; padding: 6px; }
+.control-footer .btn, .control-footer .auto-stake, .control-footer .auto-toggle { min-height: 30px; height: auto; }
+.control-footer .btn { padding: 5px 7px; font-size: 11px; }
+.control-footer .auto-toggle { border-color: var(--border-strong); color: var(--text-2); background: var(--panel-2); }
+.control-footer .auto-toggle.on { background: var(--primary); border-color: var(--primary); color: white; }
+.control-footer .warn-btn { background: var(--panel); border-color: #e7b7b7; color: var(--error); }
+.control-footer .warn-btn:hover { background: var(--error-bg); }
+.setup-table tbody tr:hover { background: var(--panel-2); }
+.setup-table tbody tr.selected:hover { background: #e4edff; }
+.setup-table th { color: var(--text-2); }
+.safe-col { padding: 10px; }
+.safe-col-head { padding-bottom: 6px; border-bottom: 1px solid var(--border); }
+@media (max-width: 680px) {
+  .acc-chips { flex-wrap: wrap; }
+  .acc-chip { max-width: 100%; }
+  .control-footer .auto-toggle { margin-right: 0; }
+  .card-workspace .safe-cards, .card-workspace .remaining-cards { flex: 1 1 0; min-height: 0; }
+}

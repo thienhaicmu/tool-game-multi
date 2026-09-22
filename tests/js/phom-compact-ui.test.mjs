@@ -140,7 +140,7 @@ test('Phỏm: player cards retain identity and lifecycle controls without a redu
   const cell = fn(js, 'compactBrowserCell');
   assert.doesNotMatch(cell, /class: 'bc-cb'/);
   assert.match(cell, /index === 1 \? '#2563eb' : index === 2 \? '#16a34a' : index === 3 \? '#ea580c'/); // B1/B2/B3 accents by index
-  assert.match(cell, /'b-badge'[\s\S]*?'B' \+ index/); // badge shows B1/B2/B3
+  assert.match(cell, /'b-badge'[\s\S]*?'P' \+ index/); // badge shows P1/P2/P3
   assert.match(cell, /onReloadWeb\(runId\)/); assert.match(cell, /onCloseBrowser\(slot, runId\)/); // ↻ / ⏻ per cell
 });
 
