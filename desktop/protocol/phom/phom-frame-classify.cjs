@@ -17,6 +17,7 @@
 //   [4,"Simms",<rid>]                             op 4  LEAVE room request (client)
 //   [5,{...}]                                     op 5  extension/room push (server)
 //   [6,"Simms","channelPlugin",{cmd:...}]         op 6  extension request  (client)
+//   [8,"Simms",<rid>,"<pwd>",8]                   op 8  JOIN THIS EXACT TABLE (client; answered with an op-3 ack)
 // ---------------------------------------------------------------------------
 
 const ZONE = 'Simms';
@@ -44,7 +45,7 @@ const CMD = Object.freeze({
 });
 
 // Wire opcodes.
-const OP = Object.freeze({ JOIN: 3, LEAVE: 4, PUSH: 5, EXT_REQUEST: 6 });
+const OP = Object.freeze({ JOIN: 3, LEAVE: 4, PUSH: 5, EXT_REQUEST: 6, JOIN_TABLE: 8 });
 
 const CMD_TYPE = Object.freeze({
   [CMD.CHANNEL_LIST]: 'CHANNEL_LIST_REQUEST',
@@ -119,6 +120,18 @@ function classifyPhomFrame(raw) {
       type: 'JOIN_REQUEST',
       channel: Number.isFinite(json[2]) ? json[2] : (json[2] != null ? Number(json[2]) : null),
       hasPassword: typeof json[3] === 'string' && json[3].length > 0,
+      // [3,"Simms",<channel>,"",true] — quick-play into a stake channel (the server picks the table)
+      quickPlay: json[4] === true,
+    });
+  }
+  // op 8 — the client asks to sit at ONE specific table (capture 2026-10-02). The server answers it with the same
+  // op-3 ack as a join, so only the request needs its own shape.
+  if (op === OP.JOIN_TABLE && typeof json[1] === 'string') {
+    return finalize(out, {
+      type: 'JOIN_REQUEST',
+      channel: Number.isFinite(json[2]) ? json[2] : (json[2] != null ? Number(json[2]) : null),
+      hasPassword: typeof json[3] === 'string' && json[3].length > 0,
+      byTableId: true,
     });
   }
   if (op === OP.LEAVE) {
@@ -187,8 +200,8 @@ function classifyPhomFrame(raw) {
     // Single-seat delta (live-captured [5,{p:{...seat...},t:1,cmd:200}]): ONE player took/updated a
     // seat at THIS table. `p` is a single seat object (same shape as a ps[] entry); `t===1` = present
     // (joined). This is how an EARLY joiner learns about LATER joiners (the full ps[] snapshot only
-    // arrives on one's own join), so it MUST be folded into table state. Removal (t!==1) is not yet
-    // evidenced, so only presence is surfaced here.
+    // arrives on one's own join), so it MUST be folded into table state. `t===2` = that player left
+    // (capture 2026-10-02); the context drops the row.
     if (cmd === CMD.SEAT_UPDATE && payload && payload.p && typeof payload.p === 'object' && !Array.isArray(payload.p)) {
       return finalize(out, { type: 'SEAT_UPDATE', seat: payload.p, present: payload.t === 1, t: payload.t });
     }
@@ -198,7 +211,7 @@ function classifyPhomFrame(raw) {
       // Live capture shows TWO cmd:100 forms: the authoritative game identity (id:0, uid "<aid>_<n>"
       // — the SAME form used in ps[]) and a session-token identity (id:1, token uid + As.time). Surface
       // `id` so the context binds only the authoritative game uid (never the token, which races ahead).
-      return finalize(out, { type: 'SELF_IDENTITY', uid: payload.uid != null ? payload.uid : payload.u, identityId: payload.id });
+      return finalize(out, { type: 'SELF_IDENTITY', uid: payload.uid != null ? payload.uid : payload.u, identityId: payload.id, displayName: typeof payload.dn === 'string' && payload.dn ? payload.dn : null });
     }
     // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / ROUND_END 853 / MELD 854).
     if (cmd != null && CMD_TYPE[cmd]) return finalize(out, { type: CMD_TYPE[cmd] });
@@ -226,11 +239,14 @@ function finalize(out, extra) {
     // request-frame fields
     channel: extra.channel !== undefined ? extra.channel : undefined,
     hasPassword: extra.hasPassword !== undefined ? extra.hasPassword : undefined,
+    quickPlay: extra.quickPlay !== undefined ? extra.quickPlay : undefined,
+    byTableId: extra.byTableId !== undefined ? extra.byTableId : undefined,
     accepted: extra.accepted !== undefined ? extra.accepted : undefined,
     resultCode: extra.resultCode !== undefined ? extra.resultCode : undefined,
     resultMessage: extra.resultMessage !== undefined ? extra.resultMessage : undefined,
     // identity / seat-delta fields
     identityId: extra.identityId !== undefined ? extra.identityId : undefined,
+    displayName: extra.displayName !== undefined ? extra.displayName : undefined, // own account name (cmd 100 dn)
     seat: extra.seat !== undefined ? extra.seat : undefined,     // single seat object (SEAT_UPDATE)
     present: extra.present !== undefined ? extra.present : undefined,
     t: extra.t !== undefined ? extra.t : undefined,

@@ -33,7 +33,7 @@ class ChannelSim {
     return async (frame) => {
       const j = JSON.parse(frame); const uid = UIDS[id];
       if (j[0] === 6 && j[3] && j[3].cmd === 300) { this.feed(id, this.channelList()); return { ok: true }; }
-      if (j[0] === 3) {
+      if (j[0] === 8 || j[0] === 3) { // the tool's JOIN is op 8 (join this exact table)
         const wasSeated = this.seatedAt(uid) >= 0;
         this.log.push({ id, op: 'JOIN', wasSeated });
         if (wasSeated) { this.unseat(uid); this.feed(id, [4, true, 2, -1, 0, '']); } // server moves the player out

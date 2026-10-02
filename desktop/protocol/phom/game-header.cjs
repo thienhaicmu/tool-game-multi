@@ -23,6 +23,9 @@ const HEADER_ACTIONS = Object.freeze({
   JOIN:        { icon: '🚪', short: 'Vào Bàn', tip: 'Vào bàn' },
   REJOIN:      { icon: '↻', short: 'Rejoin', tip: 'Vào lại bàn hiện tại' },
   LEAVE:       { icon: '✕', short: 'Thoát bàn', tip: 'Rời bàn hiện tại (không tắt Chromium)' },
+  FIND_TABLE:  { icon: '🔑', short: 'Dò Key', tip: 'Ngồi một mình ở một bàn trống (acc KEY)' },
+  SCAN_TABLE:  { icon: '🔍', short: 'Tạo', tip: 'Dò ra bàn của acc KEY rồi vào' },
+  CANCEL_FIND: { icon: '■', short: 'Dừng', tip: 'Dừng dò bàn' },
   RELOAD:      { icon: '⟳', short: 'Tải lại', tip: 'Tải lại web trong Chromium (giữ profile)' },
   STOP:        { icon: '⏻', short: 'Tắt', tip: 'Tắt Chromium này (không xóa profile)' },
   FOCUS:       { icon: '↑', short: 'Lên trước', tip: 'Đưa cửa sổ Chromium lên trên cùng' },
@@ -61,6 +64,11 @@ function deriveHeaderState(view = {}) {
   else if (view.entering) { statusLabel = 'ĐANG VÀO GAME'; statusClass = 'warn'; primary = { action: 'ENTER_GAME', label: 'ĐANG VÀO GAME…', busy: true, disabled: true }; }
   else if (!view.inGame) { statusLabel = 'CHƯA VÀO GAME'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME' }; }
   else if (s === 'KICKED') { statusLabel = 'BỊ ĐÁ · bấm ReJoin'; statusClass = 'danger'; primary = { action: 'REJOIN', label: 'REJOIN' }; }
+  // DÒ KEY / TẠO running: how far it got, and the way to stop it (the reference tool's second click on the button).
+  else if (s === 'SEARCHING') {
+    statusLabel = (view.searchKind === 'SCAN' ? 'ĐANG DÒ BÀN KEY' : 'ĐANG DÒ KEY') + (view.searchElapsedSec ? ' ' + view.searchElapsedSec + 's' : '') + (view.searchAttempt ? ' · lần ' + view.searchAttempt : '');
+    statusClass = 'warn'; primary = { action: 'CANCEL_FIND', label: 'DỪNG', danger: true };
+  }
   else if (s === 'LEAVE_UNCONFIRMED') { statusLabel = 'CHƯA XÁC NHẬN RỜI'; statusClass = 'warn'; primary = { action: 'LEAVE', label: 'THỬ RỜI BÀN LẠI', danger: true }; }
   else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
   else if (joined) {
@@ -78,10 +86,12 @@ function deriveHeaderState(view = {}) {
   else if (view.groupRole && view.sharedRid != null) { statusLabel = 'NGOÀI BÀN · SS ' + view.sharedRid; statusClass = 'warn'; primary = { action: 'REJOIN', label: 'VÀO LẠI BÀN' }; }
   // In the game, not at a table: the group's số bàn is offered (VÀO), else there is nothing to do but TÌM BÀN.
   else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_CODE', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }
-  else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND_TABLE', label: 'TÌM BÀN' }; }
+  // A KEY is seated but its số bàn is not known yet: the next step for this browser is TẠO.
+  else if (view.keySeated) { statusLabel = 'ĐÃ VÀO GAME · KEY đã ngồi'; statusClass = 'ok'; primary = { action: 'SCAN_TABLE', label: 'TẠO' }; }
+  else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND_TABLE', label: 'DÒ KEY' }; }
   // PHASE 6.3.8 — the ordered GAME/TABLE icon set (primary first, then secondary). Lifecycle is added by the page.
   const actions = [toActionIcon(primary), ...secondary.map(toActionIcon)].filter(Boolean);
-  return { account, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null, joinedShared,
+  return { account, accountId: view.accountId != null ? String(view.accountId) : null, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null, joinedShared,
     // §co-seat — this browser's room CODE (hpwd) + the shared code, so the page/⋯ menu can show "mã bàn".
     roomCode: view.roomCode != null ? String(view.roomCode) : null, sharedRoomCode: view.sharedRoomCode != null ? String(view.sharedRoomCode) : null,
     // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
@@ -97,6 +107,10 @@ function deriveHeaderState(view = {}) {
     // §group — the reference-tool bar: role chip, SS pre-filled with this browser's / the group's số bàn, the table key.
     groupRole: view.groupRole || null, isTableHost: !!view.isTableHost, inTable: joined,
     canRejoin: joined || view.lastRid != null || view.sharedRid != null,
+    // ReJoin is a toggle (reference tool): ON = this browser comes back by itself after every kick.
+    rejoinOn: !!view.rejoinOn,
+    // A KEY sits at the group's table (TẠO has something to look for); this browser is not that KEY.
+    keySeated: !!view.keySeated, isKey: view.groupRole === 'KEY',
     ssDefault: joined ? Number(view.rid) : (view.sharedRid != null ? Number(view.sharedRid) : null),
     tableKey: view.roomCode != null && String(view.roomCode) !== '' ? String(view.roomCode) : null,
     roomListAt: view.roomListAt != null ? view.roomListAt : null };
@@ -125,7 +139,7 @@ function bootScript(opts = {}) {
   // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
   function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } if(OPTIMISTIC_ACTIONS[action]) applyOptimistic(action); window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
   // Only the GAME/TABLE flow actions paint an optimistic busy overlay; lifecycle (RELOAD/STOP/FOCUS) do not.
-  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, JOIN:1, REJOIN:1, LEAVE:1, FIND_TABLE:1, JOIN_CODE:1, NEW_TABLE:1 };
+  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, JOIN:1, REJOIN:1, LEAVE:1, FIND_TABLE:1, SCAN_TABLE:1, JOIN_CODE:1, NEW_TABLE:1 };
   // 6.3.2.11 OPTIMISTIC visual state (page-local only). __authState = last AUTHORITATIVE state pushed by main;
   // __optAction = a transient action the user just clicked. The click paints an immediate busy state with NO
   // CDP/main round-trip; the next authoritative __phomHeaderRender CLEARS it and wins. Only the status/action
@@ -156,7 +170,7 @@ function bootScript(opts = {}) {
   // drag handle = badge + name + status (dragging the identity area moves the whole control).
   const handle = mk('div','display:flex;align-items:center;gap:4px;cursor:move;min-width:0;');
   const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = SLOTN ? 'P'+SLOTN : 'P?';
-  const nameEl = mk('span','font-weight:700;color:#e5e7eb;white-space:nowrap;'); nameEl.textContent = ''; nameEl.style.display='none';
+  const nameEl = mk('span','font-weight:700;color:#fff;white-space:nowrap;text-shadow:0 1px 3px #000,0 0 2px #000;'); nameEl.textContent = ''; nameEl.style.display='none';
   const statusDot = mk('span','width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto;');
   const stLabel = mk('span','color:#cbd5e1;font-weight:500;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
   handle.appendChild(badge); handle.appendChild(nameEl); handle.appendChild(statusDot); handle.appendChild(stLabel); stLabel.style.display='none';
@@ -264,6 +278,11 @@ function bootScript(opts = {}) {
     var sc = state.statusClass;
     statusDot.style.background = sc==='ok'?'#34d399':sc==='warn'?'#fbbf24':sc==='danger'?'#f87171':'#9ca3af';
     stLabel.textContent = state.statusLabel||''; stLabel.title = state.statusLabel||'';
+    // The account on this browser: name + in-game ID, visible as soon as it has logged in.
+    var hasAcc = state.account && state.account !== '—';
+    nameEl.textContent = hasAcc ? state.account + (state.accountId ? ' · ID ' + state.accountId : '') : '';
+    nameEl.title = hasAcc ? 'Tài khoản ' + state.account + (state.accountId ? ' — ID ' + state.accountId : '') : '';
+    nameEl.style.display = hasAcc ? '' : 'none';
     collapseBtn.textContent = __collapsed ? '▸' : '─';
     collapseBtn.setAttribute('aria-label', __collapsed ? 'Mở rộng thanh điều khiển' : 'Thu gọn thanh điều khiển');
     collapseBtn.setAttribute('aria-expanded', String(!__collapsed));
@@ -285,12 +304,10 @@ function bootScript(opts = {}) {
         act.appendChild(ssInput);
         act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v + (state.tableKey ? ' ' + state.tableKey : '')); }catch(e){} },'Copy số bàn' + (state.tableKey ? ' + key' : '')));
         act.appendChild(txtBtn('Vào','#16a34a',function(){ var r=ssRid(); if(r!=null) emit('JOIN_CODE',{ rid:r }); },'Vào đúng số bàn trong ô SS (key tự điền nếu bàn do tool tạo)'));
-        act.appendChild(txtBtn('Vào lại','#334155',function(){ emit('REJOIN'); },'Vào lại bàn hiện tại / bàn chung', !state.canRejoin));
-        act.appendChild(txtBtn('Tìm bàn','#7c3aed',function(){
-          if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm Tìm bàn.'); return; }
-          feedback.style.display='none';
-          emit('FIND_TABLE');
-        },state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước khi tìm bàn' : 'Tìm bàn chờ công khai còn chỗ ở mức cược ' + state.stake + ' (người chơi khác vào được)'));
+        act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin ●' : 'ReJoin', state.rejoinOn ? '#0f766e' : '#334155',function(){ emit('REJOIN'); }, state.rejoinOn ? 'ReJoin đang BẬT — bị đá sẽ tự vào lại. Bấm để tắt' : 'Vào bàn chung và tự vào lại mỗi lần bị đá', !state.canRejoin));
+        function needStake(){ if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm lại.'); return true; } feedback.style.display='none'; return false; }
+        act.appendChild(txtBtn('Tạo','#0369a1',function(){ if(needStake()) return; emit('SCAN_TABLE'); }, state.isKey ? 'Đây là acc KEY — bấm Tạo ở trình duyệt khác' : 'Dò ra bàn của acc KEY (cược ' + (state.stake != null ? state.stake : '?') + ') rồi vào — số bàn tự điền vào ô SS', state.isKey || !(state.keySeated || state.ssDefault != null)));
+        act.appendChild(txtBtn('Dò Key','#7c3aed',function(){ if(needStake()) return; emit('FIND_TABLE'); },state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước' : 'Ngồi một mình ở một bàn trống cược ' + state.stake + ' — acc này thành KEY'));
         act.appendChild(txtBtn('Rời bàn','#991b1b',function(){ emit('LEAVE'); },'Rời bàn (không tắt Chromium)', !state.inTable));
       } else {
         var p = state.primary;
@@ -305,7 +322,7 @@ function bootScript(opts = {}) {
     var statusInfo=mk('div','padding:6px 10px;color:#e5e7eb;'); statusInfo.textContent=state.statusLabel||''; menu.appendChild(statusInfo);
     badge.title = (SLOTN ? 'Player '+SLOTN : 'Player') + ' · ' + (state.statusLabel||'');
     if(state.canAct){
-      if(state.inTable) menu.appendChild(menuItem('Bàn khác · tìm bàn chờ mới cho nhóm', function(){ emit('NEW_TABLE'); }));
+      if(state.inTable) menu.appendChild(menuItem('Bàn khác · acc KEY dò bàn trống mới', function(){ emit('NEW_TABLE'); }));
     }
     menu.appendChild(menuItem('↑ Đưa cửa sổ lên trên cùng', function(){ emit('FOCUS'); }));
     menu.appendChild(menuItem('⟳ Tải lại web', function(){ emit('RELOAD'); }));
@@ -323,7 +340,7 @@ function bootScript(opts = {}) {
     }
     if(state.lastCapture){ var cap=mk('div','padding:6px 10px;color:#86efac;font-weight:500;white-space:nowrap;'); cap.textContent='📄 Đã lưu: '+state.lastCapture; menu.appendChild(cap); }
     var info = mk('div','padding:8px 10px;color:#9ca3af;font-weight:500;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
-    info.textContent = (SLOTN?('P'+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '') + (state.tableKey ? ' · KEY '+state.tableKey : '');
+    info.textContent = (SLOTN?('P'+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.accountId ? ' · ID ' + state.accountId : '') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '') + (state.tableKey ? ' · KEY '+state.tableKey : '');
     menu.appendChild(info);
     // 6.3.2.10 PROFILING (gated) — click→visual in ONE (page) clock on the FIRST paint after a click.
     if(CLICKLOG && window.__phClickT!=null){ try{ console.log('[PHOM-CLK] CLICK_TO_RENDER', Math.round(CLK()-window.__phClickT)+'ms', 'action='+window.__phClickA, '->', state.statusLabel||''); }catch(e){} window.__phClickT=null; }
@@ -333,7 +350,8 @@ function bootScript(opts = {}) {
   function optState(action){
     var base = __authState || {};
     var label = action==='ENTER_GAME' ? 'ĐANG VÀO GAME…'
-      : (action==='FIND_TABLE'||action==='NEW_TABLE') ? 'ĐANG TÌM BÀN…'
+      : (action==='FIND_TABLE'||action==='NEW_TABLE') ? 'ĐANG DÒ KEY…'
+      : action==='SCAN_TABLE' ? 'ĐANG DÒ BÀN KEY…'
       : action==='JOIN_CODE' ? 'ĐANG VÀO BÀN…'
       : action==='JOIN' ? 'ĐANG VÀO BÀN…'
       : action==='REJOIN' ? 'ĐANG VÀO BÀN…'
@@ -341,7 +359,7 @@ function bootScript(opts = {}) {
       : 'ĐANG XỬ LÝ…';
     return { account: base.account, rid: base.rid, statusLabel: label, statusClass:'warn', primary:{ action: action, label: label, disabled: true, busy: true }, actions: [{ action: action, icon:(OPT_ICON[action]||'•'), short:label, label:label, disabled:true, busy:true }], secondary: [], error: null };
   }
-  var OPT_ICON = { ENTER_GAME:'▶', JOIN:'🚪', JOIN_CODE:'🚪', REJOIN:'↻', LEAVE:'✕', FIND_TABLE:'🔍' };
+  var OPT_ICON = { ENTER_GAME:'▶', JOIN:'🚪', JOIN_CODE:'🚪', REJOIN:'↻', LEAVE:'✕', FIND_TABLE:'🔑', SCAN_TABLE:'🔍', CANCEL_FIND:'■' };
   // Synchronous, page-local: show the busy state the instant the user clicks — no CDP, no main round-trip.
   function applyOptimistic(action){ try { __optAction = action; paint(optState(action)); } catch(e){} }
   // AUTHORITATIVE render from main ALWAYS wins: store it, clear any optimistic overlay, paint it.
@@ -356,7 +374,8 @@ function bootScript(opts = {}) {
 function optimisticLabel(action) {
   switch (action) {
     case 'ENTER_GAME': return 'ĐANG VÀO GAME…';
-    case 'FIND_TABLE': case 'NEW_TABLE': return 'ĐANG TÌM BÀN…';
+    case 'FIND_TABLE': case 'NEW_TABLE': return 'ĐANG DÒ KEY…';
+    case 'SCAN_TABLE': return 'ĐANG DÒ BÀN KEY…';
     case 'JOIN': case 'JOIN_CODE': return 'ĐANG VÀO BÀN…';
     case 'REJOIN': return 'ĐANG VÀO BÀN…';
     case 'LEAVE': return 'ĐANG THOÁT PHÒNG…';

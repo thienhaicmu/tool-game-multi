@@ -327,13 +327,14 @@ test('BC: bootScript is a compact draggable single-row header with per-slot acce
   assert.equal(/emit\('HOST'\)|emit\('READY'\)|emit\('KICK'\)/.test(src), false);
 });
 
-test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Tìm bàn / Vào buttons always carry their onclick', () => {
+test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Dò Key / Tạo / Vào buttons always carry their onclick', () => {
   const src = gh.bootScript();
-  // one stake for the session: the bar only DISPLAYS it and TÌM BÀN needs it before it can be pressed
+  // one stake for the session: the bar only DISPLAYS it, and Dò Key / Tạo need it before they can be pressed
   assert.doesNotMatch(src, /stakeSel/);
   assert.match(src, /CHƯA CHỌN CƯỢC/);
-  assert.match(src, /txtBtn\('Tìm bàn','#7c3aed',function\(\)\{\s*if\(state\.stake == null\)\{ showFeedback\([^\n]+return; \}/);
-  assert.match(src, /feedback\.style\.display='none';\s*emit\('FIND_TABLE'\)/);
+  assert.match(src, /function needStake\(\)\{ if\(state\.stake == null\)\{ showFeedback\([^\n]+return true; \}/);
+  assert.match(src, /txtBtn\('Dò Key','#7c3aed',function\(\)\{ if\(needStake\(\)\) return; emit\('FIND_TABLE'\); \}/);
+  assert.match(src, /txtBtn\('Tạo','#0369a1',function\(\)\{ if\(needStake\(\)\) return; emit\('SCAN_TABLE'\); \}/);
   // Vào parses the SS box without a regex (a lost backslash once turned /^\\d+$/ into /^d+$/ and the button did nothing)
   assert.match(src, /txtBtn\('Vào','#16a34a',function\(\)\{ var r=ssRid\(\); if\(r!=null\) emit\('JOIN_CODE',\{ rid:r \}\); \}/);
   assert.doesNotMatch(src, /\^d\+\$/);
@@ -355,4 +356,20 @@ test('unconfirmed leave must retry leave before offering another join', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'LEAVE_UNCONFIRMED', sharedRid: 123 });
   assert.equal(s.primary.action, 'LEAVE');
   assert.equal(s.statusClass, 'warn');
+});
+
+test('DÒ KEY / TẠO on the bar: searching shows progress + DỪNG; after a KEY sits, the next step is TẠO; ReJoin shows ON', () => {
+  const base = { opened: true, inGame: true, stake: 20000 };
+  const searching = gh.deriveHeaderState({ ...base, manualState: 'SEARCHING', searchKind: 'SCAN', searchElapsedSec: 12, searchAttempt: 6 });
+  assert.equal(searching.statusLabel, 'ĐANG DÒ BÀN KEY 12s · lần 6');
+  assert.equal(searching.primary.action, 'CANCEL_FIND');
+  assert.equal(searching.canAct, false, 'only DỪNG while it runs');
+  assert.equal(gh.deriveHeaderState({ ...base, manualState: 'SEARCHING', searchKind: 'KEY' }).statusLabel, 'ĐANG DÒ KEY');
+  assert.equal(gh.deriveHeaderState({ ...base, manualState: 'READY' }).primary.action, 'FIND_TABLE');
+  const next = gh.deriveHeaderState({ ...base, manualState: 'READY', keySeated: true });
+  assert.equal(next.primary.action, 'SCAN_TABLE'); assert.equal(next.keySeated, true);
+  assert.equal(gh.deriveHeaderState({ ...base, manualState: 'JOINED', rid: 7907972, rejoinOn: true }).rejoinOn, true);
+  assert.equal(gh.HEADER_ACTIONS.SCAN_TABLE.short, 'Tạo'); assert.equal(gh.HEADER_ACTIONS.FIND_TABLE.short, 'Dò Key');
+  const src = gh.bootScript();
+  assert.match(src, /state\.rejoinOn \? 'ReJoin ●' : 'ReJoin'/);
 });

@@ -642,6 +642,47 @@ else {
     }, gameHeader.ENTER_GAME_TIMEOUT_MS);
   }
 
+  // VÀO GAME on one browser — the header button and the auto entry both come through here. Starts the click→ENTERED
+  // clock, shows ĐANG VÀO GAME, fires the vgcg_8 tile (INVOKED != ENTERED) and arms the bounded ENTERING timeout.
+  async function startEnterGame(rid, meta = {}) {
+    headerEnterStartedAt[rid] = nowMs(); // T6 — start the click→ENTERED latency clock (§2/§17)
+    headerEntering[rid] = true;
+    armEnterTimeout(rid); // §10 — bounded ENTERING (INVOKED != ENTERED): reverts to NOT_IN_GAME if no evidence
+    pushHeaderStates();
+    headerLog('ENTER_GAME_START', { runId: rid, ...meta, elapsedMs: 0 });
+    let res;
+    try { res = await phomEnterGame(rid); } catch (e) { res = { ok: false, error: { code: 'PHOM_ENTRY_FAILED', message: safeMsg(e) } }; }
+    if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; clearHeaderEnterTimer(rid); }
+    headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, ...meta, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
+    return res;
+  }
+
+  // §auto-enter — as soon as a browser has LOGGED IN (the server pushed the account's own identity, cmd 100, on its
+  // game socket) and is not in Phỏm yet, the tool presses VÀO GAME for it. Once per page load: when Phỏm is reached it
+  // stops for good (leaving Phỏm on purpose is not undone); a click that did not get in is retried a few times — the
+  // lobby scene may still be building right after login. PHOM_AUTO_ENTER=0 turns it off.
+  const AUTO_ENTER_SETTLE_MS = 1500;   // after login, let the lobby scene finish building
+  const AUTO_ENTER_NOT_READY_MS = 3000; // the tile did not resolve yet → look again soon
+  const AUTO_ENTER_MAX_TRIES = 5;
+  const autoEnterState = Object.create(null); // runId -> { tries, nextAt, done, timer }
+  function resetAutoEnter(rid) { const st = autoEnterState[rid]; if (st && st.timer) clearTimeout(st.timer); delete autoEnterState[rid]; }
+  function maybeAutoEnter(rid, view, b) {
+    if (process.env.PHOM_AUTO_ENTER === '0') return;
+    if (!b || !b.loggedIn || !view.opened || view.dataStale) return;
+    const st = autoEnterState[rid] || (autoEnterState[rid] = { tries: 0, nextAt: nowMs() + AUTO_ENTER_SETTLE_MS, done: false, timer: null });
+    if (view.inGame) { if (!st.done) { st.done = true; headerLog('AUTO_ENTER_DONE', { runId: rid, tries: st.tries }); } return; }
+    if (st.done || st.tries >= AUTO_ENTER_MAX_TRIES || headerEntering[rid] || headerActionBusy[rid]) return;
+    const wait = st.nextAt - nowMs();
+    if (wait > 0) { if (!st.timer) st.timer = setTimeout(() => { st.timer = null; pushHeaderStates(); }, wait + 20); return; }
+    st.tries += 1;
+    st.nextAt = Infinity; // nothing else fires until this attempt settles
+    headerActionBusy[rid] = true;
+    startEnterGame(rid, { source: 'auto', attempt: st.tries })
+      .then((res) => { st.nextAt = nowMs() + (res && res.ok ? gameHeader.ENTER_GAME_TIMEOUT_MS : AUTO_ENTER_NOT_READY_MS); })
+      .catch(() => { st.nextAt = nowMs() + AUTO_ENTER_NOT_READY_MS; })
+      .finally(() => { delete headerActionBusy[rid]; if (st.tries >= AUTO_ENTER_MAX_TRIES) headerLog('AUTO_ENTER_GAVE_UP', { runId: rid, tries: st.tries }); pushHeaderStates(); });
+  }
+
   // Per-browser RUNTIME status for the READ-ONLY Screen 2 (browser kind · CDP · header). No actions.
   // §2/§12 — HEADER distinguishes three facts: CDP connected, binding installed, and the header DOM actually
   // present in the page (confirmed by the page itself via __HEADER_STATUS). READY only when ALL hold; when
@@ -767,7 +808,7 @@ else {
     const inGame = opened && !!b.socketReady && !!b.connected && (b.channelCount || 0) > 0;
     const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : null;
     return {
-      account, opened, inGame,
+      account, accountId: b.accountId || null, opened, inGame,
       // PHASE 6.3.6 — ENTERING is BOUNDED: shown only while pending + not authoritatively inGame + within the
       // timeout window since the click. A fired-but-never-entered click reverts to NOT_IN_GAME (never stuck).
       entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),
@@ -780,6 +821,8 @@ else {
       capturing: captureActiveFor(runId),
       lastCapture: lastCaptureByRun[String(runId)] || null,
       searchAttempt: b.searchAttempt || 0,
+      searchKind: b.searchKind || null,
+      rejoinOn: !!b.rejoinOn,
       rid: b.rid != null ? b.rid : null,
       joinedViaChannel: !!b.joinedViaChannel, // §stake-channel — label it KÊNH, never SS (see deriveHeaderState)
       lastRid: b.lastRid != null ? b.lastRid : null,
@@ -794,6 +837,8 @@ else {
       // §group — role at the tool-created table + readiness + chủ bàn, for the bar's role chip. `seatedAtTable` says
       // whether this browser is REALLY sitting at that table right now (a role alone never implies a seat).
       groupRole: b.groupRole || null, ready: !!b.ready, isTableHost: !!b.isTableHost,
+      // DÒ KEY done somewhere else: the KEY is sitting at its table, so TẠO here has a table to look for.
+      keySeated: b.groupRole !== 'KEY' && (browsers || []).some((x) => x && x.groupRole === 'KEY' && x.manualState === 'JOINED'),
       seatedAtTable: b.manualState === 'JOINED' && b.rid != null,
       // Data freshness: frames were seen once but stopped (lost hook after a reload / target swap) → say it.
       dataStale: !!(opened && b.lastFrameAt != null && (nowMs() - Number(b.lastFrameAt)) > HEADER_STALE_MS),
@@ -859,6 +904,7 @@ else {
       if (!client) continue;
       const view = headerViewFor(run.id, browsers, sharedRid, sharedRoomCode);
       const rid = String(run.id);
+      maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
       if (view.inGame) {
         // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
         // and log the click→ENTERED latency once, then stop timing this run.
@@ -928,6 +974,7 @@ else {
     const rid = String(runId);
     if (!url || /^about:/i.test(url)) return; // the proxy-auth launch page, not the game
     try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ }
+    resetAutoEnter(rid); // a new page = a new login → auto VÀO GAME again
     delete headerError[rid]; headerDomPresent[rid] = false; delete headerLastPushed[rid];
     headerLog('DOCUMENT_REPLACED', { runId: rid });
     pushHeaderStates();
@@ -976,21 +1023,17 @@ else {
     let res = { ok: true };
     try {
       if (action === 'ENTER_GAME') {
-        headerEnterStartedAt[rid] = nowMs(); // T6 — start the click→ENTERED latency clock (§2/§17)
-        headerEntering[rid] = true;
-        armEnterTimeout(rid); // §10 — bounded ENTERING (INVOKED != ENTERED): reverts to NOT_IN_GAME if no evidence
-        pushHeaderStates();
-        headerLog('ENTER_GAME_START', { runId: rid, slotId: payload && payload.slotId, actionId, elapsedMs: 0 });
-        res = await phomEnterGame(rid); // T8 — the in-engine tile click was fired (INVOKED != ENTERED)
-        if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; clearHeaderEnterTimer(rid); }
-        headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, actionId, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
+        res = await startEnterGame(rid, { source: 'header', slotId: payload && payload.slotId, actionId });
       } else if (action === 'FIND_TABLE') {
-        // T1 — TÌM BÀN at the stake chosen in the Phỏm tool (the bar has no picker; it never invents a stake).
-        // The server picks a PUBLIC lobby table that still has room and names it (số bàn + password) in its reply;
-        // this browser becomes KEY and the others join that số bàn with VÀO (first READY, then NOT_READY).
+        // T1 — DÒ KEY at the stake chosen in the Phỏm tool (the bar has no picker; it never invents a stake): this
+        // browser sits alone at an empty public table and becomes KEY.
         ensurePhomSessions();
         const stake = phomSessions.selectedStake();
         res = await phomSessions.findTable(rid, { stake });
+      } else if (action === 'SCAN_TABLE') {
+        // T2a — TẠO: find the KEY's table (its số bàn) and sit there; the số bàn then fills every bar's SS.
+        ensurePhomSessions();
+        res = await phomSessions.scanTable(rid);
       } else if (action === 'NEW_TABLE') {
         // BÀN KHÁC — leave this table and take another public one (manual: only this browser; auto: the group).
         ensurePhomSessions();
@@ -1008,8 +1051,8 @@ else {
         res = stopAndSaveCapture();
         if (res && res.ok) { try { electronShell.showItemInFolder(res.txtPath); } catch { /* best effort */ } }
       } else if (action === 'CANCEL_FIND') {
-        // §34 — stop the persistent search this browser is running. Runs alongside the pending FIND (exempt
-        // from single-flight); the coordinator's generation bump is what actually resolves that FIND as stale.
+        // §34 — DỪNG: stop the DÒ KEY / TẠO this browser is running. Runs alongside it (exempt from single-flight);
+        // the coordinator's search generation is what actually ends it.
         ensurePhomSessions();
         res = await phomSessions.cancelFind(rid);
       } else if (action === 'JOIN_SHARED') {

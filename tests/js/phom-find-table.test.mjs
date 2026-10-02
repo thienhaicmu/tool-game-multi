@@ -1,261 +1,329 @@
-// §find — TÌM BÀN via the game's own QUICK_PLAY_WITH_BET, the SỐ BÀN list, §room-key.
+// §dò-key — the group's table, found the way the reference tool finds it.
 //
-// Protocol source: a LIVE capture of the real site (2026-10-02, v.hitclub.guitars) —
-//   ask   [6,"Simms","channelPlugin",{cmd:313,gid:8,aid:1,b:20000}]        (repeated while searching)
-//   reply [5,{ri:{rid:7900193,b:20000,Mu:4,uC:2,hpwd:false,rn:"Phom",…},cmd:313}]
-//         · it NAMES a table and says how full it is; it does NOT seat anyone
-//         · rn "Phom#6" with a small rid is a stake CHANNEL, not a shareable số bàn
-//   join  [3,"Simms",<rid>,""] → [3,true,0,-1,null]  …or [3,false,103,<rid>,"Sai mật khẩu phòng"]
-//   nothing suitable: no ri, {mgs:"Không tìm thấy phòng thích hợp!"}
-// The tool never sends CREATE_TABLE (308): a Phỏm table cannot be created without a password (the live server
-// dropped three 308s sent with pwd:"", capture 2026-09-21T11-57) and a table with a password is one no other
-// player can enter from the lobby — see docs/phom-kich-ban.md §5.
+// Protocol source: the reference tool's three browsers captured live and merged by time (2026-10-02 22:24 / 22:27 /
+// 22:28, v.hitclub.guitars, Web Traffic Recorder):
+//   DÒ KEY  [3,"Simms",145,"",true]          quick-play into the 20K channel → 202 ps[]; strangers → [4,"Simms",-1]
+//                                             and again, until the account sits ALONE (C:true)
+//   TẠO     [6,"Simms","channelPlugin",{cmd:313,gid:8,aid:1,b:20000}] → [5,{ri:{rid,uC,Mu,rn,hpwd},cmd:313}]
+//           [3,"Simms",<rid>,"​"]       → [3,false,103,<rid>,"Sai mật khẩu phòng"]  (never seats anyone)
+//           uC 1 → [8,"Simms",<rid>,"",8]   → [3,true,0,-1,null] + 202 with the KEY in ps[]
+//   VÀO / ReJoin  [8,"Simms",<số bàn>,"",8]
+//   kicked  [4,true,2,-1,2,"Bạn bị kick vì không sẵn sàng"] every ~10s for the NOT_READY account → op 8 again
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { HostTableCoordinator } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
-const { buildQuickPlayFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
+const { buildQuickPlayFrame, buildJoinTableFrame, buildChannelQuickJoinFrame, buildProbeJoinFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
 const { classifyPhomFrame } = require('../../desktop/protocol/phom/phom-frame-classify.cjs');
 const { PhomContext } = require('../../desktop/protocol/phom/phom-context.cjs');
 const { createTableGroup } = require('../../desktop/protocol/phom/table-group.cjs');
+const { readFileSync } = require('node:fs');
+const readMain = () => readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
 // The group flow (docs/phom-kich-ban.md) runs unpaced here; its pacing/queueing rules are phom-table-group.test.mjs.
 const groupFor = (coord) => createTableGroup({ coord, paceMinMs: 0, paceMaxMs: 0, sleep: () => Promise.resolve() });
+const ZWSP = '​';
+const CHANNELS = [{ rid: 139, b: 100 }, { rid: 145, b: 20000 }];
 
-// Server sim for QUICK_PLAY. The lobby holds PUBLIC tables (no password); a 307 is answered with a table that still
-// has a free seat, else with the server's own "nothing suitable" message. `gameAutoJoin` = the game client answers
-// the reply with its own JOIN (the real client does). `strangers` pre-seats other players at the table it hands out.
-class QuickPlaySim {
-  constructor({ gameAutoJoin = true, hpwd = '', strangers = 0, refusals = 0, neverFound = false, pwd = '', channelFirst = 0, lockedFirst = 0 } = {}) {
-    this.gameAutoJoin = gameAutoJoin; this.hpwd = hpwd; this.strangers = strangers;
-    this.refusals = refusals; this.neverFound = neverFound; this.pwd = pwd;
-    this.channelFirst = channelFirst; this.lockedFirst = lockedFirst;
+// Server sim. Rooms are public tables; seats[0] is the host. `strangersFirst` = how many channel quick-plays land at
+// a table that already has strangers. `scan` = what each 313 names, in order: 'full' (3 strangers), 'channel' (the
+// stake channel itself), 'lone' (one stranger), 'key' (the table the KEY sits at alone) — 'key' once the list ends,
+// unless `keyNever`. `gameAutoJoin` = the game client answers every 313 with its own plain op-3 JOIN, which (worst
+// case) seats the account there.
+class Sim {
+  constructor({ strangersFirst = 0, scan = ['full', 'channel', 'lone'], keyNever = false, gameAutoJoin = false } = {}) {
+    this.strangersFirst = strangersFirst; this.scan = scan.slice(); this.keyNever = keyNever; this.gameAutoJoin = gameAutoJoin;
     this.uids = { B1: '1_1', B2: '1_2', B3: '1_3' };
-    this.rooms = new Map(); this.nextRid = 7900000;
-    this.sent = { B1: [], B2: [], B3: [] }; this.coord = null; this.asks = 0; this.lastGiven = null;
+    this.rooms = new Map(); this.nextRid = 7900000; this.special = {};
+    this.sent = { B1: [], B2: [], B3: [] }; this.coord = null; this.asks = 0;
   }
   attach(c) { this.coord = c; }
   feed(id, raw, direction = 'recv') { this.coord.ingest(id, { raw, direction, targetId: id, url: 'wss://sim', now: Date.now() }); }
-  table(room) { return JSON.stringify([5, { b: room.b, hpwd: this.hpwd, ps: room.seats.map((uid, sit) => ({ uid, sit, r: false })), cmd: 202 }]); }
+  ours(uid) { return Object.values(this.uids).includes(uid); }
+  room(b, strangers) { const rid = this.nextRid++; const r = { rid, b, Mu: 4, seats: [] }; for (let i = 0; i < strangers; i++) r.seats.push(`s_${rid}_${i}`); this.rooms.set(rid, r); return r; }
+  table(room) { return JSON.stringify([5, { b: room.b, hpwd: false, ps: room.seats.map((uid, sit) => ({ uid, sit, r: false, C: sit === 0 })), cmd: 202 }]); }
   broadcast(room) { for (const [bid, uid] of Object.entries(this.uids)) if (room.seats.includes(uid)) this.feed(bid, this.table(room)); }
-  join(id, rid, key = '') {
-    const room = this.rooms.get(rid); const uid = this.uids[id];
-    if (!room) { this.feed(id, JSON.stringify([3, false, 102, rid, 'Phòng không tồn tại'])); return; }
-    if (room.key && key !== room.key) { this.feed(id, JSON.stringify([3, false, 103, rid, 'Sai mật khẩu phòng'])); return; }
-    if (!room.seats.includes(uid)) room.seats.push(uid);
-    this.feed(id, '[3,true,0,-1,null]');
-    this.broadcast(room);
-  }
-  // The table a 307 hands out: an existing public table of this stake with a free seat, else a fresh one. Like the
-  // real matchmaker it spreads players out — the table handed out last time is only repeated when it is the only one.
-  pick(stake) {
-    const candidates = [...this.rooms.values()].filter((r) => r.b === stake && !r.key && r.seats.length < r.Mu);
-    const spread = candidates.find((r) => r.rid !== this.lastGiven) || candidates[0];
-    if (spread) { this.lastGiven = spread.rid; return spread; }
-    const rid = this.nextRid++;
-    const room = { rid, b: stake, Mu: 4, key: this.pwd, seats: [] };
-    for (let i = 0; i < this.strangers; i++) room.seats.push('stranger_' + rid + '_' + i);
-    this.rooms.set(rid, room); this.lastGiven = rid;
-    return room;
+  seat(id, room) { room.seats.push(this.uids[id]); this.feed(id, '[3,true,0,-1,null]'); this.broadcast(room); }
+  unseat(id) { for (const room of this.rooms.values()) { if (room.seats.includes(this.uids[id])) { room.seats = room.seats.filter((u) => u !== this.uids[id]); this.broadcast(room); } } }
+  keyRoom() { return [...this.rooms.values()].find((r) => r.seats.length === 1 && this.ours(r.seats[0])) || null; }
+  kick(id, msg = 'Bạn bị kick vì không sẵn sàng') { this.unseat(id); this.feed(id, JSON.stringify([4, true, 2, -1, 2, msg])); }
+  named(b) {
+    const kind = this.scan.length ? this.scan.shift() : (this.keyNever ? 'full' : 'key');
+    if (kind === 'channel') return { rid: CHANNELS.find((c) => c.b === b).rid, rn: 'Phom#6', uC: 3 };
+    if (kind === 'key') { const r = this.keyRoom(); return r ? { rid: r.rid, rn: 'Phom', uC: r.seats.length } : null; }
+    const r = this.special[kind] || (this.special[kind] = this.room(b, kind === 'full' ? 3 : 1));
+    return { rid: r.rid, rn: 'Phom', uC: r.seats.length };
   }
   sendFor(id) {
     return async (frame) => {
       const j = JSON.parse(frame); this.sent[id].push(j);
       if (j[0] === 6 && j[3] && j[3].cmd === 313) {
         this.asks++;
-        if (this.neverFound || this.asks <= this.refusals) { this.feed(id, JSON.stringify([5, { mgs: 'Không tìm thấy phòng thích hợp!', cmd: 313 }])); return { ok: true }; }
-        // the live server answers with a stake CHANNEL now and then — never a số bàn the others could join
-        if (this.asks <= this.refusals + this.channelFirst) { this.feed(id, JSON.stringify([5, { ri: { rid: 145, rn: 'Phom#6', b: Number(j[3].b), sid: 1, Mu: 4, uC: 3, hpwd: false, gid: 8 }, cmd: 313 }])); return { ok: true }; }
-        // …and with password-locked tables, which this tool has no key for
-        if (this.asks <= this.refusals + this.channelFirst + this.lockedFirst) { this.feed(id, JSON.stringify([5, { ri: { rid: 7910000 + this.asks, rn: 'Phom', b: Number(j[3].b), sid: 1, Mu: 4, uC: 1, hpwd: true, gid: 8 }, cmd: 313 }])); return { ok: true }; }
-        const room = this.pick(Number(j[3].b));
-        this.feed(id, JSON.stringify([5, { ri: { rid: room.rid, rn: 'Phom', b: room.b, sid: 1, Mu: room.Mu, uC: room.seats.length, hpwd: !!room.key, gid: 8, pwd: room.key }, cmd: 313 }]));
-        if (this.gameAutoJoin) {
-          // the GAME client's own JOIN — seen by the tool only as an outgoing frame on the capture stream
-          this.feed(id, JSON.stringify([3, 'Simms', room.rid, room.key]), 'send');
-          this.join(id, room.rid, room.key);
-        }
+        const n = this.named(Number(j[3].b));
+        if (!n) { this.feed(id, JSON.stringify([5, { mgs: 'Không tìm thấy phòng thích hợp!', cmd: 313 }])); return { ok: true }; }
+        this.feed(id, JSON.stringify([5, { ri: { rid: n.rid, rn: n.rn, b: Number(j[3].b), sid: 1, Mu: 4, uC: n.uC, hpwd: false, gid: 8 }, cmd: 313 }]));
+        const room = this.rooms.get(n.rid);
+        if (this.gameAutoJoin && room) { this.feed(id, JSON.stringify([3, 'Simms', n.rid, '']), 'send'); if (room.seats.length < 4) this.seat(id, room); }
         return { ok: true };
       }
-      if (j[0] === 3) { this.join(id, j[2], j[3]); return { ok: true }; }
-      if (j[0] === 4) {
-        for (const room of this.rooms.values()) { const had = room.seats.includes(this.uids[id]); room.seats = room.seats.filter((u) => u !== this.uids[id]); if (had) this.broadcast(room); }
-        this.feed(id, '[4,true,1,-1,0,""]'); return { ok: true };
+      if (j[0] === 3 && j[4] === true) { // DÒ KEY quick-play into a stake channel
+        const b = CHANNELS.find((c) => c.rid === j[2]).b;
+        const room = this.strangersFirst > 0 ? (this.strangersFirst--, this.room(b, 2)) : this.room(b, 0);
+        this.seat(id, room); return { ok: true };
       }
+      if (j[0] === 3 && j[3] === ZWSP) { this.feed(id, JSON.stringify([3, false, 103, j[2], 'Sai mật khẩu phòng'])); return { ok: true }; }
+      if (j[0] === 8) {
+        const room = this.rooms.get(j[2]);
+        if (!room) { this.feed(id, JSON.stringify([3, false, 102, j[2], 'Phòng không tồn tại'])); return { ok: true }; }
+        if (room.seats.length >= room.Mu) { this.feed(id, JSON.stringify([3, false, 100, -1, 'Phòng đầy'])); return { ok: true }; }
+        this.seat(id, room); return { ok: true };
+      }
+      if (j[0] === 4) { this.unseat(id); this.feed(id, '[4,true,1,-1,0,""]'); return { ok: true }; }
       return { ok: true };
     };
   }
 }
 function mk(simOpts) {
-  const sim = new QuickPlaySim(simOpts);
+  const sim = new Sim(simOpts);
   const coord = new HostTableCoordinator({
-    environmentAuthorized: true, delay: () => Promise.resolve(), createAutoJoinMs: 40,
-    findBudgetMs: 120, rerollCooldownMs: 0, joinRejectGraceMs: 10, leaveConfirmMs: 40,
+    environmentAuthorized: true, delay: () => Promise.resolve(),
+    findBudgetMs: 300, rerollCooldownMs: 0, joinRejectGraceMs: 10, leaveConfirmMs: 40, probeAckMs: 40,
     profiles: ['B1', 'B2', 'B3'].map((id) => ({ id, displayName: id, send: sim.sendFor(id) })),
   });
   sim.attach(coord);
   for (const id of ['B1', 'B2', 'B3']) {
     sim.feed(id, `[5,{"uid":"${sim.uids[id]}","As":{"gold":1},"cmd":100,"id":0}]`);
-    sim.feed(id, JSON.stringify([5, { rs: [{ rid: 139, b: 100, uC: 20, Mu: 4, zn: 'Simms', gid: 8, rn: 'Phom#0' }], cmd: 300 }]));
+    sim.feed(id, JSON.stringify([5, { rs: CHANNELS.map((c, i) => ({ rid: c.rid, b: c.b, uC: 20, Mu: 4, zn: 'Simms', gid: 8, rn: 'Phom#' + i })), cmd: 300 }]));
     coord.setIdentity(id, { aid: '1' });
   }
   return { coord, sim };
 }
-const joins = (sim, id) => sim.sent[id].filter((f) => f[0] === 3);
-const asks = (sim, id) => sim.sent[id].filter((f) => f[0] === 6 && f[3] && f[3].cmd === 313);
-
-test('FIND-00: the ask is exactly the live client frame, and the reply gives the real số bàn', async () => {
-  // live 2026-10-02: [6,"Simms","channelPlugin",{"cmd":313,"gid":8,"aid":1,"b":20000}] — no `inc`
-  assert.deepEqual(JSON.parse(buildQuickPlayFrame({ stake: 20000 })), [6, 'Simms', 'channelPlugin', { cmd: 313, gid: 8, aid: 1, b: 20000 }]);
-  assert.deepEqual(JSON.parse(buildQuickPlayFrame()), [6, 'Simms', 'channelPlugin', { cmd: 313, gid: 8, aid: 1 }]);
-  const { coord, sim } = mk();
-  const r = await groupFor(coord).findTable('B1', { stake: 20000 });
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(r.rid, 7900000);
-  const ext = sim.sent.B1.filter((f) => f[0] === 6 && f[3].cmd !== 363).map((f) => f[3]); // 363 = the role's auto-ready preference
-  assert.deepEqual(ext, [{ cmd: 313, gid: 8, aid: 1, b: 20000 }], 'one ask, nothing else — no 311, no 308');
-});
-
-test('FIND-00c: a stake CHANNEL answer is never taken for a số bàn — the tool asks again', async () => {
-  const { coord, sim } = mk({ channelFirst: 2 });
-  const r = await coord.findPublicTable('B1', { stake: 20000 });
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.ok(r.rid >= 100000, 'the số bàn is a real table, not kênh 145');
-  assert.equal(asks(sim, 'B1').length, 3, 'two channel answers were skipped without a single JOIN');
-  assert.equal(joins(sim, 'B1').filter((f) => f[2] === 145).length, 0, 'the channel is never joined');
-});
-
-test('FIND-00d: a password-locked table is skipped without joining it', async () => {
-  const { coord, sim } = mk({ lockedFirst: 2 });
-  const r = await coord.findPublicTable('B1', { stake: 20000 });
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(asks(sim, 'B1').length, 3);
-  for (const f of joins(sim, 'B1')) assert.ok(f[2] < 7910000 || f[2] > 7910003, 'a locked table is never joined');
-});
-
-test('FIND-00b: the tool NEVER creates a private table (no 308 on the wire, no generated key)', async () => {
-  const { coord, sim } = mk();
-  const r = await groupFor(coord).findTable('B1', { stake: 100 });
-  assert.equal(r.ok, true, JSON.stringify(r));
-  for (const id of ['B1', 'B2', 'B3']) assert.equal(sim.sent[id].some((f) => f[0] === 6 && f[3] && f[3].cmd === 308), false, id + ' sent a CREATE_TABLE');
-  assert.equal(r.roomKey, '', 'a public table has no password, so none is invented');
-  assert.deepEqual(joins(sim, 'B1').map((f) => f[3]), [], 'the game client did the JOIN itself');
-});
-
-test('FIND-01: a LIVE reply is classified with the số bàn, how full it is, and whether it is a real table', () => {
-  // verbatim from the capture
-  const ok = classifyPhomFrame('[5,{"ri":{"mM":200000,"b":20000,"gid":8,"MMBI":0,"hpwd":false,"aG":"G","Mu":4,"ahp":false,"rid":7900193,"uC":2,"sid":1,"zn":"Simms","mMBI":0,"rn":"Phom","aid":1,"inc":false},"cmd":313}]');
-  assert.equal(ok.type, 'ROOM_ASSIGNED'); assert.equal(ok.ok, true); assert.equal(ok.rid, 7900193); assert.equal(ok.stake, 20000);
-  assert.equal(ok.seated, 2); assert.equal(ok.maxPlayers, 4); assert.equal(ok.isTable, true); assert.equal(ok.locked, false);
-  assert.equal(ok.password, ''); assert.equal(ok.hasPassword, false);
-  // the same command answers with the stake CHANNEL now and then — not a số bàn anyone else can join
-  const chan = classifyPhomFrame('[5,{"ri":{"mM":200000,"b":20000,"gid":8,"hpwd":false,"Mu":4,"rid":145,"uC":3,"sid":1,"zn":"Simms","rn":"Phom#6","aid":1},"cmd":313}]');
-  assert.equal(chan.type, 'ROOM_ASSIGNED'); assert.equal(chan.rid, 145); assert.equal(chan.isTable, false);
-  const bet = classifyPhomFrame('[5,{"ri":{"rid":4001794,"b":100,"sid":1,"Mu":4,"gid":8,"rn":"Phom","pwd":"482913"},"cmd":313}]');
-  assert.equal(bet.type, 'ROOM_ASSIGNED'); assert.equal(bet.rid, 4001794); assert.equal(bet.password, '482913'); assert.equal(bet.hasPassword, true);
-  const no = classifyPhomFrame('[5,{"mgs":"Không tìm thấy phòng thích hợp!","cmd":307}]');
-  assert.equal(no.type, 'ROOM_ASSIGNED'); assert.equal(no.ok, false); assert.equal(no.message, 'Không tìm thấy phòng thích hợp!');
-  assert.equal(classifyPhomFrame(buildQuickPlayFrame({ stake: 100 })).type, 'QUICK_PLAY_REQUEST');
-  // and the live refusal of a table this tool has no password for
-  const refused = classifyPhomFrame('[3,false,103,7907065,"Sai mật khẩu phòng"]');
-  assert.equal(refused.accepted, false); assert.equal(refused.resultCode, 103); assert.equal(refused.resultMessage, 'Sai mật khẩu phòng');
-  // the game's own CREATE_TABLE reply reads the same way (one handler in the game client), so a table the USER
-  // created by hand in the web is still understood.
-  assert.equal(classifyPhomFrame('[5,{"ri":{"rid":5,"b":100,"sid":1,"Mu":4,"gid":8,"pwd":"1"},"cmd":308}]').type, 'ROOM_ASSIGNED');
-});
-
-test('FIND-02: the game joins the assigned table by itself → the tool sends NO second JOIN, and holds a real SS', async () => {
-  const { coord, sim } = mk({ gameAutoJoin: true });
-  const r = await coord.findPublicTable('B1', { stake: 20000 });
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(joins(sim, 'B1').length, 0, 'a tool JOIN on top of the game JOIN would get the player moved');
-  const b1 = coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1');
-  assert.equal(b1.manualState, 'JOINED'); assert.equal(b1.rid, r.rid); assert.equal(b1.joinedViaChannel, false);
-  assert.equal(coord.sharedRid(), r.rid);
-});
-
-test('FIND-03: the game did not join → the tool JOINs the assigned rid itself with the password the server gave', async () => {
-  const { coord, sim } = mk({ gameAutoJoin: false, pwd: '' });
-  const r = await coord.findPublicTable('B1', { stake: 500 });
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.deepEqual(joins(sim, 'B1'), [[3, 'Simms', r.rid, '']]);
-});
-
-test('FIND-04: "Không tìm thấy phòng thích hợp" is retried (paced) until a table appears', async () => {
-  const { coord, sim } = mk({ refusals: 2 });
-  const r = await coord.findPublicTable('B1', { stake: 100 });
-  assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(asks(sim, 'B1').length, 3, 'two refusals then the table');
-});
-
-test('FIND-05: no table for the whole budget → ONE typed error naming the stake and the server reason', async () => {
-  const { coord, sim } = mk({ neverFound: true });
-  const r = await coord.findPublicTable('B1', { stake: 100, budgetMs: 60 });
-  assert.equal(r.ok, false);
-  assert.equal(r.error.code, 'PHOM_NO_PUBLIC_TABLE');
-  assert.match(r.error.message, /Không tìm thấy bàn chờ cược 100 sau 3 phút/);
-  assert.match(r.error.message, /Không tìm thấy phòng thích hợp/);
-  assert.ok(asks(sim, 'B1').length >= 2, 'it kept asking while the budget lasted');
-});
-
-test('FIND-06: a table that cannot hold the rest of the group is skipped from the ANSWER — never joined', async () => {
-  const { coord, sim } = mk({ strangers: 3 }); // 3 strangers at a 4-seat table → room for one of ours only
-  const r = await coord.findPublicTable('B1', { stake: 100, seatsNeeded: 2, budgetMs: 60 });
-  assert.equal(r.ok, false);
-  assert.equal(r.error.code, 'PHOM_NO_PUBLIC_TABLE');
-  assert.match(r.error.message, /không còn đủ 2 chỗ/);
-  assert.equal(joins(sim, 'B1').length, 0, 'uC/Mu in the answer is enough — a full table costs no JOIN');
-  assert.equal(sim.sent.B1.some((f) => f[0] === 4), false, 'and nothing to leave either');
-  assert.ok(asks(sim, 'B1').length >= 2, 'it kept asking for another table');
-  // ... and with room for the group it is accepted, reporting what it found.
-  const b = mk({ strangers: 1 });
-  const ok = await b.coord.findPublicTable('B1', { stake: 100, seatsNeeded: 2 });
-  assert.equal(ok.ok, true, JSON.stringify(ok));
-  assert.equal(ok.seatsTaken, 1); assert.equal(ok.capacity, 4);
-});
-
-test('FIND-07: no stake → typed error, nothing sent', async () => {
-  const { coord, sim } = mk();
-  const r = await coord.findPublicTable('B1', {});
-  assert.equal(r.error.code, 'PHOM_INVALID_STAKE'); assert.equal(sim.sent.B1.length, 0);
-});
-
-test('GATHER-01: find + gather seats all three at the SAME số bàn, followers join with the server password', async () => {
-  const { coord, sim } = mk({ gameAutoJoin: true, hpwd: 'server-room-code' });
-  const r = await groupFor(coord).setAuto(true, { creatorId: 'B2', stake: 20000 });
-  assert.equal(r.ok, true, JSON.stringify(r.error || r));
-  const room = sim.rooms.get(r.rid);
-  assert.deepEqual([...room.seats].sort(), ['1_1', '1_2', '1_3']);
-  for (const id of ['B1', 'B3']) {
-    const js = joins(sim, id);
-    assert.ok(js.length >= 1);
-    for (const f of js) { assert.equal(f[2], r.rid, 'follower joins the số bàn the server named'); assert.equal(f[3], '', 'a public table is joined with an empty password — never the table hpwd'); }
+// The group flow on top of the sim, plus the account AUTO-READY preference (CMD 363): a client whose preference is on
+// readies by itself when it sits down (live 2026-09-21T12-06), so NOT_READY must switch it off first.
+function mkGroup(simOpts) {
+  const { coord, sim } = mk(simOpts);
+  sim.pref = {}; sim.readyFrames = []; sim.order = [];
+  const baseSeat = sim.seat.bind(sim);
+  sim.seat = (id, room) => { baseSeat(id, room); sim.order.push(['seat', id, room.rid]); if (sim.pref[id] && room.seats.indexOf(sim.uids[id]) > 0) sim.readyBroadcast(room, sim.uids[id]); };
+  sim.readyBroadcast = (room, uid) => { for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u)) sim.feed(bid, JSON.stringify([5, { uid, cmd: 5 }])); };
+  const baseSend = sim.sendFor.bind(sim);
+  for (const id of ['B1', 'B2', 'B3']) {
+    const inner = baseSend(id);
+    coord._rec(id).send = async (frame) => {
+      const j = JSON.parse(frame);
+      if (j[0] === 6 && j[3] && j[3].cmd === 363) { sim.sent[id].push(j); sim.pref[id] = j[3].aRd === 'true'; sim.order.push(['pref', id, j[3].aRd]); return { ok: true }; }
+      if (j[0] === 5 && j[3] && j[3].cmd === 5) { sim.sent[id].push(j); sim.readyFrames.push(id); const room = sim.rooms.get(j[2]); if (room) sim.readyBroadcast(room, sim.uids[id]); return { ok: true }; }
+      return inner(frame);
+    };
   }
-  assert.equal(asks(sim, 'B1').length, 0, 'only the KEY browser asks for a table'); assert.equal(asks(sim, 'B3').length, 0);
+  return { coord, sim, group: groupFor(coord) };
+}
+const op = (sim, id, n) => sim.sent[id].filter((f) => f[0] === n);
+const asks = (sim, id) => sim.sent[id].filter((f) => f[0] === 6 && f[3] && f[3].cmd === 313);
+const tick = () => new Promise((r) => setTimeout(r, 30));
+const until = async (pred) => { for (let i = 0; i < 60 && !pred(); i++) await tick(); };
+
+test('WIRE: the frames are exactly the reference tool\'s live frames', () => {
+  assert.deepEqual(JSON.parse(buildJoinTableFrame(7907972)), [8, 'Simms', 7907972, '', 8]);
+  assert.deepEqual(JSON.parse(buildChannelQuickJoinFrame(145)), [3, 'Simms', 145, '', true]);
+  assert.deepEqual(JSON.parse(buildProbeJoinFrame(7907065)), [3, 'Simms', 7907065, '​']);
+  assert.equal(buildProbeJoinFrame(7907065), '[3,"Simms",7907065,"​"]');
+  assert.deepEqual(JSON.parse(buildQuickPlayFrame({ stake: 20000 })), [6, 'Simms', 'channelPlugin', { cmd: 313, gid: 8, aid: 1, b: 20000 }]);
+  // verbatim from the capture
+  const j8 = classifyPhomFrame('[8,"Simms",7907180,"",8]');
+  assert.equal(j8.type, 'JOIN_REQUEST'); assert.equal(j8.channel, 7907180); assert.equal(j8.byTableId, true);
+  const qp = classifyPhomFrame('[3,"Simms",145,"",true]');
+  assert.equal(qp.type, 'JOIN_REQUEST'); assert.equal(qp.quickPlay, true);
+  const refused = classifyPhomFrame('[3,false,103,7907065,"Sai mật khẩu phòng"]');
+  assert.equal(refused.accepted, false); assert.equal(refused.resultCode, 103);
+  const kick = classifyPhomFrame('[4,true,2,-1,2,"Bạn bị kick vì không sẵn sàng"]');
+  assert.equal(kick.type, 'LEAVE_ACK'); assert.equal(kick.resultCode, 2); assert.equal(kick.resultMessage, 'Bạn bị kick vì không sẵn sàng');
+  const named = classifyPhomFrame('[5,{"ri":{"mM":200000,"b":20000,"gid":8,"MMBI":0,"hpwd":false,"aG":"G","Mu":4,"ahp":false,"rid":7907972,"uC":1,"sid":1,"zn":"Simms","mMBI":0,"rn":"Phom","aid":1,"inc":false},"cmd":313}]');
+  assert.equal(named.type, 'ROOM_ASSIGNED'); assert.equal(named.rid, 7907972); assert.equal(named.seated, 1); assert.equal(named.isTable, true);
+  assert.equal(classifyPhomFrame('[5,{"ri":{"b":20000,"hpwd":false,"Mu":4,"rid":145,"uC":3,"rn":"Phom#6"},"cmd":313}]').isTable, false);
 });
 
-test('GATHER-02: a browser still seated elsewhere leaves first, then joins the group table', async () => {
-  const { coord, sim } = mk({ gameAutoJoin: true });
-  // B3 is sitting at an old table.
-  sim.rooms.set(3600000, { rid: 3600000, b: 999, Mu: 4, seats: [] });
-  await coord.manualJoinRoom('B3', 3600000, { timeoutMs: 60 });
-  const r = await groupFor(coord).setAuto(true, { creatorId: 'B1', stake: 100 });
+test('SEAT: a t:2 seat push drops that player from the table (live: the kicked NOT_READY account)', () => {
+  const ctx = new PhomContext({ profileId: 'A', uid: '1_365473596' });
+  const meta = { direction: 'recv', targetId: 'A', url: 'wss://sim' };
+  ctx.observe({ ...meta, raw: '[5,{"b":20000,"ps":[{"uid":"1_365473596","sit":0,"C":true},{"uid":"1_642487221","sit":1}],"cmd":202}]' });
+  ctx.observe({ ...meta, raw: '[5,{"p":{"uid":"1_321513416","a":"Avatar0","r":false,"dn":"thekiet2k4","id":0,"m":431503,"sit":2},"t":1,"cmd":200}]' });
+  assert.equal(ctx.tableState().playerCount, 3);
+  ctx.observe({ ...meta, raw: '[5,{"p":{"uid":"1_321513416","mT":false,"dn":"thekiet2k4","id":0},"t":2,"cmd":200}]' });
+  assert.deepEqual(ctx.tableState().uids, ['1_365473596', '1_642487221']);
+  ctx.observe({ ...meta, raw: '[5,{"p":{"uid":"1_365473596","id":0},"t":2,"cmd":200}]' }); // our own row never goes this way
+  assert.ok(ctx.tableState().uids.includes('1_365473596'));
+});
+
+test('DÒ KEY: quick-plays into the stake channel, leaves strangers\' tables, stops when it sits ALONE', async () => {
+  const { coord, sim } = mk({ strangersFirst: 2 });
+  const r = await coord.findKeyTable('B1', { stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.channel, 145); assert.equal(r.attempts, 3);
+  assert.deepEqual(op(sim, 'B1', 3), [[3, 'Simms', 145, '', true], [3, 'Simms', 145, '', true], [3, 'Simms', 145, '', true]]);
+  assert.equal(op(sim, 'B1', 4).length, 2, 'left the two tables that had strangers');
+  assert.equal(asks(sim, 'B1').length, 0, 'the KEY never asks 313');
+  const room = sim.keyRoom();
+  assert.deepEqual(room.seats, ['1_1'], 'alone = host of an empty table');
+  const b1 = coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1');
+  assert.equal(b1.manualState, 'JOINED'); assert.equal(b1.joinedViaChannel, true, 'no số bàn yet — shown as the channel');
+});
+
+test('DÒ KEY: no stake / no channel for the stake → typed error, nothing sent', async () => {
+  const { coord, sim } = mk();
+  assert.equal((await coord.findKeyTable('B1', {})).error.code, 'PHOM_INVALID_STAKE');
+  assert.equal((await coord.findKeyTable('B1', { stake: 777 })).error.code, 'PHOM_NO_STAKE_CHANNEL');
+  assert.equal(sim.sent.B1.length, 0);
+});
+
+test('TẠO: probes every named table with U+200B, sits only where ONE player is, keeps it only if that is the KEY', async () => {
+  const { coord, sim } = mk({ scan: ['full', 'channel', 'lone'] });
+  await coord.findKeyTable('B1', { stake: 20000 });
+  const keyRid = sim.keyRoom().rid;
+  const r = await coord.scanForKeyTable('B2', { stake: 20000, keyUid: '1_1' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.rid, keyRid, 'the số bàn is the KEY\'s table');
+  assert.equal(asks(sim, 'B2').length, 4);
+  // probes: one per named TABLE (the channel answer is not a table), each with the invisible password
+  const probes = op(sim, 'B2', 3);
+  assert.equal(probes.length, 3);
+  for (const p of probes) assert.equal(p[3], ZWSP);
+  // real joins: the lone stranger (left again) and the KEY's table
+  assert.deepEqual(op(sim, 'B2', 8).map((f) => f[2]), [sim.special.lone.rid, keyRid]);
+  for (const f of op(sim, 'B2', 8)) assert.deepEqual(f.slice(3), ['', 8]);
+  assert.equal(op(sim, 'B2', 4).length, 1, 'left the stranger\'s table');
+  assert.equal(sim.special.full.seats.includes('1_2'), false, 'never sat at the full table');
+  assert.deepEqual(sim.rooms.get(keyRid).seats, ['1_1', '1_2']);
+});
+
+test('TẠO: the game client seating the account itself at a stranger\'s table is undone, and the search goes on', async () => {
+  const { coord, sim } = mk({ scan: ['full'], gameAutoJoin: true });
+  await coord.findKeyTable('B1', { stake: 20000 });
+  const r = await coord.scanForKeyTable('B2', { stake: 20000, keyUid: '1_1' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  const keyTable = [...sim.rooms.values()].find((x) => x.seats[0] === '1_1');
+  assert.equal(r.rid, keyTable.rid);
+  assert.deepEqual(keyTable.seats, ['1_1', '1_2']);
+  assert.equal(sim.special.full.seats.includes('1_2'), false, 'it did not stay at the strangers\' table');
+  assert.ok(op(sim, 'B2', 4).length >= 1);
+});
+
+test('TẠO: no KEY table for the whole budget → one typed error; no KEY at all → refused at once', async () => {
+  const { coord, sim } = mk({ keyNever: true, scan: [] });
+  await coord.findKeyTable('B1', { stake: 20000 });
+  const r = await coord.scanForKeyTable('B2', { stake: 20000, keyUid: '1_1', budgetMs: 80 });
+  assert.equal(r.ok, false); assert.equal(r.error.code, 'PHOM_NO_KEY_TABLE');
+  assert.match(r.error.message, /cược 20000/);
+  assert.ok(asks(sim, 'B2').length >= 2);
+  assert.equal(op(sim, 'B2', 8).length, 0, 'full tables are never joined');
+  const none = await coord.scanForKeyTable('B3', { stake: 20000 });
+  assert.equal(none.error.code, 'PHOM_NO_KEY');
+});
+
+test('DỪNG: cancelSearch stops a running TẠO at its next step', async () => {
+  const { coord, sim } = mk({ keyNever: true, scan: [] });
+  coord._findBudgetMs = 60000;
+  await coord.findKeyTable('B1', { stake: 20000 });
+  const p = coord.scanForKeyTable('B2', { stake: 20000, keyUid: '1_1' });
+  await until(() => asks(sim, 'B2').length >= 2);
+  coord.cancelSearch('B2');
+  const r = await p;
+  assert.equal(r.cancelled, true);
+  const b2 = coord.manualBrowserSnapshot().find((b) => b.profileId === 'B2');
+  assert.notEqual(b2.manualState, 'SEARCHING'); assert.equal(b2.searchKind, null);
+});
+
+// ---- the group (docs/phom-kich-ban.md) on the sim ----
+
+test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (READY); Vào joins it (NOT_READY) with op 8', async () => {
+  const { coord, sim, group } = mkGroup({ scan: ['lone'] });
+  group.setStake(20000);
+  const k = await group.findTable('B3', {});             // the bar sends no stake: the tool's Tiền is used
+  assert.equal(k.ok, true, JSON.stringify(k.error || k)); assert.equal(k.role, 'KEY');
+  assert.equal(op(sim, 'B3', 3)[0][2], 145, 'the channel of the stake chosen in the tool (20000)');
+  assert.equal(group.rid(), null, 'no số bàn yet');
+  const s = await group.scanTable('B1');
+  assert.equal(s.ok, true, JSON.stringify(s.error || s)); assert.equal(s.role, 'READY');
+  const rid = [...sim.rooms.values()].find((r) => r.seats[0] === '1_3').rid;
+  assert.equal(group.rid(), rid, 'the KEY\'s table is the group\'s số bàn');
+  assert.equal(sim.special.lone.seats.includes('1_1'), false, 'the lone stranger\'s table was left');
+  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B3').rid, rid, 'the KEY now shows the số bàn');
+  const v = await group.joinTable('B2', rid);
+  assert.equal(v.ok, true, JSON.stringify(v.error || v)); assert.equal(v.role, 'NOT_READY');
+  assert.deepEqual(op(sim, 'B2', 8).at(-1), [8, 'Simms', rid, '', 8]);
+  assert.deepEqual([...sim.rooms.get(rid).seats].sort(), ['1_1', '1_2', '1_3']);
+  for (const id of ['B1', 'B2']) {
+    const prefAt = sim.order.findIndex((e) => e[0] === 'pref' && e[1] === id);
+    const seatAt = sim.order.findIndex((e) => e[0] === 'seat' && e[1] === id && e[2] === rid);
+    assert.ok(prefAt >= 0 && prefAt < seatAt, `${id}: auto-ready preference set before it sits down`);
+  }
+  assert.deepEqual(sim.readyFrames, ['B1'], 'only READY readies; the KEY never sends cmd 5');
+});
+
+test('A1 (auto): TỰ ĐỘNG forms KEY / READY / NOT_READY at ONE table, one browser after another', async () => {
+  const { sim, group } = mkGroup({ strangersFirst: 1, scan: ['full', 'lone'] });
+  const r = await group.setAuto(true, { creatorId: 'B2', stake: 20000 });
   assert.equal(r.ok, true, JSON.stringify(r.error || r));
-  assert.ok(sim.sent.B3.some((f) => f[0] === 4), 'B3 left its old table');
-  assert.deepEqual(sim.rooms.get(3600000).seats, []);
-  assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'));
+  assert.deepEqual(r.roles, { B2: 'KEY', B1: 'READY', B3: 'NOT_READY' });
+  assert.deepEqual([...sim.rooms.get(r.rid).seats].sort(), ['1_1', '1_2', '1_3']);
+  assert.equal(asks(sim, 'B3').length, 0, 'the third account joins the known số bàn — no search');
+  assert.equal(sim.pref.B2, false); assert.equal(sim.pref.B1, true); assert.equal(sim.pref.B3, false);
 });
 
-test('ROOM-KEY: a locked table is joined with the password the SERVER gave, and an unknown table with none', async () => {
-  const { coord, sim } = mk({ gameAutoJoin: true, hpwd: 'anchor-hpwd', pwd: '482913' });
-  const group = groupFor(coord);
-  const c = await group.findTable('B1', { stake: 100 });
-  assert.equal(c.roomKey, '482913', 'the password comes from ri.pwd — never generated here');
-  const j = await group.joinTable('B2', c.rid);
-  assert.equal(j.ok, true, JSON.stringify(j));
-  await group.rejoin('B3');
-  for (const id of ['B2', 'B3']) for (const f of joins(sim, id)) { assert.equal(f[3], c.roomKey); assert.notEqual(f[3], 'anchor-hpwd'); }
-  assert.equal(coord.roomKeyFor(1234567), '', 'a table that is not the group table gets the empty code');
+test('A3 (auto): the NOT_READY account is kicked again and again — it comes back EVERY time (no per-minute cap)', async () => {
+  const { sim, group } = mkGroup();
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r.error || r));
+  for (let i = 0; i < 7; i++) {
+    sim.kick('B3');
+    await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
+    assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'), `kick ${i + 1}: back at the table`);
+  }
+  assert.ok(op(sim, 'B3', 8).filter((f) => f[2] === r.rid).length >= 8);
+  assert.equal(sim.pref.B3, false, 'still NOT_READY');
+});
+
+test('T6 + ReJoin toggle (manual): a kick is only reported, until ReJoin is switched on; pressing it again switches off', async () => {
+  const { coord, sim, group } = mkGroup();
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  await group.setAuto(false);
+  sim.kick('B3'); await tick(); await tick();
+  assert.equal(sim.rooms.get(r.rid).seats.includes('1_3'), false, 'manual: no automatic rejoin');
+  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B3').manualState, 'KICKED');
+  const on = await group.rejoin('B3');
+  assert.equal(on.ok, true, JSON.stringify(on.error || on)); assert.equal(on.rejoinOn, true);
+  sim.kick('B3');
+  await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
+  assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'), 'ReJoin on: back by itself');
+  const off = await group.rejoin('B3');
+  assert.equal(off.rejoinOn, false);
+  sim.kick('B3'); await tick(); await tick();
+  assert.equal(sim.rooms.get(r.rid).seats.includes('1_3'), false, 'ReJoin off again');
+});
+
+test('A4 (auto): the table is gone when a kicked member comes back → the group is formed again at a new table', async () => {
+  const { sim, group } = mkGroup();
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  for (const id of ['B1', 'B2', 'B3']) sim.unseat(id);
+  sim.rooms.delete(r.rid);
+  sim.feed('B3', JSON.stringify([4, true, 2, -1, 2, 'x']));
+  await until(() => group.rid() != null && group.rid() !== r.rid && group.snapshot().members.every((m) => m.seated));
+  const g = group.snapshot();
+  assert.notEqual(g.rid, r.rid);
+  assert.deepEqual([...sim.rooms.get(g.rid).seats].sort(), ['1_1', '1_2', '1_3']);
+});
+
+test('A5 (auto): BÀN KHÁC — the KEY runs Dò Key again and the whole group moves', async () => {
+  const { sim, group } = mkGroup();
+  const a = await group.setAuto(true, { creatorId: 'B2', stake: 20000 });
+  const b = await group.newTable();
+  assert.equal(b.ok, true, JSON.stringify(b.error || b));
+  assert.notEqual(b.rid, a.rid);
+  assert.deepEqual([...sim.rooms.get(b.rid).seats].sort(), ['1_1', '1_2', '1_3']);
+  assert.deepEqual(sim.rooms.get(a.rid).seats, [], 'nobody left behind');
+  assert.equal(group.snapshot().members.find((m) => m.role === 'KEY').id, 'B2');
+  await group.leaveAll();
+  assert.equal(group.active(), false);
 });
 
 test('ROOM-LIST: the full số bàn list survives the 14-channel CMD 300 replies that follow it', () => {
@@ -269,170 +337,80 @@ test('ROOM-LIST: the full số bàn list survives the 14-channel CMD 300 replies
   assert.deepEqual(ctx.channels().map((r) => r.rid), [139]);
 });
 
-// §group — the standard flow: the finder = KEY, next = READY, last = NOT_READY; a kicked member rejoins.
-// The sim models the account AUTO-READY preference (CMD 363 aRd): a client whose preference is on readies by itself
-// on join (live capture 2026-09-21T12-06), so NOT_READY must have it switched off before it sits down.
-function withGroupFlow(sim) {
-  sim.pref = {}; sim.readyFrames = []; sim.order = [];
-  const baseTable = sim.table.bind(sim);
-  sim.table = (room) => { const j = JSON.parse(baseTable(room)); j[1].ps.forEach((p, i) => { p.C = i === 0; }); return JSON.stringify(j); };
-  const baseJoin = sim.join.bind(sim);
-  sim.join = (id, rid, key) => {
-    baseJoin(id, rid, key);
-    const room = sim.rooms.get(rid); const uid = sim.uids[id];
-    sim.order.push(['join', id]);
-    if (sim.pref[id] && room && room.seats.indexOf(uid) > 0) sim.readyBroadcast(room, uid);
-  };
-  sim.readyBroadcast = (room, uid) => { for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u)) sim.feed(bid, JSON.stringify([5, { uid, cmd: 5 }])); };
-  const baseSend = sim.sendFor.bind(sim);
-  sim.sendFor = (id) => { const inner = baseSend(id); return async (frame) => {
-    const j = JSON.parse(frame);
-    if (j[0] === 6 && j[3] && j[3].cmd === 363) { sim.pref[id] = j[3].aRd === 'true'; sim.order.push(['pref', id, j[3].aRd]); return { ok: true }; }
-    if (j[0] === 5 && j[3] && j[3].cmd === 5) { sim.readyFrames.push(id); const room = sim.rooms.get(j[2]); if (room) sim.readyBroadcast(room, sim.uids[id]); return { ok: true }; }
-    return inner(frame);
-  }; };
-  sim.kick = (id, msg) => {
-    for (const room of sim.rooms.values()) { if (room.seats.includes(sim.uids[id])) { room.seats = room.seats.filter((u) => u !== sim.uids[id]); sim.broadcast(room); } }
-    sim.feed(id, JSON.stringify([4, true, 2, -1, 1, msg]));
-  };
-  return sim;
-}
-function mkGroup() {
-  const sim = withGroupFlow(new QuickPlaySim({ gameAutoJoin: true }));
-  const coord = new HostTableCoordinator({
-    environmentAuthorized: true, delay: () => Promise.resolve(), createAutoJoinMs: 40, kickRejoinMs: 0,
-    findBudgetMs: 120, rerollCooldownMs: 0, joinRejectGraceMs: 10, leaveConfirmMs: 40,
-    profiles: ['B1', 'B2', 'B3'].map((id) => ({ id, displayName: id, send: sim.sendFor(id) })),
-  });
-  sim.attach(coord);
-  for (const id of ['B1', 'B2', 'B3']) { sim.feed(id, `[5,{"uid":"${sim.uids[id]}","As":{"gold":1},"cmd":100,"id":0}]`); coord.setIdentity(id, { aid: '1' }); }
-  return { coord, sim, group: groupFor(coord) };
-}
-const tick = () => new Promise((r) => setTimeout(r, 30));
-
-test('READY/HOST pushes are classified; the client ready frame is not mistaken for a READY push', () => {
-  assert.deepEqual((({ type, uid }) => ({ type, uid }))(classifyPhomFrame('[5,{"uid":"1_644556017","dn":"baycao1004","cmd":5}]')), { type: 'USER_READY', uid: '1_644556017' });
-  assert.equal(classifyPhomFrame('[5,{"uid":"1_644556017","dn":"baycao1004","cmd":203}]').type, 'HOST_CHANGED');
-  assert.notEqual(classifyPhomFrame('[5,"Simms",3752077,{"cmd":5}]').type, 'USER_READY');
-  const kick = classifyPhomFrame('[4,true,2,-1,1,"Bạn thoát vì không bắt đầu"]');
-  assert.equal(kick.resultCode, 2); assert.equal(kick.resultMessage, 'Bạn thoát vì không bắt đầu');
+test('LAG: another game\'s broadcasts on the shared socket cost nothing — no update, no log, no hands emit', () => {
+  const { coord } = mk();
+  let updates = 0, logs = 0, hands = 0;
+  coord.on('update', () => updates++); coord.on('log', () => logs++); coord.on('hands', () => hands++);
+  const meta = { direction: 'recv', targetId: 'B1', url: 'wss://sim', now: 1 };
+  // verbatim from the capture (≈15 of these per second per browser)
+  for (const raw of [
+    '[5,{"errC":10005,"gid":10112,"cmd":10004}]',
+    '[5,{"bs":{"b":[{"eid":1,"bc":35,"v":8473537}]},"gid":10110,"rmT":38999,"cmd":10003}]',
+    '[5,{"d":{"cmd":2005,"sid":2635153,"md5":"1e93"},"cmd":1015}]',
+    '[5,{"Js":[{"b":100000,"gid":206,"gn":"Trên Dưới","J":2694683,"aid":1}],"cmd":10000}]',
+    '[5,{"mgs":"Trên Dưới %c nổ hũ %y","cmd":10,"params":["x","350.478"]}]',
+  ]) coord.ingest('B1', { ...meta, raw });
+  assert.deepEqual({ updates, logs, hands }, { updates: 0, logs: 0, hands: 0 });
+  // a Phỏm frame still goes all the way through
+  coord.ingest('B1', { ...meta, raw: '[5,{"b":20000,"ps":[{"uid":"1_1","sit":0,"C":true}],"cmd":202}]' });
+  assert.ok(updates > 0 && logs > 0 && hands > 0);
 });
 
-test('A1 (live sim): KEY / READY / NOT_READY — preferences set BEFORE joining, only READY is ready, the host never starts', async () => {
-  const { sim, group } = mkGroup();
-  const r = await group.setAuto(true, { creatorId: 'B2', stake: 100 });
-  assert.equal(r.ok, true, JSON.stringify(r.error || r));
-  assert.deepEqual(r.roles, { B2: 'KEY', B1: 'READY', B3: 'NOT_READY' });
-  for (const id of ['B1', 'B3']) {
-    const prefAt = sim.order.findIndex((e) => e[0] === 'pref' && e[1] === id);
-    const joinAt = sim.order.findIndex((e) => e[0] === 'join' && e[1] === id);
-    assert.ok(prefAt >= 0 && prefAt < joinAt, `${id}: auto-ready preference must be set before it sits down`);
-  }
-  assert.equal(sim.pref.B2, false); assert.equal(sim.pref.B1, true); assert.equal(sim.pref.B3, false);
-  const by = Object.fromEntries(group.snapshot().members.map((m) => [m.id, m]));
-  assert.equal(by.B1.ready, true); assert.equal(by.B3.ready, false); assert.equal(by.B2.ready, false);
-  assert.equal(sim.readyFrames.includes('B2'), false, 'the KEY never sends cmd 5 (for a host that would be BẮT ĐẦU)');
+test('AUTO-ENTER: the login identity push (cmd 100) marks the browser logged in; a page reset clears it', () => {
+  const ctx = new PhomContext({ profileId: 'A' });
+  const meta = { direction: 'recv', targetId: 'A', url: 'wss://sim' };
+  assert.equal(ctx.loggedIn(), false);
+  ctx.observe({ ...meta, raw: '[5,{"errC":10005,"gid":10112,"cmd":10004}]' });
+  assert.equal(ctx.loggedIn(), false, 'lobby broadcasts are not a login');
+  ctx.observe({ ...meta, raw: '[5,{"uid":"1_365473596","As":{"gold":453384},"dn":"gdufuud","cmd":100,"id":0}]' });
+  assert.equal(ctx.loggedIn(), true);
+  ctx.reset();
+  assert.equal(ctx.loggedIn(), false, 'a reloaded page must log in again');
+  const { coord, sim } = mk();
+  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1').loggedIn, true, 'surfaced to main');
+  assert.ok(sim);
 });
 
-test('A3 (live sim): with TỰ ĐỘNG on, a member the server removes rejoins the SAME số bàn and keeps its role', async () => {
-  const { sim, group } = mkGroup();
-  const r = await group.setAuto(true, { creatorId: 'B2', stake: 100 });
-  const joinsBefore = joins(sim, 'B3').length;
-  sim.kick('B3', 'Bạn thoát vì không sẵn sàng');
-  await tick();
-  const js = joins(sim, 'B3');
-  assert.equal(js.length, joinsBefore + 1);
-  assert.deepEqual(js.at(-1), [3, 'Simms', r.rid, '']);
-  assert.ok(sim.rooms.get(r.rid).seats.includes(sim.uids.B3));
-  assert.equal(sim.pref.B3, false, 'still NOT_READY after the rejoin');
+test('AUTO-ENTER (main): fires VÀO GAME once a browser is logged in and not in Phỏm, once per page, bounded', () => {
+  const main = readMain();
+  const fn = main.slice(main.indexOf('function maybeAutoEnter('), main.indexOf('// Per-browser RUNTIME status'));
+  assert.match(fn, /if \(!b \|\| !b\.loggedIn \|\| !view\.opened \|\| view\.dataStale\) return;/);
+  assert.match(fn, /if \(view\.inGame\) \{ if \(!st\.done\)/, 'reaching Phỏm ends it');
+  assert.match(fn, /st\.tries >= AUTO_ENTER_MAX_TRIES/, 'bounded');
+  assert.match(fn, /startEnterGame\(rid, \{ source: 'auto'/, 'the same path as the VÀO GAME button');
+  assert.match(main, /resetAutoEnter\(rid\); \/\/ a new page = a new login/);
+  assert.match(main, /maybeAutoEnter\(rid, view, browsers\.find/);
 });
 
-test('A4 (live sim): the table is gone when a kicked member rejoins → the group re-forms at another table', async () => {
-  const { sim, group } = mkGroup();
-  const r = await group.setAuto(true, { creatorId: 'B2', stake: 100 });
-  assert.equal(r.ok, true, JSON.stringify(r.error || r));
-  sim.kick('B1', 'x'); sim.kick('B3', 'x'); sim.kick('B2', 'x');
-  sim.rooms.delete(r.rid);
-  for (let i = 0; i < 20 && !(group.snapshot() && group.snapshot().rid !== r.rid); i++) await tick();
-  const g = group.snapshot();
-  assert.ok(g && g.rid !== r.rid, 'another table');
-  await tick();
-  assert.deepEqual([...sim.rooms.get(g.rid).seats].sort(), ['1_1', '1_2', '1_3']);
-});
-
-test('A5 (live sim): BÀN KHÁC leaves this table, asks for a different one, and re-forms the group there', async () => {
-  const { sim, group } = mkGroup();
-  const a = await group.setAuto(true, { creatorId: 'B2', stake: 100 });
-  // A second public table exists at this stake, so "another table" is really another one.
-  sim.rooms.set(3800000, { rid: 3800000, b: 100, Mu: 4, key: '', seats: [] });
-  const b = await group.newTable();
-  assert.equal(b.ok, true, JSON.stringify(b.error || b));
-  assert.notEqual(b.rid, a.rid, 'the table it was told to leave is not handed back');
-  assert.deepEqual([...sim.rooms.get(b.rid).seats].sort(), ['1_1', '1_2', '1_3'], 'the whole group moved');
-  assert.deepEqual(sim.rooms.get(a.rid).seats, [], 'and nobody is left behind');
-  assert.equal(group.snapshot().members.find((m) => m.role === 'KEY').id, 'B2', 'the finder stays KEY');
-  await group.leaveAll();
-  assert.equal(group.active(), false);
-});
-
-test('A5b (live sim): when the server has no other table, BÀN KHÁC keeps this one instead of looping forever', async () => {
-  const { sim, group } = mkGroup();
-  const a = await group.setAuto(true, { creatorId: 'B2', stake: 100 });
-  const asksBefore = sim.asks;
-  const b = await group.newTable();
-  assert.equal(b.ok, true, JSON.stringify(b.error || b));
-  assert.equal(b.rid, a.rid, 'the only public table at this stake');
-  assert.ok(sim.asks - asksBefore >= 2 && sim.asks - asksBefore <= 5, 'it asked again a few times, then settled');
-  assert.deepEqual([...sim.rooms.get(b.rid).seats].sort(), ['1_1', '1_2', '1_3']);
-});
-
-// Manual flow (header): TÌM BÀN on one browser only; the others press VÀO — first joiner READY, the next NOT_READY.
-test('T1+T2 (live sim): TÌM BÀN acts on THIS browser only (KEY); VÀO order decides READY then NOT_READY', async () => {
-  const { sim, group } = mkGroup();
-  const c = await group.findTable('B3', { stake: 100 });
-  assert.equal(c.ok, true, JSON.stringify(c.error || c));
-  assert.equal(c.role, 'KEY');
-  assert.equal(joins(sim, 'B1').length + joins(sim, 'B2').length, 0, 'nobody else is pulled in');
-  const first = await group.joinTable('B1', c.rid);
-  assert.equal(first.ok, true, JSON.stringify(first.error || first));
-  assert.equal(first.role, 'READY');
-  assert.deepEqual(joins(sim, 'B1').at(-1), [3, 'Simms', c.rid, ''], 'VÀO uses the số bàn the server named');
-  const second = await group.joinTable('B2', c.rid);
-  assert.equal(second.role, 'NOT_READY');
-  const prefAt = sim.order.findIndex((e) => e[0] === 'pref' && e[1] === 'B2');
-  const joinAt = sim.order.findIndex((e) => e[0] === 'join' && e[1] === 'B2');
-  assert.ok(prefAt >= 0 && prefAt < joinAt && sim.pref.B2 === false, 'NOT_READY switches auto-ready off before sitting');
-  const by = Object.fromEntries(group.snapshot().members.map((m) => [m.id, m]));
-  assert.equal(by.B1.ready, true); assert.equal(by.B2.ready, false); assert.equal(by.B3.role, 'KEY');
-});
-
-test('T6 (live sim): TỰ ĐỘNG off → a kicked member is NOT rejoined automatically (state KICKED, user presses ReJoin)', async () => {
+test('AUTO = MANUAL: TỰ ĐỘNG presses Dò Key → Tạo → Vào and switches ReJoin on for the seated members; unticking switches those off', async () => {
   const { coord, sim, group } = mkGroup();
-  const c = await group.findTable('B3', { stake: 100 });
-  await group.joinTable('B1', c.rid);
-  const before = joins(sim, 'B1').length;
-  sim.kick('B1', 'Bạn thoát vì không sẵn sàng');
-  await tick();
-  assert.equal(joins(sim, 'B1').length, before, 'no automatic rejoin');
-  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1').manualState, 'KICKED');
-  const back = await group.rejoin('B1');
-  assert.equal(back.ok, true, JSON.stringify(back.error || back));
-  assert.deepEqual(joins(sim, 'B1').at(-1), [3, 'Simms', c.rid, '']);
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r.error || r));
+  // the same wire as by hand: B1 quick-plays the channel, B2 asks 313 + probes, B3 joins the số bàn with op 8
+  assert.ok(op(sim, 'B1', 3).every((f) => f[4] === true));
+  assert.ok(asks(sim, 'B2').length >= 1);
+  assert.equal(asks(sim, 'B3').length, 0); assert.deepEqual(op(sim, 'B3', 8).at(-1), [8, 'Simms', r.rid, '', 8]);
+  const on = Object.fromEntries(coord.manualBrowserSnapshot().map((b) => [b.profileId, group.rejoinOn(b.profileId)]));
+  assert.deepEqual(on, { B1: false, B2: true, B3: true }, 'like pressing ReJoin on READY and NOT_READY');
+  await group.setAuto(false);
+  assert.equal(group.rejoinOn('B2'), false); assert.equal(group.rejoinOn('B3'), false);
+  // …but a ReJoin the USER switched on stays on
+  await group.rejoin('B3'); // seated + was off → it is a "switch on + join"
+  sim.kick('B3'); await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
+  assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'));
 });
 
-test('A1/A6 (live sim): TỰ ĐỘNG needs a stake; OFF stops rejoining; THOÁT BÀN TẤT CẢ turns it off', async () => {
-  const { sim, group } = mkGroup();
-  const bad = await group.setAuto(true, { creatorId: 'B1' });
-  assert.equal(bad.ok, false); assert.equal(group.autoActive(), false);
-  const on = await group.setAuto(true, { creatorId: 'B1', stake: 100 });
-  assert.equal(on.ok, true, JSON.stringify(on.error || on)); assert.equal(group.autoActive(), true);
-  assert.deepEqual(on.roles, { B1: 'KEY', B2: 'READY', B3: 'NOT_READY' });
-  await group.setAuto(false);
-  const before = joins(sim, 'B3').length;
-  sim.kick('B3', 'x'); await tick();
-  assert.equal(joins(sim, 'B3').length, before);
-  await group.setAuto(true); // group exists → only brings the missing member back
-  assert.equal(joins(sim, 'B3').length, before + 1);
-  await group.leaveAll();
-  assert.equal(group.autoActive(), false);
+test('ACCOUNT: the login identity gives the account name + ID before it sits anywhere; the bar shows both', () => {
+  const ctx = new PhomContext({ profileId: 'A' });
+  ctx.observe({ direction: 'recv', targetId: 'A', url: 'wss://sim', raw: '[5,{"uid":"1_365473596","As":{"gold":453384},"dn":"gdufuud","cmd":100,"id":0}]' });
+  assert.equal(ctx.displayName(), 'gdufuud');
+  const { coord, sim } = mk();
+  sim.feed('B1', '[5,{"uid":"1_1","As":{"gold":1},"dn":"gdufuud","cmd":100,"id":0}]');
+  const b1 = coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1');
+  assert.equal(b1.username, 'gdufuud', 'named from login, not only once seated');
+  assert.equal(b1.accountId, '1');
+  const gh = require('../../desktop/protocol/phom/game-header.cjs');
+  const st = gh.deriveHeaderState({ opened: true, inGame: true, account: 'gdufuud', accountId: '365473596' });
+  assert.equal(st.account, 'gdufuud'); assert.equal(st.accountId, '365473596');
+  assert.match(gh.bootScript(), /nameEl\.textContent = hasAcc \? state\.account \+ \(state\.accountId \? ' · ID ' \+ state\.accountId : ''\)/);
 });

@@ -17,10 +17,10 @@ const { PhomDeviceProfilesStore } = require('../../desktop/browser-run/phom-devi
 const { parseFlexibleProxy, normalizeProxyConfig, publicSnapshot } = require('../../desktop/browser-run/proxy-config.cjs');
 
 // ---- the agent model ----
-test('there are exactly two agents, and the default is the mobile one the tool always used', () => {
+test('there are exactly two agents, and a new profile defaults to the web agent', () => {
   assert.deepEqual(ba.AGENTS, ['WEB', 'MOBILE']);
-  assert.equal(ba.DEFAULT_AGENT, 'MOBILE');
-  assert.equal(ba.normalizeAgent().agent, 'MOBILE');
+  assert.equal(ba.DEFAULT_AGENT, 'WEB');
+  assert.equal(ba.normalizeAgent().agent, 'WEB');
   assert.equal(ba.normalizeAgent('web').agent, 'WEB');
   assert.equal(ba.normalizeAgent({ agent: 'MOBILE' }).agent, 'MOBILE');
   assert.equal(ba.normalizeAgent('tablet').error.code, 'PHOM_AGENT_INVALID');

@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const { createTableGroup, ROLE, PACE_MIN_MS, PACE_MAX_MS } = require('../../desktop/protocol/phom/table-group.cjs');
 
 // A coordinator stand-in: records every command with the virtual time it was sent at.
-function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, findFails = false } = {}) {
+function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, scanFails = {}, findFails = false } = {}) {
   const c = {
     clock: 0, sent: [], seats: new Map(), rid: 3700000, keyResolver: null, listeners: {},
     on(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); },
@@ -29,13 +29,25 @@ function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, findFails = false
     async leaveTable(id) { this.sent.push({ at: this.clock, id, cmd: 'LEAVE' }); this.seats.delete(id); return { ok: true }; },
     async setAutoReadyPref(id, on) { this.sent.push({ at: this.clock, id, cmd: 'PREF', on }); return { ok: true }; },
     async sendTableReady(id, rid) { this.sent.push({ at: this.clock, id, cmd: 'READY', rid }); return { ok: true }; },
-    async findPublicTable(id, opts) {
+    // DÒ KEY: seated alone at a fresh table whose số bàn nobody knows yet (shown under the stake channel)
+    async findKeyTable(id, opts) {
       if (opts && typeof opts.pace === 'function') await opts.pace();
-      this.sent.push({ at: this.clock, id, cmd: 'FIND', stake: opts.stake, avoidRid: opts.avoidRid != null ? opts.avoidRid : null });
-      if (findFails) return { ok: false, error: { code: 'PHOM_NO_PUBLIC_TABLE', message: 'no' } };
-      const rid = this.rid++; this.seats.set(id, rid);
-      return { ok: true, rid, roomKey: '', found: true }; // a public table: the server's password is empty
+      this.sent.push({ at: this.clock, id, cmd: 'FIND', stake: opts.stake });
+      if (findFails) return { ok: false, error: { code: 'PHOM_NO_KEY_TABLE', message: 'no' } };
+      this.keyRid = this.rid++; this.seats.set(id, 145);
+      return { ok: true, channel: 145 };
     },
+    // TẠO: lands at the KEY's table and reports its số bàn
+    async scanForKeyTable(id, opts) {
+      if (opts && typeof opts.pace === 'function') await opts.pace();
+      this.sent.push({ at: this.clock, id, cmd: 'SCAN', stake: opts.stake, keyUid: opts.keyUid });
+      const fail = scanFails[id];
+      if (fail) { delete scanFails[id]; return { ok: false, error: fail }; }
+      this.seats.set(id, this.keyRid);
+      return { ok: true, rid: this.keyRid, found: true };
+    },
+    adoptTableRid(id, rid) { this.seats.set(id, rid); return true; },
+    cancelSearch() { return { ok: true }; },
     async manualJoinByCode(id, rid, key) {
       this.sent.push({ at: this.clock, id, cmd: 'JOIN', rid, key: key || '' });
       const fail = joinFails[id];
@@ -76,66 +88,103 @@ test('QUEUE: two operations asked for at once run one after another, never inter
   assert.ok(order.indexOf('B2:JOIN') > order.indexOf('B1:FIND'));
 });
 
-test('T1 + T2: a manual TÌM BÀN makes KEY; the join order decides READY then NOT_READY', async () => {
+test('T1 + T2a + T2: Dò Key makes KEY; Tạo finds the số bàn (READY); Vào joins it (NOT_READY)', async () => {
   const { coord, group } = mk();
   const created = await group.findTable('B2', { stake: 500 });
   assert.equal(created.ok, true);
   assert.equal(group.roleOf('B2'), ROLE.KEY);
+  assert.equal(group.rid(), null, 'no số bàn until Tạo finds it');
   assert.deepEqual(cmds(coord, 'PREF').map((e) => [e.id, e.on]), [['B2', false]], 'KEY never auto-readies');
-  const first = await group.joinTable('B1', created.rid);
+  const first = await group.scanTable('B1');
+  assert.equal(first.ok, true, JSON.stringify(first.error || first));
   assert.equal(first.role, ROLE.READY);
-  const second = await group.joinTable('B3', created.rid);
+  assert.equal(cmds(coord, 'SCAN')[0].keyUid, 'uid-B2', 'Tạo looks for the uid of the KEY');
+  assert.equal(cmds(coord, 'SCAN')[0].stake, 500, 'at the stake the KEY sat at');
+  assert.equal(group.rid(), coord.keyRid);
+  assert.equal(coord.seatedRid('B2'), coord.keyRid, 'the KEY adopts the số bàn');
+  const second = await group.scanTable('B3'); // số bàn known → Tạo is simply Vào
   assert.equal(second.role, ROLE.NOT_READY);
-  // the preference is always set BEFORE that browser's JOIN, and only READY sends a ready frame
-  for (const id of ['B1', 'B3']) {
+  assert.equal(cmds(coord, 'SCAN').length, 1);
+  assert.deepEqual(cmds(coord, 'JOIN').map((e) => [e.id, e.rid]), [['B3', coord.keyRid]]);
+  for (const [id, cmd] of [['B1', 'SCAN'], ['B3', 'JOIN']]) {
     const pref = coord.sent.findIndex((e) => e.id === id && e.cmd === 'PREF');
-    const join = coord.sent.findIndex((e) => e.id === id && e.cmd === 'JOIN');
-    assert.ok(pref >= 0 && pref < join, id);
+    const sit = coord.sent.findIndex((e) => e.id === id && e.cmd === cmd);
+    assert.ok(pref >= 0 && pref < sit, id);
   }
   assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B1']);
-  assert.deepEqual(cmds(coord, 'JOIN').map((e) => e.key), ['', ''], 'joins carry the password the server gave (empty for a public table)');
 });
 
-test('T2: a failed join gives the role back to the next browser', async () => {
-  const { group } = mk({ joinFails: { B1: { code: 'PHOM_JOIN_REJECTED', message: 'nope' } } });
-  const created = await group.findTable('B2', { stake: 100 });
-  const failed = await group.joinTable('B1', created.rid);
+test('T2a: Tạo without a KEY, or on the KEY itself, is refused before anything is sent', async () => {
+  const { coord, group } = mk();
+  assert.equal((await group.scanTable('B1')).error.code, 'PHOM_NO_KEY');
+  await group.findTable('B2', { stake: 100 });
+  assert.equal((await group.scanTable('B2')).error.code, 'PHOM_KEY_CANNOT_SCAN');
+  assert.equal(cmds(coord, 'SCAN').length, 0);
+});
+
+test('T2a: a failed Tạo gives the role back to the next browser', async () => {
+  const { group } = mk({ scanFails: { B1: { code: 'PHOM_NO_KEY_TABLE', message: 'nope' } } });
+  await group.findTable('B2', { stake: 100 });
+  const failed = await group.scanTable('B1');
   assert.equal(failed.ok, false);
   assert.equal(group.roleOf('B1'), null);
-  const next = await group.joinTable('B3', created.rid);
-  assert.equal(next.role, ROLE.READY, 'the free READY role goes to the next joiner');
+  const next = await group.scanTable('B3');
+  assert.equal(next.role, ROLE.READY, 'the free READY role goes to the next one');
 });
 
 test('T5: leaving frees a READY / NOT_READY role but the KEY keeps its own', async () => {
   const { group } = mk();
-  const created = await group.findTable('B2', { stake: 100 });
-  await group.joinTable('B1', created.rid);
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');
   await group.leave('B1');
   assert.equal(group.roleOf('B1'), null);
   await group.leave('B2');
   assert.equal(group.roleOf('B2'), ROLE.KEY);
 });
 
-test('T6 vs A3: a kick is only REPORTED in manual mode, and rejoined (paced) when TỰ ĐỘNG is on', async () => {
+test('T6 vs A3: a kick is only REPORTED in manual mode, and rejoined (paced) when TỰ ĐỘNG is on — every time', async () => {
   const { coord, group } = mk();
   const notices = []; group.on('notice', (n) => notices.push(n.event));
-  const created = await group.findTable('B2', { stake: 100 });
-  await group.joinTable('B1', created.rid);
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');
+  const rid = group.rid();
   coord.seats.delete('B1');
-  coord.fire('kicked', { id: 'B1', message: 'Bạn thoát vì không sẵn sàng' });
+  coord.fire('kicked', { id: 'B1', message: 'Bạn bị kick vì không sẵn sàng' });
   await new Promise((r) => setImmediate(r));
-  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length, 1, 'manual: no rejoin');
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length, 0, 'manual: no rejoin');
   assert.ok(notices.includes('KICKED'));
   await group.setAuto(true, { creatorId: 'B2', stake: 100 });   // A2: keeps the group, brings B1/B3 back
   const before = cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length;
-  coord.seats.delete('B1');
-  coord.fire('kicked', { id: 'B1', message: 'x' });
-  await new Promise((r) => setTimeout(r, 0));
-  await group.joinTable('B3', created.rid); // drains the queue (the rejoin is ahead of it)
-  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length, before + 1, 'auto: rejoined once');
+  for (let i = 0; i < 8; i++) {                                    // more than any per-minute cap would allow
+    coord.seats.delete('B1');
+    coord.fire('kicked', { id: 'B1', message: 'x' });
+    coord.fire('kicked', { id: 'B1', message: 'x' });              // a duplicate report queues ONE rejoin
+    await group.leave('B9');                                      // drains the queue (the rejoin is ahead of it)
+  }
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1' && e.rid === rid).length, before + 8, 'auto: back after every kick');
+  assert.equal(notices.includes('REJOIN_EXHAUSTED'), false);
 });
 
-test('A1: TỰ ĐỘNG forms the group — leave, find a table, then join one browser at a time', async () => {
+test('ReJoin toggle: ON brings the browser back after a kick even with TỰ ĐỘNG off; pressing it again switches OFF', async () => {
+  const { coord, group } = mk();
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');
+  coord.seats.delete('B3');
+  const on = await group.rejoin('B3');
+  assert.equal(on.ok, true); assert.equal(on.rejoinOn, true); assert.equal(group.rejoinOn('B3'), true);
+  const joins = () => cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length;
+  const n = joins();
+  coord.seats.delete('B3'); coord.fire('kicked', { id: 'B3', message: 'x' });
+  await group.leave('B9');
+  assert.equal(joins(), n + 1, 'back by itself');
+  const off = await group.rejoin('B3');
+  assert.equal(off.rejoinOn, false);
+  coord.seats.delete('B3'); coord.fire('kicked', { id: 'B3', message: 'x' });
+  await group.leave('B9');
+  assert.equal(joins(), n + 1, 'off: only reported');
+});
+
+test('A1: TỰ ĐỘNG forms the group — leave, Dò Key, Tạo, then Vào — one browser at a time', async () => {
   const { coord, group } = mk();
   coord.seats.set('B1', 111); coord.seats.set('B2', 222);
   const res = await group.setAuto(true, { creatorId: 'B1', stake: 1000 });
@@ -143,7 +192,8 @@ test('A1: TỰ ĐỘNG forms the group — leave, find a table, then join one br
   assert.deepEqual(res.roles, { B1: 'KEY', B2: 'READY', B3: 'NOT_READY' });
   const seq = coord.sent.map((e) => e.id + ':' + e.cmd);
   assert.deepEqual(seq.slice(0, 2), ['B1:LEAVE', 'B2:LEAVE'], 'old seats are released first');
-  assert.ok(seq.indexOf('B2:JOIN') < seq.indexOf('B3:JOIN'), 'joins are sequential, never together');
+  assert.ok(seq.indexOf('B1:FIND') < seq.indexOf('B2:SCAN') && seq.indexOf('B2:SCAN') < seq.indexOf('B3:JOIN'), 'Dò Key → Tạo → Vào');
+  assert.equal(res.rid, coord.keyRid);
 });
 
 test('A1: TỰ ĐỘNG without a stake (and with no group) refuses and turns itself back off', async () => {
@@ -156,10 +206,11 @@ test('A1: TỰ ĐỘNG without a stake (and with no group) refuses and turns its
 
 test('A4 vs T7: a lost table is replaced when auto is on, and only reported when it is off', async () => {
   const gone = { code: 'PHOM_JOIN_REJECTED', message: 'Phòng không tồn tại', serverCode: 102 };
-  const manual = mk({ joinFails: { B1: gone } });
-  const created = await manual.group.findTable('B2', { stake: 100 });
+  const manual = mk({ joinFails: { B3: gone } });
+  await manual.group.findTable('B2', { stake: 100 });
+  await manual.group.scanTable('B1');
   const notices = []; manual.group.on('notice', (n) => notices.push(n.event));
-  await manual.group.joinTable('B1', created.rid);
+  await manual.group.joinTable('B3', manual.group.rid());
   assert.ok(notices.includes('TABLE_LOST'));
   assert.equal(manual.group.active(), false, 'manual: the group is dissolved, no new table is taken');
 
@@ -172,7 +223,8 @@ test('A4 vs T7: a lost table is replaced when auto is on, and only reported when
   await new Promise((r) => setTimeout(r, 0));
   await auto.group.joinTable('B3', 999999); // drain
   assert.notEqual(auto.group.snapshot().rid, rid, 'auto: another table was taken');
-  assert.equal(cmds(auto.coord, 'FIND').at(-1).avoidRid, rid, 'and the lost table is not asked for again');
+  assert.equal(cmds(auto.coord, 'FIND').length, 2, 'by a fresh Dò Key');
+  assert.equal(cmds(auto.coord, 'FIND').at(-1).id, 'B2', 'with the same KEY browser');
 });
 
 test('A6: unticking TỰ ĐỘNG cancels what is queued and stops rejoining; seats stay as they are', async () => {

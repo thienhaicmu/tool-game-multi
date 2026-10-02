@@ -33,6 +33,8 @@ class PhomContext extends EventEmitter {
     this._joinedChannel = null;
     this._lastFrameAt = null;
     this._connected = false;
+    this._identitySeen = false; // cmd 100 seen on this socket since the last reset
+    this._displayName = null;   // the account's own name (dn), from cmd 100 — known before it sits anywhere
     // Server answers to our own JOIN / LEAVE (Test D capture). A JOIN refusal ([3,false,code,-1,msg]) lets a join
     // fail fast with the server's reason; a LEAVE ack ([4,true,code,...]) is the proof the player left the table.
     this._lastJoinAck = null;   // { accepted, code, message, at, seq }
@@ -102,6 +104,9 @@ class PhomContext extends EventEmitter {
     // ps[] membership matching is correct — otherwise a token uid never matches ps[] (seat=null,
     // false TABLE_MISMATCH). Once the authoritative uid is bound it is never downgraded.
     if (cls.type === 'SELF_IDENTITY' && cls.uid != null) {
+      // The server pushes this once, when the account logs in — the "login OK" signal the auto VÀO GAME waits for.
+      if (!this._identitySeen) { this._identitySeen = true; changed = true; }
+      if (cls.identityId !== 1 && cls.displayName && cls.displayName !== this._displayName) { this._displayName = cls.displayName; changed = true; }
       if (cls.identityId !== 1) {                       // authoritative game identity (id:0 / absent)
         if (!this._uidAuthoritative) { this._uid = String(cls.uid); this._uidAuthoritative = true; changed = true; }
       } else if (this._uid == null) {                   // token identity: fallback for the gate only
@@ -174,6 +179,14 @@ class PhomContext extends EventEmitter {
         changed = true;
       }
     }
+    // t:2 = that player LEFT the table (capture 2026-10-02: [5,{p:{uid,dn,id},t:2,cmd:200}] each time the NOT_READY
+    // account was kicked, followed by its t:1 when it sat down again). Our own row is never dropped this way — only
+    // LEAVE_ACK / a fresh ps[] decide whether THIS browser is seated.
+    if (cls.type === 'SEAT_UPDATE' && cls.t === 2 && cls.seat && cls.seat.uid != null && this._tableState && String(cls.seat.uid) !== this._uid) {
+      this._tableState = dropSeat(this._tableState, String(cls.seat.uid));
+      this._tableStateAt = now;
+      changed = true;
+    }
 
     if (changed) this._emit();
     return cls;
@@ -186,6 +199,7 @@ class PhomContext extends EventEmitter {
   }
 
   reset() {
+    this._identitySeen = false; this._displayName = null;
     this._socket = null; this._channels = []; this._tableState = null; this._lastJoinAck = null; this._lastLeaveAck = null;
     this._joinedChannel = null; this._connected = false;
     this._emit();
@@ -217,6 +231,9 @@ class PhomContext extends EventEmitter {
   sendContext() { return this._socket ? { ...this._socket } : null; }
 
   socketReady() { return !!this._socket; }
+  // The account's own identity arrived on the game socket (cmd 100): it is logged in.
+  loggedIn() { return !!this._identitySeen; }
+  displayName() { return this._displayName; }
   aid() { return this._aid; }
   uid() { return this._uid; }
   channels() { return this._channels.slice(); }
@@ -320,6 +337,13 @@ function foldSeat(ts, seat) {
     cP: ts.cP != null ? ts.cP : null,
     identity: uids.length ? { type: 'PLAYER_SET_FINGERPRINT', value: uids.join('|') } : null,
   };
+}
+
+function dropSeat(ts, uid) {
+  const seats = ts.seats.filter((s) => s.uid !== uid);
+  if (seats.length === ts.seats.length) return ts;
+  const uids = seats.map((s) => s.uid).filter(Boolean).sort();
+  return { ...ts, seats, playerCount: seats.length, uids, identity: uids.length ? { type: 'PLAYER_SET_FINGERPRINT', value: uids.join('|') } : null };
 }
 
 function hostOf(u) { try { return new URL(u).host; } catch { return String(u || ''); } }

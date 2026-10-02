@@ -30,7 +30,7 @@ test('a profile created without an agent gets the default one', () => {
   const s = new PhomDeviceProfilesStore({ filePath: tmpFile() });
   const r = s.create({ name: 'Default' });
   assert.equal(r.ok, true);
-  assert.equal(r.profile.agent, 'MOBILE');
+  assert.equal(r.profile.agent, 'WEB');
   assert.equal(r.profile.device.resolution, '600 × 338', 'every profile reports the one default size');
 });
 

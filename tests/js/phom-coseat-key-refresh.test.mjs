@@ -41,7 +41,7 @@ class KeySim {
       let j; try { j = JSON.parse(frame); } catch { return { ok: true }; }
       const uid = this.uids[id];
       if (j[0] === 6 && j[3] && j[3].cmd === 300) { this._feed(id, this._channelList()); return { ok: true }; }
-      if (j[0] === 3) {
+      if (j[0] === 8 || j[0] === 3) { // the tool's VÀO is op 8 (join this exact table)
         const rid = j[2]; const sentKey = j[3] != null ? String(j[3]) : '';
         const room = this._room(rid); if (!room) return { ok: true };
         this.keysSeen[id].push(sentKey);

@@ -25,7 +25,7 @@ test('per-frame update/hands are COALESCED (leading+trailing throttle), not sent
 });
 
 test('header push DEDUPES per browser — an unchanged state skips the CDP evaluate (kills the storm)', () => {
-  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('function pushHeaderStates(') + 1900);
+  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('function pushHeaderStates(') + 2200);
   assert.match(fn, /const json = JSON\.stringify\(gameHeader\.deriveHeaderState\(view\)\)/);
   assert.match(fn, /if \(headerLastPushed\[rid\] === json\) continue;/);
   assert.match(fn, /headerLastPushed\[rid\] = json;/);

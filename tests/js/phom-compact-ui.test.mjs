@@ -49,7 +49,9 @@ test('the header action router acts on ONE browser via the run-scoped coordinato
   // ENTER_GAME -> phomEnterGame(runId); FIND_TABLE/JOIN/REJOIN/LEAVE -> the run-scoped group API, all keyed by
   // the single runId the click came from (never a leave-all / cross-browser action).
   const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
-  assert.match(r, /ENTER_GAME'[\s\S]*?phomEnterGame\(rid\)/);
+  assert.match(r, /ENTER_GAME'[\s\S]*?startEnterGame\(rid,/);
+  const enter = main.slice(main.indexOf('async function startEnterGame('), main.indexOf('function maybeAutoEnter('));
+  assert.match(enter, /phomEnterGame\(rid\)/, 'one browser, the one the click came from');
   // docs/phom-kich-ban.md — the table actions go through the session manager's group API, still run-scoped.
   assert.match(r, /rejoinTable\(rid\)/);
   assert.match(r, /leaveTable\(rid\)/);

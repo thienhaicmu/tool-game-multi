@@ -108,7 +108,9 @@ class HostSessionManager extends EventEmitter {
   // ---- docs/phom-kich-ban.md — every table/group action goes through the TableGroup (paced + serialized) ----
   _g() { return this._session ? this._group : null; }
   _grouped(fn) { const g = this._g(); if (!g) return Promise.resolve({ ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }); return Promise.resolve(fn(g)); }
-  findTable(id, opts) { return this._grouped((g) => g.findTable(String(id), opts || {})); }            // T1
+  findTable(id, opts) { return this._grouped((g) => g.findTable(String(id), opts || {})); }            // T1 DÒ KEY
+  scanTable(id) { return this._grouped((g) => g.scanTable(String(id))); }                             // T2a TẠO
+  cancelFind(id) { return this._grouped((g) => g.cancelSearch(String(id))); }                         // DỪNG
   joinTable(id, rid) { return this._grouped((g) => g.joinTable(String(id), rid)); }                    // T2
   rejoinTable(id) { return this._grouped((g) => g.rejoin(String(id))); }                               // T3
   leaveTable(id) { return this._grouped((g) => g.leave(String(id))); }                                 // T5
@@ -126,8 +128,18 @@ class HostSessionManager extends EventEmitter {
   gameSessionId(id) { const c = this._c(); return c && typeof c.gameSessionId === 'function' ? c.gameSessionId(String(id)) : null; }
   // §34 — cancel the in-flight persistent TÌM BÀN on one browser.
   // §38 — the single authoritative shared room (header + Tool read the same value).
-  sharedRid() { const c = this._c(); return c && typeof c.sharedRid === 'function' ? c.sharedRid() : null; }
-  sharedRidOwner() { const c = this._c(); return c && typeof c.sharedRidOwner === 'function' ? c.sharedRidOwner() : null; }
+  // While a group exists its số bàn is the group's (null until TẠO found the KEY's table — the KEY's stake channel is
+  // never published as a số bàn); without a group, the browser that holds a table.
+  sharedRid() {
+    const g = this._g();
+    if (g && g.active()) return g.rid();
+    const c = this._c(); return c && typeof c.sharedRid === 'function' ? c.sharedRid() : null;
+  }
+  sharedRidOwner() {
+    const g = this._g();
+    if (g && g.active()) { const s = g.snapshot(); const key = s && s.members.find((m) => m.role === 'KEY'); return g.rid() != null && key ? key.id : null; }
+    const c = this._c(); return c && typeof c.sharedRidOwner === 'function' ? c.sharedRidOwner() : null;
+  }
   // §co-seat — the shared room CODE (hpwd) the followers' JOIN carries to co-seat at the finder's exact table.
   sharedRoomCode() { const c = this._c(); return c && typeof c.sharedRoomCode === 'function' ? c.sharedRoomCode() : null; }
   // PHASE 6.2.3-fix — reset one browser's Phỏm context after a web reload (so slotInPhom goes false).
@@ -136,7 +148,8 @@ class HostSessionManager extends EventEmitter {
     // The coordinator reports the TABLE facts; the group ROLE (KEY / READY / NOT_READY) comes from table-group.cjs.
     const c = this._c();
     const list = c && typeof c.manualBrowserSnapshot === 'function' ? c.manualBrowserSnapshot() : [];
-    return list.map((b) => ({ ...b, groupRole: this.groupRoleOf(b.profileId) }));
+    const g = this._g();
+    return list.map((b) => ({ ...b, groupRole: this.groupRoleOf(b.profileId), rejoinOn: !!(g && g.rejoinOn(b.profileId)) }));
   }
   remainingCards(opts) { const c = this._c(); return c && typeof c.remainingCards === 'function' ? c.remainingCards(opts) : { count: 0, codes: [], cards: [] }; }
   // PHASE 6.3.3.2 — the card-observation snapshot (players/discards/melds/remaining/capabilities), or an

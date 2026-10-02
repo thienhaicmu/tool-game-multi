@@ -25,7 +25,9 @@
 // ---------------------------------------------------------------------------
 
 const AGENTS = Object.freeze(['WEB', 'MOBILE']);
-const DEFAULT_AGENT = 'MOBILE'; // what every profile ran with before (a mobile UA at 600×338)
+// A new profile is a web profile unless the user picks mobile (user's choice 2026-10-03). Profiles already saved keep
+// the agent stored with them.
+const DEFAULT_AGENT = 'WEB';
 
 // The mobile identity. One string, not a device catalog: nothing else about the
 // browser changes, so there is nothing for a second "device" to mean.

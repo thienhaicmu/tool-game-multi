@@ -7,34 +7,40 @@ Tài liệu này là **đặc tả**. Module `desktop/protocol/phom/table-group.
 
 | Quy tắc | Nội dung |
 |---|---|
-| Vai trò | **KEY**: acc tìm bàn (acc dẫn), **không bao giờ tự bấm Bắt đầu**. **SẴN SÀNG**: acc vào bàn thứ nhất. **CHƯA SẴN SÀNG**: acc vào bàn thứ hai. |
+| Vai trò | **KEY**: acc bấm Dò Key (acc dẫn, chủ bàn), **không bao giờ tự bấm Bắt đầu**. **SẴN SÀNG**: acc vào bàn thứ nhất. **CHƯA SẴN SÀNG**: acc vào bàn thứ hai. |
 | Vai trò giữ nguyên | Vai trò gắn với acc cho tới khi nhóm giải tán. Bị đá rồi vào lại vẫn giữ vai trò cũ. |
-| Bàn | Bàn của nhóm luôn là **bàn chờ công khai trong sảnh** còn ít nhất 3 chỗ, do máy chủ chỉ định (lệnh 307). Người chơi khác vào được bàn này — đó là mục đích. Tool **không tạo bàn riêng** (bàn riêng bắt buộc có mật khẩu nên không ai vào được). |
-| Key | Mật khẩu bàn là **do máy chủ trả về** (`ri.pwd`, bàn công khai thì rỗng). Tool không tự sinh key, không bao giờ dùng token đăng nhập làm mật khẩu. |
+| Bàn | Bàn của nhóm là **một bàn công khai trống** mà acc KEY ngồi vào **một mình** (Dò Key). Người chơi khác vào được — đó là mục đích. Tool **không tạo bàn riêng** (308 bắt buộc có mật khẩu nên không ai vào được). |
+| Mức cược | Luôn là mức **Tiền chọn ở tool Phỏm** (Dò Key dùng mức đó; Tạo dùng đúng mức acc KEY đang ngồi). Thanh trong trình duyệt không có ô chọn cược. |
+| Số bàn | Máy chủ **không bao giờ** báo số bàn cho acc KEY (gói 202 không có số bàn). Số bàn (SS) chỉ có khi một acc khác **Tạo** dò ra bàn của KEY; từ đó SS tự điền vào mọi trình duyệt. |
 | Nhịp | Trước **mỗi** lệnh gửi lên server: chờ **ngẫu nhiên 0,8–2,5 giây**. |
 | Không dồn dập | Mọi thao tác nhóm chạy trong **một hàng đợi tuần tự**: không bao giờ có 2 acc gửi lệnh cùng lúc, không thao tác nào chen vào thao tác đang chạy. |
 | Sẵn sàng | Game có tùy chọn "tự sẵn sàng" lưu trên server (lệnh 363). Tool đặt tùy chọn này **trước khi acc ngồi xuống**: SẴN SÀNG = bật, KEY và CHƯA SẴN SÀNG = tắt. Acc SẴN SÀNG bấm sẵn sàng thêm một lần sau khi ngồi. |
 | Cùng bàn | Một acc chỉ được tính "đã vào bàn nhóm" khi chính bàn của nó có acc KEY. |
 
-Giao thức (bắt từ **log WS thật của web**, 2026-10-02 — không phải suy từ mã nguồn):
+Giao thức — lấy từ **log WS thật của tool đối thủ**, 3 trình duyệt ghi cùng lúc rồi ghép theo giờ
+(`D:\demo\wtr_v.hitclub.guitars_20261002-222424 / 222702 / 222803.json`, 2026-10-02):
 
 | Việc | Gửi | Nhận |
 |---|---|---|
-| Tìm bàn | `[6,"Simms","channelPlugin",{cmd:313,gid:8,aid:1,b:<cược>}]` | `[5,{ri:{rid,b,Mu,uC,hpwd,rn,…},cmd:313}]` hoặc `{mgs:"Không tìm thấy phòng thích hợp!"}` |
-| Vào bàn | `[3,"Simms",<số bàn>,"<mật khẩu>"]` | `[3,true,0,-1,null]` hoặc `[3,false,103,<số bàn>,"Sai mật khẩu phòng"]` |
+| Dò Key (chơi nhanh vào kênh cược) | `[3,"Simms",<kênh, vd 145>,"",true]` | `[3,true,0,-1,null]` + `[5,{ps:[…],cmd:202}]` |
+| Hỏi bàn (Tạo) | `[6,"Simms","channelPlugin",{cmd:313,gid:8,aid:1,b:<cược>}]` | `[5,{ri:{rid,b,Mu,uC,hpwd,rn,…},cmd:313}]` hoặc `{mgs:"Không tìm thấy phòng thích hợp!"}` |
+| Dò bằng mật khẩu vô hình | `[3,"Simms",<số bàn>,"\u200B"]` | luôn `[3,false,103,<số bàn>,"Sai mật khẩu phòng"]` |
+| **Vào đúng bàn** (Vào / ReJoin / Tạo) | `[8,"Simms",<số bàn>,"",8]` | `[3,true,0,-1,null]` + `202` của chính bàn đó |
 | Sẵn sàng | `[5,"Simms",<số bàn>,{cmd:5}]` | `[5,{uid,cmd:5}]` |
 | Tự sẵn sàng | `[6,"Simms","channelPlugin",{cmd:363,aRd:"true"\|"false"}]` | — |
 | Rời bàn | `[4,"Simms",-1]` | `[4,true,1,-1,0,""]` |
-| Bị đá | — | `[4,true,2,-1,2,"Bạn bị kick vì không sẵn sàng"]` |
+| Bị đá | — | `[4,true,2,-1,2,"Bạn bị kick vì không sẵn sàng"]` (acc CHƯA SS: khoảng 10 giây/lần) |
+| Người khác rời / vào | — | `[5,{p:{uid,…},t:2,cmd:200}]` / `t:1` |
 
-Ba điều rút ra từ log thật:
+Điều rút ra từ log:
 
-1. Trả lời `313` **chỉ gọi tên một bàn, không xếp chỗ**: muốn ngồi phải tự gửi lệnh vào bàn. Đây cũng là **chỗ duy
-   nhất** máy chủ cho biết số bàn (`TABLE_STATE` cmd 202 không có số bàn).
-2. Trả lời có sẵn `uC` (đang ngồi) và `Mu` (tối đa) → biết bàn còn mấy chỗ **trước khi vào**, và `rn` = `"Phom#6"`
-   kèm rid nhỏ nghĩa là máy chủ trả về **kênh cược**, không phải số bàn (bẫy "kênh 139" cũ).
-3. Vào thẳng một số bàn cụ thể **là đúng bàn đó**: máy chủ trả lời kèm chính số bàn mình gửi, và chỉ từ chối
-   (`103 Sai mật khẩu phòng`) khi bàn đó có khoá.
+1. **op 8 mới là "vào đúng bàn này"**. op 3 gửi tới số bàn không phải lệnh đó — đây là lý do lỗi 09-21 (hai acc cùng
+   vào một số bàn bằng op 3 thì mỗi acc thành chủ một bàn mới).
+2. Trả lời `313` chỉ **gọi tên** một bàn (rid + `uC` đang ngồi), không xếp chỗ. Tool đối thủ trả lời mọi bàn được gọi
+   tên bằng một lệnh vào với mật khẩu `\u200B` để **chắc chắn bị từ chối** — nên acc không bao giờ ngồi nhầm bàn người
+   lạ. Bàn có **đúng 1 người** có thể là acc KEY đang ngồi một mình → vào thật bằng op 8.
+3. Bàn `rn` có `#` (vd `"Phom#6"`, rid nhỏ) là **kênh cược**, không phải số bàn.
+4. Acc CHƯA SẴN SÀNG bị đá khoảng 10 giây/lần; tool đối thủ vào lại ngay (op 8) **mỗi lần** — trong log là 9 lần liên tiếp.
 
 ## 1. Chế độ TAY — thanh công cụ trong từng trình duyệt
 
@@ -42,13 +48,14 @@ Ba điều rút ra từ log thật:
 
 | Mã | Người dùng | Tool làm (theo thứ tự, mỗi bước có nhịp) | Kết quả |
 |---|---|---|---|
-| **T1** | Chọn Cược, bấm **Tìm bàn** | (1) nếu acc đang ngồi bàn khác → rời bàn · (2) tắt "tự sẵn sàng" · (3) xin bàn ở mức cược đó (**313**) · (4) đọc ngay câu trả lời: là **kênh cược** (rn có `#`), **không đủ 2 chỗ** cho 2 acc kia (`Mu − uC`), hoặc **bàn khoá** mà máy chủ không đưa mật khẩu → bỏ qua, xin bàn khác (không tốn một lệnh vào bàn nào) · (5) bàn hợp lệ → vào bàn đó · (6) bị từ chối `103` hoặc bàn vừa đầy → xin bàn khác · (7) máy chủ báo "Không tìm thấy phòng thích hợp" → chờ nhịp rồi xin lại, **tối đa 3 phút** mới báo người dùng | Acc = **KEY**. Nhóm mới gồm số bàn (+ mật khẩu nếu máy chủ trả về). Ô SS của mọi trình duyệt tự điền số bàn. Nhóm cũ (nếu có) giải tán; các acc khác vẫn ngồi nguyên chỗ. |
-| **T2** | Ô SS = số bàn nhóm, bấm **Vào** | (1) nhận vai trò: chưa ai SẴN SÀNG → SẴN SÀNG, còn lại → CHƯA SẴN SÀNG · (2) nếu đang ngồi bàn khác → rời bàn · (3) đặt "tự sẵn sàng" theo vai trò · (4) vào đúng số bàn đó với mật khẩu máy chủ đã trả về · (5) xác nhận cùng bàn với KEY · (6) SẴN SÀNG: bấm sẵn sàng | Acc vào trước SẴN SÀNG, acc vào sau CHƯA SẴN SÀNG. Vào lỗi → trả lại vai trò cho acc sau. |
+| **T1** | Bấm **Dò Key** | (1) nếu acc đang ngồi bàn khác → rời bàn · (2) tắt "tự sẵn sàng" · (3) chơi nhanh vào **kênh của mức cược chọn ở tool** (`[3,…,<kênh>,"",true]`) · (4) bàn đã có người lạ → rời, chơi nhanh lại · (5) lặp tới khi **ngồi một mình** (là chủ bàn) · tối đa **3 phút** · bấm **Dừng** để thôi | Acc = **KEY**, ngồi một mình. Chưa có số bàn (thanh hiện KÊNH). Nhóm cũ (nếu có) giải tán. |
+| **T2a** | Bấm **Tạo** (ở acc khác, sau khi KEY đã ngồi) | (1) nhận vai trò: chưa ai SẴN SÀNG → SẴN SÀNG, còn lại → CHƯA SẴN SÀNG · (2) rời bàn đang ngồi · (3) đặt "tự sẵn sàng" theo vai trò · (4) hỏi **313** · (5) bàn được gọi tên → vào thử bằng mật khẩu `\u200B` (luôn bị từ chối) · (6) bàn **đúng 1 người** → vào thật bằng **op 8** · (7) bàn đó có acc KEY → xong; **không có KEY** → rời ngay, hỏi tiếp · tối đa **3 phút** · bấm **Dừng** để thôi · (8) SẴN SÀNG: bấm sẵn sàng | Số bàn của KEY = **SS của nhóm**, tự điền vào ô SS mọi trình duyệt; thanh của KEY hiện SS. Đã có SS thì Tạo = Vào. |
+| **T2** | Ô SS = số bàn nhóm, bấm **Vào** | như T2a bước (1)–(3), rồi vào đúng số bàn bằng **op 8** · xác nhận cùng bàn với KEY · SẴN SÀNG: bấm sẵn sàng | Acc vào trước SẴN SÀNG, acc vào sau CHƯA SẴN SÀNG. Vào lỗi → trả lại vai trò cho acc sau. |
 | **T2b** | Ô SS = số bàn **khác** nhóm, bấm **Vào** | vào bàn với mật khẩu rỗng (như bấm bàn trong sảnh) | Không có vai trò. |
-| **T3** | Bấm **ReJoin** | vào lại bàn nhóm bằng key (như T2, giữ vai trò) | |
-| **T4** | Bấm **Bàn khác** (acc KEY) | như T1: rời bàn, tìm bàn chờ khác | Các acc khác **không** tự chuyển; người dùng bấm Vào ở bàn mới. |
+| **T3** | Bấm **ReJoin** (công tắc) | **Bật**: vào lại bàn nhóm (như T2, giữ vai trò) và từ đó **mỗi lần bị đá tự vào lại ngay**, kể cả khi TỰ ĐỘNG không tích. Bấm lần nữa khi đang ngồi → **tắt** (vẫn ngồi). | Nút hiện "ReJoin ●" khi bật. Thoát bàn thì tắt. |
+| **T4** | Bấm **Bàn khác** (acc KEY) | như T1: rời bàn, Dò Key bàn trống mới | Các acc khác **không** tự chuyển; người dùng bấm Tạo / Vào ở bàn mới. |
 | **T5** | Bấm **Thoát** | rời bàn | SẴN SÀNG / CHƯA SẴN SÀNG: trả vai trò. KEY: giữ vai trò (có thể Vào lại). |
-| **T6** | *Bị server đá* | **không làm gì**; báo "BỊ ĐÁ · bấm ReJoin" | Vai trò giữ nguyên. |
+| **T6** | *Bị server đá*, ReJoin **tắt** | **không làm gì**; báo "BỊ ĐÁ · bấm ReJoin" | Vai trò giữ nguyên. (ReJoin **bật** → như A3.) |
 | **T7** | *Bàn không còn* (Vào/ReJoin báo "Phòng không tồn tại") | giải tán nhóm | Báo "Bàn đã mất — bấm Tìm bàn". |
 
 ## 2. Chế độ TỰ ĐỘNG — ô ☐ TỰ ĐỘNG ở cuối tool
@@ -57,12 +64,12 @@ Chỉ chạy khi ô **được tích**. Acc KEY = acc đầu tiên (thứ tự A
 
 | Mã | Tình huống | Tool làm (tuần tự, mỗi bước có nhịp) |
 |---|---|---|
-| **A1** | Tích ô, **chưa có nhóm** (cần chọn Tiền) | (1) từng acc đang ngồi bàn nào đó → rời bàn · (2) T1 cho acc KEY · (3) T2 cho acc thứ 2 (SẴN SÀNG) · (4) T2 cho acc thứ 3 (CHƯA SẴN SÀNG) · (5) kiểm tra cả nhóm cùng bàn |
-| **A2** | Tích ô, **đã có nhóm** (tạo bằng tay) | Giữ nhóm. Acc của nhóm đang không ngồi → vào lại (T3). Acc đang ở game nhưng chưa trong nhóm → vào thêm (T2). |
-| **A3** | Một acc **bị đá** | chờ nhịp → vào lại đúng bàn bằng key, giữ vai trò. Tối đa 5 lần/phút/acc; quá → dừng tự vào lại cho acc đó và báo lỗi. |
-| **A4** | **Bàn không còn** (vào lại báo "Phòng không tồn tại") | làm lại A1 với cùng Tiền và cùng acc KEY (tìm bàn chờ khác). |
-| **A5** | Bấm **Bàn khác** | làm lại A1 (mọi acc rời bàn cũ, tìm bàn chờ khác, gom lại). |
-| **A6** | **Bỏ tích** ô | huỷ mọi việc tự động đang chờ; ghế giữ nguyên; nhóm giữ nguyên (tiếp tục bằng tay). |
+| **A1** | Tích ô, **chưa có nhóm** (cần chọn Tiền) | (1) từng acc đang ngồi bàn nào đó → rời bàn · (2) T1 (Dò Key) cho acc KEY · (3) T2a (Tạo) cho acc thứ 2 (SẴN SÀNG) — ra số bàn · (4) T2 (Vào) cho acc thứ 3 (CHƯA SẴN SÀNG) · (5) bật **ReJoin** cho acc SẴN SÀNG và CHƯA SẴN SÀNG — đúng những nút người dùng sẽ bấm tay, cùng nhịp |
+| **A2** | Tích ô, **đã có nhóm** (tạo bằng tay) | Giữ nhóm. Acc của nhóm đang không ngồi → vào lại. Acc đang ở game nhưng chưa trong nhóm → Tạo (chưa có số bàn) hoặc Vào. |
+| **A3** | Một acc **bị đá** | chờ nhịp → vào lại đúng số bàn (op 8), giữ vai trò. **Mỗi lần**, không giới hạn (acc CHƯA SẴN SÀNG bị đá ~10 giây/lần là bình thường). Chỉ dừng khi bàn không còn (A4). |
+| **A4** | **Bàn không còn** (vào lại báo "Phòng không tồn tại") | làm lại A1 với cùng Tiền và cùng acc KEY (Dò Key bàn trống mới). |
+| **A5** | Bấm **Bàn khác** | làm lại A1 (mọi acc rời bàn cũ, Dò Key bàn trống mới, gom lại). |
+| **A6** | **Bỏ tích** ô | huỷ mọi việc tự động đang chờ; tắt các ReJoin mà TỰ ĐỘNG đã bật (ReJoin người dùng tự bật thì giữ); ghế giữ nguyên; nhóm giữ nguyên (tiếp tục bằng tay). |
 
 ## 3. Nút trên tool (dùng cho cả hai chế độ)
 
@@ -77,27 +84,27 @@ Chỉ chạy khi ô **được tích**. Acc KEY = acc đầu tiên (thứ tự A
 - Tự bấm **Bắt đầu** cho chủ bàn.
 - **Tạo bàn riêng** (308) hay tự sinh mật khẩu bàn: bàn như vậy người chơi khác không vào được từ sảnh.
 - Lấy số bàn từ một dòng trong danh sách sảnh rồi coi đó là bàn của nhóm (xem §5).
+- Ngồi lại ở bàn người lạ khi đang Tạo: bàn vào thật mà không có acc KEY → rời ngay.
+- Vào một số bàn bằng op 3 (đó là lệnh vào kênh / dò mật khẩu, không phải "vào đúng bàn").
 - Gửi token đăng nhập hoặc mã lấy từ bàn khác làm mật khẩu.
 - Hai acc gửi lệnh cùng một lúc, hoặc gửi lệnh không có nhịp.
 - Tự làm bất cứ việc gì khi ô TỰ ĐỘNG không tích (ngoài đúng nút người dùng bấm).
 
-## 5. Vì sao bàn của nhóm phải xin từ lệnh 307 (2026-10-02)
-
-Ba cách lấy bàn, và bằng chứng cho từng cách:
+## 5. Vì sao làm theo cách của tool đối thủ (2026-10-03)
 
 | Cách | Kết quả | Bằng chứng |
 |---|---|---|
-| Lấy một **số bàn trong danh sách sảnh** rồi cùng vào | Không gom được nhóm | Log 09-21 11:28: B1 và B2 cùng vào số bàn `3738108` (uC=1, Mu=4, cược 100, mật khẩu rỗng) → **mỗi acc thành chủ một bàn mới** (`ps=1`, `C:true`). Thêm nữa: danh sách (cmd 300) **không có bàn nào uC=0**, và mức cược đang chọn có thể **không có bàn nào còn ≥3 chỗ** (ví dụ lúc đó cược 100 có 0 bàn). Và `TABLE_STATE` không chứa số bàn nên sau khi vào, tool cũng **không biết mình ở bàn nào** để báo cho 2 acc kia. |
-| **Tạo bàn riêng** (308) | Nhóm ngồi một mình | Phỏm bắt buộc có mật khẩu bàn (log 09-21 12:02: gửi 308 `pwd` rỗng → máy chủ im lặng 3 lần), mà bàn có mật khẩu thì **người chơi khác không vào được từ sảnh**. |
-| **Xin bàn chờ công khai** (307, kèm mức cược) | Đúng yêu cầu | Máy chủ tự chọn bàn công khai còn chỗ và trả `ri.rid` + `ri.pwd` — tool biết chính xác số bàn để 2 acc kia vào, và bàn vẫn công khai (log 09-21 11:28: 2 giây sau khi một acc ngồi xuống, một người lạ vào cùng bàn). |
+| Lấy một **số bàn trong danh sách sảnh** rồi cùng vào **bằng op 3** | Không gom được nhóm | Log 09-21 11:28: B1 và B2 cùng gửi op 3 vào số bàn `3738108` → **mỗi acc thành chủ một bàn mới**. op 3 không phải lệnh "vào đúng bàn này". |
+| **Tạo bàn riêng** (308) | Nhóm ngồi một mình | Phỏm bắt buộc có mật khẩu bàn (log 09-21 12:02), mà bàn có mật khẩu thì người chơi khác không vào được từ sảnh. |
+| Một acc **xin bàn 313 rồi ngồi luôn** (bản 10-02) | Hay ngồi chung người lạ, KEY không phải chủ bàn | Câu trả lời 313 gọi tên bàn đang có người; ngồi vào đó thì chủ bàn là người lạ. |
+| **Dò Key + Tạo + op 8** (tool đối thủ) | Đúng yêu cầu | Log 10-02 22:24–22:31: acc A ngồi một mình (chủ bàn), acc B dò 313 khoảng 85 giây rồi vào được bàn A bằng op 8, acc C bấm Vào cùng số bàn → 3 acc cùng bàn; acc CHƯA SS bị đá 10 giây/lần và vào lại 9 lần liên tiếp đúng bàn đó. |
+
+Lỗi đã biết của tool đối thủ mà tool này **không** chép: nó vào thật mọi bàn có 1 người mà không kiểm tra người đó có
+phải acc KEY không (log: acc C hai lần ngồi vào bàn của `riftraidpu454`). Tool này kiểm tra uid của KEY trong ps[] và
+rời ngay nếu không phải.
 
 Kéo theo đó, các phần sau đã gỡ vì không còn đường nào chạm tới: bộ lọc bàn (`table-qualify`), khoá tìm bàn
 (`find-lock`), máy trạng thái HOST/FOLLOWER cũ (acquireHost / joinFollowers / runDiscovery / recoverHost), hai
 thí nghiệm join (`join-experiment`, `host-anchored-join`), `room-scanner`, `shared-room-session`,
-`stake-catalog`, `phom-simulator-controller`, ô chọn "người tìm bàn", bảng điều khiển thủ công cũ trong tool, và
-(2026-10-02) lệnh tạo bàn riêng 308 + bộ sinh key 6 số.
-
-Kéo theo đó, các phần sau cũng đã gỡ vì không còn đường nào chạm tới: bộ lọc bàn (`table-qualify`), khoá tìm bàn
-(`find-lock`), máy trạng thái HOST/FOLLOWER cũ (acquireHost / joinFollowers / runDiscovery / recoverHost), hai
-thí nghiệm join (`join-experiment`, `host-anchored-join`), `room-scanner`, `shared-room-session`,
-`stake-catalog`, `phom-simulator-controller`, ô chọn "người tìm bàn" và bảng điều khiển thủ công cũ trong tool.
+`stake-catalog`, `phom-simulator-controller`, ô chọn "người tìm bàn", bảng điều khiển thủ công cũ trong tool, lệnh
+tạo bàn riêng 308 + bộ sinh key 6 số, và (2026-10-03) `findPublicTable` + giới hạn 5 lần vào lại/phút.

@@ -26,19 +26,32 @@ function buildChannelListFrame(aid) { return JSON.stringify([6, ZONE, 'channelPl
 // things the answer must be checked for: `rn` ends with '#n' for a stake CHANNEL (e.g. rid 145 "Phom#6"), which is
 // not a shareable số bàn, and `Mu - uC` is the room actually left at that table.
 //
-// This is what the tool uses instead of CREATE_TABLE (308): a created Phỏm table always needs a password (the
-// server silently drops a 308 without one), and a password-locked table is one NO other player can enter from the
-// lobby list — the opposite of what the group needs.
+// The tool asks it from the NON-KEY accounts only ("Tạo"): repeated until the server names a table with exactly one
+// player, which may be the KEY sitting alone (see buildProbeJoinFrame / buildJoinTableFrame).
 function buildQuickPlayFrame({ stake = null } = {}) {
   const p = { cmd: 313, gid: GID, aid: 1 };
   if (Number(stake) > 0) p.b = Number(stake);
   return JSON.stringify([6, ZONE, 'channelPlugin', p]);
 }
 // op 3 — join a room, exactly as the game client's requestJoinRoom(rid, sid, pwd) builds it: [3,"Simms",rid,pwd].
-// Element [3] is the room's PASSWORD: for a public lobby table it is '' (what the server itself hands back in
-// ri.pwd), for a locked table it is that table's password. Membership is proven by the ensuing TABLE_STATE ps[],
-// never by this send.
+// Element [3] is the room's PASSWORD. Sent to a 7-digit TABLE this is NOT "sit at this table" (09-21: two browsers
+// sent it to the same số bàn and each became host of a fresh table) — that is op 8 below. The tool uses op 3 only for
+// the two shapes the reference tool uses: the stake-channel quick-play and the password probe.
 function buildJoinFrame(channel, code = '') { return JSON.stringify([3, ZONE, channel, code != null ? String(code) : '']); }
+// op 8 — sit at THIS EXACT table: [8,"Simms",<số bàn>,"",8] (last element = gid). Taken from the reference tool's
+// live traffic (capture 2026-10-02 22:24/22:27/22:28, three accounts merged): every "Vào" / "ReJoin" it sends is
+// this frame, the server answers [3,true,0,-1,null] + the TABLE_STATE of that very table (the KEY's ps[] row), and a
+// kicked member sent it 9 times in a row and landed back at the same table every time.
+function buildJoinTableFrame(rid, pwd = '') { return JSON.stringify([8, ZONE, Number(rid), pwd != null ? String(pwd) : '', GID]); }
+// op 3 with the quick-play flag — "seat me at some table of this stake CHANNEL": [3,"Simms",<channel rid>,"",true].
+// The reference tool's "Dò Key" repeats it (leaving again whenever strangers are already seated) until the account
+// lands ALONE at a table, i.e. it is the host of an empty public table — the group's KEY.
+function buildChannelQuickJoinFrame(channelRid) { return JSON.stringify([3, ZONE, Number(channelRid), '', true]); }
+// The password the reference tool's "Tạo" sends after every 313 answer: one invisible U+200B. No table has it, so the
+// join is always refused (103 "Sai mật khẩu phòng") and the account never sits down at a stranger's table; only a
+// table with one player (uC 1 — maybe the KEY, alone) is then really joined, with op 8.
+const PROBE_PASSWORD = '​';
+function buildProbeJoinFrame(rid) { return buildJoinFrame(Number(rid), PROBE_PASSWORD); }
 // Room-plugin cmd 5 at the current table = the game's SẴN SÀNG (INGAME_USER_READY; client shape [5,"Simms",roomID,
 // {cmd:5}] from its sendReady). For the table HOST the same cmd is BẮT ĐẦU — the tool never sends it for a host.
 function buildTableReadyFrame(rid) { return JSON.stringify([5, ZONE, Number(rid), { cmd: 5 }]); }
@@ -48,4 +61,4 @@ function buildAutoReadyPrefFrame(on) { return JSON.stringify([6, ZONE, 'channelP
 // op 4 — leave the CURRENT room (-1 = the room this socket is in).
 function buildLeaveFrame() { return JSON.stringify([4, ZONE, -1]); }
 
-module.exports = { buildTableReadyFrame, buildAutoReadyPrefFrame, buildQuickPlayFrame, buildChannelListFrame, buildJoinFrame, buildLeaveFrame };
+module.exports = { buildTableReadyFrame, buildAutoReadyPrefFrame, buildQuickPlayFrame, buildChannelListFrame, buildJoinFrame, buildJoinTableFrame, buildChannelQuickJoinFrame, buildProbeJoinFrame, PROBE_PASSWORD, buildLeaveFrame };

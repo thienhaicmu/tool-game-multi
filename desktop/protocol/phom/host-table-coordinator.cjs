@@ -5,7 +5,7 @@ const { performance } = require('node:perf_hooks');
 const { PhomContext } = require('./phom-context.cjs');
 const { reduceHand, emptyHand, SYNC } = require('./hand-reducer.cjs');
 const { ZONE, GID } = require('./phom-frame-classify.cjs');
-const { buildTableReadyFrame, buildAutoReadyPrefFrame, buildQuickPlayFrame, buildChannelListFrame, buildJoinFrame, buildLeaveFrame } = require('./phom-wire.cjs');
+const { buildTableReadyFrame, buildAutoReadyPrefFrame, buildQuickPlayFrame, buildChannelListFrame, buildJoinTableFrame, buildChannelQuickJoinFrame, buildProbeJoinFrame, buildLeaveFrame } = require('./phom-wire.cjs');
 const { remainingCardsView } = require('./remaining-cards.cjs');
 const { createCardObserver } = require('./phom-card-observer.cjs');
 const { redactDiagnostic, maskSecret } = require('./diagnostic-redaction.cjs');
@@ -82,6 +82,18 @@ const REROLL_COOLDOWN_MS = 1500;
 // (the game client's own + ours) one reply can be a refusal while the other seats the player.
 const JOIN_REJECT_GRACE_MS = 600;
 
+// The game socket is shared with the site's other games, and they broadcast constantly (capture 2026-10-02, one
+// browser, 183s: 2009× cmd 10004 + 519× 10003 for mini-games gid 10112/10110/10888, 149× 1015, 61× 10000 jackpots,
+// 7× 10 "nổ hũ" ticker — about 15 frames/s). Each one used to run the full evaluate + snapshot + hands emit + a WIRE
+// log line + an IPC to the renderer, three browsers at once, all game long. A push that names another game's gid,
+// or is one of those broadcast commands, is dropped right after the context has seen it.
+const FOREIGN_PUSH_CMDS = new Set([10, 1015, 10000, 10003, 10004]);
+function isForeignPush(cls, meta) {
+  if (!cls || cls.known || cls.op !== 5 || meta.direction === 'send') return false;
+  if (cls.gid != null && Number(cls.gid) !== GID) return true;
+  return cls.cmd != null && FOREIGN_PUSH_CMDS.has(Number(cls.cmd));
+}
+
 class HostTableCoordinator extends EventEmitter {
   constructor(deps = {}) {
     super();
@@ -98,12 +110,10 @@ class HostTableCoordinator extends EventEmitter {
         this._leaveConfirmMs = deps.leaveConfirmMs != null ? Number(deps.leaveConfirmMs) : LEAVE_CONFIRM_MS; // §37
     this._rerollCooldownMs = deps.rerollCooldownMs != null ? Number(deps.rerollCooldownMs) : REROLL_COOLDOWN_MS; // §53
     this._joinRejectGraceMs = deps.joinRejectGraceMs != null ? Number(deps.joinRejectGraceMs) : JOIN_REJECT_GRACE_MS; // §53
-    // §find — how long TÌM BÀN gives the game client to JOIN the named table by itself before the tool sends the
-    // JOIN. The 313 answer does not seat anyone (live capture 2026-10-02), so this is a short grace period, not a
-    // wait: it only avoids a double JOIN when the player drove the search from the game's own UI.
-    this._assignJoinGraceMs = deps.assignJoinGraceMs != null ? Number(deps.assignJoinGraceMs) : (deps.createAutoJoinMs != null ? Number(deps.createAutoJoinMs) : 900);
-    // §find — the whole TÌM BÀN attempt budget. The server answers "Không tìm thấy phòng thích hợp!" whenever no
-    // public table at this stake has room, so the tool keeps asking (paced) for this long before telling the user.
+    // §dò-key — how long TẠO waits for the refusal of its U+200B probe JOIN (live: ~50ms) before the next step.
+    this._probeAckMs = deps.probeAckMs != null ? Number(deps.probeAckMs) : 1500;
+    // §dò-key — the whole DÒ KEY / TẠO budget. The server keeps naming tables of strangers, so the tool keeps asking
+    // (paced) for this long before telling the user.
     this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : 180000;
     this._delay = deps.delay || ((ms) => new Promise((r) => setTimeout(r, ms)));
 
@@ -195,6 +205,8 @@ class HostTableCoordinator extends EventEmitter {
     if (!rec) return null;
     const now = meta.now != null ? meta.now : this._now();
     const cls = rec.ctx.observe({ ...meta, now });
+    // Another game's broadcast on the shared socket — nothing for Phỏm, so no evaluate / snapshot / log / IPC.
+    if (isForeignPush(cls, meta)) return cls;
     if (cls && cls.isHandEvent) {
       rec.hand = reduceHand(rec.hand, cls, { profileId: rec.id, profileUid: rec.ctx.uid(), seq: Number.isFinite(meta.seq) ? meta.seq : null, now });
     }
@@ -400,10 +412,16 @@ class HostTableCoordinator extends EventEmitter {
   _seatedNow(rec) { return !!rec && (this._ownSeated(rec) || rec.manualState === 'JOINED'); }
   // Authoritative logged-in username = the display name (dn) on this browser's OWN seat in ps[]. From
   // server evidence only; USER_UNKNOWN until seated (never guessed, never a "Browser N" placeholder §11).
-  _username(rec) { const ts = rec.ctx.tableState(); const uid = rec.ctx.uid(); if (!ts || !uid) return null; const mine = (ts.seats || []).find((s) => s.uid === uid); return mine && mine.dn ? mine.dn : null; }
+  // Before it sits anywhere, the name the server sent with the login identity (cmd 100 dn) — so the bar and the tool
+  // name the account from the moment it logs in.
+  _username(rec) {
+    const ts = rec.ctx.tableState(); const uid = rec.ctx.uid();
+    const mine = ts && uid ? (ts.seats || []).find((s) => s.uid === uid) : null;
+    return mine && mine.dn ? mine.dn : (rec.ctx.displayName() || null);
+  }
 
   // JOIN a specific RID on ONE browser; confirm from that browser's own ps[]. `intent` labels the trace
-  // (FIND vs JOIN vs REJOIN) but the wire frame is identical (buildJoinFrame(rid)).
+  // (FIND vs JOIN vs REJOIN) but the wire frame is identical: op 8, "sit at this exact table" (buildJoinTableFrame).
   async manualJoinRoom(profileId, rid, opts = {}) {
     if (!this._guard()) return this._unauthorized();
     const rec = this._rec(profileId);
@@ -433,7 +451,7 @@ class HostTableCoordinator extends EventEmitter {
     // §co-seat — a follower JOIN carries the anchor's room CODE (opts.roomCode) so the server seats it at the
     // anchor's exact table; a FIND / public join sends '' (the server picks a fresh table for the finder).
     const roomCode = opts.roomCode != null ? String(opts.roomCode) : '';
-    try { const result = await rec.send(buildJoinFrame(r, roomCode), ctx); if (result?.ok === false) throw new Error('JOIN_SEND_FAILED'); } catch (e) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; this._findLog('FX_JOIN_REJECTED', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, error: rec.lastError }; }
+    try { const result = await rec.send(buildJoinTableFrame(r, roomCode), ctx); if (result?.ok === false) throw new Error('JOIN_SEND_FAILED'); } catch (e) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_JOIN_FAILED', message: String(e && e.message || e) }; this._findLog('FX_JOIN_REJECTED', rec, fg, { rid: r, intent }); this.emit('update', this.snapshot()); return { ok: false, id: rec.id, rid: r, error: rec.lastError }; }
     if (this._stopped || rec._manualGen !== myGen) return { ok: false, id: rec.id, superseded: true };
     if (roomCode) this._findLog('F6b_JOIN_WITH_CODE', rec, fg, { rid: r, intent });
     this._coseatLog('JOIN_SENT', rec, { rid: r, intent, roomCode });
@@ -692,141 +710,232 @@ class HostTableCoordinator extends EventEmitter {
     } finally { if (rec._followGen === myGen) rec._followInFlight = false; }
   }
 
-  // §find — TÌM BÀN on ONE browser: ask the server for a PUBLIC lobby table that still has room, via the game's own
-  // QUICK_PLAY (cmd 307 with the stake — the game's requestquickPlayBet). Source of the protocol: the game client's
-  // requestquickPlay/requestquickPlayBet + onReceiveQuickPlay, read from its code cache (2026-09-21 / 2026-10-02).
+  // §dò-key — the reference tool's table protocol, read from the live traffic of its three browsers (capture
+  // 2026-10-02 22:24 / 22:27 / 22:28, merged by time). Two searches, run by two kinds of account:
   //
-  // Why not the game's CREATE_TABLE (308), which the tool used before: a Phỏm table cannot be created without a
-  // password (the server silently drops a 308 that has none — live capture 2026-09-21), and a table with a password
-  // is one NO other player can walk into from the lobby list. The group then sat alone forever.
-  // Why not a rid picked out of the lobby list: a JOIN to a listed rid is not honoured as "this exact table" (live
-  // capture 2026-09-21T11-28: two browsers JOINed số bàn 3738108 and each became host of its own fresh table), the
-  // list never contains a table with free seats at every stake, and TABLE_STATE carries no rid — so after a plain
-  // JOIN the tool cannot even tell which table it is in. The QUICK_PLAY reply is the ONE place the server names the
-  // table: ri.rid is the real SỐ BÀN and ri.pwd the password a JOIN must carry ('' for a public table), which is
-  // exactly what the other two browsers need.
+  //  DÒ KEY (the KEY account) — quick-play into the stake CHANNEL, [3,"Simms",<channel rid>,"",true]: the server seats
+  //  the account at some table of that stake. Strangers already there → leave and ask again (every ~1–2s) until the
+  //  account sits ALONE, i.e. it is the host of a fresh public table. That table is the group's. TABLE_STATE carries no
+  //  rid, so at this point nobody knows its số bàn yet — not even the KEY.
   //
-  // The reply arrives as ROOM_ASSIGNED; the game client JOINs it by itself, so the tool waits for that JOIN first and
-  // only sends its own when the game did not (a second JOIN while seated makes the server move the player — §53).
-  // When no table qualifies ("Không tìm thấy phòng thích hợp!") the ask is repeated, paced, until the budget
-  // (findBudgetMs, 3 minutes) runs out. A table that cannot hold the rest of the group (seatsNeeded) is left again.
-  // PRIMITIVE — one browser, one table. The group flow on top of this lives in table-group.cjs.
-  async findPublicTable(profileId, opts = {}) {
-    return this._withFindLock(profileId, () => this._findPublicTable(profileId, opts));
+  //  TẠO (the other accounts) — ask 313 for a table of the stake, over and over. The answer NAMES a table (rid + uC)
+  //  and seats nobody. Every named table gets a JOIN with the invisible password U+200B, which is always refused (103
+  //  "Sai mật khẩu phòng") — so the account never ends up at a stranger's table, whatever the game client does with
+  //  the answer. A table with exactly ONE player may be the KEY sitting alone: that one is really joined (op 8) and
+  //  kept only when the KEY's uid is in its ps[] (the reference tool skips that check and twice sat down at a
+  //  stranger's table). The rid of that join IS the group's số bàn; the rest of the group joins it with op 8 too.
+  //
+  // Both give up after findBudgetMs (3 minutes) with a typed error; cancelSearch() stops either at its next step.
+  // PRIMITIVES — one browser each. The group flow on top of them lives in table-group.cjs.
+  async findKeyTable(profileId, opts = {}) {
+    return this._withFindLock(profileId, () => this._findKeyTable(profileId, opts));
   }
-  async _findPublicTable(profileId, opts = {}) {
-    if (!this._guard()) return this._unauthorized();
+  async scanForKeyTable(profileId, opts = {}) {
+    return this._withFindLock(profileId, () => this._scanForKeyTable(profileId, opts));
+  }
+  // DỪNG on the header: stop the DÒ KEY / TẠO running on this browser. A seat it already holds is kept.
+  cancelSearch(profileId) {
     const rec = this._rec(profileId);
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
-    const stake = Number(opts.stake);
-    if (!Number.isFinite(stake) || stake <= 0) return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_STAKE', message: 'Chọn mức cược để tìm bàn' } };
-    if (!rec.ctx.sendContext()) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
-    if (this._ownSeated(rec)) {
-      const g = (rec._manualGen = (rec._manualGen || 0) + 1);
-      const lv = await this._leaveConfirmed(rec, g);
-      if (!lv.confirmed) return { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError || { code: 'PHOM_OPERATION_CANCELLED' } };
-    }
-    // Seats the rest of the group still needs at the table this browser lands on (2 = the other two accounts).
-    const seatsNeeded = opts.seatsNeeded != null ? Number(opts.seatsNeeded) : 2;
-    // BÀN KHÁC — the table to move away from, and how many times it may be handed back before the tool accepts it.
-    const avoidRid = opts.avoidRid != null ? Number(opts.avoidRid) : null;
-    let avoidLeft = avoidRid != null ? (opts.avoidTries != null ? Number(opts.avoidTries) : 3) : 0;
-    const deadline = this._now() + (opts.budgetMs != null ? Number(opts.budgetMs) : this._findBudgetMs);
-    const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
-    const fail = (code, message, extra = {}) => {
-      rec.manualState = 'ERROR'; rec.lastError = { code, message };
-      this._coseatLog('FIND_FAIL', rec, { code, ...extra });
-      this.emit('update', this.snapshot());
-      return { ok: false, id: rec.id, error: rec.lastError, ...extra };
-    };
-    let lastMessage = null;
+    rec._searchGen = (rec._searchGen || 0) + 1;
+    rec._manualGen = (rec._manualGen || 0) + 1; // wakes the step that is waiting right now
+    this._searchEnd(rec);
+    this.emit('update', this.snapshot());
+    return { ok: true, id: rec.id };
+  }
+
+  async _findKeyTable(profileId, opts = {}) {
+    const pre = await this._searchPrepare(profileId, opts);
+    if (pre.result) return pre.result;
+    const { rec, stake, sg, deadline, timeoutMs } = pre;
+    const channel = this._stakeChannel(rec, stake);
+    if (channel == null) return this._searchFail(rec, 'PHOM_NO_STAKE_CHANNEL', `Chưa thấy kênh cược ${stake} trong sảnh — tải lại danh sách cược rồi thử lại`, { stake });
+    this._searchBegin(rec, 'KEY');
     for (let attempt = 0; ; attempt++) {
+      if (!await this._searchBreathe(rec, sg, opts)) return this._searchCancelled(rec);
+      rec.manualState = 'SEARCHING'; rec._searchAttempt = attempt + 1;
       const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
-      if (typeof opts.pace === 'function') { const alive = await opts.pace(); if (alive === false || rec._manualGen !== myGen) return { ok: false, id: rec.id, superseded: true }; }
-      const assignBefore = rec.ctx.roomAssignSeq();
       const tableBefore = rec.ctx.tableSeq();
-      const joinBefore = rec.ctx.joinSendSeq();
-      rec.manualState = 'SEARCHING'; rec.lastError = null;
-      this._coseatLog('FIND_SENT', rec, { stake, attempt });
+      const ackBefore = rec.ctx.ackSeq();
+      this._coseatLog('KEY_SCAN_SENT', rec, { stake, channel, attempt });
+      this.emit('update', this.snapshot());
+      try {
+        const sent = await rec.send(buildChannelQuickJoinFrame(channel), rec.ctx.sendContext());
+        if (sent?.ok === false) throw new Error('QUICK_JOIN_SEND_FAILED');
+      } catch (e) { return this._searchFail(rec, 'PHOM_FIND_FAILED', String(e && e.message || e)); }
+      const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
+      const refusal = () => { const a = rec.ctx.lastJoinAck(); return a && a.seq > ackBefore && a.accepted === false ? a : null; };
+      await this._waitManual(() => seatedFresh() || !!refusal(), rec, myGen, timeoutMs);
+      if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+      if (!seatedFresh()) {
+        const r = refusal();
+        this._coseatLog('KEY_SCAN_NOT_SEATED', rec, { attempt, code: r ? r.code : null, message: r ? r.message : null });
+        if (this._now() >= deadline) return this._searchFail(rec, 'PHOM_NO_KEY_TABLE', `Không ngồi được một mình ở bàn nào cược ${stake} sau 3 phút${r && r.message ? ` — máy chủ: ${r.message}` : ''}`, { stake, attempts: attempt + 1 });
+        continue;
+      }
+      const others = rec.ctx.tableState().seats.filter((s) => s.uid !== rec.ctx.uid()).length;
+      if (others === 0) {
+        // Alone = host of a fresh public table. Its số bàn is learnt later, when a TẠO lands here (adoptTableRid);
+        // until then the seat is shown under the stake channel it came through (KÊNH, never SS).
+        rec._joinedRid = channel; rec._joinedViaChannel = true; rec._joinedRidValidated = true;
+        rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+        this._searchEnd(rec);
+        this._coseatLog('KEY_TABLE_OK', rec, { stake, channel, attempt });
+        this._mark('M_KEY_CONFIRMED', { id: rec.id, channel, seat: rec.ctx.seat() });
+        this.emit('update', this.snapshot());
+        return { ok: true, id: rec.id, channel, state: 'JOINED', seat: rec.ctx.seat(), attempts: attempt + 1 };
+      }
+      this._coseatLog('KEY_SCAN_STRANGERS', rec, { attempt, others });
+      const lv = await this._leaveConfirmed(rec, myGen);
+      if (lv.cancelled || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+      if (!lv.confirmed) { this._searchEnd(rec); return { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError }; }
+      if (this._now() >= deadline) return this._searchFail(rec, 'PHOM_NO_KEY_TABLE', `Bàn nào cược ${stake} cũng đã có người — chưa ngồi được một mình sau 3 phút`, { stake, attempts: attempt + 1 });
+    }
+  }
+
+  async _scanForKeyTable(profileId, opts = {}) {
+    const pre = await this._searchPrepare(profileId, opts);
+    if (pre.result) return pre.result;
+    const { rec, stake, sg, deadline, timeoutMs } = pre;
+    const keyUid = opts.keyUid != null ? String(opts.keyUid) : null;
+    if (!keyUid) return this._searchFail(rec, 'PHOM_NO_KEY', 'Chưa có acc KEY ngồi bàn — bấm Dò Key ở một trình duyệt trước');
+    this._searchBegin(rec, 'SCAN');
+    let lastMessage = null;
+    const giveUp = (attempt) => this._searchFail(rec, 'PHOM_NO_KEY_TABLE', `Chưa dò ra bàn của acc KEY (cược ${stake}) sau 3 phút${lastMessage ? ` — máy chủ: ${lastMessage}` : ''}`, { stake, attempts: attempt + 1 });
+    for (let attempt = 0; ; attempt++) {
+      if (!await this._searchBreathe(rec, sg, opts)) return this._searchCancelled(rec);
+      rec.manualState = 'SEARCHING'; rec._searchAttempt = attempt + 1;
+      const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+      const assignBefore = rec.ctx.roomAssignSeq();
+      // Taken BEFORE the ask: the game client may sit the account down the instant the answer arrives.
+      const tableBefore = rec.ctx.tableSeq();
+      this._coseatLog('SCAN_SENT', rec, { stake, attempt });
       this.emit('update', this.snapshot());
       try {
         const sent = await rec.send(buildQuickPlayFrame({ stake }), rec.ctx.sendContext());
         if (sent?.ok === false) throw new Error('QUICK_PLAY_SEND_FAILED');
-      } catch (e) { return fail('PHOM_FIND_FAILED', String(e && e.message || e)); }
+      } catch (e) { return this._searchFail(rec, 'PHOM_FIND_FAILED', String(e && e.message || e)); }
       const reply = () => { const r = rec.ctx.lastRoomAssign(); return r && r.seq > assignBefore ? r : null; };
       await this._waitManual(() => !!reply(), rec, myGen, timeoutMs);
-      if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+      if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
       const res = reply();
-      // No answer at all / no table free → ask again while the budget lasts (the lobby fills and empties constantly).
       if (!res || !res.ok) {
         lastMessage = res && res.message ? res.message : lastMessage;
-        this._coseatLog('FIND_NO_TABLE', rec, { stake, attempt, message: lastMessage });
-        if (this._now() >= deadline) {
-          return fail('PHOM_NO_PUBLIC_TABLE', `Không tìm thấy bàn chờ cược ${stake} sau 3 phút${lastMessage ? ` — máy chủ: ${lastMessage}` : ''}`, { stake, attempts: attempt + 1 });
-        }
-        await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
-        if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+        this._coseatLog('SCAN_NO_TABLE', rec, { attempt, message: lastMessage });
+        if (this._now() >= deadline) return giveUp(attempt);
         continue;
       }
       const rid = Number(res.rid);
-      const roomKey = typeof res.password === 'string' ? res.password : '';
-      // The answer is only a NAME, not a seat (live capture 2026-10-02: 50 answers, no seating). Everything that
-      // can disqualify the table is already in it, so a bad one costs no JOIN at all:
-      //  · a stake CHANNEL ("Phom#6", small rid) is not a shareable số bàn — the old "kênh 139" trap;
-      //  · `Mu - uC` is the room left: the group needs seatsNeeded more chairs;
-      //  · a LOCKED table (hpwd) whose password the answer did not carry is one this tool cannot enter;
-      //  · BÀN KHÁC means "not the table we just left" (the protocol has no "anything but rid" parameter, so the
-      //    tool simply asks again a few times; when the server has nothing else it keeps this one and says so).
-      const taken = Number(res.seated) >= 0 ? Number(res.seated) : 0;
-      const capacity = Number(res.maxPlayers) > 0 ? Number(res.maxPlayers) : this._capacity;
-      const notATable = res.isTable === false;
-      const tooFull = !notATable && capacity - taken < seatsNeeded;
-      // locked, and the answer did not hand us its password → this tool has no way in; with a password it is fine
-      // (that is how the game itself enters a table it was invited to).
-      const locked = !notATable && !tooFull && res.locked === true && !(typeof res.password === 'string' && res.password.length > 0);
-      const sameTable = !notATable && !tooFull && !locked && avoidRid != null && rid === Number(avoidRid) && avoidLeft > 0;
-      if (notATable || tooFull || locked || sameTable) {
-        if (sameTable) avoidLeft--;
-        const why = notATable ? 'FIND_NOT_A_TABLE' : tooFull ? 'FIND_TOO_FULL' : locked ? 'FIND_LOCKED' : 'FIND_SAME_TABLE';
-        this._coseatLog(why, rec, { rid, roomName: res.roomName, taken, capacity, seatsNeeded, attempt });
-        if (tooFull && this._now() >= deadline) return fail('PHOM_NO_PUBLIC_TABLE', `Bàn chờ cược ${stake} nào cũng không còn đủ ${seatsNeeded} chỗ cho nhóm (đã thử 3 phút)`, { stake, attempts: attempt + 1 });
-        if (this._now() >= deadline) return fail('PHOM_NO_PUBLIC_TABLE', `Không tìm thấy bàn chờ cược ${stake} còn đủ chỗ sau 3 phút`, { stake, attempts: attempt + 1 });
-        await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
-        if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+      // The probe: a JOIN that cannot succeed. Waits for its refusal (or for whatever seat the game client's own JOIN
+      // produced) so the next step starts from a known state.
+      const ackBefore = rec.ctx.ackSeq();
+      const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
+      if (res.isTable) {
+        try { await rec.send(buildProbeJoinFrame(rid), rec.ctx.sendContext()); } catch { /* the next ask goes on regardless */ }
+        await this._waitManual(() => { const a = rec.ctx.lastJoinAck(); return !!(a && a.seq > ackBefore) || seatedFresh(); }, rec, myGen, this._probeAckMs);
+        if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+      }
+      if (seatedFresh()) {
+        // Something seated this account anyway (the game client answering the 313 by itself): fine only at the KEY's.
+        if (this._atKeyTable(rec, keyUid)) return this._scanFound(rec, rid, attempt);
+        this._coseatLog('SCAN_UNEXPECTED_SEAT', rec, { rid, attempt });
+        const lv = await this._leaveConfirmed(rec, myGen);
+        if (lv.cancelled || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+        if (!lv.confirmed) { this._searchEnd(rec); return { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError }; }
+        if (this._now() >= deadline) return giveUp(attempt);
         continue;
       }
-      this._coseatLog('FIND_OK', rec, { rid, stake: res.stake, seated: taken, capacity, attempt });
-      // Now take the seat. The game client joins the table it was told about by itself when the player drove the
-      // search; the tool gives it a short grace period and otherwise sends the JOIN, because a SECOND join while
-      // seated makes the server move the player (§53).
-      const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
-      const gameJoined = () => { const j = rec.ctx.lastJoinSend(); return !!(j && j.seq > joinBefore && Number(j.rid) === rid); };
-      await this._waitManual(() => seatedFresh() || gameJoined(), rec, myGen, this._assignJoinGraceMs);
-      if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
-      if (!seatedFresh() && gameJoined()) await this._waitManual(seatedFresh, rec, myGen, timeoutMs);
-      if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
-      if (!seatedFresh()) {
-        if (gameJoined()) return fail('PHOM_JOIN_NOT_CONFIRMED', `Máy chủ xếp vào bàn ${rid} nhưng chưa thấy vào bàn`, { rid });
-        const j = await this.manualJoinRoom(profileId, rid, { intent: 'JOIN', roomCode: roomKey, timeoutMs });
-        // The server refuses a table this tool has no password for ("Sai mật khẩu phòng", code 103) and a table
-        // that filled up while we asked — neither is a failure of TÌM BÀN: ask for another table.
-        if (!j.ok) {
-          const serverCode = Number(j.error && j.error.serverCode);
-          const retryable = serverCode === 103 || serverCode === 102 || /mật khẩu|đầy|hủy/i.test((j.error && j.error.message) || '');
-          if (!retryable || this._now() >= deadline) return { ...j, rid };
-          this._coseatLog('FIND_JOIN_REFUSED', rec, { rid, serverCode, attempt });
-          await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
-          if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
-          continue;
-        }
+      if (!(res.isTable && !res.locked && Number(res.seated) === 1)) {
+        this._coseatLog('SCAN_SKIP', rec, { rid, seated: res.seated, isTable: res.isTable, locked: res.locked, attempt });
+        if (this._now() >= deadline) return giveUp(attempt);
+        continue;
       }
-      rec._joinedRid = rid; rec._lastRid = rid;
-      rec._joinedViaChannel = false; rec._joinedRidValidated = true;
-      rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
-      this._mark('M_FIND_CONFIRMED', { id: rec.id, rid, seat: rec.ctx.seat() });
-      this.emit('update', this.snapshot());
-      return { ok: true, id: rec.id, rid, roomKey, found: true, state: 'JOINED', seat: rec.ctx.seat(), seatsTaken: taken, capacity };
+      // One player at this table — maybe the KEY. Sit down for real and look.
+      this._coseatLog('SCAN_CANDIDATE', rec, { rid, attempt });
+      const j = await this.manualJoinRoom(profileId, rid, { intent: 'JOIN', roomCode: '', timeoutMs });
+      if (j.superseded || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+      if (j.ok && this._atKeyTable(rec, keyUid)) return this._scanFound(rec, rid, attempt);
+      if (j.ok) {
+        const host = (rec.ctx.tableState().seats.find((s) => s.host) || {}).uid || null;
+        this._coseatLog('SCAN_NOT_KEY', rec, { rid, host, attempt });
+        const lv = await this._leaveConfirmed(rec, rec._manualGen);
+        if (lv.cancelled || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+        if (!lv.confirmed) { this._searchEnd(rec); return { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError }; }
+      } else {
+        this._coseatLog('SCAN_JOIN_REFUSED', rec, { rid, serverCode: j.error && j.error.serverCode, attempt });
+      }
+      if (this._now() >= deadline) return giveUp(attempt);
     }
+  }
+
+  // ---- search helpers ----
+  // The stake CHANNEL of this stake (rs[] row "Phom#n", small rid) — what DÒ KEY quick-plays into.
+  _stakeChannel(rec, stake) {
+    const c = (rec.ctx.channels() || []).find((x) => Number(x.b) === Number(stake) && Number(x.rid) < 100000
+      && (x.zn == null || x.zn === ZONE) && (x.gid == null || Number(x.gid) === GID));
+    return c ? Number(c.rid) : null;
+  }
+  _atKeyTable(rec, keyUid) { const ts = rec.ctx.tableState(); return !!(ts && this._ownSeated(rec) && ts.uids.includes(String(keyUid))); }
+  async _searchPrepare(profileId, opts) {
+    if (!this._guard()) return { result: this._unauthorized() };
+    const rec = this._rec(profileId);
+    if (!rec) return { result: { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } } };
+    const stake = Number(opts.stake);
+    if (!Number.isFinite(stake) || stake <= 0) return { result: { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_STAKE', message: 'Chọn mức cược để tìm bàn' } } };
+    if (!rec.ctx.sendContext()) { rec.manualState = 'ERROR'; return { result: { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } } }; }
+    const sg = (rec._searchGen = (rec._searchGen || 0) + 1);
+    if (this._ownSeated(rec)) {
+      const g = (rec._manualGen = (rec._manualGen || 0) + 1);
+      const lv = await this._leaveConfirmed(rec, g);
+      if (!lv.confirmed) return { result: { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError || { code: 'PHOM_OPERATION_CANCELLED' } } };
+    }
+    const deadline = this._now() + (opts.budgetMs != null ? Number(opts.budgetMs) : this._findBudgetMs);
+    return { rec, stake, sg, deadline, timeoutMs: opts.timeoutMs != null ? opts.timeoutMs : 8000 };
+  }
+  _searchBegin(rec, kind) {
+    rec.manualState = 'SEARCHING'; rec._searchKind = kind; rec._searchStartedAt = this._now(); rec._searchAttempt = 0; rec.lastError = null;
+    this.emit('update', this.snapshot());
+  }
+  _searchEnd(rec) {
+    if (rec.manualState === 'SEARCHING') rec.manualState = this._ownSeated(rec) ? 'JOINED' : 'IDLE';
+    rec._searchKind = null; rec._searchStartedAt = null;
+  }
+  _searchStopped(rec, sg) { return this._stopped || rec._searchGen !== sg; }
+  // The pause before every ask: the group's pacing when it drives the search, else the reroll cooldown.
+  async _searchBreathe(rec, sg, opts) {
+    if (this._searchStopped(rec, sg)) return false;
+    if (typeof opts.pace === 'function') { if (await opts.pace() === false) return false; }
+    else await this._waitManual(() => false, rec, rec._manualGen, this._rerollCooldownMs);
+    return !this._searchStopped(rec, sg);
+  }
+  _searchCancelled(rec) {
+    this._searchEnd(rec);
+    this.emit('update', this.snapshot());
+    return { ok: false, id: rec.id, cancelled: true, superseded: true, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'Đã dừng dò bàn' } };
+  }
+  _searchFail(rec, code, message, extra = {}) {
+    this._searchEnd(rec);
+    rec.manualState = 'ERROR'; rec.lastError = { code, message };
+    this._coseatLog('SEARCH_FAIL', rec, { code, ...extra });
+    this.emit('update', this.snapshot());
+    return { ok: false, id: rec.id, error: rec.lastError, ...extra };
+  }
+  _scanFound(rec, rid, attempt) {
+    rec._joinedRid = rid; rec._lastRid = rid; rec._joinedViaChannel = false; rec._joinedRidValidated = true;
+    rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+    this._searchEnd(rec);
+    this._coseatLog('SCAN_KEY_FOUND', rec, { rid, attempt });
+    this._mark('M_SCAN_CONFIRMED', { id: rec.id, rid, seat: rec.ctx.seat() });
+    this.emit('update', this.snapshot());
+    return { ok: true, id: rec.id, rid, found: true, state: 'JOINED', seat: rec.ctx.seat(), attempts: attempt + 1 };
+  }
+  // The KEY learns its own số bàn from the account that found it: from now on it shows SS <rid>, not the channel.
+  adoptTableRid(profileId, rid) {
+    const rec = this._rec(profileId);
+    if (!rec || !this._ownSeated(rec) || !Number.isFinite(Number(rid))) return false;
+    rec._joinedRid = Number(rid); rec._lastRid = Number(rid); rec._joinedViaChannel = false; rec._joinedRidValidated = true;
+    this.emit('update', this.snapshot());
+    return true;
   }
 
   // ---- PRIMITIVES used by table-group.cjs (the group/role/auto flow lives there, not here) ----
@@ -918,6 +1027,9 @@ class HostTableCoordinator extends EventEmitter {
         isSelectedFinder: this._finderId != null && rec.id === this._finderId,
         username: this._username(rec) || 'USER_UNKNOWN',
         connected: c.connected, socketReady: c.socketReady,
+        loggedIn: rec.ctx.loggedIn(),
+        // The account's in-game ID: the number of its uid ("1_365473596" → "365473596"), shown beside its name.
+        accountId: accountIdOf(c.uid),
         // When a frame from THIS browser's game socket last arrived. A browser that is in the game but whose frames
         // stopped is NOT "chưa vào game" — it is a lost data stream, and the surfaces must say so (and re-hook).
         lastFrameAt: c.lastFrameAt != null ? c.lastFrameAt : null,
@@ -947,6 +1059,10 @@ class HostTableCoordinator extends EventEmitter {
         betOptions: this._betOptionsFor(rec),
         canRejoin: (rec._joinedRid != null || rec._lastRid != null),
         manualState: rec.manualState || (c.socketReady && c.connected ? 'READY' : 'CLOSED'),
+        // DÒ KEY ('KEY') / TẠO ('SCAN') in progress: which one, how many asks so far, how long it has been running.
+        searchKind: rec._searchKind || null,
+        searchAttempt: rec._searchKind ? (rec._searchAttempt || 0) : 0,
+        searchElapsedSec: rec._searchKind && rec._searchStartedAt != null ? Math.max(0, Math.round((this._now() - rec._searchStartedAt) / 1000)) : 0,
         seat: c.seat, uid: shortUid(c.uid),
         membership: ts ? ts.uids.map(shortUid) : [],
         playerCount: ts ? ts.playerCount : 0,
@@ -1116,6 +1232,7 @@ function publicHand(rec) {
     resultDelta: h.resultDelta, updatedAt: h.updatedAt, lastError: h.lastError,
   };
 }
+function accountIdOf(uid) { if (uid == null) return null; const m = /^\d+_(\d+)$/.exec(String(uid)); return m ? m[1] : null; }
 function shortUid(uid) { if (uid == null) return null; const s = String(uid); return s.length <= 6 ? s : `${s.slice(0, 4)}…${s.slice(-3)}`; }
 
 module.exports = { HostTableCoordinator, SESSION, ROLE, PSTATE, SYNC };

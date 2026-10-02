@@ -30,7 +30,7 @@
   let proxies = [];
   // The two browser agents (web / mobile) the main process offers; filled on boot.
   let agents = [];
-  let defaultAgent = 'MOBILE';
+  let defaultAgent = 'WEB';
   let profiles = {};         // slot -> saved profile (device + proxyRef)
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
@@ -170,7 +170,7 @@
     $('workspace').hidden = false;
     try { caps = await api.capabilities(); } catch { caps = {}; }
     try { const p = await api.proxyList(); proxies = (p && p.proxies) || []; } catch { proxies = []; }
-    try { const ag = await api.agents(); agents = (ag && ag.agents) || []; defaultAgent = (ag && ag.defaultAgent) || 'MOBILE'; } catch { agents = []; }
+    try { const ag = await api.agents(); agents = (ag && ag.agents) || []; defaultAgent = (ag && ag.defaultAgent) || 'WEB'; } catch { agents = []; }
     try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch { profiles = {}; }
     try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
@@ -271,7 +271,7 @@
   function renderKey() {
     if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + (manualBrowsers.length);
     const g = manualGroup;
-    const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.seat, b.ready, b.groupRole, b.isTableHost, b.username, b.connected, b.socketReady, b.channelCount, b.header, b.lastError && b.lastError.code].join(',')).join(';');
+    const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.seat, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.header, b.lastError && b.lastError.code].join(',')).join(';');
     const cards = ['B1', 'B2', 'B3'].map((sl) => { const a = safeBySlot[sl]; return a ? a.roundSeq + ':' + (a.targetCards || []).map((c) => c.code + c.classification).join('') : '-'; }).join('|');
     const rem = remaining ? (remaining.count + ':' + (cardsSnap && cardsSnap.remaining ? cardsSnap.remaining.count : '')) : '-';
     return [uiState, activeTab, g && g.rid, g && g.key, g && g.auto, g && g.busy, g && g.recreating, autoStake, autoBusy,
@@ -582,7 +582,7 @@
 
   const SLOT_INDEX = { A: '1', B: '2', C: '3' };
   const AGENT_LABEL = { WEB: 'Web', MOBILE: 'Mobile' };
-  function agentLabel(a) { return AGENT_LABEL[a] || AGENT_LABEL[defaultAgent] || 'Mobile'; }
+  function agentLabel(a) { return AGENT_LABEL[a] || AGENT_LABEL[defaultAgent] || 'Web'; }
   async function refreshClusterProfiles() {
     try { const r = await api.clusterProfileList(); clusterProfiles = (r && r.profiles) || []; selectedClusterProfileId = (r && r.selectedId) || null; }
     catch { clusterProfiles = []; selectedClusterProfileId = null; }
@@ -759,17 +759,19 @@
       : b.manualState === 'RECONNECTING' ? { label: 'BỊ ĐÁ → REJOIN', cls: 'warn' }
       : b.manualState === 'KICKED' ? { label: 'BỊ ĐÁ', cls: 'danger' }
       : b.manualState === 'JOINING' ? { label: 'ĐANG VÀO BÀN', cls: 'warn' }
-      : b.manualState === 'SEARCHING' ? { label: 'ĐANG TÌM BÀN', cls: 'warn' }
+      : b.manualState === 'SEARCHING' ? { label: b.searchKind === 'SCAN' ? 'ĐANG DÒ BÀN KEY' : 'ĐANG DÒ KEY', cls: 'warn' }
       : inTable ? { label: 'TRONG BÀN', cls: 'ok' }
       : inGame ? { label: 'Ở SẢNH', cls: 'info' }
       : enterErr ? { label: 'LỖI VÀO GAME', cls: 'danger' }
       : { label: 'CHƯA VÀO GAME', cls: 'off' };
     const ACC = index === 1 ? '#2563eb' : index === 2 ? '#16a34a' : index === 3 ? '#ea580c' : '#6b7280';
     const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : '—';
+    const accId = b.accountId ? String(b.accountId) : null; // in-game ID (number of the uid), known from login
     const wsOk = !!(b.connected && b.socketReady);
-    const chip = el('div', { class: 'acc-chip st-' + st.cls, title: account + ' · ' + st.label + (wsOk ? ' · WS kết nối' : ' · WS mất kết nối') + (b.lastError ? ' · ' + (b.lastError.message || b.lastError.code) : '') },
+    const chip = el('div', { class: 'acc-chip st-' + st.cls, title: account + (accId ? ' · ID ' + accId : '') + ' · ' + st.label + (wsOk ? ' · WS kết nối' : ' · WS mất kết nối') + (b.lastError ? ' · ' + (b.lastError.message || b.lastError.code) : '') },
       el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'P' + index),
-      account !== '—' ? el('span', { class: 'bc-acc', title: account }, account) : null,
+      account !== '—' ? el('span', { class: 'bc-acc', title: 'Tài khoản ' + account + (accId ? ' — ID ' + accId : '') }, account) : null,
+      accId ? el('span', { class: 'bc-id faint xs', title: 'ID tài khoản' }, 'ID ' + accId) : null,
       roleChip(b.groupRole, b.isTableHost),
       el('span', { class: 'bc-badge ' + st.cls, title: st.label, 'aria-label': st.label }, el('span', { class: 'status-dot ' + st.cls })),
       inTable && b.ready ? el('span', { class: 'ready-yes', title: 'Đã sẵn sàng' }, '✓') : null);
@@ -1383,7 +1385,7 @@
       // Observe the browsers immediately (auto-start passive session + poll) so the gate reflects
       // real state and advances to READY on its own once A/B/C are in Phỏm.
       await ensurePassiveSession(); startEntryPolling();
-      note(`Đã mở ${open.opened || 0}/3 trình duyệt. Đăng nhập A/B/C — tool sẽ tự nhận khi vào Phỏm.`);
+      note(`Đã mở ${open.opened || 0}/3 trình duyệt. Đăng nhập A/B/C — login xong tool tự vào game Phỏm.`);
     } catch (e) {
       // A failed open NEVER closes the browsers that DID open (§6/§14). Land on Screen 2
       // if anything opened so the user keeps those browsers; only fall back to ERROR when
