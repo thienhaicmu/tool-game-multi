@@ -14,7 +14,7 @@ const model = require('./phom-cluster-profile.cjs');
 //
 // It persists METADATA + REFERENCES only (a cluster profile has no secret by design)
 // and NEVER live runtime state (BrowserRun id, CDP port, PID, target/session, hand/
-// join/ready). Reference INTEGRITY (browser profile / device / proxy existence) is
+// join/ready). Reference INTEGRITY (browser profile / proxy existence) is
 // decided against injected resolvers so this store never imports the other stores;
 // the runtime active-session guard is an injected predicate for the same reason.
 //
@@ -34,12 +34,11 @@ class PhomClusterProfileStore {
     // Injected reference resolvers (return metadata objects or null). Kept as deps so
     // this store never imports PhomProfileStore / ProxyConfigStore directly.
     this._resolveBrowserProfile = deps.resolveBrowserProfile || (() => null); // (browserProfileId) -> profile|null
-    this._resolveDevice = deps.resolveDevice || (() => null);                 // (browserProfileId, deviceProfileId) -> device|null
     this._resolveProxy = deps.resolveProxy || (() => null);                   // (proxyRef) -> proxy|null
     // Injected runtime guard: true when a live ClusterSession references this profile.
     this._isActive = deps.isActive || (() => false);                          // (clusterProfileId) -> boolean
     // Injected migration source (existing per-slot Phom selections). Optional.
-    this._migrationSource = deps.migrationSource || (() => null);             // () -> { slots:{A:{deviceProfileId,proxyRef},...} } | null
+    this._migrationSource = deps.migrationSource || (() => null);             // () -> { slots:{A:{browserProfileId,proxyRef},...} } | null
 
     this._map = new Map();     // id -> profile
     this._selectedId = null;
@@ -128,23 +127,21 @@ class PhomClusterProfileStore {
   // Resolve references for one profile and derive its state (no secret is ever read
   // into the result — proxy resolution only confirms existence).
   _resolveRefs(profile) {
-    const proxyMissing = [], browserMissing = [], deviceMissing = [];
+    const proxyMissing = [], browserMissing = [];
     const slots = {};
     for (const s of SLOTS) {
       const slot = profile.slots[s];
       const browserProfile = slot.browserProfileId ? this._resolveBrowserProfile(slot.browserProfileId) : null;
-      const device = (browserProfile && slot.deviceProfileId) ? this._resolveDevice(slot.browserProfileId, slot.deviceProfileId) : null;
       const hasRef = !!slot.proxyRef;
       const proxyExists = hasRef ? !!this._resolveProxy(slot.proxyRef) : false;
       if (!browserProfile) browserMissing.push(s);
-      if (!device) deviceMissing.push(s);
       // Proxy is OPTIONAL: a null proxyRef => DIRECT (valid). Only a DANGLING ref (set
       // but unresolvable) counts as missing/not-ready.
       if (hasRef && !proxyExists) proxyMissing.push(s);
-      slots[s] = { browserProfile, device, proxyRef: slot.proxyRef || null, proxyExists, executionMode: hasRef ? 'PROXY' : 'DIRECT' };
+      slots[s] = { browserProfile, proxyRef: slot.proxyRef || null, proxyExists, executionMode: hasRef ? 'PROXY' : 'DIRECT' };
     }
-    const state = model.deriveState(profile, { proxyMissing, browserMissing, deviceMissing });
-    return { slots, proxyMissing, browserMissing, deviceMissing, state };
+    const state = model.deriveState(profile, { proxyMissing, browserMissing });
+    return { slots, proxyMissing, browserMissing, state };
   }
 
   _stateOf(profile) { try { return this._resolveRefs(profile).state; } catch { return model.deriveState(profile); } }
@@ -188,7 +185,7 @@ class PhomClusterProfileStore {
     const existing = this._map.get(sid);
     if (!existing) return err('PHOM_CLUSTER_PROFILE_NOT_FOUND', `No cluster profile: ${id}`);
     // §7 — a cluster profile backing a live ClusterSession cannot be deleted (stop it
-    // first). The referenced browser/device/proxy objects are NEVER deleted here.
+    // first). The referenced browser profile / proxy objects are NEVER deleted here.
     if (this._isActive(sid)) return err('PHOM_CLUSTER_PROFILE_IN_USE', 'Cluster profile is in use by an active session; stop it first', { id: sid });
     this._map.delete(sid);
     const clearedSelection = this._selectedId === sid;
@@ -203,7 +200,7 @@ class PhomClusterProfileStore {
     const existing = this.get(id);
     if (!existing) return err('PHOM_CLUSTER_PROFILE_NOT_FOUND', `No cluster profile: ${id}`);
     if (!isString(newName) || !newName.trim()) return err('PHOM_CLUSTER_PROFILE_NAME_REQUIRED', 'A new name is required to duplicate');
-    // Copy ONLY references (browser/device/proxy ids) + settings — no runtime state,
+    // Copy ONLY references (browser profile / proxy ids) + settings — no runtime state,
     // no secret value (proxyRef is a reference, resolved at runtime). Fresh id/timestamps.
     const res = model.normalizeClusterProfile({
       name: newName,
@@ -255,10 +252,9 @@ class PhomClusterProfileStore {
     const errors = [];
     if (!p.gameUrl) errors.push({ code: 'PHOM_CLUSTER_GAME_URL_INVALID', message: 'gameUrl is required to run', field: 'gameUrl' });
     for (const s of r.browserMissing) errors.push({ code: 'PHOM_CLUSTER_BROWSER_PROFILE_MISSING', message: `browser profile missing for slot ${s}`, slot: s });
-    for (const s of r.deviceMissing) errors.push({ code: 'PHOM_CLUSTER_DEVICE_PROFILE_MISSING', message: `device missing for slot ${s}`, slot: s });
     for (const s of r.proxyMissing) errors.push({ code: 'PHOM_CLUSTER_PROXY_MISSING', message: `proxy missing for slot ${s}`, slot: s });
     const ready = r.state === 'READY_TO_RUN' && errors.length === 0;
-    return { ok: ready, state: r.state, ready, missing: { gameUrl: !p.gameUrl, browser: r.browserMissing, device: r.deviceMissing, proxy: r.proxyMissing }, errors };
+    return { ok: ready, state: r.state, ready, missing: { gameUrl: !p.gameUrl, browser: r.browserMissing, proxy: r.proxyMissing }, errors };
   }
 
   // toRuntimeConfig(id) -> { ok, config } | typed error. Resolves references, then
@@ -270,7 +266,7 @@ class PhomClusterProfileStore {
     if (!p) return err('PHOM_CLUSTER_PROFILE_NOT_FOUND', `No cluster profile: ${id}`);
     const r = this._resolveRefs(p);
     const resolved = { slots: {} };
-    for (const s of SLOTS) resolved.slots[s] = { browserProfile: r.slots[s].browserProfile, device: r.slots[s].device, proxyRef: r.slots[s].proxyExists ? p.slots[s].proxyRef : null };
+    for (const s of SLOTS) resolved.slots[s] = { browserProfile: r.slots[s].browserProfile, proxyRef: r.slots[s].proxyExists ? p.slots[s].proxyRef : null };
     return model.toClusterRuntimeConfig(p, resolved);
   }
 
@@ -289,8 +285,8 @@ class PhomClusterProfileStore {
     const slots = {};
     for (const s of SLOTS) {
       const sel = source.slots[s];
-      if (!sel || !isString(sel.deviceProfileId)) { this._markMigrated(); return { ok: true, migrated: false, reason: 'INCOMPLETE_SOURCE', slot: s }; }
-      slots[s] = { browserProfileId: isString(sel.browserProfileId) ? sel.browserProfileId : s, deviceProfileId: sel.deviceProfileId, proxyRef: isString(sel.proxyRef) ? sel.proxyRef : null };
+      if (!sel || !isString(sel.browserProfileId)) { this._markMigrated(); return { ok: true, migrated: false, reason: 'INCOMPLETE_SOURCE', slot: s }; }
+      slots[s] = { browserProfileId: sel.browserProfileId, proxyRef: isString(sel.proxyRef) ? sel.proxyRef : null };
     }
     const res = model.normalizeClusterProfile({
       name: source.name || 'Cụm mặc định',

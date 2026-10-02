@@ -6,12 +6,12 @@ const { parseStrict } = require('../protocol/numeric.cjs');
 // PhomClusterProfile — PURE model (no disk, no network, no runtime). A cluster
 // profile is ONE saved configuration that drives the whole three-browser cluster:
 // a single shared game URL, a default HOST slot, a default stake, and three slots
-// (A/B/C) each binding an existing browser profile + its device + a proxy reference.
+// (A/B/C) each binding an existing browser profile + a proxy reference.
 //
 // In this repo the "browser profile" is the PhomProfileStore slot (A/B/C), which
-// itself owns a normalized device; a proxy is a ProxyConfigStore id (PX-*). So a
+// itself owns its browser agent; a proxy is a ProxyConfigStore id (PX-*). So a
 // cluster slot references: browserProfileId (a PhomProfileStore slot key),
-// deviceProfileId (the device.id inside that browser profile) and proxyRef (a proxy
+// and proxyRef (a proxy
 // config id). This module NEVER stores a secret (proxy/account password, token,
 // cookie, authorization) and NEVER stores live runtime state (BrowserRun id, CDP
 // port, PID, target/session, hand/join/ready state) — those are reconstructed at
@@ -20,7 +20,7 @@ const { parseStrict } = require('../protocol/numeric.cjs');
 // Two states are distinguished WITHOUT a persisted flag (state is derived):
 //   DRAFT        — structurally valid, but missing a gameUrl and/or a proxyRef, or
 //                  a reference does not resolve yet. Legal to save while setting up.
-//   READY_TO_RUN — gameUrl present+valid, every proxyRef/browserProfile/device
+//   READY_TO_RUN — gameUrl present+valid, every proxyRef/browserProfile
 //                  reference resolves. Only a READY profile can be projected to a
 //                  runtime config for the cluster manager.
 // ---------------------------------------------------------------------------
@@ -71,7 +71,6 @@ function normalizeSlot(raw) {
   const s = raw && typeof raw === 'object' ? raw : {};
   return {
     browserProfileId: isNonEmptyString(s.browserProfileId) ? String(s.browserProfileId).trim() : null,
-    deviceProfileId: isNonEmptyString(s.deviceProfileId) ? String(s.deviceProfileId).trim() : null,
     proxyRef: isNonEmptyString(s.proxyRef) ? String(s.proxyRef).trim() : null,
   };
 }
@@ -83,7 +82,7 @@ function genId() { return `PHCL-${Date.now().toString(36)}-${Math.random().toStr
  * Produces a persistable profile with ONLY whitelisted fields (unknown/runtime fields
  * are dropped by construction — never copied through). Enforces the STRUCTURAL
  * invariants (always, for both DRAFT and READY): a trimmed name within the length
- * cap, exactly slots A/B/C, each slot with a browserProfileId + deviceProfileId, a
+ * cap, exactly slots A/B/C, each slot with a browserProfileId, a
  * valid-if-present game URL with no credentials, a defaultHostSlot of A/B/C, and no
  * duplicate browser profile across slots. It deliberately does NOT resolve references
  * (that is reference/readiness validation, done by the store with live resolvers).
@@ -119,8 +118,8 @@ function normalizeClusterProfile(input = {}, { existing = null } = {}) {
   const stakeRes = normalizeStake(src.defaultStake !== undefined ? src.defaultStake : ex.defaultStake);
   if (!stakeRes.ok) return stakeRes;
 
-  // slots: exactly A/B/C, each with a browserProfileId + deviceProfileId. A missing
-  // slot key is PHOM_CLUSTER_SLOT_MISSING; a present slot lacking a browser/device ref
+  // slots: exactly A/B/C, each with a browserProfileId. A missing
+  // slot key is PHOM_CLUSTER_SLOT_MISSING; a present slot lacking a browser profile ref
   // is a structural error too (DRAFT only ever relaxes proxyRef + gameUrl).
   const srcSlots = (src.slots && typeof src.slots === 'object') ? src.slots : (ex.slots || {});
   const slots = {};
@@ -128,7 +127,6 @@ function normalizeClusterProfile(input = {}, { existing = null } = {}) {
     if (!srcSlots || srcSlots[s] == null) return typedError('PHOM_CLUSTER_SLOT_MISSING', `slot ${s} is required`, { slot: s });
     const slot = normalizeSlot(srcSlots[s]);
     if (!slot.browserProfileId) return typedError('PHOM_CLUSTER_BROWSER_PROFILE_MISSING', `slot ${s} requires a browserProfileId`, { slot: s });
-    if (!slot.deviceProfileId) return typedError('PHOM_CLUSTER_DEVICE_PROFILE_MISSING', `slot ${s} requires a deviceProfileId`, { slot: s });
     slots[s] = slot;
   }
   // Reject any extra slot keys beyond A/B/C (structural isolation).
@@ -174,13 +172,12 @@ function slotExecutionMode(slot) { return slot && slot.proxyRef ? 'PROXY' : 'DIR
 
 // Derive DRAFT vs READY_TO_RUN given a set of already-resolved reference checks. The
 // store calls this after confirming references; the model only decides from inputs.
-// `resolved` (optional) may carry { proxyMissing:[], browserMissing:[], deviceMissing:[] }.
+// `resolved` (optional) may carry { proxyMissing:[], browserMissing:[] }.
 function deriveState(profile, resolved = null) {
   if (missingReadyFields(profile).length) return 'DRAFT';
   if (resolved) {
     if ((resolved.proxyMissing || []).length) return 'DRAFT';
     if ((resolved.browserMissing || []).length) return 'DRAFT';
-    if ((resolved.deviceMissing || []).length) return 'DRAFT';
   }
   return 'READY_TO_RUN';
 }
@@ -211,11 +208,11 @@ function publicSnapshot(profile, { state = null } = {}) {
  * toClusterRuntimeConfig(profile, resolved) -> { ok, config } | typed error.
  * PURE projection consumed LATER by PhomClusterCdpManager (which must never read the
  * JSON store directly). `resolved` is supplied by the caller after resolving refs:
- *   resolved = { slots: { A: { browserProfile, device, proxyRef }, ... } }
- * where browserProfile/device are the caller-resolved objects (metadata only) and
+ *   resolved = { slots: { A: { browserProfile, proxyRef }, ... } }
+ * where browserProfile is the caller-resolved object (metadata only) and
  * proxyRef is the proxy id (NEVER a password). The projection:
  *   - rejects unless the profile is READY_TO_RUN (refs resolve + url + proxies),
- *   - maps each slot 1:1 (a slot's device/proxy never moves to another slot),
+ *   - maps each slot 1:1 (a slot's browser profile/proxy never moves to another slot),
  *   - keeps the HOST assignment from defaultHostSlot,
  *   - carries the shared gameUrl + selected stake,
  *   - contains NO secret and NO persisted runtime identifier,
@@ -225,7 +222,7 @@ function toClusterRuntimeConfig(profile, resolved = {}) {
   if (!profile) return typedError('PHOM_CLUSTER_PROFILE_NOT_FOUND', 'No cluster profile');
   const resSlots = (resolved && resolved.slots) || {};
   // Reference-level readiness check from the resolved inputs.
-  const proxyMissing = [], browserMissing = [], deviceMissing = [];
+  const proxyMissing = [], browserMissing = [];
   for (const s of SLOTS) {
     const slot = profile.slots[s];
     const r = resSlots[s] || {};
@@ -233,18 +230,16 @@ function toClusterRuntimeConfig(profile, resolved = {}) {
     // profile but not resolved by the caller) is a real error.
     if (slot.proxyRef && !r.proxyRef) proxyMissing.push(s);
     if (!r.browserProfile) browserMissing.push(s);
-    if (!r.device) deviceMissing.push(s);
   }
-  const state = deriveState(profile, { proxyMissing, browserMissing, deviceMissing });
+  const state = deriveState(profile, { proxyMissing, browserMissing });
   if (state !== 'READY_TO_RUN') {
-    return typedError('PHOM_CLUSTER_PROFILE_NOT_READY', 'Cluster profile is not READY_TO_RUN', { proxyMissing, browserMissing, deviceMissing, gameUrl: !!profile.gameUrl });
+    return typedError('PHOM_CLUSTER_PROFILE_NOT_READY', 'Cluster profile is not READY_TO_RUN', { proxyMissing, browserMissing, gameUrl: !!profile.gameUrl });
   }
   const slots = {};
   for (const s of SLOTS) {
     const r = resSlots[s];
     slots[s] = {
       browserProfile: r.browserProfile,   // caller-resolved metadata (no secret)
-      deviceProfile: r.device,            // caller-resolved device (no secret)
       proxyRef: profile.slots[s].proxyRef, // reference id only — never a password; null = DIRECT
       executionMode: slotExecutionMode(profile.slots[s]),
     };

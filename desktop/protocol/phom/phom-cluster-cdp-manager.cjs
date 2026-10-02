@@ -4,14 +4,14 @@ const EventEmitter = require('node:events');
 
 // ---------------------------------------------------------------------------
 // PhomClusterCdpManager (§7–13) — the CONTROL-PLANE owner of the three-profile
-// cluster. It coordinates lifecycle + device/proxy fan-out + event aggregation,
+// cluster. It coordinates lifecycle + agent/proxy fan-out + event aggregation,
 // but keeps THREE fully independent CDP connections (one per BrowserRun): it never
 // opens a shared CDP session, never routes one client's command to another profile.
 //
 // It REUSES existing owners (no second BrowserRun/CDP implementation):
 //   - deps.openProfile(slot,cfg)         -> opens a BrowserRun (custom Chromium)
 //   - deps.getRunClient(runId)           -> that run's OWN CDP client
-//   - deps.applyDeviceToClient(client,d) -> device emulation on that client
+//   - deps.applyAgentToClient(client,a)  -> applies that browser's agent (web/mobile UA)
 //   - deps.testProxy(proxyRef)           -> proxy observed-IP tester
 //   - deps.hostSession                   -> HostSessionManager (game orchestration)
 //   - deps.closeRun(runId)               -> teardown one owned run
@@ -28,7 +28,7 @@ class PhomClusterCdpManager extends EventEmitter {
     this._now = deps.now || (() => Date.now());
     this._openProfile = deps.openProfile || (async () => ({ ok: false, error: { code: 'PHOM_CLUSTER_NO_OPENER', message: 'no openProfile' } }));
     this._getRunClient = deps.getRunClient || (() => null);
-    this._applyDeviceToClient = deps.applyDeviceToClient || (async () => ({ applied: [], unsupported: [] }));
+    this._applyAgentToClient = deps.applyAgentToClient || (async () => ({ applied: [], unsupported: [] }));
     this._testProxy = deps.testProxy || (async () => ({ state: 'NOT_CONFIGURED' }));
     this._closeRun = deps.closeRun || (async () => {});
     this._host = deps.hostSession || null;
@@ -40,7 +40,7 @@ class PhomClusterCdpManager extends EventEmitter {
   active() { return !!this._cluster && !this._cluster.stopped; }
   clusterSessionId() { return this._cluster ? this._cluster.clusterSessionId : null; }
 
-  // §8 createCluster — define the three slots (profile refs + device + proxy). Does not
+  // §8 createCluster — define the three slots (profile refs + agent + proxy). Does not
   // open browsers yet.
   createCluster(config = {}) {
     const profiles = Array.isArray(config.profiles) ? config.profiles : [];
@@ -65,13 +65,13 @@ class PhomClusterCdpManager extends EventEmitter {
       const p = bySlot.get(s);
       slots.set(s, { slot: s, profileId: null,
         // Authoritative launch identity from the saved profile projection (§3): the
-        // browser profile key (user-data-dir/device/proxy owner) and the shared game
+        // browser profile key (user-data-dir/agent/proxy owner) and the shared game
         // URL travel WITH the slot so openProfile never re-derives from the slot letter.
         browserProfileId: p.browserProfileId || null,
         gameUrl: p.gameUrl != null ? p.gameUrl : clusterGameUrl,
         label: p.label || `Profile ${s}`,
-        proxyRef: p.proxyRef || null, device: p.device || null,
-        role: s === hostSlot ? 'HOST' : 'FOLLOWER', cdpConnected: false, deviceApplied: null, proxyState: 'NOT_TESTED',
+        proxyRef: p.proxyRef || null, agent: p.agent || null,
+        role: s === hostSlot ? 'HOST' : 'FOLLOWER', cdpConnected: false, agentApplied: null, proxyState: 'NOT_TESTED',
         observedIp: null, error: null, lastSeq: -1, seen: new Set() });
     }
     this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, stopped: false, orchestrationStopped: false };
@@ -93,7 +93,7 @@ class PhomClusterCdpManager extends EventEmitter {
       if (slot.profileId && !slot.browserClosed) { results.push({ slot: s, ok: true, reused: true, runId: slot.profileId }); continue; }
       if (slot.browserClosed) { slot.browserClosed = false; slot.profileId = null; slot.cdpConnected = false; slot.error = null; }
       let res;
-      try { res = await this._openProfile(s, { proxyRef: slot.proxyRef, browserProfileId: slot.browserProfileId, gameUrl: slot.gameUrl, device: slot.device, label: slot.label }); } catch (e) { res = { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: safe(e) } }; }
+      try { res = await this._openProfile(s, { proxyRef: slot.proxyRef, browserProfileId: slot.browserProfileId, gameUrl: slot.gameUrl, agent: slot.agent, label: slot.label }); } catch (e) { res = { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: safe(e) } }; }
       // A launch failure NEVER closes the slots that already opened (§14): record the
       // typed error for THIS slot and keep every opened browser alive (PARTIAL).
       if (res && res.ok) { slot.profileId = res.runId; slot.error = null; }
@@ -122,20 +122,21 @@ class PhomClusterCdpManager extends EventEmitter {
     return { ok: connected === 3, connected, results };
   }
 
-  // §12/§13 applyClusterDevices — fan-out device emulation through each profile's OWN
-  // client. Never copies one slot's result to another; PARTIAL if any slot fails.
-  async applyClusterDevices() {
+  // §12/§13 applyClusterAgents — fan-out the browser agent through each profile's OWN client.
+  // Never copies one slot's result to another; PARTIAL if any slot fails. The WEB agent applies
+  // nothing by design (the browser keeps its own identity), so it counts as applied.
+  async applyClusterAgents() {
     if (!this._guard()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'no cluster' } };
     const results = [];
     for (const s of SLOTS) {
       const slot = this._slot(s);
       const client = slot.profileId ? this._getRunClient(slot.profileId) : null;
-      if (!client) { slot.deviceApplied = { ok: false }; results.push({ slot: s, ok: false, error: { code: 'PHOM_CLUSTER_NO_CLIENT' } }); continue; }
+      if (!client) { slot.agentApplied = { ok: false }; results.push({ slot: s, ok: false, error: { code: 'PHOM_CLUSTER_NO_CLIENT' } }); continue; }
       let r;
-      try { r = await this._applyDeviceToClient(client, slot.device); } catch (e) { r = { error: { code: 'PHOM_DEVICE_APPLY_FAILED', message: safe(e) } }; }
-      const okApplied = r && Array.isArray(r.applied) && r.applied.includes('setDeviceMetricsOverride');
-      slot.deviceApplied = { ok: !!okApplied, applied: r && r.applied, unsupported: r && r.unsupported };
-      results.push({ slot: s, ok: !!okApplied, applied: r && r.applied, unsupported: r && r.unsupported });
+      try { r = await this._applyAgentToClient(client, slot.agent); } catch (e) { r = { error: { code: 'PHOM_AGENT_APPLY_FAILED', message: safe(e) } }; }
+      const okApplied = !!(r && Array.isArray(r.applied) && !(r.unsupported || []).length);
+      slot.agentApplied = { ok: okApplied, applied: r && r.applied, unsupported: r && r.unsupported };
+      results.push({ slot: s, ok: okApplied, applied: r && r.applied, unsupported: r && r.unsupported });
     }
     this._emit();
     const applied = results.filter((r) => r.ok).length;
@@ -273,9 +274,9 @@ class PhomClusterCdpManager extends EventEmitter {
         browserState: slot.browserClosed ? exitReasonToBrowserState(slot.exitReason) : (slot.profileId ? 'OPEN' : 'NOT_OPEN'),
         exitReason: slot.browserClosed ? (slot.exitReason || 'UNKNOWN_EXIT') : null,
         pid: info.pid != null ? info.pid : null, cdpPort: info.port != null ? info.port : null, userDataDir: info.userDataDir || null,
-        cdpConnected: slot.cdpConnected, deviceApplied: slot.deviceApplied ? !!slot.deviceApplied.ok : false,
+        cdpConnected: slot.cdpConnected, agentApplied: slot.agentApplied ? !!slot.agentApplied.ok : false,
         proxyState: slot.proxyState, observedIp: slot.observedIp,
-        deviceName: slot.device ? slot.device.name : null, resolution: slot.device ? `${slot.device.viewportWidth}×${slot.device.viewportHeight}` : null,
+        agent: slot.agent || null,
         error: slot.error || null,
       };
     }
@@ -291,7 +292,7 @@ class PhomClusterCdpManager extends EventEmitter {
       selectedStake: c.selectedStake, tableIdentity: hostSnap ? hostSnap.hostTableIdentity : null,
       profiles,
       connectedCount: SLOTS.filter((s) => c.slots.get(s).cdpConnected).length,
-      deviceAppliedCount: SLOTS.filter((s) => c.slots.get(s).deviceApplied && c.slots.get(s).deviceApplied.ok).length,
+      agentAppliedCount: SLOTS.filter((s) => c.slots.get(s).agentApplied && c.slots.get(s).agentApplied.ok).length,
       proxyPassCount: SLOTS.filter((s) => c.slots.get(s).proxyState === 'PASS').length,
       joinedCount: hostSnap ? hostSnap.profiles.filter((p) => p.confirmedInTable).length : 0,
       readyCount: hostSnap ? hostSnap.readyCount : 0,

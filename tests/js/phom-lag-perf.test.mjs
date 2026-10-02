@@ -45,6 +45,35 @@ test('caches are cleared on CDP detach AND on reload so a fresh document is alwa
   assert.match(main, /resetPhom = \(\) =>[\s\S]*?delete headerLastPushed\[rid\]; delete headerEnterStartedAt\[rid\]/);
 });
 
+// 2026-10-02 — the game itself lagged, not just the tool. Two causes, both removed:
+//   · the browser rendered the Cocos canvas through Emulation.setDeviceMetricsOverride at a
+//     deviceScaleFactor of 2–3 (600×338 → 1200×676 backing pixels, ×3 browsers) with touch emulation
+//     synthesising an event per mouse move;
+//   · every HTTP request/response of a Cocos game crossed CDP for nothing — capture.on('request')
+//     only ever uses WebSocket frames.
+test('no device-metrics / touch emulation is applied to a browser any more', () => {
+  for (const forbidden of ['setDeviceMetricsOverride', 'setTouchEmulationEnabled', 'setEmitTouchEventsForMouse']) {
+    assert.equal(main.includes(forbidden), false, forbidden + ' is what made the game lag');
+  }
+  // the agent applies the user agent and nothing else
+  assert.match(main, /async function applyBrowserAgent\(client, agent, run\)/);
+  assert.match(main, /browserAgent\.emulationCommands\(agent\)/);
+  const agentSrc = read('desktop/browser-run/browser-agent.cjs');
+  assert.match(agentSrc, /method: 'Emulation\.setUserAgentOverride'/);
+});
+
+test('capture subscribes to the WebSocket events ONLY, with bounded Network buffers', () => {
+  const fn = main.slice(main.indexOf('function attachCapture('), main.indexOf('function attachCapture(') + 1200);
+  for (const ws of ['webSocketCreated', 'webSocketFrameSent', 'webSocketFrameReceived', 'webSocketClosed']) {
+    assert.ok(fn.includes(ws), 'WS event ' + ws + ' is still routed');
+  }
+  for (const http of ['requestWillBeSent', 'responseReceived', 'loadingFinished', 'loadingFailed']) {
+    assert.equal(fn.includes(http), false, http + ' is pure overhead for Phỏm');
+  }
+  assert.match(fn, /Network\.enable\(\{ maxTotalBufferSize: \d+, maxResourceBufferSize: \d+, maxPostDataSize: 0 \}\)/);
+  assert.match(fn, /\.catch\(\(\) => \{ Network\.enable\(\)/, 'an older Chromium still gets a plain enable');
+});
+
 test('the ENTER path itself has no fixed sleeps (event-driven; evidence is authoritative)', () => {
   const entry = read('desktop/protocol/cocos-lobby-entry.cjs');
   assert.equal(/setTimeout|setInterval|new Promise\(\(r\) => setTimeout/.test(entry), false, 'no sleep/poll in the enter seam');

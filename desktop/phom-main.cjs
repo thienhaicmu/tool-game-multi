@@ -48,7 +48,7 @@ const { PhomDeviceProfilesStore } = require('./browser-run/phom-device-profiles-
 const { PhomClusterProfileStore } = require('./browser-run/phom-cluster-profile-store.cjs');
 const { runEnterGameViaSite } = require('./protocol/cocos-lobby-entry.cjs');
 const { GAME_ID: PHOM_GAME_ID } = require('./protocol/phom/phom-frame-classify.cjs');
-const deviceProfile = require('./browser-run/device-profile.cjs');
+const browserAgent = require('./browser-run/browser-agent.cjs');
 const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
@@ -278,7 +278,6 @@ else {
     clusterProfileStore = new PhomClusterProfileStore({
       filePath: path.join(phomRoot(), 'phom-cluster-profiles.json'),
       resolveBrowserProfile: (bpid) => profileStore.getPublic(bpid),
-      resolveDevice: (bpid, deviceId) => { const dev = profileStore.deviceFor(bpid); return dev && String(dev.id) === String(deviceId) ? deviceProfile.publicSnapshot(dev) : null; },
       resolveProxy: (ref) => proxyConfigStore.getPublic(ref),
       isActive: (id) => !!(phomCluster && phomCluster.active() && activeClusterProfileId && String(activeClusterProfileId) === String(id)),
       migrationSource: () => clusterMigrationSource(),
@@ -293,16 +292,15 @@ else {
   }
 
   // Build the additive migration source from the EXISTING per-slot Phom selections:
-  // only when all three slots A/B/C already have a saved device do we offer a default
+  // only when all three slots A/B/C are actually configured do we offer a default
   // cluster profile (references preserved). Never fabricates a game URL/proxy.
   function clusterMigrationSource() {
     if (!profileStore) return null;
     const slots = {};
     for (const s of SLOTS_ABC) {
-      const dev = profileStore.deviceFor(s);
-      if (!dev || !dev.id) return null; // incomplete — skip migration (no fake data)
-      const saved = profileStore.get(s) || {};
-      slots[s] = { browserProfileId: s, deviceProfileId: String(dev.id), proxyRef: saved.proxyRef || null };
+      const saved = profileStore.get(s);
+      if (!saved) return null; // incomplete — skip migration (no fake data)
+      slots[s] = { browserProfileId: s, proxyRef: saved.proxyRef || null };
     }
     return { name: 'Cụm mặc định', gameUrl: null, defaultHostSlot: 'A', slots };
   }
@@ -452,7 +450,7 @@ else {
     const rt = clusterProfileStore.toRuntimeConfig(id); // typed NOT_FOUND / NOT_READY
     if (!rt.ok) return rt;
     const proj = projectRuntimeToManagerConfig(rt.config, {
-      resolveRawDevice: (bpid, did) => { const dev = profileStore.deviceFor(bpid); return dev && (did == null || String(dev.id) === String(did)) ? dev : null; },
+      resolveAgent: (bpid) => profileStore.agentFor(bpid),
     });
     if (!proj.ok) return proj;
     return { ok: true, id, ...proj.config };
@@ -512,7 +510,7 @@ else {
       // this returns straight to the logged-in game — no re-login).
       if (!localTestActive() && profUrl && profUrl !== (p.gameUrl || '')) { try { deviceProfilesStore.update(ids[i], { gameUrl: profUrl }); } catch { /* best effort */ } }
       // slot A/B/C = the runtime B1/B2/B3 window; browserProfileId carries the flexible profile id.
-      profiles.push({ slot: SLOTS_ABC[i], browserProfileId: p.id, profileId: p.id, device: p.device, proxyRef: p.proxyRef || null, gameUrl: profUrl, label: p.name });
+      profiles.push({ slot: SLOTS_ABC[i], browserProfileId: p.id, profileId: p.id, agent: deviceProfilesStore.agentFor(p.id), proxyRef: p.proxyRef || null, gameUrl: profUrl, label: p.name });
     }
     const clusterUrl = localTestActive() ? 'about:blank' : (profiles[0] ? profiles[0].gameUrl : typedUrl);
     const res = ensureCluster().createCluster({ clusterProfileId: null, hostSlot: 'A', selectedStake: null, gameUrl: clusterUrl, profiles });
@@ -534,9 +532,9 @@ else {
       openProfile: (slot, cfg) => openProfile({
         slot,
         profileKey: (cfg && cfg.browserProfileId) || slot,
-        // PHASE-6.3.1 — a flexible selected profile carries its own id (as browserProfileId) + full device.
+        // PHASE-6.3.1 — a flexible selected profile carries its own id (as browserProfileId) + its agent.
         profileId: (cfg && (cfg.profileId || cfg.browserProfileId)) || null,
-        device: (cfg && cfg.device) || null,
+        agent: (cfg && cfg.agent) || null,
         url: localTestActive() ? 'about:blank' : ((cfg && cfg.gameUrl) || 'about:blank'),
         // The cluster projection is AUTHORITATIVE for proxy: pass the resolved ref EXPLICITLY
         // (null = DIRECT). Never send `undefined`, which would make openProfile silently fall
@@ -547,7 +545,7 @@ else {
         label: (cfg && cfg.label) || `Profile ${slot}`,
       }),
       getRunClient: runClientFor,
-      applyDeviceToClient: (client, device) => applyDeviceEmulation(client, device, null),
+      applyAgentToClient: (client, agent) => applyBrowserAgent(client, agent, null),
       testProxy: (ref) => testProxyById(ref),
       closeRun: (runId) => runManager.closeRun(runId),
       getRunInfo: runInfoFor,
@@ -574,11 +572,10 @@ else {
   // A device may request an explicit desktop OS window (e.g. 960×540) that is
   // independent from its game viewport (e.g. 851×393). Legacy mobile-only profiles
   // carry osWindow=null; the geometry layer falls back to viewport + chrome.
-  function clusterDevices() { return SLOTS_ABC.map((s) => { let d = null; try { d = profileStore && profileStore.deviceFor(s); } catch { d = null; } return d ? { osWindowWidth: d.osWindowWidth, osWindowHeight: d.osWindowHeight, viewportWidth: d.viewportWidth, viewportHeight: d.viewportHeight } : {}; }); }
-  function clusterWindowArrangement() { return arrangeBrowserWindows(allDisplayWorkAreas(), clusterDevices(), { gap: 8 }); }
+  function clusterWindowArrangement() { return arrangeBrowserWindows(allDisplayWorkAreas(), { gap: 8 }); }
   // PHASE-6.2 — the FOUR-window arrangement (3 desktop Chromium windows + the Tool window). Browsers use
   // .slots[1..3]; the Tool window is placed at .tool.
-  function clusterFourWindowArrangement() { return arrangeClusterWindows(allDisplayWorkAreas(), clusterDevices(), { gap: 8 }); }
+  function clusterFourWindowArrangement() { return arrangeClusterWindows(allDisplayWorkAreas(), { gap: 8 }); }
   // Re-tile all owned session runs into the 2×2 grid + place the control window BR.
   function restoreLayout() {
     try {
@@ -1189,9 +1186,10 @@ else {
       runManager.registerTarget(target.cdpTargetId, run);
       if (!run.selectedTargetId) run.selectedTargetId = target.cdpTargetId;
       attachCapture(client, target);
-      // Apply this run's mobile device emulation (viewport/screen/DSF/mobile/touch/UA)
-      // on the run's OWN client, and reapply on navigation / new targets.
-      if (run.deviceProfile) applyDeviceEmulation(client, run.deviceProfile, run).catch(() => {});
+      // Apply this run's browser AGENT (a mobile user-agent string, or nothing for the web
+       // agent) on the run's OWN client. No viewport/scale/touch emulation: the window is the
+       // viewport, which is what stopped the game from lagging.
+      if (run.browserAgent) applyBrowserAgent(client, run.browserAgent, run).catch(() => {});
       // Ensure the WS send-hook is present before the game opens its socket.
       wsReplay.injectSession(client, undefined).catch(() => {});
       // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG)
@@ -1249,40 +1247,32 @@ else {
     return result;
   }
 
-  // Apply CDP mobile emulation to a run's client (per-run ownership). Each command is
-  // optional/guarded so an unsupported one never crashes the profile; the applied
-  // capabilities are reported. Reapply on main-frame navigation (bounded — one
-  // listener per client, torn down when the target detaches).
-  async function applyDeviceEmulation(client, device, run) {
+  // Apply a run's browser AGENT to its own client: the MOBILE agent overrides the user agent,
+  // the WEB agent overrides nothing. A user-agent override survives navigation, so there is no
+  // re-apply listener — and there is no metrics/touch emulation at all, which is what used to
+  // render the Cocos canvas at 2–3× the pixels and synthesise a touch event per mouse move.
+  async function applyBrowserAgent(client, agent, run) {
     if (!client || !client.Emulation) return { applied: [], unsupported: ['Emulation'] };
-    const cmds = deviceProfile.emulationCommands(device);
-    const metricsCmd = cmds.find((c) => c.method === 'Emulation.setDeviceMetricsOverride');
+    const cmds = browserAgent.emulationCommands(agent);
     const applied = [], unsupported = [];
     for (const c of cmds) {
       const short = c.method.split('.')[1];
       try { await client.Emulation[short](c.params); applied.push(short); } catch { unsupported.push(short); }
     }
-    // Reapply metrics after a real navigation creates a fresh context (once per client).
-    try {
-      if (client.Page && metricsCmd && !client.__phomEmuNav) {
-        client.__phomEmuNav = true;
-        await client.Page.enable().catch(() => {});
-        client.Page.frameNavigated((p) => { if (p && p.frame && !p.frame.parentId) client.Emulation.setDeviceMetricsOverride(metricsCmd.params).catch(() => {}); });
-      }
-    } catch { /* best effort */ }
-    if (run) { run._deviceEmuApplied = applied; run._deviceEmuUnsupported = unsupported; }
-    try { send('phom:device-applied', { runId: run && run.id, applied, unsupported, device: deviceProfile.publicSnapshot(device) }); } catch {}
+    if (run) { run._agentApplied = applied; run._agentUnsupported = unsupported; }
+    try { send('phom:agent-applied', { runId: run && run.id, applied, unsupported, agent: browserAgent.publicSnapshot(agent) }); } catch {}
     return { applied, unsupported };
   }
 
+  // Only the game's WebSocket is of interest, so only the WebSocket events are subscribed:
+  // the HTTP request/response/loadingFinished/loadingFailed events were a Cocos game's worth of
+  // per-asset traffic crossing CDP for nothing (capture.on('request') ignores everything that is
+  // not a WS frame). Network.enable's buffers are kept small for the same reason — the tool never
+  // reads a response body, so Chromium must not retain them.
   function attachCapture(client, target) {
     const { Network } = client;
     const tid = target.cdpTargetId;
-    Network.enable().catch(() => {});
-    Network.requestWillBeSent((p, sid) => capture.onRequestWillBeSent(tid, p, sid));
-    Network.responseReceived((p, sid) => capture.onResponseReceived(tid, p, sid));
-    Network.loadingFinished((p, sid) => capture.onLoadingFinished(tid, p, sid));
-    Network.loadingFailed((p, sid) => capture.onLoadingFailed(tid, p, sid));
+    Network.enable({ maxTotalBufferSize: 1048576, maxResourceBufferSize: 262144, maxPostDataSize: 0 }).catch(() => { Network.enable().catch(() => {}); });
     Network.webSocketCreated((p, sid) => capture.onWebSocketCreated(tid, p, sid));
     Network.webSocketFrameSent((p, sid) => capture.onWebSocketFrameSent(tid, p, sid));
     Network.webSocketFrameReceived((p, sid) => capture.onWebSocketFrameReceived(tid, p, sid));
@@ -1293,7 +1283,7 @@ else {
   // AND its saved mobile device profile (viewport emulation is separate from the
   // native 2×2 window size). The device belongs to the slot (browser profile), so the
   // same device is reapplied every time this slot's browser is (re)opened.
-  async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username, device: deviceArg, profileId }) {
+  async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username, agent: agentArg, profileId }) {
     ensureRunManager(); ensurePhomSessions(); ensureStores();
     // PHASE 6.3.2.2 — resolve the browser runtime (custom Chromium OR Google Chrome) per the saved
     // preference. AUTO prefers custom Chromium; if it is unavailable it falls back to Chrome (logged).
@@ -1316,10 +1306,11 @@ else {
     // fallback). `proxyRequired` stays an explicit opt-IN (default optional).
     const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired === true }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
     if (!gate.ok) return gate; // PROXY_CONFIG_NOT_FOUND / DISABLED (bound proxy) — launch blocked; DIRECT is allowed
-    // PHASE-6.3.1 — a flexible selected profile passes its FULL device explicitly; otherwise fall back to
-    // the legacy per-slot device. The persistent user-data-dir is keyed by the profile identity so each
-    // profile keeps its own Chromium data + reopens the SAME identity.
-    const device = deviceArg || profileStore.deviceFor(pk);
+    // A selected profile passes its AGENT explicitly; otherwise fall back to the legacy per-slot
+    // agent, then to the default. The persistent user-data-dir is keyed by the profile identity so
+    // each profile keeps its own Chromium data + reopens the SAME identity.
+    const agentNorm = browserAgent.normalizeAgent(agentArg || profileStore.agentFor(pk));
+    const agent = agentNorm.ok ? agentNorm.agent : browserAgent.DEFAULT_AGENT;
     const udKey = (profileId != null && String(profileId).trim()) ? String(profileId).trim() : pk;
     // Chromium sandbox policy for THIS launch (sandbox ON unless the fully-gated dev
     // diagnostic bypass applies). When the sandbox stays ON we self-heal the runtime's
@@ -1339,29 +1330,20 @@ else {
     const profileDir = path.join(phomRoot(), 'browser-profiles', udKey || slot || 'X');
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
     // PHASE-6 — DETERMINISTIC multi-monitor placement. Browser slot A/B/C ⇒ window 1/2/3 (stable, never
-    // by launch/PID order). Sizes each window to the profile's MOBILE-LANDSCAPE viewport + chrome (device
-    // metrics still applied over CDP — only the native window bounds change). Reads the live display
-    // topology so the three windows are visible simultaneously across monitors. Falls back to the Phase-3
-    // single-slot spread, then to the legacy quadrant (localTest / no device).
-    // PHASE-6.2 — a DESKTOP Chromium window (title bar / min-max-close / resizable), sized to fill its
-    // monitor region (NOT forced to a mobile size); the game viewport stays mobile-landscape via CDP.
+    // by launch/PID order). Every window is the ONE default size (browser-agent.DEFAULT_VIEWPORT + the
+    // Chromium chrome allowance), which is also the page's viewport: nothing is emulated or scaled.
+    // Reads the live display topology so the three windows are visible simultaneously across monitors.
     const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
     let windowRect;
-    if (device) {
-      // §7/§8 — pass BOTH osWindow* and viewport* to the geometry layer so an
-      // explicit desktop OS window size (e.g. 960×540) is honored independently of
-      // the emulated viewport (which stays a CDP concern).
-      const geoDevice = { osWindowWidth: device.osWindowWidth, osWindowHeight: device.osWindowHeight, viewportWidth: device.viewportWidth, viewportHeight: device.viewportHeight };
-      try {
-        const arr = clusterFourWindowArrangement();
-        windowRect = (arr && arr.slots && arr.slots[slotIndex]) || desktopWindowRectForSlot(currentWorkArea(), slot, geoDevice);
-      } catch { windowRect = desktopWindowRectForSlot(currentWorkArea(), slot, geoDevice); }
-    } else { windowRect = gridRectForSlot(slot); }
-    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, mobileTouch: !!(device && device.touch), profileDir, sandboxDisabled: sandbox.sandboxDisabled });
+    try {
+      const arr = clusterFourWindowArrangement();
+      windowRect = (arr && arr.slots && arr.slots[slotIndex]) || desktopWindowRectForSlot(currentWorkArea(), slot);
+    } catch { windowRect = desktopWindowRectForSlot(currentWorkArea(), slot); }
+    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
     run.profileId = udKey; // PHASE-6.3.1 — runtime browserRunId → profileId mapping (active-guard + reopen)
-    run.deviceProfile = device || null; // reapplied on every attach/navigation
+    run.browserAgent = agent; // re-applied on every attach
     // PHASE 6.3.2.2 — per-run executable so each browser launches from the resolved runtime. The launcher
     // uses run.chromeExecutable first (chrome-runtime.cjs); null keeps the runtime's pinned custom Chromium.
     run.chromeExecutable = usingChrome ? rtChoice.executable : null;
@@ -1379,7 +1361,7 @@ else {
     if (!launched.ok) { runManager.failRun(run, launched.error); return { ok: false, error: launched.error }; }
     run.cdpEndpoint = launched.endpoint;
     connectRunEndpointWithRetry(run, launched.endpoint).catch(() => {});
-    return { ok: true, runId: run.id, proxy: gate.runProxy, device: device ? deviceProfile.publicSnapshot(device) : null };
+    return { ok: true, runId: run.id, proxy: gate.runProxy, agent: browserAgent.publicSnapshot(agent) };
   }
 
   // ---- license gate ----
@@ -1460,7 +1442,7 @@ else {
     ipcMain.handle('phom:chromium-status', () => { const r = chromiumRuntime(); return r.ok ? { ok: true, version: r.version, architecture: r.architecture, root: r.root, checksumVerified: r.checksumVerified } : r; });
     // §3/§4 — expose the FULL catalog (mobile + desktop + laptop + laptop-small +
     // laptop-small + mobile-landscape). The UI groups them by profileType.
-    ipcMain.handle('phom:device-presets', () => ({ ok: true, presets: deviceProfile.listProfilePresets() }));
+    ipcMain.handle('phom:agents', () => ({ ok: true, agents: browserAgent.AGENTS.map((a) => ({ agent: a, ...browserAgent.publicSnapshot(a) })), defaultAgent: browserAgent.DEFAULT_AGENT }));
     ipcMain.handle('phom:profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: profileStore.list() }; }));
     ipcMain.handle('phom:profile-upsert', guarded((_e, slot, input) => { ensureStores(); return profileStore.upsert(String(slot), input || {}); }));
     ipcMain.handle('phom:profile-delete', guarded((_e, slot) => { ensureStores(); return profileStore.remove(String(slot)); }));
@@ -1667,7 +1649,7 @@ else {
     }));
     ipcMain.handle('phom:cluster-open', guarded(() => ensureCluster().openCluster()));
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
-    ipcMain.handle('phom:cluster-apply-devices', guarded(() => ensureCluster().applyClusterDevices()));
+    ipcMain.handle('phom:cluster-apply-agents', guarded(() => ensureCluster().applyClusterAgents()));
     ipcMain.handle('phom:cluster-test-proxies', guarded(() => ensureCluster().testClusterProxies()));
     ipcMain.handle('phom:cluster-acquire-host', guarded(() => ensureCluster().acquireHostTable()));
     ipcMain.handle('phom:cluster-join-followers', guarded(() => ensureCluster().joinFollowers()));

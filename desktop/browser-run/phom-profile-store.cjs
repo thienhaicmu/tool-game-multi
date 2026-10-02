@@ -2,17 +2,17 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const { normalizeDeviceProfile, publicSnapshot } = require('./device-profile.cjs');
+const { normalizeAgent, publicSnapshot } = require('./browser-agent.cjs');
 
 // ---------------------------------------------------------------------------
 // PhomProfileStore — persists the three reusable Phỏm profiles (slot A/B/C), each
-// binding a proxy REFERENCE and a normalized mobile device profile. Metadata only:
-// NEVER a proxy password / account / token / cookie (secrets stay in
-// ProxySecretStore). Small JSON file, atomic write. Device identity is STABLE across
-// restarts (persisted), never re-randomized on reload.
+// binding a proxy REFERENCE and a browser AGENT (web or mobile — browser-agent.cjs).
+// Metadata only: NEVER a proxy password / account / token / cookie (secrets stay in
+// ProxySecretStore). Small JSON file, atomic write.
 //
-// The device profile belongs to the BROWSER profile (slot), not to the HOST/FOLLOWER
-// role — changing a slot's role never moves its device/proxy.
+// The agent belongs to the BROWSER profile (slot), not to a role — changing a slot's
+// role never moves its agent/proxy. Records saved under the old device model are
+// migrated on read (their mobile/userAgent decides the agent).
 // ---------------------------------------------------------------------------
 
 const SLOTS = Object.freeze(['A', 'B', 'C']);
@@ -28,8 +28,16 @@ class PhomProfileStore {
     if (!this._filePath) return { ok: true, firstRun: true };
     try {
       const data = JSON.parse(fs.readFileSync(this._filePath, 'utf8'));
-      for (const p of (data && Array.isArray(data.profiles) ? data.profiles : [])) if (p && SLOTS.includes(p.slot)) this._map.set(p.slot, p);
-      return { ok: true };
+      let migrated = false;
+      for (const p of (data && Array.isArray(data.profiles) ? data.profiles : [])) {
+        if (!p || !SLOTS.includes(p.slot)) continue;
+        // A record saved under the device model keeps only its agent (see browser-agent.cjs).
+        const rec = { slot: p.slot, name: p.name, proxyRef: p.proxyRef || null, agent: this._agentOf(p), windowSlot: p.windowSlot || p.slot, createdAt: p.createdAt, updatedAt: p.updatedAt };
+        if (p.device !== undefined || p.agent !== rec.agent) migrated = true;
+        this._map.set(rec.slot, rec);
+      }
+      if (migrated) { try { this._persist(); } catch { /* the next write migrates it */ } }
+      return { ok: true, migrated };
     } catch (e) { if (e && e.code === 'ENOENT') return { ok: true, firstRun: true }; return { ok: false, error: { code: 'PHOM_PROFILE_STORE_CORRUPT', message: String(e && e.message || e) } }; }
   }
 
@@ -41,26 +49,23 @@ class PhomProfileStore {
     fs.renameSync(tmp, this._filePath);
   }
 
-  // Create/update a slot's profile. `input.device` may be a preset id (+overrides) or
-  // an explicit device; it is normalized + validated (landscape invariant enforced).
+  // Create/update a slot's profile. `input.agent` is 'WEB' or 'MOBILE' (absent keeps
+  // what the slot has, or the default for a new slot).
   upsert(slot, input = {}) {
     if (!SLOTS.includes(slot)) return { ok: false, error: { code: 'PHOM_PROFILE_INVALID_SLOT', message: `slot must be A/B/C, got ${slot}` } };
     const existing = this._map.get(slot) || {};
-    let device = existing.device || null;
-    if (input.device) {
-      // Preserve a stable device id across edits unless a fresh preset is chosen.
-      const devInput = { ...input.device };
-      if (existing.device && existing.device.id && !input.device.regenerate && (!input.device.presetId || input.device.presetId === existing.device.presetId)) devInput.id = existing.device.id;
-      const norm = normalizeDeviceProfile(devInput);
+    let agent = this._agentOf(existing);
+    if (input.agent !== undefined || input.device !== undefined) {
+      const norm = normalizeAgent(input.agent !== undefined ? input.agent : input.device);
       if (!norm.ok) return norm;
-      device = norm.device;
+      agent = norm.agent;
     }
     const now = new Date().toISOString();
     const profile = {
       slot,
       name: input.name != null ? String(input.name) : (existing.name || `Profile ${slot}`),
       proxyRef: input.proxyRef !== undefined ? (input.proxyRef || null) : (existing.proxyRef || null),
-      device,
+      agent,
       windowSlot: slot,
       createdAt: existing.createdAt || now,
       updatedAt: now,
@@ -70,14 +75,22 @@ class PhomProfileStore {
     return { ok: true, profile: this.getPublic(slot) };
   }
 
+  // The agent of a stored record, migrating a legacy device object when that is all it has.
+  _agentOf(p) {
+    if (!p || (p.agent == null && p.device == null)) return null;
+    const norm = normalizeAgent(p.agent != null ? p.agent : p.device);
+    return norm.ok ? norm.agent : null;
+  }
+
   get(slot) { return this._map.get(slot) || null; }
   getPublic(slot) {
     const p = this.get(slot); if (!p) return null;
-    return { slot: p.slot, name: p.name, proxyRef: p.proxyRef, device: p.device ? publicSnapshot(p.device) : null, windowSlot: p.windowSlot, createdAt: p.createdAt, updatedAt: p.updatedAt };
+    const agent = this._agentOf(p);
+    return { slot: p.slot, name: p.name, proxyRef: p.proxyRef, agent, device: agent ? publicSnapshot(agent) : null, windowSlot: p.windowSlot, createdAt: p.createdAt, updatedAt: p.updatedAt };
   }
   list() { return SLOTS.map((s) => this.getPublic(s)).filter(Boolean); }
-  // Full device object (for CDP emulation) — never leaves main.
-  deviceFor(slot) { const p = this.get(slot); return p ? p.device : null; }
+  // The agent to apply over CDP for this slot ('WEB' | 'MOBILE' | null when unset).
+  agentFor(slot) { return this._agentOf(this.get(slot)); }
 
   // Slots currently referencing a proxy id (used to guard proxy deletion).
   slotsUsingProxy(proxyId) { const id = String(proxyId); return SLOTS.filter((s) => { const p = this._map.get(s); return p && p.proxyRef === id; }); }

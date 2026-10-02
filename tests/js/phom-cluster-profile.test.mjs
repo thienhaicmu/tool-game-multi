@@ -20,9 +20,9 @@ function validInput(over = {}) {
     defaultHostSlot: 'A',
     defaultStake: 1000,
     slots: {
-      A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a' },
-      B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: 'PX-b' },
-      C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: 'PX-c' },
+      A: { browserProfileId: 'A', proxyRef: 'PX-a' },
+      B: { browserProfileId: 'B', proxyRef: 'PX-b' },
+      C: { browserProfileId: 'C', proxyRef: 'PX-c' },
     },
     ...over,
   };
@@ -59,7 +59,7 @@ test('valid three-slot profile normalizes with whitelisted fields only', () => {
 
 test('DRAFT when gameUrl/proxy missing; READY when all present (via store state)', () => {
   const { store } = newStore();
-  const draft = store.create(validInput({ gameUrl: null, slots: { A: { browserProfileId: 'A', deviceProfileId: 'dev-A' }, B: { browserProfileId: 'B', deviceProfileId: 'dev-B' }, C: { browserProfileId: 'C', deviceProfileId: 'dev-C' } } }));
+  const draft = store.create(validInput({ gameUrl: null, slots: { A: { browserProfileId: 'A' }, B: { browserProfileId: 'B' }, C: { browserProfileId: 'C' } } }));
   assert.equal(draft.ok, true);
   assert.equal(draft.profile.state, 'DRAFT');
   const ready = store.create(validInput());
@@ -68,19 +68,24 @@ test('DRAFT when gameUrl/proxy missing; READY when all present (via store state)
 });
 
 test('missing slot / invalid host slot / duplicate browser profile are typed', () => {
-  const miss = model.normalizeClusterProfile(validInput({ slots: { A: { browserProfileId: 'A', deviceProfileId: 'dev-A' }, B: { browserProfileId: 'B', deviceProfileId: 'dev-B' } } }));
+  const miss = model.normalizeClusterProfile(validInput({ slots: { A: { browserProfileId: 'A' }, B: { browserProfileId: 'B' } } }));
   assert.equal(miss.error.code, 'PHOM_CLUSTER_SLOT_MISSING');
   const host = model.normalizeClusterProfile(validInput({ defaultHostSlot: 'Z' }));
   assert.equal(host.error.code, 'PHOM_CLUSTER_HOST_SLOT_INVALID');
-  const dup = model.normalizeClusterProfile(validInput({ slots: { A: { browserProfileId: 'A', deviceProfileId: 'dev-A' }, B: { browserProfileId: 'A', deviceProfileId: 'dev-B' }, C: { browserProfileId: 'C', deviceProfileId: 'dev-C' } } }));
+  const dup = model.normalizeClusterProfile(validInput({ slots: { A: { browserProfileId: 'A' }, B: { browserProfileId: 'A' }, C: { browserProfileId: 'C' } } }));
   assert.equal(dup.error.code, 'PHOM_CLUSTER_DUPLICATE_BROWSER_PROFILE');
 });
 
-test('missing browser/device ref in a slot is typed', () => {
-  const nb = model.normalizeClusterProfile(validInput({ slots: { A: { deviceProfileId: 'dev-A' }, B: { browserProfileId: 'B', deviceProfileId: 'dev-B' }, C: { browserProfileId: 'C', deviceProfileId: 'dev-C' } } }));
+test('a slot without a browser profile ref is typed; the browser ref is the only one required', () => {
+  const nb = model.normalizeClusterProfile(validInput({ slots: { A: {}, B: { browserProfileId: 'B' }, C: { browserProfileId: 'C' } } }));
   assert.equal(nb.error.code, 'PHOM_CLUSTER_BROWSER_PROFILE_MISSING');
-  const nd = model.normalizeClusterProfile(validInput({ slots: { A: { browserProfileId: 'A' }, B: { browserProfileId: 'B', deviceProfileId: 'dev-B' }, C: { browserProfileId: 'C', deviceProfileId: 'dev-C' } } }));
-  assert.equal(nd.error.code, 'PHOM_CLUSTER_DEVICE_PROFILE_MISSING');
+  const ok = model.normalizeClusterProfile(validInput({ slots: { A: { browserProfileId: 'A' }, B: { browserProfileId: 'B' }, C: { browserProfileId: 'C' } } }));
+  assert.equal(ok.ok, true);
+  assert.deepEqual(Object.keys(ok.profile.slots.A).sort(), ['browserProfileId', 'proxyRef']);
+  // a leftover device ref from an older file is simply ignored
+  const legacy = model.normalizeClusterProfile(validInput({ slots: { A: { browserProfileId: 'A', deviceProfileId: 'dev-A' }, B: { browserProfileId: 'B' }, C: { browserProfileId: 'C' } } }));
+  assert.equal(legacy.ok, true);
+  assert.equal(legacy.profile.slots.A.deviceProfileId, undefined);
 });
 
 test('name is required + length-capped', () => {
@@ -101,9 +106,9 @@ test('unknown fields and RUNTIME fields are never persisted', () => {
     bogus: 'x', runId: 'B-123', cdpPort: 9222, pid: 4444, targetId: 'T1', cdpSessionId: 'S1',
     handState: { foo: 1 }, joinState: 'READY', activationKey: 'KEY',
     slots: {
-      A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a', password: 'secret', runId: 'B-1', cdpPort: 1 },
-      B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: 'PX-b' },
-      C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: 'PX-c' },
+      A: { browserProfileId: 'A', proxyRef: 'PX-a', password: 'secret', runId: 'B-1', cdpPort: 1 },
+      B: { browserProfileId: 'B', proxyRef: 'PX-b' },
+      C: { browserProfileId: 'C', proxyRef: 'PX-c' },
     },
   }));
   assert.equal(r.ok, true);
@@ -111,7 +116,7 @@ test('unknown fields and RUNTIME fields are never persisted', () => {
   for (const banned of ['bogus', 'runId', 'cdpPort', 'pid', 'targetId', 'cdpSessionId', 'handState', 'joinState', 'activationKey', 'password', 'secret']) {
     assert.equal(flat.includes(banned), false, `persisted profile must not contain "${banned}"`);
   }
-  assert.deepEqual(Object.keys(r.profile.slots.A).sort(), ['browserProfileId', 'deviceProfileId', 'proxyRef']);
+  assert.deepEqual(Object.keys(r.profile.slots.A).sort(), ['browserProfileId', 'proxyRef']);
 });
 
 // =========================== B. STORE ======================================
@@ -183,7 +188,7 @@ test('corrupt JSON is recovered: backed up aside, store continues empty', () => 
 
 // =========================== MIGRATION =====================================
 test('migration is additive + idempotent; never fabricates a URL', () => {
-  const source = { name: 'Cụm mặc định', slots: { A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a' }, B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null }, C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: null } } };
+  const source = { name: 'Cụm mặc định', slots: { A: { browserProfileId: 'A', proxyRef: 'PX-a' }, B: { browserProfileId: 'B', proxyRef: null }, C: { browserProfileId: 'C', proxyRef: null } } };
   const { store, filePath } = newStore({ migrationSource: () => source });
   const m1 = store.migrate();
   assert.equal(m1.ok, true);
@@ -211,19 +216,19 @@ test('migration skips cleanly when the source is incomplete (no fake data)', () 
 });
 
 // =================== C. REFERENCE INTEGRITY ================================
-test('validateReady flags missing browser / device / proxy references', () => {
+test('validateReady flags missing browser / proxy references', () => {
   const { store } = newStore({ ...resolvers({ browsers: ['A', 'B'], proxies: ['PX-a', 'PX-b'] }) });
   const id = store.create(validInput()).profile.id;
   const v = store.validateReady(id);
   assert.equal(v.ok, false);
   assert.equal(v.state, 'DRAFT');
   assert.deepEqual(v.missing.browser, ['C']);
-  assert.deepEqual(v.missing.device, ['C']);
+  assert.equal(v.missing.device, undefined, 'there is no device reference any more');
   assert.deepEqual(v.missing.proxy, ['C']);
   const codes = v.errors.map((e) => e.code);
   assert.ok(codes.includes('PHOM_CLUSTER_BROWSER_PROFILE_MISSING'));
-  assert.ok(codes.includes('PHOM_CLUSTER_DEVICE_PROFILE_MISSING'));
   assert.ok(codes.includes('PHOM_CLUSTER_PROXY_MISSING'));
+  assert.equal(codes.includes('PHOM_CLUSTER_DEVICE_PROFILE_MISSING'), false);
 });
 
 test('validateReady passes when all references resolve + URL present', () => {
@@ -236,9 +241,9 @@ test('validateReady passes when all references resolve + URL present', () => {
 
 // ---- PROXY OPTIONAL (proxy is not required for READY) -----------------------
 const directSlots = () => ({
-  A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: null },
-  B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
-  C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: null },
+  A: { browserProfileId: 'A', proxyRef: null },
+  B: { browserProfileId: 'B', proxyRef: null },
+  C: { browserProfileId: 'C', proxyRef: null },
 });
 
 test('A/B/C ALL Direct (no proxyRef) => READY_TO_RUN (proxy optional, §12)', () => {
@@ -253,9 +258,9 @@ test('A/B/C ALL Direct (no proxyRef) => READY_TO_RUN (proxy optional, §12)', ()
 test('mixed A=PROXY, B=DIRECT, C=PROXY => READY + per-slot executionMode mapping (§6/§13)', () => {
   const { store } = newStore({ ...resolvers({ proxies: ['PX-a', 'PX-c'] }) });
   const id = store.create(validInput({ slots: {
-    A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a' },
-    B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
-    C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: 'PX-c' },
+    A: { browserProfileId: 'A', proxyRef: 'PX-a' },
+    B: { browserProfileId: 'B', proxyRef: null },
+    C: { browserProfileId: 'C', proxyRef: 'PX-c' },
   } })).profile.id;
   const v = store.validateReady(id);
   assert.equal(v.ready, true, 'a Direct middle slot does not block readiness');
@@ -275,9 +280,9 @@ test('explicitly UNBINDING a proxyRef switches that slot back to DIRECT and stay
   assert.equal(store.validateReady(id).state, 'READY_TO_RUN');
   // user clears slot B's proxy binding
   const upd = store.update(id, { slots: {
-    A: { browserProfileId: 'A', deviceProfileId: 'dev-A', proxyRef: 'PX-a' },
-    B: { browserProfileId: 'B', deviceProfileId: 'dev-B', proxyRef: null },
-    C: { browserProfileId: 'C', deviceProfileId: 'dev-C', proxyRef: 'PX-c' },
+    A: { browserProfileId: 'A', proxyRef: 'PX-a' },
+    B: { browserProfileId: 'B', proxyRef: null },
+    C: { browserProfileId: 'C', proxyRef: 'PX-c' },
   } });
   assert.equal(upd.ok, true);
   const v = store.validateReady(id);
@@ -345,8 +350,6 @@ test('projection maps A/B/C 1:1, keeps HOST + stake + shared URL, no cross-slot 
   assert.equal(rc.config.slots.A.proxyRef, 'PX-a');
   assert.equal(rc.config.slots.B.proxyRef, 'PX-b');
   assert.equal(rc.config.slots.C.proxyRef, 'PX-c');
-  assert.equal(rc.config.slots.A.deviceProfile.id, 'dev-A');
-  assert.equal(rc.config.slots.C.deviceProfile.id, 'dev-C');
   assert.equal(rc.config.slots.A.browserProfile.slot, 'A');
   // stored object not mutated by projection
   assert.equal(JSON.stringify(store.get(id)), before);

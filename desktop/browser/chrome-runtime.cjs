@@ -119,8 +119,6 @@ class ChromeRuntime {
       env: this._env,
       windowSize: rect ? { width: rect.width, height: rect.height } : this._windowSize,
       windowPosition: rect ? { x: rect.x, y: rect.y } : null,
-      // PHOM mobile: browser-level touch events for a consistent mobile web view.
-      mobileTouch: !!(run && run.mobileTouch),
       // Pinned Chromium executable (per-run override wins, else the runtime default).
       chromeExecutable: (run && run.chromeExecutable) || this._chromeExecutable || null,
       // Sandbox disabled ONLY when the owner's gated dev diagnostic policy set it on

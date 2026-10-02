@@ -1,6 +1,6 @@
-// PHASE 6.3.1 — wiring assertions for the flexible SETUP: main IPC (CRUD + open-from-selection with the
-// active-profile guard + device forwarding) and the renderer (table selection, bulk proxy, RUN GAME →
-// openSelected). Source-level (no GUI runtime) — the pure store/selection logic is tested separately.
+// Wiring assertions for SETUP: main IPC (CRUD + open-from-selection with the active-profile guard + agent
+// forwarding) and the renderer (table selection, bulk proxy, RUN GAME → openSelected). Source-level (no GUI
+// runtime) — the pure store/selection logic is tested separately.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
@@ -30,22 +30,23 @@ test('delete + proxy-change are blocked while the profile backs a LIVE Chromium 
   assert.match(setpx, /profileInUse\(pid\)/);
 });
 
-test('open-from-selection maps selection order → B1/B2/B3 (internal slots A/B/C) with each profile device+proxy', () => {
+test('open-from-selection maps selection order → B1/B2/B3 (internal slots A/B/C) with each profile agent+proxy', () => {
   const fn = main.slice(main.indexOf('function openSelectedProfiles('), main.indexOf('function ensureCluster()'));
   assert.match(fn, /ids\.length !== 3/); // exactly 3
   assert.match(fn, /PHOM_GAME_URL_REQUIRED/); // game url required (unless local test)
   assert.match(fn, /slot: SLOTS_ABC\[i\]/); // selection order i → slot A/B/C → B(i+1)
-  assert.match(fn, /device: p\.device/); // each browser gets ITS profile device
+  assert.match(fn, /agent: deviceProfilesStore\.agentFor\(p\.id\)/); // each browser gets ITS profile agent
   assert.match(fn, /proxyRef: p\.proxyRef/);
   assert.match(fn, /profileId: p\.id/); // stable profile identity carried to the run
 });
 
-test('openProfile forwards an explicit device + records browserRunId → profileId (reopen uses the right profile)', () => {
-  assert.match(main, /const device = deviceArg \|\| profileStore\.deviceFor\(pk\)/);
+test('openProfile forwards an explicit agent + records browserRunId → profileId (reopen uses the right profile)', () => {
+  assert.match(main, /browserAgent\.normalizeAgent\(agentArg \|\| profileStore\.agentFor\(pk\)\)/);
+  assert.match(main, /run\.browserAgent = agent/);
   assert.match(main, /run\.profileId = udKey/);
-  // the cluster openProfile closure forwards the flexible profile id + device
+  // the cluster openProfile closure forwards the profile id + its agent
   assert.match(main, /profileId: \(cfg && \(cfg\.profileId \|\| cfg\.browserProfileId\)\)/);
-  assert.match(main, /device: \(cfg && cfg\.device\)/);
+  assert.match(main, /agent: \(cfg && cfg\.agent\)/);
 });
 
 // PHASE 6.3.2.1 — Game URL is a per-profile property (edited in Edit Profile). openSelectedProfiles opens
@@ -60,8 +61,8 @@ test('open-from-selection uses each profile OWN Game URL (§6.3.2.1)', () => {
 test('renderer: Game URL is edited in Edit Profile (pf-url) + shown as a table column, not a global input', () => {
   // per-profile URL field in the edit modal, saved via profileUpdateX/profileCreate
   assert.match(js, /id: 'pf-url'/);
-  assert.match(js, /profileUpdateX\(id, \{ name, device, gameUrl \}\)/);
-  assert.match(js, /profileCreate\(\{ name, device, gameUrl \}\)/);
+  assert.match(js, /profileUpdateX\(id, \{ name, agent, gameUrl \}\)/);
+  assert.match(js, /profileCreate\(\{ name, agent, gameUrl \}\)/);
   // the table shows a GAME URL column (ellipsised) and there is no global URL input any more
   assert.match(js, /'GAME URL'/);
   assert.match(js, /col-url/);

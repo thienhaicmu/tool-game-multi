@@ -65,41 +65,28 @@ function toolWindowBounds(workArea = {}, opts = {}) {
   return { x, y, width, height };
 }
 
-// PHASE-3 — a DESKTOP window whose content area fits the profile's MOBILE-LANDSCAPE viewport.
-// The window is a normal desktop Chromium window; its size is derived from the device's emulated
-// viewport (CSS px) + an allowance for the browser chrome (tab strip + address bar + frame), so the
-// mobile-landscape content shows at its true ratio without being squashed. Device emulation itself is
-// unchanged (still CDP setDeviceMetricsOverride) — this ONLY sizes/places the native window.
+// A DESKTOP Chromium window for one browser. EVERY Phỏm browser window is the same size: the default
+// viewport (browser-agent.DEFAULT_VIEWPORT, 600×338) plus an allowance for the browser chrome (tab strip
+// + address bar + frame). The page is never emulated or scaled any more, so this window IS the game's
+// viewport and its maximum size.
 //
-// Placement spreads the three windows across the work-area width: A left, C right, B centered. When
-// the work area is too narrow for three device-sized windows they overlap in the middle (each stays
-// FULL device size + draggable) rather than the viewport being shrunk to fit (§5). Pure math.
-const WINDOW_CHROME = Object.freeze({ frameWidth: 16, chromeHeight: 120 });
-// PHASE-6.2.4 — resolve a device's OS window size on Windows. The OS window is
-// INDEPENDENT from the emulated viewport (§8). When the device carries an explicit
-// osWindowWidth/osWindowHeight, that is the authoritative Chromium native window
-// size. When absent (legacy mobile-only profiles), fall back to viewport + browser
-// chrome so the mobile-landscape content is not squashed by an undersized frame.
-function _resolveOsWindowSize(device, frameW, chromeH) {
-  const osw = Number(device && device.osWindowWidth);
-  const osh = Number(device && device.osWindowHeight);
-  const vw = Math.max(320, Math.round(Number(device && device.viewportWidth) || 851));
-  const vh = Math.max(180, Math.round(Number(device && device.viewportHeight) || 393));
-  if (Number.isFinite(osw) && osw > 0 && Number.isFinite(osh) && osh > 0) {
-    return { width: Math.round(osw), height: Math.round(osh), vw, vh, hasOsWindow: true };
-  }
-  return { width: vw + frameW, height: chromeH + vh, vw, vh, hasOsWindow: false };
+// Placement spreads the three windows across the work-area width: A left, C right, B centered. When the
+// work area is too narrow for three of them they overlap in the middle (each stays full size +
+// draggable) rather than being shrunk (§5). Pure math.
+const { DEFAULT_VIEWPORT, WINDOW_CHROME } = require('../../browser-run/browser-agent.cjs');
+// The one window size: the default viewport + the chrome allowance.
+function _resolveOsWindowSize(frameW, chromeH) {
+  const vw = DEFAULT_VIEWPORT.width, vh = DEFAULT_VIEWPORT.height;
+  return { width: vw + frameW, height: chromeH + vh, vw, vh };
 }
-function desktopWindowRectForSlot(workArea = {}, slot, device = {}, opts = {}) {
+function desktopWindowRectForSlot(workArea = {}, slot, opts = {}) {
   const x0 = Math.round(Number(workArea.x) || 0);
   const y0 = Math.round(Number(workArea.y) || 0);
   const W = Math.max(320, Math.round(Number(workArea.width) || 1280));
   const H = Math.max(240, Math.round(Number(workArea.height) || 800));
   const frameW = Number.isFinite(opts.frameWidth) ? opts.frameWidth : WINDOW_CHROME.frameWidth;
   const chromeH = Number.isFinite(opts.chromeHeight) ? opts.chromeHeight : WINDOW_CHROME.chromeHeight;
-  // §8 — OS window size uses device.osWindowWidth/Height when present; else falls
-  // back to the legacy viewport + chrome allowance.
-  const size = _resolveOsWindowSize(device, frameW, chromeH);
+  const size = _resolveOsWindowSize(frameW, chromeH);
   const vw = size.vw, vh = size.vh;
   // Window OUTER size, never larger than the work area.
   const width = Math.min(W, size.width);
@@ -118,22 +105,16 @@ function desktopWindowRectForSlot(workArea = {}, slot, device = {}, opts = {}) {
 }
 
 // PHASE-6 — deterministic multi-monitor arrangement for the THREE manual browser windows. Slot i ALWAYS
-// maps to Browser i (1/2/3) regardless of launch/PID/enumeration order (§7/§34). Each window keeps its
-// device mobile-landscape viewport (device emulation is separate); the outer window = viewport + chrome.
+// maps to Browser i (1/2/3) regardless of launch/PID/enumeration order (§7/§34). Every window is the one
+// default size (DEFAULT_VIEWPORT + chrome), which is also the page's viewport.
 //   ≥3 monitors → one browser per monitor (PER_MONITOR)
 //   2 monitors  → browsers 1&2 tiled on monitor 0, browser 3 on monitor 1 (SPLIT_2)
 //   1 monitor   → all three tiled side-by-side (TILED)
-// When a target region cannot fit the device-sized windows side-by-side they are SPREAD (may overlap)
-// and `insufficient` is set to LAYOUT_SPACE_INSUFFICIENT — never a silent "perfect" claim, and the
-// viewport is NEVER shrunk below the device size (§35).
+// When a target region cannot fit the windows side-by-side they are SPREAD (may overlap) and
+// `insufficient` is set to LAYOUT_SPACE_INSUFFICIENT — never a silent "perfect" claim, and a window is
+// never shrunk below the default size (§35).
 function _normMon(m) { return { x: Math.round(Number(m && m.x) || 0), y: Math.round(Number(m && m.y) || 0), width: Math.max(320, Math.round(Number(m && m.width) || 1280)), height: Math.max(240, Math.round(Number(m && m.height) || 800)) }; }
-function _winSize(device, frameW, chromeH) {
-  // §8 — OS window size is INDEPENDENT from the emulated viewport. When the device
-  // carries an explicit osWindow*, use it directly (a Desktop 960×540 OS window is
-  // 960×540 even if the game viewport is 851×393). Otherwise fall back to the
-  // legacy mobile-only sizing (viewport + browser chrome).
-  return _resolveOsWindowSize(device, frameW, chromeH);
-}
+function _winSize(frameW, chromeH) { return _resolveOsWindowSize(frameW, chromeH); }
 function _centerIn(size, m) {
   const width = Math.min(size.width, m.width), height = Math.min(size.height, m.height);
   const x = m.x + Math.max(0, Math.round((m.width - width) / 2));
@@ -156,95 +137,83 @@ function _tileAcross(sizes, m, gap) {
   }
   return { rects, insufficient };
 }
-function arrangeBrowserWindows(monitors, devices, opts = {}) {
+function arrangeBrowserWindows(monitors, opts = {}) {
   const gap = Number.isFinite(opts.gap) ? opts.gap : 8;
   const frameW = Number.isFinite(opts.frameWidth) ? opts.frameWidth : WINDOW_CHROME.frameWidth;
   const chromeH = Number.isFinite(opts.chromeHeight) ? opts.chromeHeight : WINDOW_CHROME.chromeHeight;
   const mons = (Array.isArray(monitors) && monitors.length ? monitors : [{ x: 0, y: 0, width: 1280, height: 800 }]).map(_normMon);
-  const dev = Array.isArray(devices) ? { 1: devices[0], 2: devices[1], 3: devices[2] } : (devices && typeof devices === 'object' ? devices : {});
-  const size = (i) => _winSize(dev[i] || {}, frameW, chromeH);
+  const size = () => _winSize(frameW, chromeH);
   const slots = { 1: null, 2: null, 3: null };
   let insufficient = false, placement;
   if (mons.length >= 3) {
     placement = 'PER_MONITOR';
-    for (let i = 1; i <= 3; i++) { const s = size(i); slots[i] = _centerIn(s, mons[i - 1]); if (s.width > mons[i - 1].width || s.height > mons[i - 1].height) insufficient = true; }
+    for (let i = 1; i <= 3; i++) { const s = size(); slots[i] = _centerIn(s, mons[i - 1]); if (s.width > mons[i - 1].width || s.height > mons[i - 1].height) insufficient = true; }
   } else if (mons.length === 2) {
     placement = 'SPLIT_2';
-    const pair = _tileAcross([size(1), size(2)], mons[0], gap); slots[1] = pair.rects[0]; slots[2] = pair.rects[1];
-    const s3 = size(3); slots[3] = _centerIn(s3, mons[1]); insufficient = pair.insufficient || s3.width > mons[1].width || s3.height > mons[1].height;
+    const pair = _tileAcross([size(), size()], mons[0], gap); slots[1] = pair.rects[0]; slots[2] = pair.rects[1];
+    const s3 = size(); slots[3] = _centerIn(s3, mons[1]); insufficient = pair.insufficient || s3.width > mons[1].width || s3.height > mons[1].height;
   } else {
     placement = 'TILED';
-    const t = _tileAcross([size(1), size(2), size(3)], mons[0], gap); slots[1] = t.rects[0]; slots[2] = t.rects[1]; slots[3] = t.rects[2]; insufficient = t.insufficient;
+    const t = _tileAcross([size(), size(), size()], mons[0], gap); slots[1] = t.rects[0]; slots[2] = t.rects[1]; slots[3] = t.rects[2]; insufficient = t.insufficient;
   }
   return { slots, monitors: mons.length, placement, insufficient, insufficientReason: insufficient ? 'LAYOUT_SPACE_INSUFFICIENT' : null };
 }
 
 // PHASE-6.2 — the FOUR-window desktop arrangement: three real Chromium browser windows (1/2/3) + the
 // Tool window, deterministic across the live monitor topology (slot i ALWAYS Browser i; the Tool is the
-// 4th region). The Chromium windows are DESKTOP windows (title bar / min-max-close / resizable — sized
-// to fill their monitor region, NOT forced to a mobile size); the game viewport stays mobile-landscape
-// via CDP device emulation (unchanged) — each slot carries its `viewport` for reference only.
+// 4th region). Every Chromium window is a DESKTOP window of the ONE default size, centered in its
+// region — never stretched to fill a monitor, because the window is the game's viewport now.
 //   ≥4 monitors → B1..B3 fill mon0..2, Tool on mon3
 //   3 monitors  → B1..B3 fill mon0..2, Tool docks bottom-right of mon2
 //   2 monitors  → B1|B2 split mon0, B3 fills mon1, Tool docks bottom-right of mon1
 //   1 monitor   → 2×2 quadrants: B1 TL, B2 TR, B3 BL, Tool BR (no overlap)
-function _fill(m, frac) { const width = Math.round(m.width * frac); const height = Math.round(m.height * frac); return { x: m.x + Math.round((m.width - width) / 2), y: m.y + Math.round((m.height - height) / 2), width, height }; }
 function _toolDock(m, opts) { const w = Math.min(m.width, Number.isFinite(opts.toolWidth) ? opts.toolWidth : 560); const h = Math.min(m.height, Number.isFinite(opts.toolHeight) ? opts.toolHeight : 260); return { x: m.x + m.width - w, y: m.y + m.height - h, width: w, height: h }; }
-// §7/§8 — a browser rect that HONORS the device's explicit OS window size when
-// present. `region` is the region allocated to this browser (a full monitor, or a
-// half-monitor for SPLIT_2, or a quadrant for GRID_2x2). If the device requests a
-// specific OS window size, the window is exactly that size, centered in the
-// region (never enlarged past the region). Otherwise the caller's `fillRect`
-// fallback (legacy fill-region behavior) is used.
-function _regionWindowRect(region, device, opts, fillRect) {
+// A browser rect inside the region allocated to it (a full monitor, a half-monitor for SPLIT_2, or a
+// quadrant for GRID_2x2): the ONE default window size, centered, never enlarged past the region.
+function _regionWindowRect(region, opts) {
   const frameW = Number.isFinite(opts.frameWidth) ? opts.frameWidth : WINDOW_CHROME.frameWidth;
   const chromeH = Number.isFinite(opts.chromeHeight) ? opts.chromeHeight : WINDOW_CHROME.chromeHeight;
-  const size = _resolveOsWindowSize(device, frameW, chromeH);
-  if (size.hasOsWindow) {
-    const width = Math.min(region.width, size.width);
-    const height = Math.min(region.height, size.height);
-    const x = region.x + Math.max(0, Math.round((region.width - width) / 2));
-    const y = region.y + Math.max(0, Math.round((region.height - height) / 2));
-    return { x, y, width, height };
-  }
-  return fillRect;
+  const size = _resolveOsWindowSize(frameW, chromeH);
+  const width = Math.min(region.width, size.width);
+  const height = Math.min(region.height, size.height);
+  const x = region.x + Math.max(0, Math.round((region.width - width) / 2));
+  const y = region.y + Math.max(0, Math.round((region.height - height) / 2));
+  return { x, y, width, height };
 }
-function arrangeClusterWindows(monitors, devices, opts = {}) {
+function arrangeClusterWindows(monitors, opts = {}) {
   const mons = (Array.isArray(monitors) && monitors.length ? monitors : [{ x: 0, y: 0, width: 1280, height: 800 }]).map(_normMon);
-  const dev = Array.isArray(devices) ? { 1: devices[0], 2: devices[1], 3: devices[2] } : (devices && typeof devices === 'object' ? devices : {});
-  const vp = (i) => { const d = dev[i] || {}; return { width: Math.max(320, Math.round(Number(d.viewportWidth) || 851)), height: Math.max(180, Math.round(Number(d.viewportHeight) || 393)) }; };
-  const withVp = (rect, i) => ({ ...rect, viewport: vp(i) });
-  const regionRect = (region, i, legacyFill) => withVp(_regionWindowRect(region, dev[i] || {}, opts, legacyFill), i);
+  const vp = () => ({ width: DEFAULT_VIEWPORT.width, height: DEFAULT_VIEWPORT.height });
+  const regionRect = (region) => ({ ..._regionWindowRect(region, opts), viewport: vp() });
   const slots = { 1: null, 2: null, 3: null };
   let tool = null, placement, insufficient = false;
   if (mons.length >= 4) {
     placement = 'PER_MONITOR_4';
-    for (let i = 1; i <= 3; i++) slots[i] = regionRect(mons[i - 1], i, _fill(mons[i - 1], 0.9));
+    for (let i = 1; i <= 3; i++) slots[i] = regionRect(mons[i - 1]);
     tool = _toolDock(mons[3], opts);
   } else if (mons.length === 3) {
     placement = 'PER_MONITOR_3';
-    slots[1] = regionRect(mons[0], 1, _fill(mons[0], 0.9));
-    slots[2] = regionRect(mons[1], 2, _fill(mons[1], 0.9));
-    slots[3] = regionRect(mons[2], 3, _fill(mons[2], 0.78));
+    slots[1] = regionRect(mons[0]);
+    slots[2] = regionRect(mons[1]);
+    slots[3] = regionRect(mons[2]);
     tool = _toolDock(mons[2], opts);
   } else if (mons.length === 2) {
     placement = 'SPLIT_2';
     const m0 = mons[0]; const halfW = Math.floor((m0.width - 8) / 2);
     const region1 = { x: m0.x, y: m0.y, width: halfW, height: m0.height };
     const region2 = { x: m0.x + halfW + 8, y: m0.y, width: halfW, height: m0.height };
-    slots[1] = regionRect(region1, 1, region1);
-    slots[2] = regionRect(region2, 2, region2);
-    slots[3] = regionRect(mons[1], 3, _fill(mons[1], 0.82));
+    slots[1] = regionRect(region1);
+    slots[2] = regionRect(region2);
+    slots[3] = regionRect(mons[1]);
     tool = _toolDock(mons[1], opts);
   } else {
     placement = 'GRID_2x2';
     const g = computeGridLayout(mons[0], { gap: Number.isFinite(opts.gap) ? opts.gap : 8 });
-    slots[1] = regionRect(g.A, 1, g.A);
-    slots[2] = regionRect(g.B, 2, g.B);
-    slots[3] = regionRect(g.C, 3, g.C);
+    slots[1] = regionRect(g.A);
+    slots[2] = regionRect(g.B);
+    slots[3] = regionRect(g.C);
     tool = g.control;
-    // A quadrant can be smaller than the mobile-landscape viewport on low-res displays — the game
-    // viewport is CDP-emulated so it still renders, but flag the tight space honestly.
+    // A quadrant can be smaller than the default window on a low-res display: the window is then clamped
+    // to the quadrant, so the page gets less than DEFAULT_VIEWPORT — flag the tight space honestly.
     insufficient = [1, 2, 3].some((i) => slots[i].width < slots[i].viewport.width || slots[i].height < slots[i].viewport.height);
   }
   return { slots, tool, monitors: mons.length, placement, insufficient, insufficientReason: insufficient ? 'LAYOUT_SPACE_INSUFFICIENT' : null };

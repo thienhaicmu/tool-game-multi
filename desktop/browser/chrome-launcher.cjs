@@ -195,7 +195,7 @@ function ensureChromePersistentSession(profile) {
 }
 
 class ChromeLauncher {
-  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, mobileTouch = false, chromeExecutable = null, sandboxDisabled = false, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null, probeCdp = defaultProbeCdp, now = () => Date.now(), instanceId = null, livenessWatchMs = 4000 } = {}) {
+  constructor({ profilePath, env = process.env, windowSize = DEFAULT_WINDOW, windowPosition = null, chromeExecutable = null, sandboxDisabled = false, onRuntime = () => {}, onExit = () => {}, spawn: spawnFn = spawn, cdp = CDP, proxy = null, probeCdp = defaultProbeCdp, now = () => Date.now(), instanceId = null, livenessWatchMs = 4000 } = {}) {
     this.profilePath = profilePath;               // per-run persistent user-data-dir
     this.env = env;
     // Per-launcher instance id — one launcher owns one browser run for its whole life.
@@ -214,7 +214,6 @@ class ChromeLauncher {
     // Optional { x, y } opening position for 2×2 workspace tiling (null = OS default).
     this.windowPosition = windowPosition && Number.isFinite(windowPosition.x) && Number.isFinite(windowPosition.y) ? { x: Math.round(windowPosition.x), y: Math.round(windowPosition.y) } : null;
     // PHOM mobile: browser-level touch events (all tabs) for a consistent mobile view.
-    this.mobileTouch = !!mobileTouch;
     // Chromium sandbox is ON by default. This is set true ONLY by the fully-gated
     // dev diagnostic path (resolveSandboxPolicy) — NEVER a production default. The
     // real 0x5 fix is an AppContainer ACL grant on the runtime, not this flag.
@@ -286,8 +285,6 @@ class ChromeLauncher {
       `--window-size=${w},${h}`,   // DEFAULT opening size only; Chrome stays resizable
       // Optional 2×2 tiling position (null adds nothing — unchanged behaviour).
       ...(this.windowPosition ? [`--window-position=${this.windowPosition.x},${this.windowPosition.y}`] : []),
-      // Optional browser-level touch events for mobile emulation (null adds nothing).
-      ...(this.mobileTouch ? ['--touch-events=enabled'] : []),
       // Sandbox stays ON by default (security boundary). The copied-runtime "Access
       // denied (0x5)" is fixed by granting AppContainer read+execute on the runtime
       // (ensureSandboxAccess), NOT by --no-sandbox. --no-sandbox is added ONLY when the

@@ -167,21 +167,23 @@ test('--no-sandbox appears ONLY when sandboxDisabled is explicitly set (dev diag
 });
 
 // §11 loopback-only CDP + PHOM mobile/tiling opening args are opt-in and correct.
-test('CDP debugging binds loopback only; mobile-touch and 2x2 window-position are opt-in', async () => {
+test('CDP debugging binds loopback only; the 2x2 window-position is opt-in', async () => {
   const profile = tmpProfile();
   try {
     const spawn = makeFakeSpawn();
-    const l = new ChromeLauncher({ profilePath: profile, env: envWithChrome(), spawn, cdp: makeFakeCdp(), mobileTouch: true, windowPosition: { x: 964, y: 0 } });
+    const l = new ChromeLauncher({ profilePath: profile, env: envWithChrome(), spawn, cdp: makeFakeCdp(), windowPosition: { x: 964, y: 0 } });
     await l.open('about:blank');
     const { args } = spawn.calls[0];
     assert.ok(args.includes('--remote-debugging-address=127.0.0.1'), 'debugging port is bound to loopback, never 0.0.0.0');
-    assert.ok(args.includes('--touch-events=enabled'), 'mobile-touch opt-in adds browser-level touch events');
+    // Touch emulation is gone for good: it synthesised an event per mouse move and pushed the game onto
+    // the touch code path, which is part of why the game lagged (see phom-browser-agent.test.mjs).
+    assert.equal(args.includes('--touch-events=enabled'), false, 'the launcher never asks for touch events');
     assert.equal(argValue(args, '--window-position'), '964,0', 'window-position tiles the opening window');
 
     // Off by default: a plain launcher adds none of these.
     const spawn2 = makeFakeSpawn();
     const plain = new ChromeLauncher({ profilePath: profile, env: envWithChrome(), spawn: spawn2, cdp: makeFakeCdp() });
     await plain.open('about:blank');
-    assert.ok(!spawn2.calls[0].args.some((a) => /--touch-events|--window-position/.test(a)), 'no mobile/tiling flags unless requested');
+    assert.ok(!spawn2.calls[0].args.some((a) => /--touch-events|--window-position/.test(a)), 'no touch/tiling flags unless requested');
   } finally { fs.rmSync(profile, { recursive: true, force: true }); }
 });

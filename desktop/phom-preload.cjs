@@ -20,8 +20,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   proxyTestAll: (ids) => ipcRenderer.invoke('phom:proxy-test-all', ids),
   proxyQuickApply: (payload) => ipcRenderer.invoke('phom:proxy-quick-apply', payload),
   onProxyAuth: (cb) => ipcRenderer.on('phom:proxy-auth', (_e, p) => cb(p)),
-  // mobile device profiles (per slot)
-  devicePresets: () => ipcRenderer.invoke('phom:device-presets'),
+  // the browser agent (web / mobile) — the only rendering choice
+  agents: () => ipcRenderer.invoke('phom:agents'),
   profileList: () => ipcRenderer.invoke('phom:profile-list'),
   profileUpsert: (slot, input) => ipcRenderer.invoke('phom:profile-upsert', slot, input),
   profileDelete: (slot) => ipcRenderer.invoke('phom:profile-delete', slot),
@@ -32,7 +32,7 @@ contextBridge.exposeInMainWorld('phomQA', {
   profileDeleteX: (id) => ipcRenderer.invoke('phom:profile-delete-x', id),
   profileSetProxy: (id, proxyInput) => ipcRenderer.invoke('phom:profile-set-proxy', id, proxyInput),
   openSelected: (cfg) => ipcRenderer.invoke('phom:open-selected', cfg),
-  onDeviceApplied: (cb) => ipcRenderer.on('phom:device-applied', (_e, p) => cb(p)),
+  onAgentApplied: (cb) => ipcRenderer.on('phom:agent-applied', (_e, p) => cb(p)),
   // browser + HOST/FOLLOWER controlled-table session
   openProfile: (cfg) => ipcRenderer.invoke('phom:open-profile', cfg),
   startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
@@ -85,7 +85,7 @@ contextBridge.exposeInMainWorld('phomQA', {
   clusterCreate: (config) => ipcRenderer.invoke('phom:cluster-create', config),
   clusterOpen: () => ipcRenderer.invoke('phom:cluster-open'),
   clusterConnect: () => ipcRenderer.invoke('phom:cluster-connect'),
-  clusterApplyDevices: () => ipcRenderer.invoke('phom:cluster-apply-devices'),
+  clusterApplyAgents: () => ipcRenderer.invoke('phom:cluster-apply-agents'),
   clusterTestProxies: () => ipcRenderer.invoke('phom:cluster-test-proxies'),
   clusterAcquireHost: () => ipcRenderer.invoke('phom:cluster-acquire-host'),
   clusterJoinFollowers: () => ipcRenderer.invoke('phom:cluster-join-followers'),

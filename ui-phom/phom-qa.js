@@ -28,8 +28,9 @@
   let session = null;
   let hands = [];
   let proxies = [];
-  let presets = [];          // mobile device presets
-  const DEFAULT_PROFILE_PRESET_ID = 'desktop-22-24-16x9'; // §6.3.13 — default display for NEW profiles (600×338 · 16:9)
+  // The two browser agents (web / mobile) the main process offers; filled on boot.
+  let agents = [];
+  let defaultAgent = 'MOBILE';
   let profiles = {};         // slot -> saved profile (device + proxyRef)
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
@@ -169,7 +170,7 @@
     $('workspace').hidden = false;
     try { caps = await api.capabilities(); } catch { caps = {}; }
     try { const p = await api.proxyList(); proxies = (p && p.proxies) || []; } catch { proxies = []; }
-    try { const pr = await api.devicePresets(); presets = (pr && pr.presets) || []; } catch { presets = []; }
+    try { const ag = await api.agents(); agents = (ag && ag.agents) || []; defaultAgent = (ag && ag.defaultAgent) || 'MOBILE'; } catch { agents = []; }
     try { const pf = await api.profileList(); profiles = Object.fromEntries(((pf && pf.profiles) || []).map((x) => [x.slot, x])); } catch { profiles = {}; }
     try { session = await api.sessionState(); if (session && session.hands) hands = session.hands; } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
@@ -405,9 +406,9 @@
     const allSel = profilesX.length > 0 && selectedProfileIds.length === Math.min(3, profilesX.length);
     const headCb = el('input', { type: 'checkbox', class: 'prof-cb', checked: allSel ? 'checked' : null, title: 'Chọn / bỏ chọn tất cả', onchange: () => { if (allSel) clearAllProfiles(); else selectAllProfiles(); } });
     table.appendChild(el('thead', null, el('tr', null,
-      el('th', null, headCb), el('th', null, 'PLAYER'), el('th', null, 'PROFILE'), el('th', null, 'TYPE'), el('th', null, 'OS WINDOW'), el('th', null, 'VIEWPORT'), el('th', null, 'PROXY'), el('th', null, 'GAME URL'), el('th', null, 'TRẠNG THÁI'), el('th', null, ''))));
+      el('th', null, headCb), el('th', null, 'PLAYER'), el('th', null, 'PROFILE'), el('th', null, 'AGENT'), el('th', null, 'PROXY'), el('th', null, 'GAME URL'), el('th', null, 'TRẠNG THÁI'), el('th', null, ''))));
     const tbody = el('tbody');
-    if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '10', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
+    if (!profilesX.length) tbody.appendChild(el('tr', null, el('td', { colspan: '8', class: 'faint', style: 'text-align:center;padding:16px' }, 'Chưa có profile — bấm THÊM PROFILE.')));
     for (const p of profilesX) tbody.appendChild(profileRow(p));
     table.appendChild(tbody);
     const scroll = el('div', { class: 'table-scroll' }, table);
@@ -423,21 +424,16 @@
   function selectAllProfiles() { selectedProfileIds = profilesX.slice(0, 3).map((p) => p.id); renderApp(); }
   function clearAllProfiles() { selectedProfileIds = []; renderApp(); }
   function profileRow(p) {
-    const dev = p.device || {};
     const sel = PS ? PS.isSelected(selectedProfileIds, p.id) : false;
     const canSel = PS ? PS.canSelect(selectedProfileIds, p.id) : false;
     const bLabel = PS ? PS.browserOf(selectedProfileIds, p.id) : null;
     const cb = el('input', { type: 'checkbox', class: 'prof-cb', checked: sel ? 'checked' : null, disabled: canSel ? null : true,
       onchange: () => { if (PS) { selectedProfileIds = PS.toggle(selectedProfileIds, p.id); renderApp(); } } });
-    const typeText = TYPE_LABEL[dev.profileType] || dev.profileType || '—';
-    const osText = dev.osWindow || (dev.osWindowWidth ? `${dev.osWindowWidth}×${dev.osWindowHeight}` : 'Desktop');
     return el('tr', { class: 'prof-row' + (sel ? ' selected' : '') },
       el('td', null, cb),
       el('td', { class: 'col-tag' }, bLabel ? el('span', { class: 'b-badge' }, playerLabel(bLabel)) : ''),
       el('td', { class: 'col-name' }, p.name || '(no name)'),
-      el('td', null, typeText),
-      el('td', { class: 'num' }, osText),
-      el('td', { class: 'num' }, dev.resolution || '—'),
+      el('td', null, el('span', { class: 'badge', title: p.agent === 'WEB' ? 'Trình duyệt giữ nguyên danh tính web' : 'Dùng user-agent điện thoại' }, agentLabel(p.agent))),
       // PHASE 6.3.10 — compact proxy display: TYPE host:port · auth (credential is never shown, §10). DIRECT if none.
       el('td', null, (() => {
         if (!p.proxyRef) return el('span', { class: 'badge faint' }, 'DIRECT');
@@ -513,7 +509,7 @@
   async function duplicateProfileX(id) {
     const p = profilesX.find((x) => x.id === id);
     if (!p) return;
-    const res = await api.profileCreate({ name: (p.name || 'Profile') + ' (copy)', device: p.device || {}, gameUrl: p.gameUrl || null });
+    const res = await api.profileCreate({ name: (p.name || 'Profile') + ' (copy)', agent: p.agent || defaultAgent, gameUrl: p.gameUrl || null });
     if (res && res.ok === false) return note(errText(res), true);
     await refreshProfilesX(); renderApp(); note('Đã nhân bản profile.');
   }
@@ -527,29 +523,23 @@
   }
   function openProfileModal(id) {
     const existing = id ? profilesX.find((x) => x.id === id) : null;
-    // §6.3.13 — a NEW profile defaults to the standard 22/24" 16:9 preset (600×338) so three
-    // browsers tile on one 1920×1080 monitor without the user configuring width/height. EXISTING
-    // profiles keep their saved viewport untouched (§4/§11); Duplicate preserves the source (§10).
-    const defPreset = !existing ? (presets.find((p) => p.id === DEFAULT_PROFILE_PRESET_ID) || null) : null;
-    const dev = existing && existing.device ? existing.device : (defPreset ? { ...defPreset, presetId: defPreset.id } : {});
+    const curAgent = (existing && existing.agent) || defaultAgent;
     document.querySelectorAll('.phq-analyzer').forEach((n) => n.remove());
     const ov = el('div', { class: 'phq-analyzer' });
     const close = () => ov.remove();
-    const presetSel = el('select', { class: 'sel', id: 'pf-preset' }, el('option', { value: '' }, '— chọn preset (tùy chọn) —'));
-    for (const pr of presets) presetSel.appendChild(el('option', { value: pr.id, selected: dev.presetId === pr.id ? 'selected' : null }, `${pr.name} · ${(pr.profileType || '').replace('_', ' ')}`));
     const f = (idv, ph, val) => el('input', { class: 'f', id: idv, placeholder: ph, value: val != null ? val : '' });
     const curProxy = existing && existing.proxyRef ? (proxies || []).find((x) => x.id === existing.proxyRef) || null : null;
-    const applyPreset = () => { const pr = presets.find((x) => x.id === presetSel.value); if (!pr) return; $('pf-name').value = $('pf-name').value || pr.name; $('pf-osw').value = pr.osWindowWidth || ''; $('pf-osh').value = pr.osWindowHeight || ''; $('pf-vpw').value = pr.viewportWidth || ''; $('pf-vph').value = pr.viewportHeight || ''; if ($('pf-touch')) $('pf-touch').checked = !!pr.touch; };
-    presetSel.onchange = applyPreset;
+    // The ONE rendering choice: which identity the browser presents. Everything else (kích thước
+    // cửa sổ = khung hình web) là mặc định chung, không chỉnh theo profile nữa.
+    const agentSel = el('select', { class: 'sel', id: 'pf-agent' });
+    const agentOpts = agents.length ? agents : [{ agent: 'WEB', label: 'Agent Web' }, { agent: 'MOBILE', label: 'Agent Mobile' }];
+    for (const a of agentOpts) agentSel.appendChild(el('option', { value: a.agent, selected: curAgent === a.agent ? 'selected' : null }, a.label || a.agent));
+    agentSel.value = curAgent;
     const card = el('div', { class: 'anz-card' },
       el('div', { class: 'section-t' }, existing ? 'SỬA PROFILE' : 'THÊM PROFILE'),
       el('div', { class: 'phq-row' }, el('span', null, 'Tên'), f('pf-name', 'tên profile', existing ? existing.name : '')),
-      el('div', { class: 'phq-row' }, el('span', null, 'Preset'), presetSel),
-      el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'OS WINDOW (cửa sổ Chromium)'),
-      el('div', { class: 'phq-row' }, el('span', null, 'W × H'), f('pf-osw', 'width', dev.osWindowWidth), f('pf-osh', 'height', dev.osWindowHeight)),
-      el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'VIEWPORT (game emulation)'),
-      el('div', { class: 'phq-row' }, el('span', null, 'W × H'), f('pf-vpw', 'width', dev.viewportWidth), f('pf-vph', 'height', dev.viewportHeight)),
-      el('div', { class: 'phq-row' }, el('span', null, 'Touch'), el('label', { class: 'faint' }, el('input', { type: 'checkbox', id: 'pf-touch', checked: (dev.touch == null ? true : dev.touch) ? 'checked' : null }), ' bật cảm ứng')),
+      el('div', { class: 'phq-row' }, el('span', null, 'Agent'), agentSel),
+      el('div', { class: 'note sm' }, 'Agent Web = giữ nguyên danh tính trình duyệt · Agent Mobile = user-agent điện thoại. Khung hình web dùng kích thước mặc định của cửa sổ.'),
       el('div', { class: 'section-t', style: 'margin-top:8px;font-size:12px' }, 'GAME URL (lưu trong profile — không phải nhập lại khi mở)'),
       el('div', { class: 'phq-row' }, el('span', null, 'URL'), el('input', { class: 'f mono', id: 'pf-url', type: 'url', spellcheck: 'false', placeholder: 'https://game.example.com/room', value: existing && existing.gameUrl ? existing.gameUrl : '' })),
       // PHASE 6.3.9 — PROXY is now configured HERE (per-profile), replacing the bulk-proxy panel. Optional:
@@ -570,27 +560,13 @@
     ov.appendChild(card); document.body.appendChild(ov);
   }
   async function saveProfileModal(id, close) {
-    const num = (v) => { const n = Number(String(v || '').trim()); return Number.isFinite(n) && n > 0 ? n : null; };
-    const vpw = num($('pf-vpw').value), vph = num($('pf-vph').value);
     const err = $('pf-err');
-    if (!vpw || !vph) { if (err) { err.textContent = 'Viewport width/height phải là số > 0.'; err.className = 'note warn'; } return; }
-    const osw = num($('pf-osw').value), osh = num($('pf-osh').value);
-    const touch = !!($('pf-touch') && $('pf-touch').checked);
-    // §6.3.13 — when a preset is selected (NEW profiles default to Desktop 22/24"), carry its
-    // profileType / scale / emulation so the display tag + device emulation stick. Editing an
-    // existing profile with no preset selected keeps the legacy CUSTOM/MOBILE_LANDSCAPE logic (§11).
-    const presetId = ($('pf-preset') && $('pf-preset').value) || null;
-    const preset = presetId ? presets.find((p) => p.id === presetId) : null;
-    const device = { viewportWidth: vpw, viewportHeight: vph, screenWidth: vpw, screenHeight: vph,
-      deviceScaleFactor: preset ? preset.deviceScaleFactor : 2, osWindowWidth: osw, osWindowHeight: osh,
-      touch, mobile: preset ? preset.mobile : touch, maxTouchPoints: preset ? preset.maxTouchPoints : (touch ? 5 : 0),
-      orientationType: 'landscapePrimary', presetId: preset ? preset.id : null,
-      profileType: preset ? preset.profileType : ((osw && osh) ? 'CUSTOM' : 'MOBILE_LANDSCAPE') };
+    const agent = ($('pf-agent') && $('pf-agent').value) || defaultAgent;
     const name = ($('pf-name').value || '').trim() || 'Profile';
     const gameUrl = ($('pf-url') && $('pf-url').value || '').trim() || null;
     let res;
-    if (id) res = await api.profileUpdateX(id, { name, device, gameUrl });
-    else res = await api.profileCreate({ name, device, gameUrl });
+    if (id) res = await api.profileUpdateX(id, { name, agent, gameUrl });
+    else res = await api.profileCreate({ name, agent, gameUrl });
     if (res && res.ok === false) { if (err) { err.textContent = errText(res); err.className = 'note warn'; } return; }
     // PHASE 6.3.9 — per-profile PROXY (optional), reusing the existing api.profileSetProxy IPC. Non-destructive:
     // a new proxy string changes it, the remove checkbox clears it (DIRECT), an untouched field leaves it alone.
@@ -605,7 +581,8 @@
   }
 
   const SLOT_INDEX = { A: '1', B: '2', C: '3' };
-  const TYPE_LABEL = { DESKTOP: 'Desktop', LAPTOP: 'Laptop', LAPTOP_SMALL: 'Laptop Small', MOBILE_LANDSCAPE: 'Mobile Ngang', DESKTOP_16_9: 'Desktop 22/24"', CUSTOM: 'Custom' };
+  const AGENT_LABEL = { WEB: 'Web', MOBILE: 'Mobile' };
+  function agentLabel(a) { return AGENT_LABEL[a] || AGENT_LABEL[defaultAgent] || 'Mobile'; }
   async function refreshClusterProfiles() {
     try { const r = await api.clusterProfileList(); clusterProfiles = (r && r.profiles) || []; selectedClusterProfileId = (r && r.selectedId) || null; }
     catch { clusterProfiles = []; selectedClusterProfileId = null; }
@@ -1385,7 +1362,7 @@
         if (cn && (cn.connected || 0) >= 3) break;
         await new Promise((r) => setTimeout(r, 800));
       }
-      await api.clusterApplyDevices();
+      await api.clusterApplyAgents();
       try { await api.restoreLayout(); } catch {}
       try { caps = await api.capabilities(); } catch {}
       // sync per-slot runIds from the cluster snapshot for HOST/session actions

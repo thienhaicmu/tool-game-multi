@@ -147,12 +147,11 @@ function realStores() {
   const secretStore = new ProxySecretStore({ filePath: secretFile, safeStorage: null }); // session-only (never plaintext on disk)
   const proxyStore = new ProxyConfigStore({ filePath: proxyFile, secretStore });
   const profileStore = new PhomProfileStore({ filePath: profileFile });
-  // seed three device-bearing browser profiles so a cluster profile can be READY
-  for (const s of SLOTS) profileStore.upsert(s, { name: `P${s}`, device: { presetId: 'android-pixel5-landscape' } });
+  // seed three browser profiles so a cluster profile can be READY
+  for (const s of SLOTS) profileStore.upsert(s, { name: `P${s}`, agent: 'MOBILE' });
   const clusterStore = new PhomClusterProfileStore({
     filePath: clusterFile,
     resolveBrowserProfile: (id) => profileStore.getPublic(id),
-    resolveDevice: (bpid, deviceId) => { const dev = profileStore.deviceFor(bpid); return dev && String(dev.id) === String(deviceId) ? { id: dev.id } : null; },
     resolveProxy: (ref) => proxyStore.getPublic(ref),
     isActive: () => false,
   });
@@ -193,9 +192,9 @@ test('apply via real stores: password lives ONLY in the secret store (never meta
 
 test('apply updates the selected cluster profile refs and its JSON holds NO password', () => {
   const st = realStores();
-  // create a READY-ish cluster profile referencing A/B/C browser+device (proxy added by apply)
+  // create a READY-ish cluster profile referencing the A/B/C browser profiles (proxy added by apply)
   const created = st.clusterStore.create({ name: 'Bàn', gameUrl: 'https://g.example.com/p', defaultHostSlot: 'A',
-    slots: { A: { browserProfileId: 'A', deviceProfileId: deviceId(st, 'A') }, B: { browserProfileId: 'B', deviceProfileId: deviceId(st, 'B') }, C: { browserProfileId: 'C', deviceProfileId: deviceId(st, 'C') } } });
+    slots: { A: { browserProfileId: 'A' }, B: { browserProfileId: 'B' }, C: { browserProfileId: 'C' } } });
   assert.equal(created.ok, true);
   const slots = parseQuickProxies('h1|8080|u1|PWA\nh2|8081|u2|PWB\nh3|8082|u3|PWC', { protocol: 'http' }).slots;
   const res = applyQuickProxies({ slots, clusterProfileId: created.profile.id }, realOps(st));
@@ -215,5 +214,4 @@ test('a stale password IS preserved when the config store keeps it; apply create
   assert.equal(st.proxyStore.resolvePassword(res.refs.A), 'KEEPME');
 });
 
-function deviceId(st, slot) { const d = st.profileStore.deviceFor(slot); return d ? String(d.id) : null; }
 function safeRead(p) { try { return readFileSync(p, 'utf8'); } catch { return ''; } }

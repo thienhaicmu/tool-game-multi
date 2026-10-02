@@ -4,19 +4,12 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const { PhomClusterCdpManager, SLOTS } = require('../../desktop/protocol/phom/phom-cluster-cdp-manager.cjs');
-const dp = require('../../desktop/browser-run/device-profile.cjs');
-
-function devices() {
-  return {
-    A: dp.normalizeDeviceProfile({ presetId: 'android-pixel5-landscape' }).device,
-    B: dp.normalizeDeviceProfile({ presetId: 'android-galaxy-s20-landscape' }).device,
-    C: dp.normalizeDeviceProfile({ presetId: 'android-generic-412-landscape' }).device,
-  };
-}
+// Each slot carries its browser AGENT (the only rendering choice): web or mobile.
+function agents() { return { A: 'MOBILE', B: 'WEB', C: 'MOBILE' }; }
 
 // Build a manager over MOCK owners: each slot gets its OWN client object + run info.
 function makeManager(opts = {}) {
-  const dev = devices();
+  const dev = agents();
   const clients = { A: { id: 'client-A', Emulation: {} }, B: { id: 'client-B', Emulation: {} }, C: { id: 'client-C', Emulation: {} } };
   const runIdBySlot = { A: 'BR-A', B: 'BR-B', C: 'BR-C' };
   const slotByRun = { 'BR-A': 'A', 'BR-B': 'B', 'BR-C': 'C' };
@@ -27,7 +20,7 @@ function makeManager(opts = {}) {
     now: (() => { let t = 0; return () => (t += 1); })(),
     openProfile: async (slot) => { if (opts.failOpen === slot) return { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED' } }; opened.push(slot); return { ok: true, runId: runIdBySlot[slot] }; },
     getRunClient: (runId) => clients[slotByRun[runId]] || null,
-    applyDeviceToClient: async (client, device) => { const slot = Object.keys(clients).find((s) => clients[s] === client); applied[slot].push(device.id); return { applied: ['setDeviceMetricsOverride', 'setTouchEmulationEnabled'], unsupported: [] }; },
+    applyAgentToClient: async (client, agent) => { const slot = Object.keys(clients).find((s) => clients[s] === client); applied[slot].push(agent); return { applied: agent === 'MOBILE' ? ['setUserAgentOverride'] : [], unsupported: [] }; },
     testProxy: async (ref) => ({ state: 'PASS', observedIp: '203.0.113.' + ref.slice(-1) }),
     closeRun: async (runId) => { closed.push(runId); },
     getRunInfo: (runId) => ({ pid: 1000 + runId.charCodeAt(3), port: 9300 + runId.charCodeAt(3), userDataDir: `D:/ud/${runId}` }),
@@ -38,7 +31,7 @@ function makeManager(opts = {}) {
 
 function baseCluster(mgr, dev) {
   return mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
-    { slot: 'A', proxyRef: 'px-A', device: dev.A }, { slot: 'B', proxyRef: 'px-B', device: dev.B }, { slot: 'C', proxyRef: 'px-C', device: dev.C },
+    { slot: 'A', proxyRef: 'px-A', agent: dev.A }, { slot: 'B', proxyRef: 'px-B', agent: dev.B }, { slot: 'C', proxyRef: 'px-C', agent: dev.C },
   ] });
 }
 
@@ -76,27 +69,25 @@ test('openCluster is PARTIAL if one process fails (not full success)', async () 
   assert.equal(mgr.getClusterSnapshot().profiles.C.error.code, 'PHOM_CHROMIUM_LAUNCH_FAILED');
 });
 
-// §12/§13/§17.E — applyClusterDevices routes each device to its OWN client; no copy.
-test('applyClusterDevices fans out per-client; each device to its own client only', async () => {
+// §12/§13/§17.E — applyClusterAgents routes each slot's agent to its OWN client; no copy.
+test('applyClusterAgents fans out per-client; each agent to its own client only', async () => {
   const { mgr, dev, applied } = makeManager();
   baseCluster(mgr, dev);
   await mgr.openCluster();
-  const res = await mgr.applyClusterDevices();
+  const res = await mgr.applyClusterAgents();
   assert.equal(res.ok, true);
-  assert.deepEqual(applied.A, [dev.A.id]);
-  assert.deepEqual(applied.B, [dev.B.id]);
-  assert.deepEqual(applied.C, [dev.C.id]);
-  // no cross-contamination
-  assert.notEqual(dev.A.id, dev.B.id);
+  assert.deepEqual(applied.A, ['MOBILE']);
+  assert.deepEqual(applied.B, ['WEB'], 'the web agent applies nothing, but to its own client only');
+  assert.deepEqual(applied.C, ['MOBILE']);
 });
 
-test('applyClusterDevices PARTIAL when one client is missing (no fake full success)', async () => {
+test('applyClusterAgents PARTIAL when one client is missing (no fake full success)', async () => {
   const { mgr, dev } = makeManager();
   baseCluster(mgr, dev);
   await mgr.openCluster();
   const orig = mgr._getRunClient.bind(mgr);
   mgr._getRunClient = (runId) => (runId === 'BR-C' ? null : orig(runId));
-  const res = await mgr.applyClusterDevices();
+  const res = await mgr.applyClusterAgents();
   assert.equal(res.ok, false);
   assert.equal(res.applied, 2);
 });
@@ -115,7 +106,7 @@ test('testClusterProxies fans out; 3/3 PASS => ok', async () => {
 test('cluster opens with all THREE slots Direct (no proxyRef) — proxy optional', async () => {
   const { mgr, dev, opened } = makeManager();
   mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
-    { slot: 'A', proxyRef: null, device: dev.A }, { slot: 'B', proxyRef: null, device: dev.B }, { slot: 'C', proxyRef: null, device: dev.C },
+    { slot: 'A', proxyRef: null, agent: dev.A }, { slot: 'B', proxyRef: null, agent: dev.B }, { slot: 'C', proxyRef: null, agent: dev.C },
   ] });
   const res = await mgr.openCluster();
   assert.equal(res.ok, true);
@@ -125,7 +116,7 @@ test('cluster opens with all THREE slots Direct (no proxyRef) — proxy optional
 test('cluster opens in MIXED mode: A=PROXY, B=DIRECT, C=PROXY', async () => {
   const { mgr, dev, opened } = makeManager();
   mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
-    { slot: 'A', proxyRef: 'px-A', device: dev.A }, { slot: 'B', proxyRef: null, device: dev.B }, { slot: 'C', proxyRef: 'px-C', device: dev.C },
+    { slot: 'A', proxyRef: 'px-A', agent: dev.A }, { slot: 'B', proxyRef: null, agent: dev.B }, { slot: 'C', proxyRef: 'px-C', agent: dev.C },
   ] });
   const res = await mgr.openCluster();
   assert.equal(res.ok, true);
@@ -135,7 +126,7 @@ test('cluster opens in MIXED mode: A=PROXY, B=DIRECT, C=PROXY', async () => {
 test('TEST TẤT CẢ: Direct slots return DIRECT (skipped), never a failure; configured proxies still pass', async () => {
   const { mgr, dev } = makeManager();
   mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
-    { slot: 'A', proxyRef: 'px-A', device: dev.A }, { slot: 'B', proxyRef: null, device: dev.B }, { slot: 'C', proxyRef: 'px-C', device: dev.C },
+    { slot: 'A', proxyRef: 'px-A', agent: dev.A }, { slot: 'B', proxyRef: null, agent: dev.B }, { slot: 'C', proxyRef: 'px-C', agent: dev.C },
   ] });
   const res = await mgr.testClusterProxies();
   assert.equal(res.ok, true, 'mixed cluster with a Direct slot is OK (Direct is not a failure)');
