@@ -1,10 +1,11 @@
-// §find — TÌM BÀN via the game's own QUICK_PLAY (CMD 307 with the stake), the SỐ BÀN list, §room-key.
+// §find — TÌM BÀN via the game's own QUICK_PLAY_WITH_BET, the SỐ BÀN list, §room-key.
 //
-// Protocol source: the game client's code cache (2026-09-21 / 2026-10-02) —
-//   requestquickPlay(gid)        → [6,"Simms","channelPlugin",{cmd:307,aid:1,gid,inc:false}]
-//   requestquickPlayBet(gid,b)   → [6,"Simms","channelPlugin",{cmd:307,aid:1,gid,b,inc:false}]
-//   reply [5,{ri:{rid,b,sid,Mu,gid,pwd},cmd:307|313}] → onReceiveQuickPlay → the client itself sends
-//        requestJoinRoom(rid,sid,pwd) = [3,"Simms",rid,pwd]
+// Protocol source: a LIVE capture of the real site (2026-10-02, v.hitclub.guitars) —
+//   ask   [6,"Simms","channelPlugin",{cmd:313,gid:8,aid:1,b:20000}]        (repeated while searching)
+//   reply [5,{ri:{rid:7900193,b:20000,Mu:4,uC:2,hpwd:false,rn:"Phom",…},cmd:313}]
+//         · it NAMES a table and says how full it is; it does NOT seat anyone
+//         · rn "Phom#6" with a small rid is a stake CHANNEL, not a shareable số bàn
+//   join  [3,"Simms",<rid>,""] → [3,true,0,-1,null]  …or [3,false,103,<rid>,"Sai mật khẩu phòng"]
 //   nothing suitable: no ri, {mgs:"Không tìm thấy phòng thích hợp!"}
 // The tool never sends CREATE_TABLE (308): a Phỏm table cannot be created without a password (the live server
 // dropped three 308s sent with pwd:"", capture 2026-09-21T11-57) and a table with a password is one no other
@@ -25,11 +26,12 @@ const groupFor = (coord) => createTableGroup({ coord, paceMinMs: 0, paceMaxMs: 0
 // has a free seat, else with the server's own "nothing suitable" message. `gameAutoJoin` = the game client answers
 // the reply with its own JOIN (the real client does). `strangers` pre-seats other players at the table it hands out.
 class QuickPlaySim {
-  constructor({ gameAutoJoin = true, hpwd = '', strangers = 0, refusals = 0, neverFound = false, pwd = '' } = {}) {
+  constructor({ gameAutoJoin = true, hpwd = '', strangers = 0, refusals = 0, neverFound = false, pwd = '', channelFirst = 0, lockedFirst = 0 } = {}) {
     this.gameAutoJoin = gameAutoJoin; this.hpwd = hpwd; this.strangers = strangers;
     this.refusals = refusals; this.neverFound = neverFound; this.pwd = pwd;
+    this.channelFirst = channelFirst; this.lockedFirst = lockedFirst;
     this.uids = { B1: '1_1', B2: '1_2', B3: '1_3' };
-    this.rooms = new Map(); this.nextRid = 3700000;
+    this.rooms = new Map(); this.nextRid = 7900000;
     this.sent = { B1: [], B2: [], B3: [] }; this.coord = null; this.asks = 0; this.lastGiven = null;
   }
   attach(c) { this.coord = c; }
@@ -59,11 +61,15 @@ class QuickPlaySim {
   sendFor(id) {
     return async (frame) => {
       const j = JSON.parse(frame); this.sent[id].push(j);
-      if (j[0] === 6 && j[3] && j[3].cmd === 307) {
+      if (j[0] === 6 && j[3] && j[3].cmd === 313) {
         this.asks++;
-        if (this.neverFound || this.asks <= this.refusals) { this.feed(id, JSON.stringify([5, { mgs: 'Không tìm thấy phòng thích hợp!', cmd: 307 }])); return { ok: true }; }
+        if (this.neverFound || this.asks <= this.refusals) { this.feed(id, JSON.stringify([5, { mgs: 'Không tìm thấy phòng thích hợp!', cmd: 313 }])); return { ok: true }; }
+        // the live server answers with a stake CHANNEL now and then — never a số bàn the others could join
+        if (this.asks <= this.refusals + this.channelFirst) { this.feed(id, JSON.stringify([5, { ri: { rid: 145, rn: 'Phom#6', b: Number(j[3].b), sid: 1, Mu: 4, uC: 3, hpwd: false, gid: 8 }, cmd: 313 }])); return { ok: true }; }
+        // …and with password-locked tables, which this tool has no key for
+        if (this.asks <= this.refusals + this.channelFirst + this.lockedFirst) { this.feed(id, JSON.stringify([5, { ri: { rid: 7910000 + this.asks, rn: 'Phom', b: Number(j[3].b), sid: 1, Mu: 4, uC: 1, hpwd: true, gid: 8 }, cmd: 313 }])); return { ok: true }; }
         const room = this.pick(Number(j[3].b));
-        this.feed(id, JSON.stringify([5, { ri: { rid: room.rid, b: room.b, sid: 1, Mu: room.Mu, gid: 8, pwd: room.key }, cmd: 307 }]));
+        this.feed(id, JSON.stringify([5, { ri: { rid: room.rid, rn: 'Phom', b: room.b, sid: 1, Mu: room.Mu, uC: room.seats.length, hpwd: !!room.key, gid: 8, pwd: room.key }, cmd: 313 }]));
         if (this.gameAutoJoin) {
           // the GAME client's own JOIN — seen by the tool only as an outgoing frame on the capture stream
           this.feed(id, JSON.stringify([3, 'Simms', room.rid, room.key]), 'send');
@@ -96,17 +102,35 @@ function mk(simOpts) {
   return { coord, sim };
 }
 const joins = (sim, id) => sim.sent[id].filter((f) => f[0] === 3);
-const asks = (sim, id) => sim.sent[id].filter((f) => f[0] === 6 && f[3] && f[3].cmd === 307);
+const asks = (sim, id) => sim.sent[id].filter((f) => f[0] === 6 && f[3] && f[3].cmd === 313);
 
-test('FIND-00: the 307 frame is exactly the game client shape, and the reply gives the real số bàn', async () => {
-  assert.deepEqual(JSON.parse(buildQuickPlayFrame({ stake: 20000 })), [6, 'Simms', 'channelPlugin', { cmd: 307, aid: 1, gid: 8, inc: false, b: 20000 }]);
-  assert.deepEqual(JSON.parse(buildQuickPlayFrame()), [6, 'Simms', 'channelPlugin', { cmd: 307, aid: 1, gid: 8, inc: false }]);
+test('FIND-00: the ask is exactly the live client frame, and the reply gives the real số bàn', async () => {
+  // live 2026-10-02: [6,"Simms","channelPlugin",{"cmd":313,"gid":8,"aid":1,"b":20000}] — no `inc`
+  assert.deepEqual(JSON.parse(buildQuickPlayFrame({ stake: 20000 })), [6, 'Simms', 'channelPlugin', { cmd: 313, gid: 8, aid: 1, b: 20000 }]);
+  assert.deepEqual(JSON.parse(buildQuickPlayFrame()), [6, 'Simms', 'channelPlugin', { cmd: 313, gid: 8, aid: 1 }]);
   const { coord, sim } = mk();
   const r = await groupFor(coord).findTable('B1', { stake: 20000 });
   assert.equal(r.ok, true, JSON.stringify(r));
-  assert.equal(r.rid, 3700000);
+  assert.equal(r.rid, 7900000);
   const ext = sim.sent.B1.filter((f) => f[0] === 6 && f[3].cmd !== 363).map((f) => f[3]); // 363 = the role's auto-ready preference
-  assert.deepEqual(ext, [{ cmd: 307, aid: 1, gid: 8, inc: false, b: 20000 }], 'one ask, nothing else — no 311, no 308');
+  assert.deepEqual(ext, [{ cmd: 313, gid: 8, aid: 1, b: 20000 }], 'one ask, nothing else — no 311, no 308');
+});
+
+test('FIND-00c: a stake CHANNEL answer is never taken for a số bàn — the tool asks again', async () => {
+  const { coord, sim } = mk({ channelFirst: 2 });
+  const r = await coord.findPublicTable('B1', { stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.ok(r.rid >= 100000, 'the số bàn is a real table, not kênh 145');
+  assert.equal(asks(sim, 'B1').length, 3, 'two channel answers were skipped without a single JOIN');
+  assert.equal(joins(sim, 'B1').filter((f) => f[2] === 145).length, 0, 'the channel is never joined');
+});
+
+test('FIND-00d: a password-locked table is skipped without joining it', async () => {
+  const { coord, sim } = mk({ lockedFirst: 2 });
+  const r = await coord.findPublicTable('B1', { stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(asks(sim, 'B1').length, 3);
+  for (const f of joins(sim, 'B1')) assert.ok(f[2] < 7910000 || f[2] > 7910003, 'a locked table is never joined');
 });
 
 test('FIND-00b: the tool NEVER creates a private table (no 308 on the wire, no generated key)', async () => {
@@ -118,15 +142,23 @@ test('FIND-00b: the tool NEVER creates a private table (no 308 on the wire, no g
   assert.deepEqual(joins(sim, 'B1').map((f) => f[3]), [], 'the game client did the JOIN itself');
 });
 
-test('FIND-01: the 307/313 reply is classified with the số bàn + the password a JOIN must carry', () => {
-  const ok = classifyPhomFrame('[5,{"ri":{"rid":3109174,"b":20000,"sid":1,"Mu":4,"gid":8,"pwd":""},"cmd":307}]');
-  assert.equal(ok.type, 'ROOM_ASSIGNED'); assert.equal(ok.ok, true); assert.equal(ok.rid, 3109174); assert.equal(ok.stake, 20000);
+test('FIND-01: a LIVE reply is classified with the số bàn, how full it is, and whether it is a real table', () => {
+  // verbatim from the capture
+  const ok = classifyPhomFrame('[5,{"ri":{"mM":200000,"b":20000,"gid":8,"MMBI":0,"hpwd":false,"aG":"G","Mu":4,"ahp":false,"rid":7900193,"uC":2,"sid":1,"zn":"Simms","mMBI":0,"rn":"Phom","aid":1,"inc":false},"cmd":313}]');
+  assert.equal(ok.type, 'ROOM_ASSIGNED'); assert.equal(ok.ok, true); assert.equal(ok.rid, 7900193); assert.equal(ok.stake, 20000);
+  assert.equal(ok.seated, 2); assert.equal(ok.maxPlayers, 4); assert.equal(ok.isTable, true); assert.equal(ok.locked, false);
   assert.equal(ok.password, ''); assert.equal(ok.hasPassword, false);
-  const bet = classifyPhomFrame('[5,{"ri":{"rid":4001794,"b":100,"sid":1,"Mu":4,"gid":8,"pwd":"482913"},"cmd":313}]');
+  // the same command answers with the stake CHANNEL now and then — not a số bàn anyone else can join
+  const chan = classifyPhomFrame('[5,{"ri":{"mM":200000,"b":20000,"gid":8,"hpwd":false,"Mu":4,"rid":145,"uC":3,"sid":1,"zn":"Simms","rn":"Phom#6","aid":1},"cmd":313}]');
+  assert.equal(chan.type, 'ROOM_ASSIGNED'); assert.equal(chan.rid, 145); assert.equal(chan.isTable, false);
+  const bet = classifyPhomFrame('[5,{"ri":{"rid":4001794,"b":100,"sid":1,"Mu":4,"gid":8,"rn":"Phom","pwd":"482913"},"cmd":313}]');
   assert.equal(bet.type, 'ROOM_ASSIGNED'); assert.equal(bet.rid, 4001794); assert.equal(bet.password, '482913'); assert.equal(bet.hasPassword, true);
   const no = classifyPhomFrame('[5,{"mgs":"Không tìm thấy phòng thích hợp!","cmd":307}]');
   assert.equal(no.type, 'ROOM_ASSIGNED'); assert.equal(no.ok, false); assert.equal(no.message, 'Không tìm thấy phòng thích hợp!');
   assert.equal(classifyPhomFrame(buildQuickPlayFrame({ stake: 100 })).type, 'QUICK_PLAY_REQUEST');
+  // and the live refusal of a table this tool has no password for
+  const refused = classifyPhomFrame('[3,false,103,7907065,"Sai mật khẩu phòng"]');
+  assert.equal(refused.accepted, false); assert.equal(refused.resultCode, 103); assert.equal(refused.resultMessage, 'Sai mật khẩu phòng');
   // the game's own CREATE_TABLE reply reads the same way (one handler in the game client), so a table the USER
   // created by hand in the web is still understood.
   assert.equal(classifyPhomFrame('[5,{"ri":{"rid":5,"b":100,"sid":1,"Mu":4,"gid":8,"pwd":"1"},"cmd":308}]').type, 'ROOM_ASSIGNED');
@@ -166,18 +198,20 @@ test('FIND-05: no table for the whole budget → ONE typed error naming the stak
   assert.ok(asks(sim, 'B1').length >= 2, 'it kept asking while the budget lasted');
 });
 
-test('FIND-06: a table that cannot hold the rest of the group is left again and another is taken', async () => {
+test('FIND-06: a table that cannot hold the rest of the group is skipped from the ANSWER — never joined', async () => {
   const { coord, sim } = mk({ strangers: 3 }); // 3 strangers at a 4-seat table → room for one of ours only
   const r = await coord.findPublicTable('B1', { stake: 100, seatsNeeded: 2, budgetMs: 60 });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'PHOM_NO_PUBLIC_TABLE');
   assert.match(r.error.message, /không còn đủ 2 chỗ/);
-  assert.ok(sim.sent.B1.some((f) => f[0] === 4), 'it left the table that was too full');
+  assert.equal(joins(sim, 'B1').length, 0, 'uC/Mu in the answer is enough — a full table costs no JOIN');
+  assert.equal(sim.sent.B1.some((f) => f[0] === 4), false, 'and nothing to leave either');
+  assert.ok(asks(sim, 'B1').length >= 2, 'it kept asking for another table');
   // ... and with room for the group it is accepted, reporting what it found.
   const b = mk({ strangers: 1 });
   const ok = await b.coord.findPublicTable('B1', { stake: 100, seatsNeeded: 2 });
   assert.equal(ok.ok, true, JSON.stringify(ok));
-  assert.equal(ok.seatsTaken, 2); assert.equal(ok.capacity, 4);
+  assert.equal(ok.seatsTaken, 1); assert.equal(ok.capacity, 4);
 });
 
 test('FIND-07: no stake → typed error, nothing sent', async () => {

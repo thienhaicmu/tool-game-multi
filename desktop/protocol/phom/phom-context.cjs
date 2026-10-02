@@ -124,6 +124,10 @@ class PhomContext extends EventEmitter {
       this._roomAssign = {
         ok: cls.ok === true, rid: cls.rid != null ? cls.rid : null,
         stake: cls.stake != null ? cls.stake : null, maxPlayers: cls.maxPlayers != null ? cls.maxPlayers : null,
+        // Straight from the answer: how many sit there already, whether it is a real table (not a stake channel)
+        // and whether it is password-locked — enough to accept or skip it without joining first.
+        seated: cls.seated != null ? cls.seated : null, roomName: cls.roomName || null,
+        isTable: cls.isTable === true, locked: cls.locked === true,
         password: typeof cls.password === 'string' ? cls.password : '',
         message: cls.message || null, at: now, seq: ++this._roomAssignSeq,
       };

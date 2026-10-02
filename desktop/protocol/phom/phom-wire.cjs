@@ -16,16 +16,21 @@ const { ZONE, GID } = require('./phom-frame-classify.cjs');
 
 // CMD 300 — ask for the stake channel list; the server replies with rs[].
 function buildChannelListFrame(aid) { return JSON.stringify([6, ZONE, 'channelPlugin', { cmd: 300, aid, gid: GID }]); }
-// CMD 307 QUICK_PLAY — "seat me at a PUBLIC table in the lobby that still has room", optionally at one stake.
-// Shape copied from the game client's own requestquickPlay(gid) / requestquickPlayBet(gid, b):
-//   { cmd:307, aid:1, gid, b?, inc:false }
-// The server answers like a create does — [5,{ri:{rid,b,sid,Mu,gid,pwd}, cmd:307|313}] — or {mgs:"Không tìm thấy
-// phòng thích hợp!"} when no table qualifies, and the game client then JOINs ri.rid with ri.pwd by itself.
+// CMD 313 QUICK_PLAY_WITH_BET — "name me a table at this stake that still has room". Shape taken from the LIVE
+// client (capture 2026-10-02, v.hitclub.guitars): `[6,"Simms","channelPlugin",{cmd:313,gid:8,aid:1,b:20000}]`,
+// repeated every ~1.7s while the player looks for a table. The older build in the code cache sent the same thing
+// as cmd 307 (QUICK_PLAY) with an extra `inc:false`; the live server answers 313, so that is what the tool sends.
+//
+// The answer is [5,{ri:{rid,b,sid,Mu,uC,hpwd,rn,…}, cmd:313}] — or {mgs:"Không tìm thấy phòng thích hợp!"}. It
+// NAMES a table (số bàn + how many are seated) but does NOT seat anyone: the client JOINs it afterwards. Two
+// things the answer must be checked for: `rn` ends with '#n' for a stake CHANNEL (e.g. rid 145 "Phom#6"), which is
+// not a shareable số bàn, and `Mu - uC` is the room actually left at that table.
+//
 // This is what the tool uses instead of CREATE_TABLE (308): a created Phỏm table always needs a password (the
 // server silently drops a 308 without one), and a password-locked table is one NO other player can enter from the
 // lobby list — the opposite of what the group needs.
 function buildQuickPlayFrame({ stake = null } = {}) {
-  const p = { cmd: 307, aid: 1, gid: GID, inc: false };
+  const p = { cmd: 313, gid: GID, aid: 1 };
   if (Number(stake) > 0) p.b = Number(stake);
   return JSON.stringify([6, ZONE, 'channelPlugin', p]);
 }

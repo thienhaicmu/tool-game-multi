@@ -49,6 +49,7 @@ const OP = Object.freeze({ JOIN: 3, LEAVE: 4, PUSH: 5, EXT_REQUEST: 6 });
 const CMD_TYPE = Object.freeze({
   [CMD.CHANNEL_LIST]: 'CHANNEL_LIST_REQUEST',
   [CMD.QUICK_PLAY]: 'QUICK_PLAY_REQUEST',
+  [CMD.QUICK_PLAY_BET]: 'QUICK_PLAY_REQUEST',
   [CMD.CREATE_TABLE]: 'CREATE_TABLE_REQUEST',
   [CMD.FIND_TABLE]: 'FIND_TABLE_REQUEST',
   [CMD.READY]: 'READY_REQUEST',
@@ -166,6 +167,14 @@ function classifyPhomFrame(raw) {
         type: 'ROOM_ASSIGNED', ok: rid != null, rid,
         stake: ri && Number.isFinite(Number(ri.b)) ? Number(ri.b) : null,
         maxPlayers: ri && Number.isFinite(Number(ri.Mu)) ? Number(ri.Mu) : null,
+        // How many are already seated there, straight from the answer: the tool can skip a table that cannot hold
+        // the rest of the group without joining it first (live capture 2026-10-02 carries uC on every reply).
+        seated: ri && Number.isFinite(Number(ri.uC)) ? Number(ri.uC) : null,
+        // A stake CHANNEL answers with rn "Phom#6" and a small rid; a real table with rn "Phom" and a 7-digit rid.
+        // Only the latter is a số bàn the other browsers can join.
+        roomName: ri && typeof ri.rn === 'string' ? ri.rn : null,
+        isTable: !!(ri && Number(ri.rid) >= 100000 && !(typeof ri.rn === 'string' && ri.rn.includes('#'))),
+        locked: !!(ri && ri.hpwd === true),
         password: ri && typeof ri.pwd === 'string' ? ri.pwd : '',
         hasPassword: !!(ri && typeof ri.pwd === 'string' && ri.pwd.length > 0),
         message: typeof payload.mgs === 'string' && payload.mgs ? payload.mgs : null,
@@ -225,11 +234,15 @@ function finalize(out, extra) {
     seat: extra.seat !== undefined ? extra.seat : undefined,     // single seat object (SEAT_UPDATE)
     present: extra.present !== undefined ? extra.present : undefined,
     t: extra.t !== undefined ? extra.t : undefined,
-    // ROOM_ASSIGNED fields (the table the server put us at: số bàn + the password a JOIN must carry)
+    // ROOM_ASSIGNED fields (the table the server named: số bàn, how full it is, and the password a JOIN carries)
     ok: extra.ok !== undefined ? extra.ok : undefined,
     rid: extra.rid !== undefined ? extra.rid : undefined,
     stake: extra.stake !== undefined ? extra.stake : undefined,
     maxPlayers: extra.maxPlayers !== undefined ? extra.maxPlayers : undefined,
+    seated: extra.seated !== undefined ? extra.seated : undefined,
+    roomName: extra.roomName !== undefined ? extra.roomName : undefined,
+    isTable: extra.isTable !== undefined ? extra.isTable : undefined,
+    locked: extra.locked !== undefined ? extra.locked : undefined,
     password: extra.password !== undefined ? extra.password : undefined,
     message: extra.message !== undefined ? extra.message : undefined,
     // identity / table fields (surfaced verbatim; undefined when absent)

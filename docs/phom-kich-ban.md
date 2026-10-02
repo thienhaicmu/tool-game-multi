@@ -16,14 +16,25 @@ Tài liệu này là **đặc tả**. Module `desktop/protocol/phom/table-group.
 | Sẵn sàng | Game có tùy chọn "tự sẵn sàng" lưu trên server (lệnh 363). Tool đặt tùy chọn này **trước khi acc ngồi xuống**: SẴN SÀNG = bật, KEY và CHƯA SẴN SÀNG = tắt. Acc SẴN SÀNG bấm sẵn sàng thêm một lần sau khi ngồi. |
 | Cùng bàn | Một acc chỉ được tính "đã vào bàn nhóm" khi chính bàn của nó có acc KEY. |
 
-Giao thức (đọc từ mã game — `requestquickPlayBet` / `onReceiveQuickPlay` / `requestJoinRoom`):
-tìm bàn = `[6,"Simms","channelPlugin",{cmd:307,aid:1,gid:8,b:<cược>,inc:false}]`, server trả
-`[5,{ri:{rid,b,sid,Mu,pwd},cmd:307|313}]` (số bàn + mật khẩu bàn) hoặc `{mgs:"Không tìm thấy phòng thích hợp!"}`,
-rồi game tự vào bàn; vào bàn = `[3,"Simms",rid,pwd]`; sẵn sàng = `[5,"Simms",rid,{cmd:5}]`;
-bị đá = `[4,true,2,…,"Bạn thoát vì …"]`.
+Giao thức (bắt từ **log WS thật của web**, 2026-10-02 — không phải suy từ mã nguồn):
 
-Trả lời của `307` là **chỗ duy nhất** máy chủ cho biết acc đang ở bàn số bao nhiêu (`TABLE_STATE` cmd 202 không
-có số bàn), nên bàn của nhóm phải lấy từ đây — không lấy từ một dòng trong danh sách sảnh.
+| Việc | Gửi | Nhận |
+|---|---|---|
+| Tìm bàn | `[6,"Simms","channelPlugin",{cmd:313,gid:8,aid:1,b:<cược>}]` | `[5,{ri:{rid,b,Mu,uC,hpwd,rn,…},cmd:313}]` hoặc `{mgs:"Không tìm thấy phòng thích hợp!"}` |
+| Vào bàn | `[3,"Simms",<số bàn>,"<mật khẩu>"]` | `[3,true,0,-1,null]` hoặc `[3,false,103,<số bàn>,"Sai mật khẩu phòng"]` |
+| Sẵn sàng | `[5,"Simms",<số bàn>,{cmd:5}]` | `[5,{uid,cmd:5}]` |
+| Tự sẵn sàng | `[6,"Simms","channelPlugin",{cmd:363,aRd:"true"\|"false"}]` | — |
+| Rời bàn | `[4,"Simms",-1]` | `[4,true,1,-1,0,""]` |
+| Bị đá | — | `[4,true,2,-1,2,"Bạn bị kick vì không sẵn sàng"]` |
+
+Ba điều rút ra từ log thật:
+
+1. Trả lời `313` **chỉ gọi tên một bàn, không xếp chỗ**: muốn ngồi phải tự gửi lệnh vào bàn. Đây cũng là **chỗ duy
+   nhất** máy chủ cho biết số bàn (`TABLE_STATE` cmd 202 không có số bàn).
+2. Trả lời có sẵn `uC` (đang ngồi) và `Mu` (tối đa) → biết bàn còn mấy chỗ **trước khi vào**, và `rn` = `"Phom#6"`
+   kèm rid nhỏ nghĩa là máy chủ trả về **kênh cược**, không phải số bàn (bẫy "kênh 139" cũ).
+3. Vào thẳng một số bàn cụ thể **là đúng bàn đó**: máy chủ trả lời kèm chính số bàn mình gửi, và chỉ từ chối
+   (`103 Sai mật khẩu phòng`) khi bàn đó có khoá.
 
 ## 1. Chế độ TAY — thanh công cụ trong từng trình duyệt
 
@@ -31,7 +42,7 @@ có số bàn), nên bàn của nhóm phải lấy từ đây — không lấy t
 
 | Mã | Người dùng | Tool làm (theo thứ tự, mỗi bước có nhịp) | Kết quả |
 |---|---|---|---|
-| **T1** | Chọn Cược, bấm **Tìm bàn** | (1) nếu acc đang ngồi bàn khác → rời bàn · (2) tắt "tự sẵn sàng" · (3) xin bàn chờ công khai ở mức cược đó (307) · (4) chờ game tự vào bàn máy chủ chỉ định · (5) bàn không còn đủ 2 chỗ cho 2 acc kia → rời, xin bàn khác · (6) máy chủ báo "Không tìm thấy phòng thích hợp" → chờ nhịp rồi xin lại, **tối đa 3 phút** mới báo người dùng | Acc = **KEY**. Nhóm mới gồm số bàn (+ mật khẩu nếu máy chủ trả về). Ô SS của mọi trình duyệt tự điền số bàn. Nhóm cũ (nếu có) giải tán; các acc khác vẫn ngồi nguyên chỗ. |
+| **T1** | Chọn Cược, bấm **Tìm bàn** | (1) nếu acc đang ngồi bàn khác → rời bàn · (2) tắt "tự sẵn sàng" · (3) xin bàn ở mức cược đó (**313**) · (4) đọc ngay câu trả lời: là **kênh cược** (rn có `#`), **không đủ 2 chỗ** cho 2 acc kia (`Mu − uC`), hoặc **bàn khoá** mà máy chủ không đưa mật khẩu → bỏ qua, xin bàn khác (không tốn một lệnh vào bàn nào) · (5) bàn hợp lệ → vào bàn đó · (6) bị từ chối `103` hoặc bàn vừa đầy → xin bàn khác · (7) máy chủ báo "Không tìm thấy phòng thích hợp" → chờ nhịp rồi xin lại, **tối đa 3 phút** mới báo người dùng | Acc = **KEY**. Nhóm mới gồm số bàn (+ mật khẩu nếu máy chủ trả về). Ô SS của mọi trình duyệt tự điền số bàn. Nhóm cũ (nếu có) giải tán; các acc khác vẫn ngồi nguyên chỗ. |
 | **T2** | Ô SS = số bàn nhóm, bấm **Vào** | (1) nhận vai trò: chưa ai SẴN SÀNG → SẴN SÀNG, còn lại → CHƯA SẴN SÀNG · (2) nếu đang ngồi bàn khác → rời bàn · (3) đặt "tự sẵn sàng" theo vai trò · (4) vào đúng số bàn đó với mật khẩu máy chủ đã trả về · (5) xác nhận cùng bàn với KEY · (6) SẴN SÀNG: bấm sẵn sàng | Acc vào trước SẴN SÀNG, acc vào sau CHƯA SẴN SÀNG. Vào lỗi → trả lại vai trò cho acc sau. |
 | **T2b** | Ô SS = số bàn **khác** nhóm, bấm **Vào** | vào bàn với mật khẩu rỗng (như bấm bàn trong sảnh) | Không có vai trò. |
 | **T3** | Bấm **ReJoin** | vào lại bàn nhóm bằng key (như T2, giữ vai trò) | |

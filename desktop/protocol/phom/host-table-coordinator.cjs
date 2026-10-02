@@ -98,8 +98,10 @@ class HostTableCoordinator extends EventEmitter {
         this._leaveConfirmMs = deps.leaveConfirmMs != null ? Number(deps.leaveConfirmMs) : LEAVE_CONFIRM_MS; // §37
     this._rerollCooldownMs = deps.rerollCooldownMs != null ? Number(deps.rerollCooldownMs) : REROLL_COOLDOWN_MS; // §53
     this._joinRejectGraceMs = deps.joinRejectGraceMs != null ? Number(deps.joinRejectGraceMs) : JOIN_REJECT_GRACE_MS; // §53
-    // §find — how long TÌM BÀN gives the game client to JOIN the assigned table by itself before the tool sends the JOIN.
-    this._createAutoJoinMs = deps.createAutoJoinMs != null ? Number(deps.createAutoJoinMs) : 2500;
+    // §find — how long TÌM BÀN gives the game client to JOIN the named table by itself before the tool sends the
+    // JOIN. The 313 answer does not seat anyone (live capture 2026-10-02), so this is a short grace period, not a
+    // wait: it only avoids a double JOIN when the player drove the search from the game's own UI.
+    this._assignJoinGraceMs = deps.assignJoinGraceMs != null ? Number(deps.assignJoinGraceMs) : (deps.createAutoJoinMs != null ? Number(deps.createAutoJoinMs) : 900);
     // §find — the whole TÌM BÀN attempt budget. The server answers "Không tìm thấy phòng thích hợp!" whenever no
     // public table at this stake has room, so the tool keeps asking (paced) for this long before telling the user.
     this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : 180000;
@@ -768,37 +770,55 @@ class HostTableCoordinator extends EventEmitter {
       }
       const rid = Number(res.rid);
       const roomKey = typeof res.password === 'string' ? res.password : '';
-      this._coseatLog('FIND_OK', rec, { rid, stake: res.stake, maxPlayers: res.maxPlayers, attempt });
+      // The answer is only a NAME, not a seat (live capture 2026-10-02: 50 answers, no seating). Everything that
+      // can disqualify the table is already in it, so a bad one costs no JOIN at all:
+      //  · a stake CHANNEL ("Phom#6", small rid) is not a shareable số bàn — the old "kênh 139" trap;
+      //  · `Mu - uC` is the room left: the group needs seatsNeeded more chairs;
+      //  · a LOCKED table (hpwd) whose password the answer did not carry is one this tool cannot enter;
+      //  · BÀN KHÁC means "not the table we just left" (the protocol has no "anything but rid" parameter, so the
+      //    tool simply asks again a few times; when the server has nothing else it keeps this one and says so).
+      const taken = Number(res.seated) >= 0 ? Number(res.seated) : 0;
+      const capacity = Number(res.maxPlayers) > 0 ? Number(res.maxPlayers) : this._capacity;
+      const notATable = res.isTable === false;
+      const tooFull = !notATable && capacity - taken < seatsNeeded;
+      // locked, and the answer did not hand us its password → this tool has no way in; with a password it is fine
+      // (that is how the game itself enters a table it was invited to).
+      const locked = !notATable && !tooFull && res.locked === true && !(typeof res.password === 'string' && res.password.length > 0);
+      const sameTable = !notATable && !tooFull && !locked && avoidRid != null && rid === Number(avoidRid) && avoidLeft > 0;
+      if (notATable || tooFull || locked || sameTable) {
+        if (sameTable) avoidLeft--;
+        const why = notATable ? 'FIND_NOT_A_TABLE' : tooFull ? 'FIND_TOO_FULL' : locked ? 'FIND_LOCKED' : 'FIND_SAME_TABLE';
+        this._coseatLog(why, rec, { rid, roomName: res.roomName, taken, capacity, seatsNeeded, attempt });
+        if (tooFull && this._now() >= deadline) return fail('PHOM_NO_PUBLIC_TABLE', `Bàn chờ cược ${stake} nào cũng không còn đủ ${seatsNeeded} chỗ cho nhóm (đã thử 3 phút)`, { stake, attempts: attempt + 1 });
+        if (this._now() >= deadline) return fail('PHOM_NO_PUBLIC_TABLE', `Không tìm thấy bàn chờ cược ${stake} còn đủ chỗ sau 3 phút`, { stake, attempts: attempt + 1 });
+        await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
+        if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+        continue;
+      }
+      this._coseatLog('FIND_OK', rec, { rid, stake: res.stake, seated: taken, capacity, attempt });
+      // Now take the seat. The game client joins the table it was told about by itself when the player drove the
+      // search; the tool gives it a short grace period and otherwise sends the JOIN, because a SECOND join while
+      // seated makes the server move the player (§53).
       const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
       const gameJoined = () => { const j = rec.ctx.lastJoinSend(); return !!(j && j.seq > joinBefore && Number(j.rid) === rid); };
-      await this._waitManual(() => seatedFresh() || gameJoined(), rec, myGen, this._createAutoJoinMs);
+      await this._waitManual(() => seatedFresh() || gameJoined(), rec, myGen, this._assignJoinGraceMs);
       if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
       if (!seatedFresh() && gameJoined()) await this._waitManual(seatedFresh, rec, myGen, timeoutMs);
       if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
       if (!seatedFresh()) {
         if (gameJoined()) return fail('PHOM_JOIN_NOT_CONFIRMED', `Máy chủ xếp vào bàn ${rid} nhưng chưa thấy vào bàn`, { rid });
         const j = await this.manualJoinRoom(profileId, rid, { intent: 'JOIN', roomCode: roomKey, timeoutMs });
-        if (!j.ok) return { ...j, rid };
-      }
-      // Two reasons to hand a table back and ask again:
-      //  · TOO FULL — the table must still fit the rest of the group. The server seats by availability, so a table
-      //    with three strangers has room for one of ours only.
-      //  · SAME TABLE — BÀN KHÁC means "not this one". The protocol has no "anything but rid" parameter, so the
-      //    tool leaves and asks again a few times; when the server has nothing else it keeps this table and says so.
-      const ts = rec.ctx.tableState();
-      const taken = ts && Array.isArray(ts.seats) ? ts.seats.length : 1;
-      const capacity = Number(res.maxPlayers) > 0 ? Number(res.maxPlayers) : this._capacity;
-      const tooFull = capacity - taken < seatsNeeded;
-      const sameTable = !tooFull && avoidRid != null && rid === Number(avoidRid) && avoidLeft > 0;
-      if (tooFull || sameTable) {
-        if (sameTable) avoidLeft--;
-        this._coseatLog(tooFull ? 'FIND_TOO_FULL' : 'FIND_SAME_TABLE', rec, { rid, taken, capacity, seatsNeeded });
-        const g = (rec._manualGen = (rec._manualGen || 0) + 1);
-        const lv = await this._leaveConfirmed(rec, g);
-        if (lv.cancelled) return { ok: false, id: rec.id, superseded: true };
-        if (tooFull && this._now() >= deadline) return fail('PHOM_NO_PUBLIC_TABLE', `Bàn chờ cược ${stake} nào cũng không còn đủ ${seatsNeeded} chỗ cho nhóm (đã thử 3 phút)`, { stake, attempts: attempt + 1 });
-        await this._waitManual(() => false, rec, g, this._rerollCooldownMs);
-        continue;
+        // The server refuses a table this tool has no password for ("Sai mật khẩu phòng", code 103) and a table
+        // that filled up while we asked — neither is a failure of TÌM BÀN: ask for another table.
+        if (!j.ok) {
+          const serverCode = Number(j.error && j.error.serverCode);
+          const retryable = serverCode === 103 || serverCode === 102 || /mật khẩu|đầy|hủy/i.test((j.error && j.error.message) || '');
+          if (!retryable || this._now() >= deadline) return { ...j, rid };
+          this._coseatLog('FIND_JOIN_REFUSED', rec, { rid, serverCode, attempt });
+          await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
+          if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+          continue;
+        }
       }
       rec._joinedRid = rid; rec._lastRid = rid;
       rec._joinedViaChannel = false; rec._joinedRidValidated = true;
