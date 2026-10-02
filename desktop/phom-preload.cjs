@@ -51,10 +51,10 @@ contextBridge.exposeInMainWorld('phomQA', {
   framesRecordStop: () => ipcRenderer.invoke('phom:frames-record-stop'),
   framesOpenFolder: (p) => ipcRenderer.invoke('phom:frames-open-folder', p),
   // PHASE-6 — manual per-browser control (browserId === browserRunId). No host/follower role.
-  createTable: (browserId, opts) => ipcRenderer.invoke('phom:create-table', { browserId, opts }),
+  findTable: (browserId, opts) => ipcRenderer.invoke('phom:find-table', { browserId, opts }),
   setAuto: (on, browserId, stake) => ipcRenderer.invoke('phom:auto-set', { on, browserId, stake }),
   setStake: (stake) => ipcRenderer.invoke('phom:set-stake', { stake }),
-  changeKey: (browserId) => ipcRenderer.invoke('phom:change-key', { browserId }),
+  newTable: (browserId) => ipcRenderer.invoke('phom:new-table', { browserId }),
   roomList: (browserId) => ipcRenderer.invoke('phom:room-list', { browserId }),
   tokenKeys: () => ipcRenderer.invoke('phom:token-keys'),
   importTokenKeys: () => ipcRenderer.invoke('phom:token-import'),

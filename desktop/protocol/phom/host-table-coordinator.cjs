@@ -5,7 +5,7 @@ const { performance } = require('node:perf_hooks');
 const { PhomContext } = require('./phom-context.cjs');
 const { reduceHand, emptyHand, SYNC } = require('./hand-reducer.cjs');
 const { ZONE, GID } = require('./phom-frame-classify.cjs');
-const { buildTableReadyFrame, buildAutoReadyPrefFrame, buildCreateTableFrame, buildCreateOptionsFrame, newRoomKey, buildChannelListFrame, buildFindTableFrame, buildJoinFrame, buildReadyFrame, buildLeaveFrame } = require('./phom-wire.cjs');
+const { buildTableReadyFrame, buildAutoReadyPrefFrame, buildQuickPlayFrame, buildChannelListFrame, buildJoinFrame, buildLeaveFrame } = require('./phom-wire.cjs');
 const { remainingCardsView } = require('./remaining-cards.cjs');
 const { createCardObserver } = require('./phom-card-observer.cjs');
 const { redactDiagnostic, maskSecret } = require('./diagnostic-redaction.cjs');
@@ -98,9 +98,11 @@ class HostTableCoordinator extends EventEmitter {
         this._leaveConfirmMs = deps.leaveConfirmMs != null ? Number(deps.leaveConfirmMs) : LEAVE_CONFIRM_MS; // §37
     this._rerollCooldownMs = deps.rerollCooldownMs != null ? Number(deps.rerollCooldownMs) : REROLL_COOLDOWN_MS; // §53
     this._joinRejectGraceMs = deps.joinRejectGraceMs != null ? Number(deps.joinRejectGraceMs) : JOIN_REJECT_GRACE_MS; // §53
-    // §create — how long TẠO BÀN gives the game client to JOIN its new table by itself before the tool sends the JOIN.
+    // §find — how long TÌM BÀN gives the game client to JOIN the assigned table by itself before the tool sends the JOIN.
     this._createAutoJoinMs = deps.createAutoJoinMs != null ? Number(deps.createAutoJoinMs) : 2500;
-    this._createOptionsMs = deps.createOptionsMs != null ? Number(deps.createOptionsMs) : 3000; // wait for the CMD 311 reply
+    // §find — the whole TÌM BÀN attempt budget. The server answers "Không tìm thấy phòng thích hợp!" whenever no
+    // public table at this stake has room, so the tool keeps asking (paced) for this long before telling the user.
+    this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : 180000;
     this._delay = deps.delay || ((ms) => new Promise((r) => setTimeout(r, ms)));
 
     this._state = SESSION.IDLE;
@@ -688,85 +690,123 @@ class HostTableCoordinator extends EventEmitter {
     } finally { if (rec._followGen === myGen) rec._followInFlight = false; }
   }
 
-  // §create — TẠO BÀN on ONE browser: a FRESH empty table via the game's own CREATE_TABLE (cmd 308), instead of
-  // hunting the lobby for a table with room. Source of the protocol: the game client's requestcreateRoom +
-  // onReceiveQuickPlay (read from its code cache, 2026-09-21). The reply's ri.rid is the table's real SỐ BÀN.
-  // The game client JOINs that rid by itself when the reply arrives, so the tool waits for that JOIN first and only
-  // sends its own when the game did not (a second JOIN while seated makes the server move the player — §53).
-  // PRIMITIVE — create ONE keyed table for this browser (311 → 308 → the game joins it). The group flow on top of
-  // this lives in table-group.cjs (docs/phom-kich-ban.md); this method only talks to the server.
-  async createTable(profileId, opts = {}) {
-    return this._withFindLock(profileId, () => this._createTable(profileId, opts));
+  // §find — TÌM BÀN on ONE browser: ask the server for a PUBLIC lobby table that still has room, via the game's own
+  // QUICK_PLAY (cmd 307 with the stake — the game's requestquickPlayBet). Source of the protocol: the game client's
+  // requestquickPlay/requestquickPlayBet + onReceiveQuickPlay, read from its code cache (2026-09-21 / 2026-10-02).
+  //
+  // Why not the game's CREATE_TABLE (308), which the tool used before: a Phỏm table cannot be created without a
+  // password (the server silently drops a 308 that has none — live capture 2026-09-21), and a table with a password
+  // is one NO other player can walk into from the lobby list. The group then sat alone forever.
+  // Why not a rid picked out of the lobby list: a JOIN to a listed rid is not honoured as "this exact table" (live
+  // capture 2026-09-21T11-28: two browsers JOINed số bàn 3738108 and each became host of its own fresh table), the
+  // list never contains a table with free seats at every stake, and TABLE_STATE carries no rid — so after a plain
+  // JOIN the tool cannot even tell which table it is in. The QUICK_PLAY reply is the ONE place the server names the
+  // table: ri.rid is the real SỐ BÀN and ri.pwd the password a JOIN must carry ('' for a public table), which is
+  // exactly what the other two browsers need.
+  //
+  // The reply arrives as ROOM_ASSIGNED; the game client JOINs it by itself, so the tool waits for that JOIN first and
+  // only sends its own when the game did not (a second JOIN while seated makes the server move the player — §53).
+  // When no table qualifies ("Không tìm thấy phòng thích hợp!") the ask is repeated, paced, until the budget
+  // (findBudgetMs, 3 minutes) runs out. A table that cannot hold the rest of the group (seatsNeeded) is left again.
+  // PRIMITIVE — one browser, one table. The group flow on top of this lives in table-group.cjs.
+  async findPublicTable(profileId, opts = {}) {
+    return this._withFindLock(profileId, () => this._findPublicTable(profileId, opts));
   }
-  async _createTable(profileId, opts = {}) {
+  async _findPublicTable(profileId, opts = {}) {
     if (!this._guard()) return this._unauthorized();
     const rec = this._rec(profileId);
     if (!rec) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: `unknown browser ${profileId}` } };
     const stake = Number(opts.stake);
-    if (!Number.isFinite(stake) || stake <= 0) return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_STAKE', message: 'Chọn mức cược để tạo bàn' } };
+    if (!Number.isFinite(stake) || stake <= 0) return { ok: false, id: rec.id, error: { code: 'PHOM_INVALID_STAKE', message: 'Chọn mức cược để tìm bàn' } };
     if (!rec.ctx.sendContext()) { rec.manualState = 'ERROR'; return { ok: false, id: rec.id, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'browser has no game socket yet' } }; }
     if (this._ownSeated(rec)) {
       const g = (rec._manualGen = (rec._manualGen || 0) + 1);
       const lv = await this._leaveConfirmed(rec, g);
       if (!lv.confirmed) return { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError || { code: 'PHOM_OPERATION_CANCELLED' } };
     }
-    const maxPlayers = opts.maxPlayers != null ? Number(opts.maxPlayers) : this._capacity;
-    const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
-    // Step 1 — CMD 311, exactly what the game's TẠO BÀN button sends first. Its b[] is the list of stakes this
-    // account may create at (empty = not enough gold: the game says "Bạn không đủ tiền tạo bàn chơi!").
-    const optsBefore = rec.ctx.createOptionsSeq();
-    try { await rec.send(buildCreateOptionsFrame(), rec.ctx.sendContext()); } catch { /* the 308 below still reports */ }
-    const optReply = () => { const o = rec.ctx.createOptions(); return o && o.seq > optsBefore ? o : null; };
-    await this._waitManual(() => !!optReply(), rec, myGen, this._createOptionsMs);
-    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
-    const allowed = optReply();
-    if (allowed && !allowed.stakes.length) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_CREATE_NO_GOLD', message: 'Không đủ tiền tạo bàn chơi' }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError }; }
-    if (allowed && !allowed.stakes.includes(stake)) { rec.manualState = 'ERROR'; rec.lastError = { code: 'PHOM_CREATE_STAKE_NOT_ALLOWED', message: `Không tạo được bàn cược ${stake} — được tạo: ${allowed.stakes.join(', ')}` }; this.emit('update', this.snapshot()); return { ok: false, id: rec.id, error: rec.lastError, allowedStakes: allowed.stakes }; }
-    if (typeof opts.pace === 'function') { const alive = await opts.pace(); if (alive === false || rec._manualGen !== myGen) return { ok: false, id: rec.id, superseded: true }; }
-    // Step 2 — CMD 308 WITH a room key: Phỏm tables cannot be created without one (the server drops the request).
-    // The key is generated here for this table only — never a login token — and only this tool's browsers get it.
-    const roomKey = opts.password != null && String(opts.password) !== '' ? String(opts.password) : newRoomKey();
-    const createBefore = rec.ctx.createSeq();
-    const tableBefore = rec.ctx.tableSeq();
-    const joinBefore = rec.ctx.joinSendSeq();
-    rec.manualState = 'JOINING'; rec.lastError = null;
-    this.emit('update', this.snapshot());
+    // Seats the rest of the group still needs at the table this browser lands on (2 = the other two accounts).
+    const seatsNeeded = opts.seatsNeeded != null ? Number(opts.seatsNeeded) : 2;
+    // BÀN KHÁC — the table to move away from, and how many times it may be handed back before the tool accepts it.
+    const avoidRid = opts.avoidRid != null ? Number(opts.avoidRid) : null;
+    let avoidLeft = avoidRid != null ? (opts.avoidTries != null ? Number(opts.avoidTries) : 3) : 0;
+    const deadline = this._now() + (opts.budgetMs != null ? Number(opts.budgetMs) : this._findBudgetMs);
+    const timeoutMs = opts.timeoutMs != null ? opts.timeoutMs : 8000;
     const fail = (code, message, extra = {}) => {
       rec.manualState = 'ERROR'; rec.lastError = { code, message };
-      this._coseatLog('CREATE_FAIL', rec, { code, ...extra });
+      this._coseatLog('FIND_FAIL', rec, { code, ...extra });
       this.emit('update', this.snapshot());
       return { ok: false, id: rec.id, error: rec.lastError, ...extra };
     };
-    this._coseatLog('CREATE_SENT', rec, { stake, maxPlayers, allowedStakes: allowed ? allowed.stakes : null });
-    try {
-      const sent = await rec.send(buildCreateTableFrame({ stake, maxPlayers, password: roomKey }), rec.ctx.sendContext());
-      if (sent?.ok === false) throw new Error('CREATE_SEND_FAILED');
-    } catch (e) { return fail('PHOM_CREATE_FAILED', String(e && e.message || e)); }
-    const reply = () => { const r = rec.ctx.lastCreateResult(); return r && r.seq > createBefore ? r : null; };
-    await this._waitManual(() => !!reply(), rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
-    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
-    const res = reply();
-    if (!res) return fail('PHOM_CREATE_NO_REPLY', 'Máy chủ không trả lời lệnh tạo bàn');
-    if (!res.ok) return fail('PHOM_CREATE_REJECTED', `Máy chủ từ chối tạo bàn: ${res.message || 'không rõ lý do'}`);
-    const rid = Number(res.rid);
-    this._coseatLog('CREATE_OK', rec, { rid, stake: res.stake, maxPlayers: res.maxPlayers });
-    const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
-    const gameJoined = () => { const j = rec.ctx.lastJoinSend(); return !!(j && j.seq > joinBefore && Number(j.rid) === rid); };
-    await this._waitManual(() => seatedFresh() || gameJoined(), rec, myGen, this._createAutoJoinMs);
-    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
-    if (!seatedFresh() && gameJoined()) await this._waitManual(seatedFresh, rec, myGen, opts.timeoutMs != null ? opts.timeoutMs : 8000);
-    if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
-    if (!seatedFresh()) {
-      if (gameJoined()) return fail('PHOM_JOIN_NOT_CONFIRMED', `Đã tạo bàn ${rid} nhưng chưa thấy vào bàn`, { rid });
-      const j = await this.manualJoinRoom(profileId, rid, { intent: 'JOIN', roomCode: roomKey, timeoutMs: opts.timeoutMs });
-      if (!j.ok) return { ...j, rid, created: true };
+    let lastMessage = null;
+    for (let attempt = 0; ; attempt++) {
+      const myGen = (rec._manualGen = (rec._manualGen || 0) + 1);
+      if (typeof opts.pace === 'function') { const alive = await opts.pace(); if (alive === false || rec._manualGen !== myGen) return { ok: false, id: rec.id, superseded: true }; }
+      const assignBefore = rec.ctx.roomAssignSeq();
+      const tableBefore = rec.ctx.tableSeq();
+      const joinBefore = rec.ctx.joinSendSeq();
+      rec.manualState = 'SEARCHING'; rec.lastError = null;
+      this._coseatLog('FIND_SENT', rec, { stake, attempt });
+      this.emit('update', this.snapshot());
+      try {
+        const sent = await rec.send(buildQuickPlayFrame({ stake }), rec.ctx.sendContext());
+        if (sent?.ok === false) throw new Error('QUICK_PLAY_SEND_FAILED');
+      } catch (e) { return fail('PHOM_FIND_FAILED', String(e && e.message || e)); }
+      const reply = () => { const r = rec.ctx.lastRoomAssign(); return r && r.seq > assignBefore ? r : null; };
+      await this._waitManual(() => !!reply(), rec, myGen, timeoutMs);
+      if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+      const res = reply();
+      // No answer at all / no table free → ask again while the budget lasts (the lobby fills and empties constantly).
+      if (!res || !res.ok) {
+        lastMessage = res && res.message ? res.message : lastMessage;
+        this._coseatLog('FIND_NO_TABLE', rec, { stake, attempt, message: lastMessage });
+        if (this._now() >= deadline) {
+          return fail('PHOM_NO_PUBLIC_TABLE', `Không tìm thấy bàn chờ cược ${stake} sau 3 phút${lastMessage ? ` — máy chủ: ${lastMessage}` : ''}`, { stake, attempts: attempt + 1 });
+        }
+        await this._waitManual(() => false, rec, myGen, this._rerollCooldownMs);
+        if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+        continue;
+      }
+      const rid = Number(res.rid);
+      const roomKey = typeof res.password === 'string' ? res.password : '';
+      this._coseatLog('FIND_OK', rec, { rid, stake: res.stake, maxPlayers: res.maxPlayers, attempt });
+      const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
+      const gameJoined = () => { const j = rec.ctx.lastJoinSend(); return !!(j && j.seq > joinBefore && Number(j.rid) === rid); };
+      await this._waitManual(() => seatedFresh() || gameJoined(), rec, myGen, this._createAutoJoinMs);
+      if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+      if (!seatedFresh() && gameJoined()) await this._waitManual(seatedFresh, rec, myGen, timeoutMs);
+      if (rec._manualGen !== myGen || this._stopped) return { ok: false, id: rec.id, superseded: true };
+      if (!seatedFresh()) {
+        if (gameJoined()) return fail('PHOM_JOIN_NOT_CONFIRMED', `Máy chủ xếp vào bàn ${rid} nhưng chưa thấy vào bàn`, { rid });
+        const j = await this.manualJoinRoom(profileId, rid, { intent: 'JOIN', roomCode: roomKey, timeoutMs });
+        if (!j.ok) return { ...j, rid };
+      }
+      // Two reasons to hand a table back and ask again:
+      //  · TOO FULL — the table must still fit the rest of the group. The server seats by availability, so a table
+      //    with three strangers has room for one of ours only.
+      //  · SAME TABLE — BÀN KHÁC means "not this one". The protocol has no "anything but rid" parameter, so the
+      //    tool leaves and asks again a few times; when the server has nothing else it keeps this table and says so.
+      const ts = rec.ctx.tableState();
+      const taken = ts && Array.isArray(ts.seats) ? ts.seats.length : 1;
+      const capacity = Number(res.maxPlayers) > 0 ? Number(res.maxPlayers) : this._capacity;
+      const tooFull = capacity - taken < seatsNeeded;
+      const sameTable = !tooFull && avoidRid != null && rid === Number(avoidRid) && avoidLeft > 0;
+      if (tooFull || sameTable) {
+        if (sameTable) avoidLeft--;
+        this._coseatLog(tooFull ? 'FIND_TOO_FULL' : 'FIND_SAME_TABLE', rec, { rid, taken, capacity, seatsNeeded });
+        const g = (rec._manualGen = (rec._manualGen || 0) + 1);
+        const lv = await this._leaveConfirmed(rec, g);
+        if (lv.cancelled) return { ok: false, id: rec.id, superseded: true };
+        if (tooFull && this._now() >= deadline) return fail('PHOM_NO_PUBLIC_TABLE', `Bàn chờ cược ${stake} nào cũng không còn đủ ${seatsNeeded} chỗ cho nhóm (đã thử 3 phút)`, { stake, attempts: attempt + 1 });
+        await this._waitManual(() => false, rec, g, this._rerollCooldownMs);
+        continue;
+      }
+      rec._joinedRid = rid; rec._lastRid = rid;
+      rec._joinedViaChannel = false; rec._joinedRidValidated = true;
+      rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
+      this._mark('M_FIND_CONFIRMED', { id: rec.id, rid, seat: rec.ctx.seat() });
+      this.emit('update', this.snapshot());
+      return { ok: true, id: rec.id, rid, roomKey, found: true, state: 'JOINED', seat: rec.ctx.seat(), seatsTaken: taken, capacity };
     }
-    rec._joinedRid = rid; rec._lastRid = rid; rec._createdRid = rid;
-    rec._joinedViaChannel = false; rec._joinedRidValidated = true;
-    rec.manualState = 'JOINED'; rec.confirmedInTable = true; rec.state = PSTATE.AT_TABLE; rec.lastError = null;
-    this._mark('M_CREATE_CONFIRMED', { id: rec.id, rid, seat: rec.ctx.seat() });
-    this.emit('update', this.snapshot());
-    return { ok: true, id: rec.id, rid, roomKey, created: true, state: 'JOINED', seat: rec.ctx.seat() };
   }
 
   // ---- PRIMITIVES used by table-group.cjs (the group/role/auto flow lives there, not here) ----

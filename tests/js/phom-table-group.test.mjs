@@ -1,7 +1,7 @@
 // docs/phom-kich-ban.md — the group flow itself: pacing (0.8–2.5s before every command), one operation at a time,
-// and MANUAL vs AUTO (manual only does what was pressed; auto rejoins and re-creates). Driven against a FAKE
-// coordinator so every step is observable and the test is deterministic; the protocol level is covered by
-// phom-create-table.test.mjs.
+// and MANUAL vs AUTO (manual only does what was pressed; auto rejoins and takes another table). Driven against a
+// FAKE coordinator so every step is observable and the test is deterministic; the protocol level is covered by
+// phom-find-table.test.mjs.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -9,7 +9,7 @@ const require = createRequire(import.meta.url);
 const { createTableGroup, ROLE, PACE_MIN_MS, PACE_MAX_MS } = require('../../desktop/protocol/phom/table-group.cjs');
 
 // A coordinator stand-in: records every command with the virtual time it was sent at.
-function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, createFails = false } = {}) {
+function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, findFails = false } = {}) {
   const c = {
     clock: 0, sent: [], seats: new Map(), rid: 3700000, keyResolver: null, listeners: {},
     on(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); },
@@ -29,12 +29,12 @@ function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, createFails = fal
     async leaveTable(id) { this.sent.push({ at: this.clock, id, cmd: 'LEAVE' }); this.seats.delete(id); return { ok: true }; },
     async setAutoReadyPref(id, on) { this.sent.push({ at: this.clock, id, cmd: 'PREF', on }); return { ok: true }; },
     async sendTableReady(id, rid) { this.sent.push({ at: this.clock, id, cmd: 'READY', rid }); return { ok: true }; },
-    async createTable(id, opts) {
+    async findPublicTable(id, opts) {
       if (opts && typeof opts.pace === 'function') await opts.pace();
-      this.sent.push({ at: this.clock, id, cmd: 'CREATE', stake: opts.stake });
-      if (createFails) return { ok: false, error: { code: 'PHOM_CREATE_REJECTED', message: 'no' } };
+      this.sent.push({ at: this.clock, id, cmd: 'FIND', stake: opts.stake, avoidRid: opts.avoidRid != null ? opts.avoidRid : null });
+      if (findFails) return { ok: false, error: { code: 'PHOM_NO_PUBLIC_TABLE', message: 'no' } };
       const rid = this.rid++; this.seats.set(id, rid);
-      return { ok: true, rid, roomKey: '123456' };
+      return { ok: true, rid, roomKey: '', found: true }; // a public table: the server's password is empty
     },
     async manualJoinByCode(id, rid, key) {
       this.sent.push({ at: this.clock, id, cmd: 'JOIN', rid, key: key || '' });
@@ -57,29 +57,28 @@ const cmds = (coord, cmd) => coord.sent.filter((e) => e.cmd === cmd);
 test('PACE: every command waits a random 0.8–2.5s first; nothing is ever sent back-to-back', async () => {
   const { coord, group } = mk({ random: () => 0 });          // shortest allowed wait
   await group.setAuto(true, { creatorId: 'B1', stake: 100 });
-  assert.ok(coord.sent.length >= 6, 'create + two joins at least');
+  assert.ok(coord.sent.length >= 6, 'find + two joins at least');
   let prev = 0;
   for (const e of coord.sent) { assert.ok(e.at - prev >= PACE_MIN_MS, `${e.cmd} waited ${e.at - prev}ms`); prev = e.at; }
   const { coord: c2, group: g2 } = mk({ random: () => 1 });   // longest allowed wait
   await g2.setAuto(true, { creatorId: 'B1', stake: 100 });
   let p2 = 0;
-  // CREATE is two commands on the wire (311 then 308), so it carries two waits.
-  for (const e of c2.sent) { const cap = e.cmd === 'CREATE' ? 2 * PACE_MAX_MS : PACE_MAX_MS; assert.ok(e.at - p2 <= cap, `${e.cmd} waited ${e.at - p2}ms`); p2 = e.at; }
+  for (const e of c2.sent) { assert.ok(e.at - p2 <= PACE_MAX_MS, `${e.cmd} waited ${e.at - p2}ms`); p2 = e.at; }
 });
 
 test('QUEUE: two operations asked for at once run one after another, never interleaved', async () => {
   const { coord, group } = mk();
-  const a = group.createTable('B1', { stake: 100 });
+  const a = group.findTable('B1', { stake: 100 });
   const b = group.joinTable('B2', 3700000);
   await Promise.all([a, b]);
   const order = coord.sent.map((e) => e.id + ':' + e.cmd);
-  assert.deepEqual(order.slice(0, 2), ['B1:PREF', 'B1:CREATE'], 'the create finishes before the join starts');
-  assert.ok(order.indexOf('B2:JOIN') > order.indexOf('B1:CREATE'));
+  assert.deepEqual(order.slice(0, 2), ['B1:PREF', 'B1:FIND'], 'the search finishes before the join starts');
+  assert.ok(order.indexOf('B2:JOIN') > order.indexOf('B1:FIND'));
 });
 
-test('T1 + T2: manual create makes KEY; the join order decides READY then NOT_READY', async () => {
+test('T1 + T2: a manual TÌM BÀN makes KEY; the join order decides READY then NOT_READY', async () => {
   const { coord, group } = mk();
-  const created = await group.createTable('B2', { stake: 500 });
+  const created = await group.findTable('B2', { stake: 500 });
   assert.equal(created.ok, true);
   assert.equal(group.roleOf('B2'), ROLE.KEY);
   assert.deepEqual(cmds(coord, 'PREF').map((e) => [e.id, e.on]), [['B2', false]], 'KEY never auto-readies');
@@ -94,12 +93,12 @@ test('T1 + T2: manual create makes KEY; the join order decides READY then NOT_RE
     assert.ok(pref >= 0 && pref < join, id);
   }
   assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B1']);
-  assert.deepEqual(cmds(coord, 'JOIN').map((e) => e.key), ['123456', '123456'], 'joins carry the table key');
+  assert.deepEqual(cmds(coord, 'JOIN').map((e) => e.key), ['', ''], 'joins carry the password the server gave (empty for a public table)');
 });
 
 test('T2: a failed join gives the role back to the next browser', async () => {
   const { group } = mk({ joinFails: { B1: { code: 'PHOM_JOIN_REJECTED', message: 'nope' } } });
-  const created = await group.createTable('B2', { stake: 100 });
+  const created = await group.findTable('B2', { stake: 100 });
   const failed = await group.joinTable('B1', created.rid);
   assert.equal(failed.ok, false);
   assert.equal(group.roleOf('B1'), null);
@@ -109,7 +108,7 @@ test('T2: a failed join gives the role back to the next browser', async () => {
 
 test('T5: leaving frees a READY / NOT_READY role but the KEY keeps its own', async () => {
   const { group } = mk();
-  const created = await group.createTable('B2', { stake: 100 });
+  const created = await group.findTable('B2', { stake: 100 });
   await group.joinTable('B1', created.rid);
   await group.leave('B1');
   assert.equal(group.roleOf('B1'), null);
@@ -120,7 +119,7 @@ test('T5: leaving frees a READY / NOT_READY role but the KEY keeps its own', asy
 test('T6 vs A3: a kick is only REPORTED in manual mode, and rejoined (paced) when TỰ ĐỘNG is on', async () => {
   const { coord, group } = mk();
   const notices = []; group.on('notice', (n) => notices.push(n.event));
-  const created = await group.createTable('B2', { stake: 100 });
+  const created = await group.findTable('B2', { stake: 100 });
   await group.joinTable('B1', created.rid);
   coord.seats.delete('B1');
   coord.fire('kicked', { id: 'B1', message: 'Bạn thoát vì không sẵn sàng' });
@@ -136,7 +135,7 @@ test('T6 vs A3: a kick is only REPORTED in manual mode, and rejoined (paced) whe
   assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length, before + 1, 'auto: rejoined once');
 });
 
-test('A1: TỰ ĐỘNG forms the group — leave, create, then join one browser at a time', async () => {
+test('A1: TỰ ĐỘNG forms the group — leave, find a table, then join one browser at a time', async () => {
   const { coord, group } = mk();
   coord.seats.set('B1', 111); coord.seats.set('B2', 222);
   const res = await group.setAuto(true, { creatorId: 'B1', stake: 1000 });
@@ -155,14 +154,14 @@ test('A1: TỰ ĐỘNG without a stake (and with no group) refuses and turns its
   assert.equal(group.autoActive(), false);
 });
 
-test('A4 vs T7: a lost table is re-created when auto is on, and only reported when it is off', async () => {
+test('A4 vs T7: a lost table is replaced when auto is on, and only reported when it is off', async () => {
   const gone = { code: 'PHOM_JOIN_REJECTED', message: 'Phòng không tồn tại', serverCode: 102 };
   const manual = mk({ joinFails: { B1: gone } });
-  const created = await manual.group.createTable('B2', { stake: 100 });
+  const created = await manual.group.findTable('B2', { stake: 100 });
   const notices = []; manual.group.on('notice', (n) => notices.push(n.event));
   await manual.group.joinTable('B1', created.rid);
   assert.ok(notices.includes('TABLE_LOST'));
-  assert.equal(manual.group.active(), false, 'manual: the group is dissolved, nothing re-created');
+  assert.equal(manual.group.active(), false, 'manual: the group is dissolved, no new table is taken');
 
   const auto = mk();
   await auto.group.setAuto(true, { creatorId: 'B2', stake: 100 });
@@ -172,7 +171,8 @@ test('A4 vs T7: a lost table is re-created when auto is on, and only reported wh
   auto.coord.fire('kicked', { id: 'B1', message: 'x' });
   await new Promise((r) => setTimeout(r, 0));
   await auto.group.joinTable('B3', 999999); // drain
-  assert.notEqual(auto.group.snapshot().rid, rid, 'auto: a new table was created');
+  assert.notEqual(auto.group.snapshot().rid, rid, 'auto: another table was taken');
+  assert.equal(cmds(auto.coord, 'FIND').at(-1).avoidRid, rid, 'and the lost table is not asked for again');
 });
 
 test('A6: unticking TỰ ĐỘNG cancels what is queued and stops rejoining; seats stay as they are', async () => {
@@ -200,20 +200,20 @@ test('THOÁT BÀN TẤT CẢ: auto off, everyone leaves (paced), the group is di
   assert.equal(cmds(coord, 'LEAVE').length, leavesBefore + 3);
 });
 
-test('STAKE: one stake for the session — set in the tool, reused by a bar TẠO that sends none', async () => {
+test('STAKE: one stake for the session — set in the tool, reused by a bar TÌM BÀN that sends none', async () => {
   const { coord, group } = mk();
-  const none = await group.createTable('B1', {});           // no stake anywhere yet
+  const none = await group.findTable('B1', {});            // no stake anywhere yet
   assert.equal(none.ok, false);
   assert.equal(none.error.code, 'PHOM_INVALID_STAKE');
   assert.match(none.error.message, /tool Phỏm/);
   group.setStake(500);
   assert.equal(group.stake(), 500);
-  const made = await group.createTable('B1', {});           // the bar sends no stake → the tool's is used
+  const made = await group.findTable('B1', {});            // the bar sends no stake → the tool's is used
   assert.equal(made.ok, true, JSON.stringify(made.error || made));
-  assert.equal(cmds(coord, 'CREATE').at(-1).stake, 500);
+  assert.equal(cmds(coord, 'FIND').at(-1).stake, 500);
   assert.equal(group.snapshot().selectedStake, 500);
   // TỰ ĐỘNG with no stake argument uses the same session stake
   const auto = await group.setAuto(true, { creatorId: 'B2' });
   assert.equal(auto.ok, true, JSON.stringify(auto.error || auto));
-  assert.equal(cmds(coord, 'CREATE').at(-1).stake, 500);
+  assert.equal(cmds(coord, 'FIND').at(-1).stake, 500);
 });

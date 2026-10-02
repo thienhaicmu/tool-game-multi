@@ -1,6 +1,6 @@
 // The Phỏm control screen, rebuilt after the reference tool (2026-09-21) with the CARDS first: a one-line status
 // (số bàn · key · cược · cùng bàn), one line of three account chips, LỌC BÀI + remaining cards taking the free
-// height, and the controls at the BOTTOM (Tiền · ☐ TỰ ĐỘNG · ĐỔI KEY · THOÁT BÀN TẤT CẢ · XẾP CỬA SỔ · ĐÓNG TẤT CẢ).
+// height, and the controls at the BOTTOM (Tiền · ☐ TỰ ĐỘNG · BÀN KHÁC · THOÁT BÀN TẤT CẢ · XẾP CỬA SỔ · ĐÓNG TẤT CẢ).
 // Nothing automatic runs unless TỰ ĐỘNG is ticked. Source-level assertions (no DOM in CI); behaviour is covered by
 // phom-create-table.test.mjs.
 import test from 'node:test';
@@ -26,14 +26,14 @@ test('layout order: status line · account chips · cards · controls at the bot
 
 test('bottom controls: Tiền + TỰ ĐỘNG checkbox + the reference-tool action set; Tiền is the server stakes', () => {
   const f = fn('controlFooter');
-  for (const label of ["'Mức cược'", "type: 'checkbox'", ' TỰ ĐỘNG', 'ĐỔI KEY', 'THOÁT BÀN TẤT CẢ', 'XẾP CỬA SỔ', 'ĐÓNG TẤT CẢ']) assert.ok(f.includes(label), label);
+  for (const label of ["'Mức cược'", "type: 'checkbox'", ' TỰ ĐỘNG', 'BÀN KHÁC', 'THOÁT BÀN TẤT CẢ', 'XẾP CỬA SỔ', 'ĐÓNG TẤT CẢ']) assert.ok(f.includes(label), label);
   assert.match(fn('autoStakes'), /betOptions/);
   assert.equal(fn('compactHeader').includes('GHI WS'), false, 'Ghi WS lives in ⋯, not on the main screen');
 });
 
-test('TỰ ĐỘNG checkbox → phom:auto-set (on/off); ĐỔI KEY → change-key', () => {
+test('TỰ ĐỘNG checkbox → phom:auto-set (on/off); BÀN KHÁC → new-table', () => {
   assert.match(fn('onAutoToggle'), /api\.setAuto\(on, creator, autoStake \? Number\(autoStake\) : null\)/);
-  assert.match(fn('onChangeKey'), /api\.changeKey\(/);
+  assert.match(fn('onNewTable'), /api\.newTable\(/);
   assert.match(preload, /setAuto: \(on, browserId, stake\) => ipcRenderer\.invoke\('phom:auto-set'/);
   assert.match(main, /'phom:auto-set'[\s\S]*?phomSessions\.setAuto\(/);
   assert.equal(/phom:group-auto|groupAuto/.test(main + preload + js), false, 'the old always-on auto entry is gone');
@@ -94,7 +94,7 @@ test('bar: frames stopped arriving → MẤT DỮ LIỆU + TẢI LẠI (never a 
   const s = gh.deriveHeaderState({ opened: true, inGame: false, dataStale: true, staleSec: 45 });
   assert.match(s.statusLabel, /MẤT DỮ LIỆU 45s · TẢI LẠI/);
   assert.equal(s.primary.action, 'RELOAD');
-  assert.equal(s.canCreate, false, 'no table actions while the tool is blind');
+  assert.equal(s.canAct, false, 'no table actions while the tool is blind');
   // main: the freshness comes from the coordinator's lastFrameAt, and a stale run gets its capture re-installed
   assert.match(main, /dataStale: !!\(opened && b\.lastFrameAt != null && \(nowMs\(\) - Number\(b\.lastFrameAt\)\) > HEADER_STALE_MS\)/);
   assert.match(main, /function maybeRehookCapture\(browsers\)/);
@@ -111,7 +111,7 @@ test('group events reach the screen as one plain-Vietnamese line (never a raw co
   assert.match(main, /phomSessions\.on\('notice', \(n\) => send\('phom:notice', n\)\)/);
   assert.match(preload, /onNotice: \(cb\) => ipcRenderer\.on\('phom:notice'/);
   const t = fn('noticeText');
-  for (const ev of ['GROUP_CREATED', 'JOINED', 'KICKED', 'TABLE_LOST', 'REJOIN_EXHAUSTED', 'GROUP_DISSOLVED']) assert.ok(t.includes(ev), ev);
+  for (const ev of ['TABLE_FOUND', 'JOINED', 'KICKED', 'TABLE_LOST', 'REJOIN_EXHAUSTED', 'GROUP_DISSOLVED']) assert.ok(t.includes(ev), ev);
   assert.match(t, /default: return '';/); // an unknown event is never shown as a code
 });
 

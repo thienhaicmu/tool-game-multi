@@ -46,15 +46,15 @@ test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state
 });
 
 test('the header action router acts on ONE browser via the run-scoped coordinator API (no cross-browser)', () => {
-  // ENTER_GAME -> phomEnterGame(runId); FIND/JOIN/REJOIN/LEAVE -> the run-scoped manual* API, all keyed by
+  // ENTER_GAME -> phomEnterGame(runId); FIND_TABLE/JOIN/REJOIN/LEAVE -> the run-scoped group API, all keyed by
   // the single runId the click came from (never a leave-all / cross-browser action).
   const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
   assert.match(r, /ENTER_GAME'[\s\S]*?phomEnterGame\(rid\)/);
-  assert.match(r, /FIND'[\s\S]*?findAndJoinGroup\(rid, \{ selectedStake/); // §co-seat — plus budget/poll/fallback opts
   // docs/phom-kich-ban.md — the table actions go through the session manager's group API, still run-scoped.
   assert.match(r, /rejoinTable\(rid\)/);
   assert.match(r, /leaveTable\(rid\)/);
-  assert.match(r, /createTable\(rid, \{ stake \}\)/);
+  assert.match(r, /findTable\(rid, \{ stake \}\)/); // §find — TÌM BÀN (cmd 307) on THIS browser only
+  assert.equal(/findAndJoinGroup|createTable/.test(r), false, 'the removed lobby-list FIND / create flows are gone'); 
   assert.match(r, /joinTable\(rid, joinRid\)/);
 });
 

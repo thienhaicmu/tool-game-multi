@@ -5,8 +5,8 @@
 // It implements docs/phom-kich-ban.md literally; the test names carry the scenario ids (T1, T2, A1 … A6).
 //
 //   MANUAL (TỰ ĐỘNG off): the tool does exactly what the user pressed and NOTHING else. A kicked member is
-//                         reported, never rejoined; a lost table is reported, never re-created.
-//   AUTO   (TỰ ĐỘNG on):  form the group, rejoin a kicked member, re-create a lost table.
+//                         reported, never rejoined; a lost table is reported, never replaced.
+//   AUTO   (TỰ ĐỘNG on):  form the group, rejoin a kicked member, take another table when one is lost.
 //
 // Two rules hold everywhere:
 //   · PACING — every command sent to the server waits a random 0.8–2.5s first (deps.pace).
@@ -14,7 +14,7 @@
 //     new operation never interleaves with a running one. Turning TỰ ĐỘNG off (or leaving) cancels what is queued
 //     via a generation token, exactly like the coordinator's own cancellation.
 //
-// It owns NO protocol: every server interaction is a coordinator primitive (createTable / manualJoinByCode /
+// It owns NO protocol: every server interaction is a coordinator primitive (findPublicTable / manualJoinByCode /
 // manualJoinRoom / leaveTable / setAutoReadyPref / sendTableReady).
 // ---------------------------------------------------------------------------
 
@@ -49,7 +49,7 @@ class TableGroup extends EventEmitter {
 
   // ---- state for the surfaces -------------------------------------------------
   active() { return !!this._group; }
-  // The session's stake: every TẠO (tool or in-page bar) creates at this stake.
+  // The session's stake: every TÌM BÀN (tool or in-page bar) searches at this stake.
   stake() { return this._stake; }
   setStake(stake) {
     const v = Number(stake);
@@ -102,12 +102,13 @@ class TableGroup extends EventEmitter {
   _event(name, data = {}) { this._log(name, data); this.emit('notice', { event: name, ...data }); }
 
   // ---- T1 / A1 building blocks ------------------------------------------------
-  // T1 — this browser creates a keyed table and becomes KEY. Everything else stays where it is.
-  createTable(profileId, { stake } = {}) {
+  // T1 — this browser takes a PUBLIC table in the lobby that still has room for the group and becomes KEY. The
+  // server names that table in its reply (số bàn + its password, '' for a public one); everything else stays put.
+  findTable(profileId, { stake, avoidRid = null } = {}) {
     const s = Number(stake) > 0 ? Number(stake) : this._stake; // the bar sends none: it uses the tool's Tiền
-    return this._enqueue('CREATE', (gen) => this._create(profileId, s, gen));
+    return this._enqueue('FIND', (gen) => this._find(profileId, s, gen, avoidRid));
   }
-  async _create(profileId, stake, gen) {
+  async _find(profileId, stake, gen, avoidRid = null) {
     const id = String(profileId);
     if (!this._coord.browserReady(id)) return { ok: false, error: { code: 'PHOM_NOT_IN_GAME', message: 'Acc chưa vào game' } };
     if (!(Number(stake) > 0)) return { ok: false, error: { code: 'PHOM_INVALID_STAKE', message: 'Chưa chọn Tiền — chọn mức cược ở tool Phỏm' } };
@@ -116,12 +117,11 @@ class TableGroup extends EventEmitter {
     if (this._cancelled(gen)) return CANCELLED;
     if (!await this.pace(gen)) return CANCELLED;
     await this._coord.setAutoReadyPref(id, false); // KEY never auto-readies
-    if (!await this.pace(gen)) return CANCELLED;
-    const res = await this._coord.createTable(id, { stake: Number(stake), pace: () => this.pace(gen) });
-    if (!res.ok) { this._event('CREATE_FAILED', { id, error: res.error }); return res; }
-    this._group = { rid: Number(res.rid), key: String(res.roomKey), stake: Number(stake), creatorId: id, roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), recreating: false };
+    const res = await this._coord.findPublicTable(id, { stake: Number(stake), seatsNeeded: 2, avoidRid, pace: () => this.pace(gen) });
+    if (!res.ok) { this._event('FIND_FAILED', { id, error: res.error }); return res; }
+    this._group = { rid: Number(res.rid), key: String(res.roomKey || ''), stake: Number(stake), creatorId: id, roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), recreating: false };
     this._coord.setHost(id); this._coord.setFinder(id);
-    this._event('GROUP_CREATED', { id, rid: this._group.rid });
+    this._event('TABLE_FOUND', { id, rid: this._group.rid });
     this._emit();
     return { ...res, role: ROLE.KEY, roles: { [id]: ROLE.KEY } };
   }
@@ -178,13 +178,13 @@ class TableGroup extends EventEmitter {
     });
   }
 
-  // T4 (manual) / A5 (auto) — a new key means a NEW table (the game has no key-change command). Manual: only the
-  // KEY browser moves. Auto: the whole group is re-formed there.
-  changeKey() {
+  // T4 (manual) / A5 (auto) — BÀN KHÁC: leave this table and take another public one. Manual: only the KEY browser
+  // moves. Auto: the whole group is re-formed at the new table.
+  newTable() {
     const g = this._group;
     if (!g) return Promise.resolve({ ok: false, error: { code: 'PHOM_NO_GROUP', message: 'Chưa có bàn nào của nhóm' } });
-    const { creatorId, stake } = g;
-    return this._auto ? this._enqueue('REGROUP', (gen) => this._form(creatorId, stake, gen)) : this.createTable(creatorId, { stake });
+    const { creatorId, stake, rid } = g;
+    return this._auto ? this._enqueue('REGROUP', (gen) => this._form(creatorId, stake, gen, rid)) : this.findTable(creatorId, { stake, avoidRid: rid });
   }
 
   // ---- A — the TỰ ĐỘNG checkbox ------------------------------------------------
@@ -219,8 +219,8 @@ class TableGroup extends EventEmitter {
     });
   }
 
-  // A1 — everyone leaves, the creator makes the keyed table, the others join it one after another.
-  async _form(creatorId, stake, gen) {
+  // A1 — everyone leaves, the KEY browser takes a public table with room, the others join it one after another.
+  async _form(creatorId, stake, gen, avoidRid = null) {
     const ids = this._orderedIds().filter((id) => this._coord.browserReady(id));
     const creator = String(creatorId);
     const others = ids.filter((id) => id !== creator);
@@ -229,17 +229,17 @@ class TableGroup extends EventEmitter {
       if (!left.ok) return left;
       if (this._cancelled(gen)) return CANCELLED;
     }
-    const created = await this._create(creator, stake, gen);
-    if (!created.ok) return created;
+    const found = await this._find(creator, stake, gen, avoidRid);
+    if (!found.ok) return found;
     for (const id of others) {
       if (this._cancelled(gen)) return CANCELLED;
       const res = await this._join(id, this._group.rid, gen);
       if (res && res.cancelled) return CANCELLED;
-      if (!res.ok) return { ok: false, rid: this._group.rid, created: true, error: res.error, roles: this._rolesObject() };
+      if (!res.ok) return { ok: false, rid: this._group.rid, found: true, error: res.error, roles: this._rolesObject() };
     }
     this._event('GROUP_FORMED', { rid: this._group.rid, roles: this._rolesObject() });
     this._emit();
-    return { ok: true, rid: this._group.rid, key: this._group.key, roomKey: this._group.key, created: true, roles: this._rolesObject() };
+    return { ok: true, rid: this._group.rid, key: this._group.key, roomKey: this._group.key, found: true, roles: this._rolesObject() };
   }
 
   // A3 — a member the server removed. AUTO rejoins it (bounded); MANUAL only reports it (T6).
@@ -260,16 +260,17 @@ class TableGroup extends EventEmitter {
     });
   }
 
-  // A4 / T7 — the table is gone. AUTO re-creates it with the same stake and the same KEY browser; MANUAL reports it.
+  // A4 / T7 — the table is gone. AUTO takes another public table at the same stake with the same KEY browser;
+  // MANUAL reports it.
   async _onTableLost(gen) {
     const g = this._group;
     if (!g || g.recreating) return;
     this._event('TABLE_LOST', { rid: g.rid, auto: this._auto });
     if (!this._auto) { this._group = null; this._emit(); return; }
     g.recreating = true; this._emit();
-    const { creatorId, stake } = g;
+    const { creatorId, stake, rid } = g;
     this._group = null;
-    await this._form(creatorId, stake, gen);
+    await this._form(creatorId, stake, gen, rid);
   }
 
   // THOÁT BÀN TẤT CẢ — auto off, everyone leaves (paced), the group is dissolved.

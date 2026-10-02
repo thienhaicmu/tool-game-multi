@@ -41,13 +41,12 @@ class PhomContext extends EventEmitter {
     // Bumped on every FULL table snapshot (ps[]). A join is only proven by a snapshot that arrived AFTER it was
     // sent — the old table's state must never count as 'seated at the new one'.
     this._tableSeq = 0;
-    // CREATE_TABLE (cmd 308) replies and the JOINs sent on this socket (by the tool OR by the game client, which
-    // JOINs the created table by itself). The seq lets the creator tell a fresh reply from an old one.
-    this._createResult = null;  // { ok, rid, stake, maxPlayers, message, at, seq }
-    this._createSeq = 0;
+    // QUICK_PLAY (cmd 307/313) replies — the server naming the table it put this browser at — and the JOINs sent on
+    // this socket (by the tool OR by the game client, which JOINs the assigned table by itself). The seq lets the
+    // caller tell a fresh reply from an old one.
+    this._roomAssign = null;    // { ok, rid, stake, maxPlayers, password, message, at, seq }
+    this._roomAssignSeq = 0;
     this._lastJoinSend = null;  // { rid, at, seq }
-    this._createOptions = null; // CMD 311 reply: { stakes:[…], mB, at, seq } — the stakes this account may create at
-    this._createOptionsSeq = 0;
     this._joinSendSeq = 0;
     // The SỐ BÀN list: rs[] rows that are real tables (7-digit rid, rn without '#'), kept apart from the stake
     // channels. The server sends the full table list rarely (~every 60s) while every CMD 300 reply carries only the
@@ -121,13 +120,13 @@ class PhomContext extends EventEmitter {
       changed = true;
     }
 
-    if (cls.type === 'CREATE_TABLE_RESULT' && meta.direction !== 'send') {
-      this._createResult = { ok: cls.ok === true, rid: cls.rid != null ? cls.rid : null, stake: cls.stake != null ? cls.stake : null, maxPlayers: cls.maxPlayers != null ? cls.maxPlayers : null, message: cls.message || null, at: now, seq: ++this._createSeq };
-      changed = true;
-    }
-    if (cls.type === 'FIND_TABLE' && meta.direction !== 'send') {
-      const stakes = Array.isArray(cls.b) ? cls.b.map(Number).filter((n) => Number.isFinite(n) && n > 0) : [];
-      this._createOptions = { stakes, mB: cls.mB != null ? cls.mB : null, at: now, seq: ++this._createOptionsSeq };
+    if (cls.type === 'ROOM_ASSIGNED' && meta.direction !== 'send') {
+      this._roomAssign = {
+        ok: cls.ok === true, rid: cls.rid != null ? cls.rid : null,
+        stake: cls.stake != null ? cls.stake : null, maxPlayers: cls.maxPlayers != null ? cls.maxPlayers : null,
+        password: typeof cls.password === 'string' ? cls.password : '',
+        message: cls.message || null, at: now, seq: ++this._roomAssignSeq,
+      };
       changed = true;
     }
     if (cls.type === 'JOIN_REQUEST' && meta.direction === 'send') {
@@ -223,10 +222,9 @@ class PhomContext extends EventEmitter {
   lastJoinAck() { return this._lastJoinAck ? { ...this._lastJoinAck } : null; }
   lastLeaveAck() { return this._lastLeaveAck ? { ...this._lastLeaveAck } : null; }
   ackSeq() { return this._ackSeq; }
-  lastCreateResult() { return this._createResult ? { ...this._createResult } : null; }
-  createSeq() { return this._createSeq; }
-  createOptions() { return this._createOptions ? { ...this._createOptions, stakes: this._createOptions.stakes.slice() } : null; }
-  createOptionsSeq() { return this._createOptionsSeq; }
+  // The table the server last assigned this browser (QUICK_PLAY reply): số bàn + the password a JOIN must carry.
+  lastRoomAssign() { return this._roomAssign ? { ...this._roomAssign } : null; }
+  roomAssignSeq() { return this._roomAssignSeq; }
   lastJoinSend() { return this._lastJoinSend ? { ...this._lastJoinSend } : null; }
   joinSendSeq() { return this._joinSendSeq; }
   // The latest SỐ BÀN list (real tables only) + when it arrived.

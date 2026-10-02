@@ -108,11 +108,11 @@ class HostSessionManager extends EventEmitter {
   // ---- docs/phom-kich-ban.md — every table/group action goes through the TableGroup (paced + serialized) ----
   _g() { return this._session ? this._group : null; }
   _grouped(fn) { const g = this._g(); if (!g) return Promise.resolve({ ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }); return Promise.resolve(fn(g)); }
-  createTable(id, opts) { return this._grouped((g) => g.createTable(String(id), opts || {})); }        // T1
+  findTable(id, opts) { return this._grouped((g) => g.findTable(String(id), opts || {})); }            // T1
   joinTable(id, rid) { return this._grouped((g) => g.joinTable(String(id), rid)); }                    // T2
   rejoinTable(id) { return this._grouped((g) => g.rejoin(String(id))); }                               // T3
   leaveTable(id) { return this._grouped((g) => g.leave(String(id))); }                                 // T5
-  changeKey() { return this._grouped((g) => g.changeKey()); }                                          // T4 / A5
+  newTable() { return this._grouped((g) => g.newTable()); }                                            // T4 / A5
   setAuto(on, opts) { return this._grouped((g) => g.setAuto(!!on, opts || {})); }                      // A1/A2/A6
   leaveAllTables() { return this._grouped((g) => g.leaveAll()); }
   setStake(stake) { const g = this._g(); return g ? g.setStake(stake) : { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }; }

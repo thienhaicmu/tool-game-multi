@@ -31,8 +31,10 @@ const CMD = Object.freeze({
   SELF_IDENTITY: 100,  // server push of the OWN session identity (uid + own wallet As) — live-captured
   SEAT_UPDATE: 200,    // server push: ONE player took/updated a seat at THIS table ({p:{seat}, t}) — live-captured
   CHANNEL_LIST: 300,   // client asks for stake channels; server replies with rs[]
-  CREATE_TABLE: 308,   // client creates a table ("TẠO BÀN"); server replies {ri:{rid,b,Mu,pwd}} or {mgs}
-  FIND_TABLE: 311,     // client quick-find; server replies { b:[], mB }
+  QUICK_PLAY: 307,     // client asks for a PUBLIC table with room ("VÀO BÀN CHỜ"); reply {ri:{rid,b,Mu,pwd}} or {mgs}
+  CREATE_TABLE: 308,   // the GAME's own "TẠO BÀN" (private, needs a password); same reply shape — the tool never sends it
+  FIND_TABLE: 311,     // client asks which stakes it may create at; server replies { b:[], mB }
+  QUICK_PLAY_BET: 313, // the same reply as 307 when the request carried a stake (game: QUICK_PLAY_WITH_BET)
   READY: 363,          // client marks ready (aRd:"true")
   DEAL: 850,           // server deals the opening 9 cards (cs[]) — per-session authoritative
   PLAY: 851,           // a player discards (fP.dCs) and the turn moves to tP.uid
@@ -46,6 +48,7 @@ const OP = Object.freeze({ JOIN: 3, LEAVE: 4, PUSH: 5, EXT_REQUEST: 6 });
 
 const CMD_TYPE = Object.freeze({
   [CMD.CHANNEL_LIST]: 'CHANNEL_LIST_REQUEST',
+  [CMD.QUICK_PLAY]: 'QUICK_PLAY_REQUEST',
   [CMD.CREATE_TABLE]: 'CREATE_TABLE_REQUEST',
   [CMD.FIND_TABLE]: 'FIND_TABLE_REQUEST',
   [CMD.READY]: 'READY_REQUEST',
@@ -63,7 +66,7 @@ const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'ROUND_E
 // game socket) when it is a recognised server push for this game.
 const SERVER_EVIDENCE_TYPES = Object.freeze(new Set([
   'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'SEAT_UPDATE', 'DEAL', 'PLAY', 'DRAW', 'ROUND_END', 'MELD',
-  'SELF_IDENTITY', 'CREATE_TABLE_RESULT',
+  'SELF_IDENTITY', 'ROOM_ASSIGNED',
 ]));
 
 function base(raw) {
@@ -150,15 +153,20 @@ function classifyPhomFrame(raw) {
     if (payload && Array.isArray(payload.rs) && (cmd == null || cmd === CMD.CHANNEL_LIST)) return finalize(out, { type: 'CHANNEL_LIST' });
     if (payload && Array.isArray(payload.ps) && (cmd == null || cmd === 202)) return finalize(out, { type: 'TABLE_STATE' });
     if (payload && Array.isArray(payload.b) && payload.mB !== undefined) return finalize(out, { type: 'FIND_TABLE' });
-    // CREATE_TABLE reply (game client onReceiveQuickPlay): ri = the NEW table ({rid,b,sid,Mu,gid,pwd}); no ri →
-    // refused, with the server's reason in mgs (e.g. not enough gold). ri.rid is the table's số bàn.
-    if (cmd === CMD.CREATE_TABLE && payload) {
+    // The server assigned a table. QUICK_PLAY (307 / 313 with a stake) and the game's own CREATE_TABLE (308) share
+    // one reply shape and ONE handler in the game client (onReceiveQuickPlay): ri = the table
+    // ({rid,b,sid,Mu,gid,pwd}); no ri → nothing assigned, with the reason in mgs ("Không tìm thấy phòng thích hợp!").
+    // ri.rid is the table's real SỐ BÀN and ri.pwd the password a JOIN must carry ('' for a public lobby table) —
+    // the only place the server ever tells a browser which table it is in, which is why the group's table must come
+    // from here and not from a lobby-list row (TABLE_STATE carries no rid).
+    if ((cmd === CMD.QUICK_PLAY || cmd === CMD.QUICK_PLAY_BET || cmd === CMD.CREATE_TABLE) && payload) {
       const ri = payload.ri && typeof payload.ri === 'object' ? payload.ri : null;
       const rid = ri && Number.isFinite(Number(ri.rid)) ? Number(ri.rid) : null;
       return finalize(out, {
-        type: 'CREATE_TABLE_RESULT', ok: rid != null, rid,
+        type: 'ROOM_ASSIGNED', ok: rid != null, rid,
         stake: ri && Number.isFinite(Number(ri.b)) ? Number(ri.b) : null,
         maxPlayers: ri && Number.isFinite(Number(ri.Mu)) ? Number(ri.Mu) : null,
+        password: ri && typeof ri.pwd === 'string' ? ri.pwd : '',
         hasPassword: !!(ri && typeof ri.pwd === 'string' && ri.pwd.length > 0),
         message: typeof payload.mgs === 'string' && payload.mgs ? payload.mgs : null,
       });
@@ -217,11 +225,12 @@ function finalize(out, extra) {
     seat: extra.seat !== undefined ? extra.seat : undefined,     // single seat object (SEAT_UPDATE)
     present: extra.present !== undefined ? extra.present : undefined,
     t: extra.t !== undefined ? extra.t : undefined,
-    // CREATE_TABLE_RESULT fields
+    // ROOM_ASSIGNED fields (the table the server put us at: số bàn + the password a JOIN must carry)
     ok: extra.ok !== undefined ? extra.ok : undefined,
     rid: extra.rid !== undefined ? extra.rid : undefined,
     stake: extra.stake !== undefined ? extra.stake : undefined,
     maxPlayers: extra.maxPlayers !== undefined ? extra.maxPlayers : undefined,
+    password: extra.password !== undefined ? extra.password : undefined,
     message: extra.message !== undefined ? extra.message : undefined,
     // identity / table fields (surfaced verbatim; undefined when absent)
     aid: p.aid !== undefined ? p.aid : undefined,

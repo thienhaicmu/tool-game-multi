@@ -283,15 +283,15 @@
     if (!n || !n.event) return '';
     const who = playerLabelOf(n.id);
     switch (n.event) {
-      case 'GROUP_CREATED': return 'Đã tạo bàn ' + n.rid + '.';
+      case 'TABLE_FOUND': return 'Đã vào bàn chờ ' + n.rid + '.';
       case 'GROUP_FORMED': return 'Cả nhóm đã vào bàn ' + n.rid + '.';
       case 'JOINED': return who + ' đã vào bàn' + (n.role ? ' · ' + roleLabel(n.role) : '') + '.';
       case 'JOIN_FAILED': return who + ' vào bàn không được: ' + errText({ error: n.error }) + '.';
-      case 'CREATE_FAILED': return 'Tạo bàn không được: ' + errText({ error: n.error }) + '.';
+      case 'FIND_FAILED': return 'Tìm bàn không được: ' + errText({ error: n.error }) + '.';
       case 'LEAVE_FAILED': return who + ' chưa rời được bàn: ' + errText({ error: n.error }) + '.';
       case 'KICKED': return who + ' bị đá khỏi bàn' + (n.message ? ' (' + n.message + ')' : '') + (n.auto ? ' — đang tự vào lại…' : ' — bấm ReJoin để vào lại.');
       case 'REJOIN_EXHAUSTED': return who + ' bị đá quá nhiều lần trong 1 phút — tự vào lại đã dừng.';
-      case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang tạo bàn mới…' : ' — bấm Tạo để mở bàn mới.');
+      case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang tìm bàn khác…' : ' — bấm Tìm bàn để vào bàn khác.');
       case 'GROUP_DISSOLVED': return 'Đã thoát bàn tất cả.';
       case 'AUTO_OFF': return 'Đã tắt tự động.';
       default: return '';
@@ -383,7 +383,7 @@
     // PHASE 6.3.9/6.3.10 — Profile is the compact table + a COMPACT quick bulk-proxy import (one line = one
     // proxy, mapped B1→B2→B3 by profile order). Per-profile proxy still edits in the row's Edit modal.
     page.appendChild(profileTablePanel());
-    page.appendChild(el('div', { class: 'note' }, 'Chọn tối đa 3 profile rồi mở trình duyệt. Sau khi vào Phỏm, chọn mức cược để tạo bàn hoặc nhập số bàn trên thanh điều khiển trong game.'));
+    page.appendChild(el('div', { class: 'note' }, 'Chọn tối đa 3 profile rồi mở trình duyệt. Sau khi vào Phỏm, chọn mức cược để tìm bàn hoặc nhập số bàn trên thanh điều khiển trong game.'));
     r.appendChild(page);
     r.appendChild(runGameFooter());
   }
@@ -654,7 +654,7 @@
   //   top    compactHeader     — one line: số bàn · key · cược · cùng bàn
   //          compactBrowserRow — one line of three account chips (role · state · ready · VÀO GAME / ↻ / ⏻)
   //   middle renderCardWorkspace — LỌC BÀI for all three accounts + the remaining cards (takes the free height)
-  //   bottom controlFooter     — Tiền · ☐ TỰ ĐỘNG · ĐỔI KEY · THOÁT BÀN TẤT CẢ · XẾP CỬA SỔ · ⋯ · ĐÓNG TẤT CẢ
+  //   bottom controlFooter     — Tiền · ☐ TỰ ĐỘNG · BÀN KHÁC · THOÁT BÀN TẤT CẢ · XẾP CỬA SỔ · ⋯ · ĐÓNG TẤT CẢ
   // Manual play is each Chromium's own bar (Tạo · Vào · ReJoin · Đổi Key · Thoát). Nothing automatic runs unless
   // TỰ ĐỘNG is ticked here.
   function renderControl(r) {
@@ -670,8 +670,8 @@
     ws.appendChild(renderRemainingCards());
     return ws;
   }
-  const BUSY_LABEL = { CREATE: '⏳ ĐANG TẠO BÀN…', JOIN: '⏳ ĐANG VÀO BÀN…', REJOIN: '⏳ ĐANG VÀO LẠI…', LEAVE: '⏳ ĐANG RỜI BÀN…', LEAVE_ALL: '⏳ ĐANG RỜI HẾT…', AUTO_ON: '⏳ ĐANG BẬT TỰ ĐỘNG…', REGROUP: '⏳ ĐANG ĐỔI KEY…' };
-  const ROLE_VIEW = { KEY: ['KEY', 'role-key', 'Chủ bàn — giữ key, KHÔNG tự bấm Bắt đầu'], READY: ['SẴN SÀNG', 'role-ready', 'Vào bàn trước → luôn sẵn sàng'], NOT_READY: ['CHƯA SS', 'role-wait', 'Vào bàn sau → không sẵn sàng'] };
+  const BUSY_LABEL = { FIND: '⏳ ĐANG TÌM BÀN…', JOIN: '⏳ ĐANG VÀO BÀN…', REJOIN: '⏳ ĐANG VÀO LẠI…', LEAVE: '⏳ ĐANG RỜI BÀN…', LEAVE_ALL: '⏳ ĐANG RỜI HẾT…', AUTO_ON: '⏳ ĐANG BẬT TỰ ĐỘNG…', REGROUP: '⏳ ĐANG GOM LẠI BÀN MỚI…' };
+  const ROLE_VIEW = { KEY: ['KEY', 'role-key', 'Acc tìm bàn — KHÔNG tự bấm Bắt đầu'], READY: ['SẴN SÀNG', 'role-ready', 'Vào bàn trước → luôn sẵn sàng'], NOT_READY: ['CHƯA SS', 'role-wait', 'Vào bàn sau → không sẵn sàng'] };
   function roleChip(role, host) {
     const v = ROLE_VIEW[role];
     if (!v) return host ? el('span', { class: 'role-chip role-key', title: 'Chủ bàn' }, '👑') : null;
@@ -693,10 +693,10 @@
     const rid = g ? g.rid : manualCluster.sharedRid;
     return el('div', { class: 'tool-header status-line' },
       el('span', { class: 'th-rid' }, 'SỐ BÀN ', el('b', null, rid != null ? String(rid) : '—')),
-      el('span', { class: 'th-key' }, 'KEY ', el('b', null, g && g.key ? String(g.key) : '—')),
+      g && g.key ? el('span', { class: 'th-key' }, 'KEY ', el('b', null, String(g.key))) : null,
       el('span', { class: 'th-bet' }, 'CƯỢC ', el('b', null, g && g.stake ? String(g.stake) : (manualCluster.sharedStake != null ? String(manualCluster.sharedStake) : '—'))),
       coSeatChip(),
-      g && g.auto ? el('span', { class: 'chip green sm', title: 'Bị đá tự Rejoin · mất bàn tự tạo lại' }, g.recreating ? '⟳ ĐANG TẠO LẠI BÀN' : '● TỰ ĐỘNG') : null,
+      g && g.auto ? el('span', { class: 'chip green sm', title: 'Bị đá tự Rejoin · mất bàn tự tìm bàn khác' }, g.recreating ? '⟳ ĐANG TÌM BÀN KHÁC' : '● TỰ ĐỘNG') : null,
       // Mỗi lệnh gửi lên server đều chờ ngẫu nhiên 0,8–2,5s (docs/phom-kich-ban.md) nên thao tác kéo dài vài giây:
       // nói rõ tool đang làm gì thay vì để người dùng tưởng bị treo.
       g && g.busy ? el('span', { class: 'chip yellow sm', title: 'Thao tác chạy tuần tự, mỗi lệnh cách nhau 0,8–2,5 giây' }, BUSY_LABEL[g.busy] || 'ĐANG XỬ LÝ…') : null);
@@ -709,7 +709,7 @@
     const stakes = autoStakes();
     if (!autoStake && g && g.selectedStake != null) autoStake = String(g.selectedStake); // e.g. after a tool reload
     if (autoStake && !stakes.includes(Number(autoStake))) autoStake = '';
-    const sel = el('select', { class: 'bet-sel auto-stake', title: 'Mức cược dùng cho TẠO BÀN (cả tool và thanh trong web)', onchange: (e) => onPickStake(e.target.value) },
+    const sel = el('select', { class: 'bet-sel auto-stake', title: 'Mức cược dùng cho TÌM BÀN (cả tool và thanh trong web)', onchange: (e) => onPickStake(e.target.value) },
       el('option', { value: '' }, 'Tiền…'), ...stakes.map((v) => el('option', { value: String(v) }, String(v))));
     sel.id = 'phq-stake';
     sel.value = autoStake;
@@ -717,9 +717,9 @@
     box.checked = autoOn;
     return el('div', { class: 'control-footer' },
       el('label', { class: 'cf-label', for: 'phq-stake' }, 'Mức cược'), sel,
-      el('label', { class: 'auto-toggle' + (autoOn ? ' on' : ''), for: 'phq-auto', title: 'Bật: acc đầu tạo bàn có key, 2 acc kia vào (vào trước SẴN SÀNG, vào sau CHƯA SẴN SÀNG); bị đá tự Rejoin; mất bàn tự tạo lại. Tắt: không làm gì tự động.' },
+      el('label', { class: 'auto-toggle' + (autoOn ? ' on' : ''), for: 'phq-auto', title: 'Bật: acc đầu tìm bàn chờ công khai còn chỗ, 2 acc kia vào đúng bàn đó (vào trước SẴN SÀNG, vào sau CHƯA SẴN SÀNG); bị đá tự Rejoin; mất bàn tự tìm bàn khác. Tắt: không làm gì tự động.' },
         box, autoBusy ? ' ĐANG XỬ LÝ…' : ' TỰ ĐỘNG'),
-      el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Tạo bàn mới với key mới cho cả nhóm', onclick: () => onChangeKey() }, 'ĐỔI KEY'),
+      el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Rời bàn này và tìm bàn chờ khác cho cả nhóm', onclick: () => onNewTable() }, 'BÀN KHÁC'),
       el('button', { class: 'btn warn-btn', title: 'Cả 3 acc rời bàn (tắt tự động)', onclick: step(() => api.leaveAll(), 'Đã thoát bàn tất cả.') }, 'THOÁT BÀN TẤT CẢ'),
       el('button', { class: 'btn', title: 'Sắp xếp cửa sổ game', onclick: step(() => api.restoreLayout(), 'Đã xếp lại bố cục.') }, 'XẾP CỬA SỔ'),
       moreMenuButton(),
@@ -735,19 +735,19 @@
     if (on && !manualGroup && !autoStake) { note('Chọn Tiền trước khi bật Tự động.', true); renderApp(); return; }
     const creator = autoCreatorRunId();
     if (on && !manualGroup && !creator) { note('Chưa có acc nào vào game.', true); renderApp(); return; }
-    autoBusy = true; note(on ? (manualGroup ? 'Bật tự động — giữ bàn hiện tại…' : 'Đang tạo bàn và gọi các acc vào…') : 'Tắt tự động.'); renderApp();
+    autoBusy = true; note(on ? (manualGroup ? 'Bật tự động — giữ bàn hiện tại…' : 'Đang tìm bàn chờ và gọi các acc vào…') : 'Tắt tự động.'); renderApp();
     let res; try { res = await api.setAuto(on, creator, autoStake ? Number(autoStake) : null); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
     autoBusy = false;
     if (res && res.ok === false) note(errText(res), true);
     else if (on) note('Tự động đang giữ bàn ' + (res && res.rid != null ? res.rid : '') + '.');
     await refreshManual(); renderApp();
   }
-  async function onChangeKey() {
+  async function onNewTable() {
     const g = manualGroup; if (!g) return;
-    autoBusy = true; note('Đang tạo bàn mới với key mới…'); renderApp();
-    let res; try { res = await api.changeKey(g.members.find((m) => m.role === 'KEY')?.id || autoCreatorRunId()); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    autoBusy = true; note('Đang tìm bàn chờ khác…'); renderApp();
+    let res; try { res = await api.newTable(g.members.find((m) => m.role === 'KEY')?.id || autoCreatorRunId()); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
     autoBusy = false;
-    if (res && res.ok === false) note(errText(res), true); else note('Đã đổi sang bàn ' + (res && res.rid) + ' · key mới.');
+    if (res && res.ok === false) note(errText(res), true); else note('Đã sang bàn ' + (res && res.rid) + '.');
     await refreshManual(); renderApp();
   }
 

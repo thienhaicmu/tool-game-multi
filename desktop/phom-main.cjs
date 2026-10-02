@@ -989,25 +989,17 @@ else {
         res = await phomEnterGame(rid); // T8 — the in-engine tile click was fired (INVOKED != ENTERED)
         if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; clearHeaderEnterTimer(rid); }
         headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, actionId, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
-      } else if (action === 'FIND' || action === 'FIND_EMPTY' || action === 'CHANGE_TABLE') {
-        ensurePhomSessions();
-        const selectedStake = payload && payload.stake != null ? Number(payload.stake) : null;
-        // §co-seat (option A) — wait AGGRESSIVELY for the server's full 7-digit table list (broadcast rarely) so
-        // the finder lands a REAL số bàn to share, polling CMD 300 often and holding off the stake-139 fallback.
-        // §co-seat (option A) — POLL relentlessly (up to 300s), NEVER settle for kênh 139, and only accept a REAL
-        // bàn chờ with **≥ 3 free seats** (need/minSeats = 3) so all three browsers can sit together. When such a
-        // table appears in the list → its 7-digit số bàn → P1/P2 auto-join it (room for all).
-        res = await phomSessions.findAndJoinGroup(rid, { selectedStake, emptyOnly: action === 'FIND_EMPTY', budgetMs: 300000, pollMs: 1500 });
-      } else if (action === 'CREATE_TABLE' || action === 'CREATE_SOLO') {
-        // T1 — TẠO BÀN at the stake chosen in the Phỏm tool (the bar has no picker; it never invents a stake).
+      } else if (action === 'FIND_TABLE') {
+        // T1 — TÌM BÀN at the stake chosen in the Phỏm tool (the bar has no picker; it never invents a stake).
+        // The server picks a PUBLIC lobby table that still has room and names it (số bàn + password) in its reply;
+        // this browser becomes KEY and the others join that số bàn with VÀO (first READY, then NOT_READY).
         ensurePhomSessions();
         const stake = phomSessions.selectedStake();
-        // T1 — this browser creates the keyed table (KEY); the others join with VÀO (first READY, then NOT_READY).
-        res = await phomSessions.createTable(rid, { stake });
-      } else if (action === 'CHANGE_KEY') {
-        // ĐỔI KEY — the same group re-formed at a fresh table with a fresh key (the game has no key-change command).
+        res = await phomSessions.findTable(rid, { stake });
+      } else if (action === 'NEW_TABLE') {
+        // BÀN KHÁC — leave this table and take another public one (manual: only this browser; auto: the group).
         ensurePhomSessions();
-        res = await phomSessions.changeKey();
+        res = await phomSessions.newTable();
       } else if (action === 'JOIN_CODE') {
         // §create — VÀO SỐ BÀN typed/picked in the header (no password is ever sent — §no-password).
         ensurePhomSessions();
@@ -1548,16 +1540,16 @@ else {
     // join THAT exact room id and are confirmed co-seated.
     // PHASE-6 — MANUAL per-browser table control (browserId === browserRunId). Each command targets ONE
     // browser; there is no host/follower role. Confirmation is authoritative (own ps[]). Observe-only wire.
-    // PHASE-6.2.1 — REAL discovery: qualifying empty table (rid + stake from the server table) → JOIN → ps[].
-    // §create — TẠO BÀN (cmd 308): opts.gather=false creates on this browser only; default brings the others too.
-    ipcMain.handle('phom:create-table', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.createTable(cfg && cfg.browserId, (cfg && cfg.opts) || {}); }));
-    // §auto — the Phỏm tool's TỰ ĐỘNG checkbox. ON forms the group (creator = browserId, KEY; the others READY /
-    // NOT_READY) unless one exists, then rejoins kicked members and re-creates a lost table. OFF stops all of it.
+    // §find — TÌM BÀN (cmd 307 QUICK_PLAY, with the tool's stake): the server seats this ONE browser at a public
+    // lobby table that still has room and names it (số bàn + password) so the other two can join that table.
+    ipcMain.handle('phom:find-table', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.findTable(cfg && cfg.browserId, (cfg && cfg.opts) || {}); }));
+    // §auto — the Phỏm tool's TỰ ĐỘNG checkbox. ON forms the group (finder = browserId, KEY; the others READY /
+    // NOT_READY) unless one exists, then rejoins kicked members and takes another table when one is lost. OFF stops it.
     ipcMain.handle('phom:auto-set', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setAuto(!!(cfg && cfg.on), { creatorId: cfg && cfg.browserId, stake: cfg && cfg.stake != null ? Number(cfg.stake) : null }); }));
-    // THE mức cược lives in the Phỏm tool; the in-page bars create at this stake (they have no picker of their own).
+    // THE mức cược lives in the Phỏm tool; the in-page bars search at this stake (they have no picker of their own).
     ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setStake(cfg && cfg.stake); }));
     ipcMain.handle('phom:group-snapshot', guarded(() => { ensurePhomSessions(); return { ok: true, group: phomSessions.groupSnapshot() }; }));
-    ipcMain.handle('phom:change-key', guarded(() => { ensurePhomSessions(); return phomSessions.changeKey(); }));
+    ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
     ipcMain.handle('phom:room-list', guarded((_e, cfg) => { ensurePhomSessions(); return { ok: true, ...phomSessions.roomList(cfg && cfg.browserId) }; }));
     ipcMain.handle('phom:token-keys', guarded(async () => {
       try { return { ok: true, ...await tokenKeyStore.snapshot() }; }
