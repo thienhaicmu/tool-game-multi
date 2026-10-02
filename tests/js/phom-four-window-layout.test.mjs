@@ -1,90 +1,78 @@
-// PHASE 6.2 — the FOUR-window desktop arrangement (3 desktop Chromium windows + the Tool window),
-// deterministic across the live monitor topology. Pure geometry: slot i -> Browser i, the Tool is the
-// 4th region, browser windows are DESKTOP-sized (fill their monitor region, not a mobile size), and the
-// one default window size is used for every slot (the window IS the page's viewport).
+// The FOUR Phỏm windows (Browser 1/2/3 + the Tool) FILL the work area together: on one monitor they are
+// the four quadrants of a 2×2 grid, with no wasted desktop and no overlap. Slot i is ALWAYS Browser i,
+// whatever the monitor topology. The page's viewport is simply the window minus the browser chrome —
+// nothing is emulated or scaled (see browser-agent.cjs), so a bigger window means a bigger game.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { arrangeClusterWindows } = require('../../desktop/protocol/phom/grid-layout.cjs');
+const { arrangeClusterWindows, computeGridLayout, WINDOW_CHROME, DEFAULT_VIEWPORT } = require('../../desktop/protocol/phom/grid-layout.cjs');
 
-const { DEFAULT_VIEWPORT, defaultWindowSize } = require('../../desktop/browser-run/browser-agent.cjs');
-const VP = { width: DEFAULT_VIEWPORT.width, height: DEFAULT_VIEWPORT.height };
-const WIN = defaultWindowSize();
-const overlap = (a, b) => { const x = Math.max(0, Math.min(a.x + a.width, b.x + b.width) - Math.max(a.x, b.x)); const y = Math.max(0, Math.min(a.y + a.height, b.y + b.height) - Math.max(a.y, b.y)); return x * y; };
+const MON = { x: 0, y: 0, width: 1920, height: 1040 };          // 1080 minus a taskbar
+const MON2 = { x: 1920, y: 0, width: 1920, height: 1040 };
+const MON3 = { x: 3840, y: 0, width: 1920, height: 1040 };
+const MON4 = { x: 5760, y: 0, width: 1920, height: 1040 };
+const area = (r) => r.width * r.height;
+const overlap = (a, b) => !(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y);
 
-test('produces four windows: three browser slots + the Tool', () => {
-  const a = arrangeClusterWindows([{ x: 0, y: 0, width: 1920, height: 1040 }]);
-  assert.ok(a.slots[1] && a.slots[2] && a.slots[3], 'three browser slots');
-  assert.ok(a.tool && Number.isFinite(a.tool.width) && Number.isFinite(a.tool.height), 'a Tool window rect');
+test('ONE monitor: the three browsers + the Tool are the four quadrants, filling the screen', () => {
+  const arr = arrangeClusterWindows([MON], {});
+  assert.equal(arr.placement, 'GRID_2x2');
+  const g = computeGridLayout(MON, { gap: 8 });
+  assert.deepEqual({ x: arr.slots[1].x, y: arr.slots[1].y, width: arr.slots[1].width, height: arr.slots[1].height }, g.A, 'B1 = top-left quadrant');
+  assert.deepEqual({ x: arr.slots[2].x, y: arr.slots[2].y, width: arr.slots[2].width, height: arr.slots[2].height }, g.B, 'B2 = top-right quadrant');
+  assert.deepEqual({ x: arr.slots[3].x, y: arr.slots[3].y, width: arr.slots[3].width, height: arr.slots[3].height }, g.C, 'B3 = bottom-left quadrant');
+  assert.deepEqual(arr.tool, g.control, 'the Tool is the fourth quadrant');
+  // together they cover (almost) the whole work area — only the 8px gaps are left over
+  const covered = area(arr.slots[1]) + area(arr.slots[2]) + area(arr.slots[3]) + area(arr.tool);
+  assert.ok(covered > area(MON) * 0.97, `the four windows fill the screen (covered ${covered} of ${area(MON)})`);
+  // and they never overlap
+  const rects = [arr.slots[1], arr.slots[2], arr.slots[3], arr.tool];
+  for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) assert.equal(overlap(rects[i], rects[j]), false, `window ${i} and ${j} overlap`);
 });
 
-test('single monitor => 2×2 quadrants (B1 TL, B2 TR, B3 BL, Tool BR), no overlap', () => {
-  const a = arrangeClusterWindows([{ x: 0, y: 0, width: 1920, height: 1040 }]);
-  assert.equal(a.placement, 'GRID_2x2');
-  const { slots, tool } = a;
-  assert.ok(slots[1].x < slots[2].x, 'B1 left of B2');
-  assert.ok(slots[1].y < slots[3].y, 'B1 above B3');
-  assert.ok(tool.x >= slots[3].x + slots[3].width - 2 || tool.y >= slots[1].y, 'Tool in the BR region');
-  // quadrants do not overlap
-  assert.equal(overlap(slots[1], slots[2]), 0);
-  assert.equal(overlap(slots[1], slots[3]), 0);
-  assert.equal(overlap(slots[2], slots[3]), 0);
-  assert.equal(overlap(slots[3], tool), 0);
+test('the game viewport is the window minus the browser chrome (bigger window = bigger game)', () => {
+  const arr = arrangeClusterWindows([MON], {});
+  for (const i of [1, 2, 3]) {
+    assert.equal(arr.slots[i].viewport.width, arr.slots[i].width - WINDOW_CHROME.frameWidth);
+    assert.equal(arr.slots[i].viewport.height, arr.slots[i].height - WINDOW_CHROME.chromeHeight);
+    assert.ok(arr.slots[i].viewport.width >= DEFAULT_VIEWPORT.width, 'a quadrant of a 1920 screen is roomier than the minimum');
+  }
+  assert.equal(arr.insufficient, false);
 });
 
-test('4 monitors => one browser per monitor + Tool on the 4th (deterministic mapping)', () => {
-  const mons = [0, 1, 2, 3].map((i) => ({ x: i * 1920, y: 0, width: 1920, height: 1040 }));
-  const a = arrangeClusterWindows(mons);
-  assert.equal(a.placement, 'PER_MONITOR_4');
-  assert.ok(a.slots[1].x < 1920, 'B1 on monitor 0');
-  assert.ok(a.slots[2].x >= 1920 && a.slots[2].x < 3840, 'B2 on monitor 1');
-  assert.ok(a.slots[3].x >= 3840 && a.slots[3].x < 5760, 'B3 on monitor 2');
-  assert.ok(a.tool.x >= 5760, 'Tool on monitor 3');
+test('TWO monitors: B1|B2 split the first, B3 fills the second, the Tool docks bottom-right', () => {
+  const arr = arrangeClusterWindows([MON, MON2], {});
+  assert.equal(arr.placement, 'SPLIT_2');
+  assert.equal(arr.slots[1].x, MON.x);
+  assert.ok(arr.slots[2].x > arr.slots[1].x && arr.slots[2].x + arr.slots[2].width <= MON.x + MON.width);
+  assert.equal(overlap(arr.slots[1], arr.slots[2]), false);
+  assert.deepEqual({ x: arr.slots[3].x, y: arr.slots[3].y, width: arr.slots[3].width, height: arr.slots[3].height }, MON2, 'B3 fills the second monitor');
+  assert.ok(arr.tool.x + arr.tool.width <= MON2.x + MON2.width && arr.tool.y + arr.tool.height <= MON2.y + MON2.height);
 });
 
-test('3 monitors => B1/B2/B3 one per monitor, Tool docks on monitor 3', () => {
-  const mons = [0, 1, 2].map((i) => ({ x: i * 1920, y: 0, width: 1920, height: 1040 }));
-  const a = arrangeClusterWindows(mons);
-  assert.equal(a.placement, 'PER_MONITOR_3');
-  assert.ok(a.tool.x >= 3840, 'Tool docked on the 3rd monitor');
-  assert.equal(overlap(a.slots[1], a.slots[2]), 0);
+test('THREE / FOUR monitors: one browser fills each monitor; the Tool gets the spare one', () => {
+  const three = arrangeClusterWindows([MON, MON2, MON3], {});
+  assert.equal(three.placement, 'PER_MONITOR_3');
+  for (const [i, m] of [[1, MON], [2, MON2], [3, MON3]]) {
+    assert.deepEqual({ x: three.slots[i].x, y: three.slots[i].y, width: three.slots[i].width, height: three.slots[i].height }, m, `B${i} fills its monitor`);
+  }
+  const four = arrangeClusterWindows([MON, MON2, MON3, MON4], {});
+  assert.equal(four.placement, 'PER_MONITOR_4');
+  assert.ok(four.tool.x >= MON4.x, 'the Tool moves to the fourth monitor');
 });
 
-test('2 monitors => B1|B2 split monitor 0, B3 + Tool on monitor 1', () => {
-  const mons = [{ x: 0, y: 0, width: 1920, height: 1040 }, { x: 1920, y: 0, width: 1920, height: 1040 }];
-  const a = arrangeClusterWindows(mons);
-  assert.equal(a.placement, 'SPLIT_2');
-  assert.ok(a.slots[1].x < 1920 && a.slots[2].x < 1920, 'B1,B2 on monitor 0');
-  assert.equal(overlap(a.slots[1], a.slots[2]), 0, 'B1,B2 split without overlap');
-  assert.ok(a.slots[3].x >= 1920 && a.tool.x >= 1920, 'B3 + Tool on monitor 1');
+test('a display too small for a comfortable game is reported, never silently accepted', () => {
+  const arr = arrangeClusterWindows([{ x: 0, y: 0, width: 900, height: 500 }], {});
+  assert.equal(arr.insufficient, true);
+  assert.equal(arr.insufficientReason, 'LAYOUT_SPACE_INSUFFICIENT');
+  // the windows still fill their quadrants — the layout is honest about being tight, not broken
+  for (const i of [1, 2, 3]) assert.ok(arr.slots[i].width > 0 && arr.slots[i].height > 0);
 });
 
-test('a browser window is the ONE default size — never stretched to fill a monitor region', () => {
-  const a = arrangeClusterWindows([{ x: 0, y: 0, width: 1920, height: 1040 }]);
-  assert.equal(a.slots[1].width, WIN.width);
-  assert.equal(a.slots[1].height, WIN.height);
-  const per = arrangeClusterWindows([{ x: 0, y: 0, width: 1920, height: 1040 }, { x: 1920, y: 0, width: 1920, height: 1040 }, { x: 3840, y: 0, width: 1920, height: 1040 }]);
-  assert.equal(per.slots[1].width, WIN.width, 'a whole monitor to itself does not make the window bigger');
-});
-
-test('every browser slot reports the default viewport (the window IS the viewport)', () => {
-  const a = arrangeClusterWindows([{ x: 0, y: 0, width: 1920, height: 1040 }]);
-  for (const i of [1, 2, 3]) assert.deepEqual(a.slots[i].viewport, VP);
-});
-
-test('tiny single display flags LAYOUT_SPACE_INSUFFICIENT (the default viewport is still reported)', () => {
-  const a = arrangeClusterWindows([{ x: 0, y: 0, width: 900, height: 500 }]);
-  assert.equal(a.placement, 'GRID_2x2');
-  assert.equal(a.insufficient, true);
-  assert.equal(a.insufficientReason, 'LAYOUT_SPACE_INSUFFICIENT');
-  for (const i of [1, 2, 3]) assert.deepEqual(a.slots[i].viewport, VP);
-});
-
-test('deterministic: the same topology always yields slot i for browser i', () => {
-  const mons = [{ x: 0, y: 0, width: 3840, height: 1040 }, { x: 3840, y: 0, width: 1920, height: 1040 }, { x: 5760, y: 0, width: 1920, height: 1040 }];
-  const a = arrangeClusterWindows(mons);
-  const b = arrangeClusterWindows(mons);
+test('slot → window mapping is deterministic (slot i is always browser i)', () => {
+  const a = arrangeClusterWindows([MON, MON2], {});
+  const b = arrangeClusterWindows([MON, MON2], {});
   assert.deepEqual(a.slots, b.slots);
-  assert.ok(a.slots[1].x < a.slots[3].x, 'slot 1 is on the left-most monitor');
+  assert.deepEqual(a.tool, b.tool);
 });

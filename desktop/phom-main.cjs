@@ -53,7 +53,7 @@ const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
 const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
-const { rectForSlot, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
+const { rectForSlot, toolWindowBounds, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
 const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
@@ -503,7 +503,6 @@ else {
     for (let i = 0; i < 3; i++) {
       const p = deviceProfilesStore.get(ids[i]);
       if (!p) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_FOUND', message: `Hồ sơ ${ids[i]} không tồn tại.` } };
-      if (!p.device) return { ok: false, error: { code: 'PHOM_PROFILE_NO_DEVICE', message: `Hồ sơ "${p.name}" chưa có thiết bị.` } };
       const profUrl = localTestActive() ? 'about:blank' : (typedUrl || (p.gameUrl ? String(p.gameUrl).trim() : ''));
       if (!localTestActive() && !profUrl) return { ok: false, error: { code: 'PHOM_GAME_URL_REQUIRED', message: 'Nhập Game URL (hoặc lưu URL trong hồ sơ) trước khi mở.' } };
       // Remember the URL on the profile so the next app launch reuses it (with the persistent user-data-dir
@@ -572,7 +571,6 @@ else {
   // A device may request an explicit desktop OS window (e.g. 960×540) that is
   // independent from its game viewport (e.g. 851×393). Legacy mobile-only profiles
   // carry osWindow=null; the geometry layer falls back to viewport + chrome.
-  function clusterWindowArrangement() { return arrangeBrowserWindows(allDisplayWorkAreas(), { gap: 8 }); }
   // PHASE-6.2 — the FOUR-window arrangement (3 desktop Chromium windows + the Tool window). Browsers use
   // .slots[1..3]; the Tool window is placed at .tool.
   function clusterFourWindowArrangement() { return arrangeClusterWindows(allDisplayWorkAreas(), { gap: 8 }); }
@@ -1330,15 +1328,15 @@ else {
     const profileDir = path.join(phomRoot(), 'browser-profiles', udKey || slot || 'X');
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
     // PHASE-6 — DETERMINISTIC multi-monitor placement. Browser slot A/B/C ⇒ window 1/2/3 (stable, never
-    // by launch/PID order). Every window is the ONE default size (browser-agent.DEFAULT_VIEWPORT + the
-    // Chromium chrome allowance), which is also the page's viewport: nothing is emulated or scaled.
-    // Reads the live display topology so the three windows are visible simultaneously across monitors.
+    // by launch/PID order). Each window FILLS its region of the live display topology (on one monitor:
+    // a quadrant of the 2×2 grid whose fourth cell is the Tool), so the four windows cover the screen and
+    // the page's viewport is simply that window minus the browser chrome — nothing is emulated or scaled.
     const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
     let windowRect;
     try {
       const arr = clusterFourWindowArrangement();
-      windowRect = (arr && arr.slots && arr.slots[slotIndex]) || desktopWindowRectForSlot(currentWorkArea(), slot);
-    } catch { windowRect = desktopWindowRectForSlot(currentWorkArea(), slot); }
+      windowRect = (arr && arr.slots && arr.slots[slotIndex]) || gridRectForSlot(slot);
+    } catch { windowRect = gridRectForSlot(slot); }
     const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;

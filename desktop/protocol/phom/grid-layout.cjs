@@ -65,125 +65,34 @@ function toolWindowBounds(workArea = {}, opts = {}) {
   return { x, y, width, height };
 }
 
-// A DESKTOP Chromium window for one browser. EVERY Phỏm browser window is the same size: the default
-// viewport (browser-agent.DEFAULT_VIEWPORT, 600×338) plus an allowance for the browser chrome (tab strip
-// + address bar + frame). The page is never emulated or scaled any more, so this window IS the game's
-// viewport and its maximum size.
-//
-// Placement spreads the three windows across the work-area width: A left, C right, B centered. When the
-// work area is too narrow for three of them they overlap in the middle (each stays full size +
-// draggable) rather than being shrunk (§5). Pure math.
+// The four Phỏm windows (3 browsers + the Tool) FILL the work area together, so the game is as large as
+// the screen allows. `DEFAULT_VIEWPORT` is only the smallest viewport the tool considers comfortable: a
+// region below it is reported as LAYOUT_SPACE_INSUFFICIENT, never silently accepted.
 const { DEFAULT_VIEWPORT, WINDOW_CHROME } = require('../../browser-run/browser-agent.cjs');
-// The one window size: the default viewport + the chrome allowance.
-function _resolveOsWindowSize(frameW, chromeH) {
-  const vw = DEFAULT_VIEWPORT.width, vh = DEFAULT_VIEWPORT.height;
-  return { width: vw + frameW, height: chromeH + vh, vw, vh };
-}
-function desktopWindowRectForSlot(workArea = {}, slot, opts = {}) {
-  const x0 = Math.round(Number(workArea.x) || 0);
-  const y0 = Math.round(Number(workArea.y) || 0);
-  const W = Math.max(320, Math.round(Number(workArea.width) || 1280));
-  const H = Math.max(240, Math.round(Number(workArea.height) || 800));
-  const frameW = Number.isFinite(opts.frameWidth) ? opts.frameWidth : WINDOW_CHROME.frameWidth;
-  const chromeH = Number.isFinite(opts.chromeHeight) ? opts.chromeHeight : WINDOW_CHROME.chromeHeight;
-  const size = _resolveOsWindowSize(frameW, chromeH);
-  const vw = size.vw, vh = size.vh;
-  // Window OUTER size, never larger than the work area.
-  const width = Math.min(W, size.width);
-  const height = Math.min(H, size.height);
-  const idx = Math.max(0, SLOTS.indexOf(slot)); // A=0, B=1, C=2
-  const last = SLOTS.length - 1;
-  let x;
-  if (idx <= 0) x = x0;                         // A: left edge
-  else if (idx >= last) x = x0 + W - width;     // C: right edge
-  else x = x0 + Math.round((W - width) / 2);    // B: centered
-  let y = y0 + Math.max(0, Math.round((H - height) / 2)); // vertically centered
-  // Clamp fully inside the work area (taskbar/multi-monitor safe).
-  x = Math.min(Math.max(x, x0), x0 + W - width);
-  y = Math.min(Math.max(y, y0), y0 + H - height);
-  return { x, y, width, height, viewport: { width: vw, height: vh } };
-}
-
-// PHASE-6 — deterministic multi-monitor arrangement for the THREE manual browser windows. Slot i ALWAYS
-// maps to Browser i (1/2/3) regardless of launch/PID/enumeration order (§7/§34). Every window is the one
-// default size (DEFAULT_VIEWPORT + chrome), which is also the page's viewport.
-//   ≥3 monitors → one browser per monitor (PER_MONITOR)
-//   2 monitors  → browsers 1&2 tiled on monitor 0, browser 3 on monitor 1 (SPLIT_2)
-//   1 monitor   → all three tiled side-by-side (TILED)
-// When a target region cannot fit the windows side-by-side they are SPREAD (may overlap) and
-// `insufficient` is set to LAYOUT_SPACE_INSUFFICIENT — never a silent "perfect" claim, and a window is
-// never shrunk below the default size (§35).
 function _normMon(m) { return { x: Math.round(Number(m && m.x) || 0), y: Math.round(Number(m && m.y) || 0), width: Math.max(320, Math.round(Number(m && m.width) || 1280)), height: Math.max(240, Math.round(Number(m && m.height) || 800)) }; }
-function _winSize(frameW, chromeH) { return _resolveOsWindowSize(frameW, chromeH); }
-function _centerIn(size, m) {
-  const width = Math.min(size.width, m.width), height = Math.min(size.height, m.height);
-  const x = m.x + Math.max(0, Math.round((m.width - width) / 2));
-  const y = m.y + Math.max(0, Math.round((m.height - height) / 2));
-  return { x, y, width, height, viewport: { width: size.vw, height: size.vh } };
-}
-// Lay N windows left→right in monitor m. Non-overlapping (gap-separated) when they fit; else spread
-// across (overlap allowed) with insufficient=true. Never shrinks the viewport.
-function _tileAcross(sizes, m, gap) {
-  const n = sizes.length;
-  const clamped = sizes.map((s) => ({ ...s, width: Math.min(s.width, m.width), height: Math.min(s.height, m.height) }));
-  const total = clamped.reduce((a, s) => a + s.width, 0) + gap * (n - 1);
-  const rects = []; let insufficient = false;
-  if (total <= m.width) {
-    let x = m.x + Math.round((m.width - total) / 2);
-    for (const s of clamped) { const y = m.y + Math.max(0, Math.round((m.height - s.height) / 2)); rects.push({ x, y, width: s.width, height: s.height, viewport: { width: s.vw, height: s.vh } }); x += s.width + gap; }
-  } else {
-    insufficient = true;
-    for (let i = 0; i < n; i++) { const s = clamped[i]; const span = n > 1 ? (m.width - s.width) / (n - 1) : 0; const x = Math.round(m.x + i * span); const y = m.y + Math.max(0, Math.round((m.height - s.height) / 2)); rects.push({ x, y, width: s.width, height: s.height, viewport: { width: s.vw, height: s.vh } }); }
-  }
-  return { rects, insufficient };
-}
-function arrangeBrowserWindows(monitors, opts = {}) {
-  const gap = Number.isFinite(opts.gap) ? opts.gap : 8;
-  const frameW = Number.isFinite(opts.frameWidth) ? opts.frameWidth : WINDOW_CHROME.frameWidth;
-  const chromeH = Number.isFinite(opts.chromeHeight) ? opts.chromeHeight : WINDOW_CHROME.chromeHeight;
-  const mons = (Array.isArray(monitors) && monitors.length ? monitors : [{ x: 0, y: 0, width: 1280, height: 800 }]).map(_normMon);
-  const size = () => _winSize(frameW, chromeH);
-  const slots = { 1: null, 2: null, 3: null };
-  let insufficient = false, placement;
-  if (mons.length >= 3) {
-    placement = 'PER_MONITOR';
-    for (let i = 1; i <= 3; i++) { const s = size(); slots[i] = _centerIn(s, mons[i - 1]); if (s.width > mons[i - 1].width || s.height > mons[i - 1].height) insufficient = true; }
-  } else if (mons.length === 2) {
-    placement = 'SPLIT_2';
-    const pair = _tileAcross([size(), size()], mons[0], gap); slots[1] = pair.rects[0]; slots[2] = pair.rects[1];
-    const s3 = size(); slots[3] = _centerIn(s3, mons[1]); insufficient = pair.insufficient || s3.width > mons[1].width || s3.height > mons[1].height;
-  } else {
-    placement = 'TILED';
-    const t = _tileAcross([size(), size(), size()], mons[0], gap); slots[1] = t.rects[0]; slots[2] = t.rects[1]; slots[3] = t.rects[2]; insufficient = t.insufficient;
-  }
-  return { slots, monitors: mons.length, placement, insufficient, insufficientReason: insufficient ? 'LAYOUT_SPACE_INSUFFICIENT' : null };
-}
 
 // PHASE-6.2 — the FOUR-window desktop arrangement: three real Chromium browser windows (1/2/3) + the
 // Tool window, deterministic across the live monitor topology (slot i ALWAYS Browser i; the Tool is the
-// 4th region). Every Chromium window is a DESKTOP window of the ONE default size, centered in its
-// region — never stretched to fill a monitor, because the window is the game's viewport now.
+// 4th region). Each window FILLS the region it is given, so the four windows together cover the screen
+// with no wasted desktop: the game is as large as the screen allows, and the page's viewport is simply
+// that window minus the browser chrome (nothing is emulated or scaled).
 //   ≥4 monitors → B1..B3 fill mon0..2, Tool on mon3
 //   3 monitors  → B1..B3 fill mon0..2, Tool docks bottom-right of mon2
 //   2 monitors  → B1|B2 split mon0, B3 fills mon1, Tool docks bottom-right of mon1
 //   1 monitor   → 2×2 quadrants: B1 TL, B2 TR, B3 BL, Tool BR (no overlap)
 function _toolDock(m, opts) { const w = Math.min(m.width, Number.isFinite(opts.toolWidth) ? opts.toolWidth : 560); const h = Math.min(m.height, Number.isFinite(opts.toolHeight) ? opts.toolHeight : 260); return { x: m.x + m.width - w, y: m.y + m.height - h, width: w, height: h }; }
-// A browser rect inside the region allocated to it (a full monitor, a half-monitor for SPLIT_2, or a
-// quadrant for GRID_2x2): the ONE default window size, centered, never enlarged past the region.
+// A browser window FILLS the region allocated to it (a full monitor, a half-monitor for SPLIT_2, or a
+// quadrant for GRID_2x2). Its viewport is the region minus the browser chrome.
 function _regionWindowRect(region, opts) {
   const frameW = Number.isFinite(opts.frameWidth) ? opts.frameWidth : WINDOW_CHROME.frameWidth;
   const chromeH = Number.isFinite(opts.chromeHeight) ? opts.chromeHeight : WINDOW_CHROME.chromeHeight;
-  const size = _resolveOsWindowSize(frameW, chromeH);
-  const width = Math.min(region.width, size.width);
-  const height = Math.min(region.height, size.height);
-  const x = region.x + Math.max(0, Math.round((region.width - width) / 2));
-  const y = region.y + Math.max(0, Math.round((region.height - height) / 2));
-  return { x, y, width, height };
+  const width = Math.round(region.width);
+  const height = Math.round(region.height);
+  return { x: Math.round(region.x), y: Math.round(region.y), width, height, viewport: { width: Math.max(1, width - frameW), height: Math.max(1, height - chromeH) } };
 }
 function arrangeClusterWindows(monitors, opts = {}) {
   const mons = (Array.isArray(monitors) && monitors.length ? monitors : [{ x: 0, y: 0, width: 1280, height: 800 }]).map(_normMon);
-  const vp = () => ({ width: DEFAULT_VIEWPORT.width, height: DEFAULT_VIEWPORT.height });
-  const regionRect = (region) => ({ ..._regionWindowRect(region, opts), viewport: vp() });
+  const regionRect = (region) => _regionWindowRect(region, opts);
   const slots = { 1: null, 2: null, 3: null };
   let tool = null, placement, insufficient = false;
   if (mons.length >= 4) {
@@ -212,9 +121,11 @@ function arrangeClusterWindows(monitors, opts = {}) {
     slots[2] = regionRect(g.B);
     slots[3] = regionRect(g.C);
     tool = g.control;
-    // A quadrant can be smaller than the default window on a low-res display: the window is then clamped
-    // to the quadrant, so the page gets less than DEFAULT_VIEWPORT — flag the tight space honestly.
-    insufficient = [1, 2, 3].some((i) => slots[i].width < slots[i].viewport.width || slots[i].height < slots[i].viewport.height);
+  }
+  // A region can be smaller than the default viewport on a low-res display: the window still fills it, but
+  // the game then gets less room than the tool's own default — flag the tight space honestly.
+  for (const i of [1, 2, 3]) {
+    if (slots[i].viewport.width < DEFAULT_VIEWPORT.width || slots[i].viewport.height < DEFAULT_VIEWPORT.height) insufficient = true;
   }
   return { slots, tool, monitors: mons.length, placement, insufficient, insufficientReason: insufficient ? 'LAYOUT_SPACE_INSUFFICIENT' : null };
 }
@@ -225,4 +136,4 @@ function chromeWindowArgs(rect) {
   return [`--window-position=${Math.round(rect.x)},${Math.round(rect.y)}`, `--window-size=${Math.round(rect.width)},${Math.round(rect.height)}`];
 }
 
-module.exports = { SLOTS, computeGridLayout, rectForSlot, chromeWindowArgs, toolWindowBounds, desktopWindowRectForSlot, arrangeBrowserWindows, arrangeClusterWindows, WINDOW_CHROME };
+module.exports = { SLOTS, computeGridLayout, rectForSlot, chromeWindowArgs, toolWindowBounds, arrangeClusterWindows, WINDOW_CHROME, DEFAULT_VIEWPORT };
