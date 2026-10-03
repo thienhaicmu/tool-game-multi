@@ -30,6 +30,13 @@ const EventEmitter = require('node:events');
 const ROLE = Object.freeze({ KEY: 'KEY', READY: 'READY', NOT_READY: 'NOT_READY' });
 const PACE_MIN_MS = 800;
 const PACE_MAX_MS = 2500;
+// A kicked member comes back this long after the kick (the reference tool: ~0.5s). It does NOT wait in the queue:
+// the NOT_READY account is kicked every ~10s, and an 8s queued rejoin (live log 2026-10-03 14:19) left it out of the
+// table most of the time.
+const REJOIN_DELAY_MS = 500;
+// THAY ACC — how often (and how long) the group checks whether the replacement browser is in the game yet.
+const REPLACE_POLL_MS = 1000;
+const REPLACE_WAIT_MS = 120000;
 
 class TableGroup extends EventEmitter {
   constructor(deps = {}) {
@@ -41,6 +48,10 @@ class TableGroup extends EventEmitter {
     this._paceMin = deps.paceMinMs != null ? Number(deps.paceMinMs) : PACE_MIN_MS;
     this._paceMax = deps.paceMaxMs != null ? Number(deps.paceMaxMs) : PACE_MAX_MS;
     this._log = typeof deps.log === 'function' ? deps.log : () => {};
+    this._rejoinDelayMs = deps.rejoinDelayMs != null ? Number(deps.rejoinDelayMs) : REJOIN_DELAY_MS;
+    this._replacePollMs = deps.replacePollMs != null ? Number(deps.replacePollMs) : REPLACE_POLL_MS;
+    this._replaceWaitMs = deps.replaceWaitMs != null ? Number(deps.replaceWaitMs) : REPLACE_WAIT_MS;
+    this._timers = new Set(); // rejoin + replacement timers — all cleared by reset / leaveAll / auto off
     // { rid, key, stake, creatorId, keyUid, roles: Map, kicks: Map, rejoinOn: Set, recreating } — rid stays null from
     // DÒ KEY until a TẠO finds the KEY's table.
     this._group = null;
@@ -350,12 +361,81 @@ class TableGroup extends EventEmitter {
     this._emit();
     if (!comeBack || g.rid == null || g.rejoinPending.has(id)) return; // T6 — the user presses ReJoin
     g.rejoinPending.add(id);
-    this._enqueue('REJOIN', async (gen) => {
+    // FAST path: op 8 straight to the group's table ~0.5s after the kick, outside the queue and without pacing; the
+    // auto-ready-off (363) follows every accepted join in the coordinator, so it is not sent twice.
+    this._after(this._rejoinDelayMs, async () => {
       g.rejoinPending.delete(id);
-      if (this._group !== g || this._atGroupTable(id)) return CANCELLED;
-      if (!this._auto && !g.rejoinOn.has(id)) return CANCELLED;  // switched off while it waited
-      return this._join(id, g.rid, gen);
+      if (this._group !== g || this._atGroupTable(id)) return;
+      if (!this._auto && !g.rejoinOn.has(id)) return; // switched off while it waited
+      if (!this._coord.browserReady(id)) return;
+      const res = await this._coord.joinTable(id, g.rid, { expectUid: g.keyUid });
+      if (this._group !== g) return;
+      if (!res.ok) {
+        if (res.superseded || res.cancelled) return;
+        this._event('JOIN_FAILED', { id, rid: g.rid, error: res.error });
+        if (this._isMissingRoom(res)) this._enqueue('TABLE_LOST', (gen) => this._onTableLost(gen));
+        return;
+      }
+      this._seated(id, g.roles.get(id));
+      this._event('JOINED', { id, rid: g.rid, role: g.roles.get(id) || null, rejoin: true });
+      this._emit();
+      this._enqueue('READY', (gen) => this._readyCheck(gen));
     });
+  }
+  _after(ms, fn) {
+    const t = setTimeout(() => { this._timers.delete(t); Promise.resolve().then(fn).catch(() => {}); }, ms);
+    if (t && t.unref) t.unref();
+    this._timers.add(t);
+    return t;
+  }
+  _clearTimers() { for (const t of this._timers) clearTimeout(t); this._timers.clear(); }
+
+  // THAY ACC — a browser of the group was replaced by another one (P4/P5 swapped in, or a new profile opened in that
+  // slot). The procedure, one step at a time:
+  //   1. the old browser is out: its role, ReJoin and pending rejoin go (main makes it LEAVE the table first when it
+  //      is still open — a benched browser must not keep a seat at the group's table);
+  //   2. the new browser takes the SAME role (SẴN SÀNG / CHƯA SẴN SÀNG, with its ReJoin);
+  //   3. as soon as it is in the game (logged in, Phỏm socket up) it sits at the group's table — op 8 to the số bàn,
+  //      or TẠO while the số bàn is not known yet; then the SẴN SÀNG check runs as after any join;
+  //   4. the KEY replaced: its table has no owner any more — the group is dissolved; with TỰ ĐỘNG on the new browser
+  //      forms a new group (Dò Key → Tạo → Vào) as soon as it is in the game.
+  // It waits at most REPLACE_WAIT_MS for the new browser; the user can always press Tạo / Vào by hand.
+  replaceMember(oldId, newId) {
+    const g = this._group;
+    const o = String(oldId), n = String(newId);
+    if (!g || !g.roles.has(o)) return { ok: true, moved: false };
+    const role = g.roles.get(o);
+    if (role === ROLE.KEY) {
+      const auto = this._auto, stake = g.stake;
+      this.dropMember(o);
+      if (auto) { this._auto = true; this._emit(); this._whenInGame(n, null, () => this._enqueue('REGROUP', (gen) => this._form(n, stake, gen))); }
+      return { ok: true, moved: false, dissolved: true, reform: auto };
+    }
+    const hadRejoin = g.rejoinOn.has(o); // the user's ReJoin choice (or TỰ ĐỘNG's) moves with the seat
+    g.roles.delete(o); g.rejoinOn.delete(o); g.kicks.delete(o);
+    if (g.rejoinPending) g.rejoinPending.delete(o);
+    if (g.autoRejoin && g.autoRejoin.delete(o)) g.autoRejoin.add(n);
+    g.roles.set(n, role);
+    if (hadRejoin) g.rejoinOn.add(n);
+    this._event('MEMBER_REPLACED', { id: n, from: o, role, rid: g.rid });
+    this._emit();
+    this._whenInGame(n, g, () => this._enqueue('REPLACE_JOIN', async (gen) => {
+      if (this._group !== g || !g.roles.has(n) || this._atGroupTable(n)) return CANCELLED;
+      return g.rid != null ? this._join(n, g.rid, gen) : this._scan(n, gen);
+    }));
+    return { ok: true, moved: true, role };
+  }
+  // Run `fn` once browser `id` is in the game (polled, cheap: one boolean per tick); gives up after REPLACE_WAIT_MS or
+  // when the group `g` is gone. g = null: no group needed (a re-form).
+  _whenInGame(id, g, fn) {
+    const deadline = this._now() + this._replaceWaitMs;
+    const tick = () => {
+      if (g && this._group !== g) return;
+      if (this._coord.browserReady(id)) { fn(); return; }
+      if (this._now() >= deadline) { this._event('REPLACE_TIMEOUT', { id }); return; }
+      this._after(this._replacePollMs, tick);
+    };
+    tick();
   }
 
   // A4 / T7 — the table is gone. AUTO runs DÒ KEY again with the same KEY browser and re-forms the group; MANUAL
@@ -373,7 +453,7 @@ class TableGroup extends EventEmitter {
 
   // THOÁT BÀN TẤT CẢ — auto off, everyone leaves (paced), the group is dissolved.
   leaveAll() {
-    this._auto = false; this._gen++;
+    this._clearTimers(); this._auto = false; this._gen++;
     return this._enqueue('LEAVE_ALL', async (gen) => {
       for (const id of this._orderedIds()) {
         if (this._cancelled(gen)) break;
@@ -386,16 +466,36 @@ class TableGroup extends EventEmitter {
       return { ok: true };
     });
   }
+  // THAY PROFILE — a browser left the session (its slot now runs another account). It loses its role; the KEY gone
+  // means the group's table has no owner any more, so the group is dissolved (the others stay where they sit).
+  dropMember(profileId) {
+    const g = this._group;
+    const id = String(profileId);
+    if (!g || !g.roles.has(id)) return { ok: true, dropped: false };
+    const wasKey = g.roles.get(id) === ROLE.KEY;
+    if (wasKey) {
+      this._auto = false; this._gen++; this._group = null;
+      this._event('GROUP_DISSOLVED', { reason: 'KEY_REPLACED', id });
+    } else {
+      g.roles.delete(id); g.rejoinOn.delete(id); g.kicks.delete(id);
+      if (g.rejoinPending) g.rejoinPending.delete(id);
+      if (g.autoRejoin) g.autoRejoin.delete(id);
+      this._event('MEMBER_REPLACED', { id, rid: g.rid });
+    }
+    this._emit();
+    return { ok: true, dropped: true, wasKey };
+  }
   // Drop the group without touching the browsers (session end / cluster closed).
-  reset() { this._auto = false; this._gen++; this._group = null; this._busy = null; this._emit(); }
+  reset() { this._clearTimers(); this._auto = false; this._gen++; this._group = null; this._busy = null; this._emit(); }
 
   // ---- helpers ----------------------------------------------------------------
   _orderedIds() { return this._coord ? this._coord.profileIds() : []; }
-  // The CHƯA SẴN SÀNG member is kicked every ~10s by design; its ReJoin goes on the moment it sits down so it always
-  // comes back (the user can switch it off). Without it the KEY is soon the only one left owing a start, and is kicked.
+  // The CHƯA SẴN SÀNG member is kicked every ~10s by design. It comes back by itself ONLY when the user asked for it:
+  // its ReJoin button, or the TỰ ĐỘNG checkbox (user rule 2026-10-03) — with TỰ ĐỘNG on its ReJoin is switched on
+  // here as it sits down, so the bar shows it; in manual mode a kick is only reported until ReJoin is pressed.
   _seated(id, role) {
     const g = this._group;
-    if (g && role === ROLE.NOT_READY && !g.rejoinOn.has(id)) g.rejoinOn.add(id);
+    if (g && this._auto && role === ROLE.NOT_READY && !g.rejoinOn.has(id)) { g.rejoinOn.add(id); g.autoRejoin.add(id); }
   }
   // AUTO does what the user would press by hand: after Dò Key → Tạo → Vào it switches ReJoin on for the members it
   // seated (READY / NOT_READY), so the bars show "ReJoin ●" exactly as a manual ReJoin would.

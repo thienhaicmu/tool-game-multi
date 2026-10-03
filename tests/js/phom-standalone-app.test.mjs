@@ -77,7 +77,7 @@ test('the explicit close (ĐÓNG TẤT CẢ) is the only IPC that closes the bro
   assert.match(mainSrc, /ipcMain\.handle\('phom:cluster-stop'[^]*?stopCluster\(\)/);
   // A run exiting on its own marks ONLY that slot closed — never cascades a close — and
   // forwards the launcher's CLASSIFIED reason (never a blanket close).
-  assert.match(mainSrc, /onRunExit:[^\n]*markRunClosed\(runId,\s*record\s*&&\s*record\.reason\)/);
+  assert.match(mainSrc, /onRunExit: \(runId, record\) => \{[\s\S]{0,400}?markRunClosed\(runId,\s*record\s*&&\s*record\.reason\)/);
   assert.match(preloadSrc, /closeBrowsers:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:cluster-stop'\)/);
 });
 

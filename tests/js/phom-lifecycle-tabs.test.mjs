@@ -44,8 +44,10 @@ test('⏻ closes ONLY that run; MỞ CHROMIUM reopens the closed browser', () =>
   assert.match(preload, /closeBrowser:/);
   assert.match(main, /phom:close-browser/);
   assert.match(main, /async function closeBrowserRun\(runId\)[\s\S]*?runManager\.closeRun\(rid\)/);
-  const reopen = fn(js, 'onReopenBrowser');
-  assert.match(reopen, /api\.clusterOpen\(\)/); // reopens closed slots only; live untouched
+  // reopen = THAY PROFILE with the slot's own profile (null): that slot only; live untouched
+  const reopen = fn(js, 'onReplaceSlot');
+  assert.match(reopen, /api\.replaceSlot\(slot, profileId && profileId !== cs\.deviceProfileId \? profileId : null\)/);
+  assert.match(main, /async function replaceSlot[\s\S]*?phomCluster\.openCluster\(\)/); // openCluster opens only the closed slot
   // no auto-rejoin after reopen (§16)
   assert.equal(/manualJoin|manualDiscover|onManualJoinShared/.test(reopen), false, 'reopen must not auto-rejoin');
 });

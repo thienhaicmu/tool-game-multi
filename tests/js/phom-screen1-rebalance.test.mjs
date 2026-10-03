@@ -49,5 +49,5 @@ test('no separate selected-profile panel / cluster (CỤM) section in the SETUP 
   assert.equal(/panelGeneral\(\)|panelAssigned\(\)|CỤM|selected-profiles-panel/.test(setup), false);
   const panel = fn('profileTablePanel');
   assert.match(panel, /'Thêm profile'/);
-  assert.match(panel, /tick 3 profile → P1 · P2 · P3/);
+  assert.match(panel, /tick 3–5 profile → P1 · P2 · P3 chơi, P4 · P5 dự bị/);
 });

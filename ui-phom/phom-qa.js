@@ -45,6 +45,8 @@
   let autoBusy = false;
   let anDanhOn = false; // ẨN DANH switch — default OFF
   let anDanhBusy = false;
+  const replacePick = { A: null, B: null, C: null }; // THAY PROFILE: the profile picked for a closed slot
+  const replaceBusy = { A: false, B: false, C: false };
   const assign = { A: { runId: null }, B: { runId: null }, C: { runId: null } };
   const manualEntering = {};    // runId → VÀO GAME in flight
   const manualEnterError = {};  // runId → why VÀO GAME failed (retryable)
@@ -185,7 +187,7 @@
     if (uiState === UI.ERROR) return renderError(content);
     if (activeTab === 'PHOM') {
       if (clusterIsOpen() || uiState === UI.CONTROL) renderControl(content);
-      else content.appendChild(el('div', { class: 'empty' }, el('b', null, 'Chưa mở trình duyệt'), el('span', null, 'Sang tab Profile, tick 3 profile rồi bấm Mở trình duyệt.')));
+      else content.appendChild(el('div', { class: 'empty' }, el('b', null, 'Chưa mở trình duyệt'), el('span', null, 'Sang tab Profile, tick 3–5 profile rồi bấm Mở trình duyệt.')));
     } else renderSetup(content);
   }
   function renderTransient(r, title, sub) { r.appendChild(el('div', { class: 'empty' }, el('span', { class: 'spinner' }), el('b', null, title), el('span', null, sub))); }
@@ -238,13 +240,17 @@
       case 'FOURTH_READY': return '🔔 Người thứ 4' + (n.name ? ' (' + n.name + ')' : '') + ' đã sẵn sàng — ' + (n.notReadyId ? playerLabelOf(n.notReadyId) + ' bấm Sẵn sàng, ' : '') + playerLabelOf(n.keyId) + ' (KEY) bấm Bắt đầu.';
       case 'SCAN_FAILED': return who + ' chưa dò ra bàn KEY: ' + errText({ error: n.error }) + '.';
       case 'GROUP_FORMED': return 'Cả nhóm đã vào bàn ' + n.rid + '.';
-      case 'JOINED': return who + ' đã vào bàn' + (n.role ? ' · ' + roleLabel(n.role) : '') + '.';
+      case 'JOINED': return who + (n.rejoin ? ' đã vào lại bàn' : ' đã vào bàn') +(n.role ? ' · ' + roleLabel(n.role) : '') + '.';
       case 'JOIN_FAILED': return who + ' vào bàn không được: ' + errText({ error: n.error }) + '.';
       case 'FIND_FAILED': return 'Tìm bàn không được: ' + errText({ error: n.error }) + '.';
       case 'LEAVE_FAILED': return who + ' chưa rời được bàn: ' + errText({ error: n.error }) + '.';
       case 'KICKED': return who + ' bị đá khỏi bàn' + (n.message ? ' (' + n.message + ')' : '') + (n.auto ? ' — đang tự vào lại…' : ' — bấm ReJoin để vào lại.');
       case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang dò bàn khác…' : ' — bấm Dò Key để vào bàn khác.');
-      case 'GROUP_DISSOLVED': return 'Đã thoát bàn tất cả.';
+      case 'GROUP_DISSOLVED': return n.reason === 'KEY_REPLACED' ? 'Acc KEY đã được thay — nhóm bị hủy, bấm Dò Key để lập bàn mới.' : 'Đã thoát bàn tất cả.';
+      case 'MEMBER_REPLACED': return who + ' thay acc cũ, nhận vai ' + roleLabel(n.role) + ' — vào game xong sẽ tự vào bàn' + (n.rid != null ? ' ' + n.rid : '') + '.';
+      case 'REPLACE_TIMEOUT': return who + ' chưa vào game sau 2 phút — đăng nhập rồi bấm Tạo / Vào.';
+      case 'SLOT_AUTO_REPLACED': return 'Trình duyệt P' + (SLOTS.indexOf(n.slot) + 1) + ' bị tắt — đã tự thay bằng ' + (n.label || 'trình duyệt dự bị') + '.';
+      case 'SLOT_AUTO_REPLACE_FAILED': return 'Trình duyệt P' + (SLOTS.indexOf(n.slot) + 1) + ' bị tắt — chưa thay được bằng dự bị: ' + errText({ error: n.error }) + '.';
       case 'AUTO_OFF': return 'Đã tắt tự động.';
       default: return '';
     }
@@ -276,7 +282,7 @@
     const n = selectedProfileIds.length;
     const panel = el('section', { class: 'panel profile-panel' });
     panel.appendChild(el('div', { class: 'panel-h' },
-      el('div', null, el('span', { class: 'panel-title' }, 'Device profiles'), el('span', { class: 'muted' }, ` · tick 3 profile → P1 · P2 · P3`)),
+      el('div', null, el('span', { class: 'panel-title' }, 'Device profiles'), el('span', { class: 'muted' }, ` · tick 3–5 profile → P1 · P2 · P3 chơi, P4 · P5 dự bị (nằm sau tool)`)),
       el('div', { class: 'row' },
         el('button', { class: 'btn', title: 'Dán nhiều proxy — mỗi dòng một proxy, gán theo thứ tự profile', onclick: openBulkProxy }, '⚡ Dán proxy'),
         el('button', { class: 'btn primary', onclick: () => openProfileModal(null) }, icon('plus'), 'Thêm profile'))));
@@ -318,7 +324,7 @@
   function runGameFooter() {
     const n = selectedProfileIds.length;
     const missingUrl = !localTest && selectedProfileIds.some((id) => { const p = profilesX.find((x) => x.id === id); return !(p && p.gameUrl && String(p.gameUrl).trim()); });
-    const ready = n === 3 && !missingUrl;
+    const ready = n >= 3 && n <= 5 && !missingUrl;
     const rt = browserRuntimeInfo || {};
     const opt = (val, label) => { const o = el('option', { value: val }, label); o.selected = (rt.preference || 'AUTO') === val; return o; };
     return el('footer', { class: 'bar' },
@@ -327,7 +333,7 @@
           opt('AUTO', 'Tự chọn'), opt('CUSTOM_CHROMIUM', 'Chromium'), opt('GOOGLE_CHROME', 'Chrome'))),
       caps.devBypass ? el('label', { class: 'field' }, el('input', { type: 'checkbox', id: 'phq-localtest', checked: localTest ? 'checked' : null, onchange: (e) => { localTest = e.target.checked; renderApp(); } }), 'Local Test') : null,
       el('span', { class: 'spacer' }),
-      n === 3 && missingUrl ? el('span', { class: 'warn-text' }, 'Có profile thiếu Game URL') : el('span', { class: 'muted' }, `Đã chọn ${n} / 3`),
+      n >= 3 && missingUrl ? el('span', { class: 'warn-text' }, 'Có profile thiếu Game URL') : el('span', { class: 'muted' }, n > 3 ? `Đã chọn ${n} · 3 chơi + ${n - 3} dự bị` : `Đã chọn ${n} / 3`),
       el('button', { class: 'btn primary lg', disabled: ready ? null : true, onclick: openCluster }, icon('play'), 'Mở trình duyệt'));
   }
 
@@ -508,11 +514,13 @@
     const role = ROLE_VIEW[b.groupRole];
     const actions = el('div', { class: 'pc-actions' });
     if (!runId) actions.appendChild(el('span', { class: 'muted' }, 'Mở ở tab Profile'));
-    else if (s.chromiumClosed) actions.appendChild(iconButton('monitor', 'Mở lại Chromium này', () => onReopenBrowser()));
+    else if (s.chromiumClosed) { const pk = replacePicker(slot, true); if (pk) actions.appendChild(pk); }
     else {
       if (!s.inGame) actions.appendChild(el('button', { class: 'btn primary sm', disabled: s.entering ? 'disabled' : null, title: 'Vào game Phỏm', onclick: () => manualEnterGame(runId) }, s.entering ? '…' : 'Vào game'));
       actions.appendChild(iconButton('refresh', 'Tải lại web trong Chromium này', () => onReloadWeb(runId)));
       actions.appendChild(iconButton('power', 'Tắt Chromium này', () => onCloseBrowser(runId), 'danger'));
+      const swap = replacePicker(slot, false); // only when a reserve browser is open
+      if (swap) actions.appendChild(swap);
     }
     return el('section', { class: 'player st-' + s.cls, style: '--accent:' + ACCENT[index - 1] },
       el('div', { class: 'pc-head' },
@@ -645,12 +653,74 @@
     try { clusterSnap = await api.clusterSnapshot(); } catch {}
     await refreshManual(); renderApp();
   }
-  // reopen the closed browser with its own profile/proxy/geometry (clusterOpen only reopens CLOSED slots)
-  async function onReopenBrowser() {
-    note('Đang mở lại Chromium…');
-    try { await api.clusterOpen(); } catch (e) { return note(errText(e), true); }
+  // ĐỔI NGƯỜI CHƠI / THAY PROFILE — every slot can take an OPEN reserve browser (4th/5th ticked profile, waiting behind
+  // the tool) at once; a CLOSED slot can also reopen with its own profile or any profile not open anywhere.
+  // Option values: 'R:D' = swap in reserve D, else a saved profile id to open.
+  function openReserves() {
+    const rs = (clusterSnap && clusterSnap.reserves) || {};
+    return Object.values(rs).filter((r) => r && r.profileId && r.browserState === 'OPEN');
+  }
+  function freeProfilesFor(slot) {
+    const busy = new Set();
+    for (const o of SLOTS) {
+      if (o === slot) continue;
+      const cs = clusterSnap && clusterSnap.profiles && clusterSnap.profiles[o];
+      if (cs && cs.deviceProfileId && cs.browserState === 'OPEN') busy.add(cs.deviceProfileId);
+    }
+    for (const r of openReserves()) if (r.deviceProfileId) busy.add(r.deviceProfileId);
+    return profilesX.filter((p) => !busy.has(p.id));
+  }
+  function replacePicker(slot, closed) {
+    const cs = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
+    const own = cs.deviceProfileId || '';
+    const opts = openReserves().map((r) => ({ value: 'R:' + r.slot, label: (r.label || r.deviceProfileId) + ' (dự bị)' }));
+    if (closed) for (const p of freeProfilesFor(slot)) opts.push({ value: p.id, label: (p.name || p.id) + (p.id === own ? ' (cũ)' : '') });
+    if (!opts.length) return null;
+    if (replacePick[slot] == null || !opts.some((o) => o.value === replacePick[slot])) replacePick[slot] = closed && opts.some((o) => o.value === own) ? own : opts[0].value;
+    const sel = el('select', { class: 'sel sm', title: closed ? 'Trình duyệt dự bị (đổi ngay) hoặc profile mở vào ô này' : 'Đổi ô này sang trình duyệt dự bị (đổi ngay, không tải lại)', disabled: replaceBusy[slot] ? 'disabled' : null, onchange: (e) => { replacePick[slot] = e.target.value; } },
+      ...opts.map((o) => el('option', { value: o.value }, o.label)));
+    sel.value = replacePick[slot];
+    const btn = el('button', { class: 'btn primary sm', disabled: replaceBusy[slot] ? 'disabled' : null, title: 'Cho trình duyệt đã chọn chơi ở ô này', onclick: () => onPickForSlot(slot, replacePick[slot]) }, replaceBusy[slot] ? '…' : (closed ? 'Mở' : 'Đổi'));
+    return el('span', { class: 'row' }, sel, btn);
+  }
+  function onPickForSlot(slot, value) {
+    if (value && value.startsWith('R:')) return onSwapSlot(slot, value.slice(2));
+    return onReplaceSlot(slot, value);
+  }
+  // the Profile tab's badges follow the cluster: P1/P2/P3 = the playing profiles, then the open reserves
+  function syncSelectionFromCluster() {
+    const ps = (clusterSnap && clusterSnap.profiles) || {};
+    const ids = SLOTS.map((sl) => ps[sl] && ps[sl].deviceProfileId).filter(Boolean);
+    if (ids.length !== 3) return;
+    selectedProfileIds = ids.concat(openReserves().map((r) => r.deviceProfileId).filter(Boolean));
+  }
+  async function onSwapSlot(slot, reserve) {
+    const oldRun = assign[slot].runId;
+    replaceBusy[slot] = true; note('Đang đổi người chơi…'); renderApp();
+    let res; try { res = await api.swapSlot(slot, reserve); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    replaceBusy[slot] = false; replacePick[slot] = null;
+    if (oldRun) clearEnter(oldRun);
+    try { clusterSnap = await api.clusterSnapshot(); } catch {}
+    bindSlotsFromCluster(); syncSelectionFromCluster();
+    if (res && res.ok === false) note(errText(res), true);
+    else note(`Ô P${SLOTS.indexOf(slot) + 1} giờ là ${res && res.label ? res.label : 'trình duyệt dự bị'}; trình duyệt cũ chuyển ra sau tool.`);
+    await refreshManual(); renderApp();
+  }
+  async function onReplaceSlot(slot, profileId) {
+    const cs = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
+    const oldRun = assign[slot].runId;
+    replaceBusy[slot] = true;
+    const p = profilesX.find((x) => x.id === profileId);
+    note(profileId && profileId !== cs.deviceProfileId ? `Đang mở ${p ? p.name : profileId} vào ô P${SLOTS.indexOf(slot) + 1}…` : 'Đang mở lại Chromium…');
+    renderApp();
+    let res; try { res = await api.replaceSlot(slot, profileId && profileId !== cs.deviceProfileId ? profileId : null); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    replaceBusy[slot] = false; replacePick[slot] = null;
+    if (oldRun) clearEnter(oldRun);
     try { clusterSnap = await api.clusterSnapshot(); } catch {}
     bindSlotsFromCluster();
+    syncSelectionFromCluster();
+    if (res && res.ok === false) note(errText(res), true);
+    else note(`Ô P${SLOTS.indexOf(slot) + 1} đang chạy ${res && res.label ? res.label : 'profile mới'} — đăng nhập nếu cần, tool tự vào game.`);
     await refreshManual(); renderApp();
   }
   // VÀO GAME on one browser: shows "Đang vào game…" at once, flips only on real in-Phỏm evidence, else a bounded timeout
@@ -757,7 +827,7 @@
 
   // MỞ TRÌNH DUYỆT: PROFILE → OPENING_CLUSTER → PHỎM
   async function openCluster() {
-    if (selectedProfileIds.length !== 3) { note('Tick đúng 3 profile trước khi mở.', true); return; }
+    if (selectedProfileIds.length < 3 || selectedProfileIds.length > 5) { note('Tick 3 đến 5 profile trước khi mở.', true); return; }
     if (!localTest) {
       const missing = selectedProfileIds.map((id) => profilesX.find((x) => x.id === id)).filter((p) => !(p && p.gameUrl && String(p.gameUrl).trim())).map((p) => (p ? p.name : '?'));
       if (missing.length) { note(`Thiếu Game URL cho: ${missing.join(', ')}. Bấm Sửa để nhập.`, true); return; }
@@ -797,7 +867,8 @@
       phomSessionStarted = false;
       uiState = UI.CONTROL; activeTab = 'PHOM'; renderApp();
       await ensurePassiveSession(); startEntryPolling();
-      note(`Đã mở ${open.opened || 0}/3 trình duyệt — đăng nhập, tool tự vào game Phỏm.`);
+      const nRes = openReserves().length;
+      note(`Đã mở ${open.opened || 0}/3 trình duyệt chơi${nRes ? ` + ${nRes} dự bị (sau tool — đổi ở nút Đổi trên thẻ P1/P2/P3)` : ''} — đăng nhập, tool tự vào game Phỏm.`);
     } catch (e) {
       // a failed open never closes the browsers that DID open
       try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
@@ -851,7 +922,17 @@
   // ---------- pushes ----------
   if (api.onSession) api.onSession((snap) => { session = snap; if (!$('workspace').hidden) bgRender(); });
   if (api.onUi) api.onUi((snap) => { applyUiSnapshot(snap); if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
-  if (api.onNotice) api.onNotice((n) => { if (n && n.event === 'FOURTH_READY') ringBell(3); const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST/.test(n.event)); });
+  if (api.onNotice) api.onNotice(async (n) => {
+    if (n && n.event === 'FOURTH_READY') ringBell(3);
+    const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST/.test(n.event));
+    // a reserve was swapped in by itself (a playing browser was closed from its window): the cards follow at once
+    if (n && /^SLOT_AUTO_/.test(n.event)) {
+      try { clusterSnap = await api.clusterSnapshot(); } catch {}
+      bindSlotsFromCluster(); syncSelectionFromCluster();
+      await refreshManual(); renderApp();
+      if (t) note(t, /FAIL/.test(n.event));
+    }
+  });
   // a browser's proxy refused the saved credentials (or none were saved) — say which one, it cannot load the game
   if (api.onProxyAuth) api.onProxyAuth((p) => { if (p) note(playerLabelOf(p.runId) + ': proxy từ chối đăng nhập (' + (p.code === 'PROXY_AUTH_REQUIRED' ? 'proxy cần user/mật khẩu' : 'sai user/mật khẩu') + ') — sửa proxy ở tab Profile.', true); });
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });

@@ -397,7 +397,8 @@ test('AUTO = MANUAL: TỰ ĐỘNG presses Dò Key → Tạo → Vào and switche
   const on = Object.fromEntries(coord.manualBrowserSnapshot().map((b) => [b.profileId, group.rejoinOn(b.profileId)]));
   assert.deepEqual(on, { B1: false, B2: true, B3: true }, 'like pressing ReJoin on SẴN SÀNG and CHƯA SS');
   await group.setAuto(false);
-  assert.equal(group.rejoinOn('B3'), true, 'CHƯA SS keeps its ReJoin (it is kicked every ~10s by design)');
+  // ReJoin = its button OR the TỰ ĐỘNG checkbox (user rule 2026-10-03): unticked, every ReJoin TỰ ĐỘNG switched on goes off
+  assert.equal(group.rejoinOn('B3'), false, 'CHƯA SS too — the user did not press its ReJoin');
   assert.equal(group.rejoinOn('B2'), false, 'the ReJoin TỰ ĐỘNG switched on goes off');
   // …but a ReJoin the USER switched on stays on
   await group.rejoin('B2'); // seated + was off → it is a "switch on + join"

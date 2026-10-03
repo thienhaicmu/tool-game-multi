@@ -1,5 +1,5 @@
 /* PHASE 6.3.1 — PROFILE SELECTION (pure, no DOM/IPC). The SETUP table's checkbox selection logic:
- * an ORDERED list of up to 3 profile ids (selection order → B1/B2/B3, §13), plus bulk-proxy mapping
+ * an ORDERED list of 3 to 5 profile ids (selection order → B1/B2/B3 play; a 4th/5th opens as a reserve, §13), plus bulk-proxy mapping
  * by the same order (§21/§22). Dual-mode: attaches to window.ProfileSelection in the renderer and
  * exports via CommonJS for node tests. It never talks to the store — the renderer applies its results. */
 (function (root, factory) {
@@ -8,22 +8,23 @@
   if (root) root.ProfileSelection = api;
 })(typeof self !== 'undefined' ? self : this, function () {
   'use strict';
-  const MAX = 3;
+  const MIN = 3; // the three that play
+  const MAX = 5; // + up to two reserves (open, not playing, swapped in from the Phỏm tab)
   const sid = (v) => (v == null ? null : String(v));
   const arrOf = (s) => (Array.isArray(s) ? s.map(sid) : []);
 
-  // Toggle a profile: remove if present (order recomputed), else append if there is room (max 3, §12).
+  // Toggle a profile: remove if present (order recomputed), else append if there is room (max 5, §12).
   function toggle(selected, id) {
     id = sid(id); const arr = arrOf(selected);
     const i = arr.indexOf(id);
     if (i >= 0) return arr.filter((x) => x !== id);
-    if (arr.length >= MAX) return arr; // full — 4th tick ignored
+    if (arr.length >= MAX) return arr; // full — 6th tick ignored
     return [...arr, id];               // append preserves SELECTION ORDER (§13)
   }
   function isSelected(selected, id) { return arrOf(selected).includes(sid(id)); }
   function canSelect(selected, id) { return isSelected(selected, id) || arrOf(selected).length < MAX; }
   function canSelectMore(selected) { return arrOf(selected).length < MAX; }
-  function complete(selected) { return arrOf(selected).length === MAX; }
+  function complete(selected) { const n = arrOf(selected).length; return n >= MIN && n <= MAX; }
   function count(selected) { return arrOf(selected).length; }
   // The runtime browser label (B1/B2/B3) for a profile, by selection order — or null if unselected.
   function browserOf(selected, id) { const i = arrOf(selected).indexOf(sid(id)); return i >= 0 ? 'B' + (i + 1) : null; }
@@ -41,5 +42,5 @@
     return { ok: true, mapping: sel.map((id, i) => ({ profileId: id, proxy: lines[i], browser: 'B' + (i + 1) })) };
   }
 
-  return { MAX, toggle, isSelected, canSelect, canSelectMore, complete, count, browserOf, prune, parseProxyLines, mapProxies };
+  return { MIN, MAX, toggle, isSelected, canSelect, canSelectMore, complete, count, browserOf, prune, parseProxyLines, mapProxies };
 });

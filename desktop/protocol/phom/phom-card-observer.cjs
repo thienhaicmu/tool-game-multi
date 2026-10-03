@@ -120,6 +120,19 @@ class CardObserver {
     if (pend) { this._setCurrentCards(u, pend.cards, pend.source, now); delete this._pendingOwnHand[s]; }
   }
 
+  // ĐỔI NGƯỜI CHƠI — the slot's browser was replaced: the old account is no longer one of ours (its cards are not
+  // known any more), and LỌC BÀI of the slot waits for the new account's own uid (bindSlot).
+  unbindSlot(slot) {
+    const s = String(slot);
+    if (!(s in this._slotBinding)) return;
+    const u = this._slotBinding[s];
+    if (u != null) { const p = this._players.get(u); if (p && p.slot === s) { p.controlled = false; p.slot = null; } }
+    this._slotBinding[s] = null;
+    delete this._pendingOwnHand[s];
+    this._log('PLAYER_UNBIND', { slot: s });
+  }
+  bindSlot(slot, uid, now) { this._bindSlot(slot, uid, now != null ? now : this._now()); }
+
   // ---- round lifecycle (§10) ----
   // A new round is delimited by the protocol's ROUND_END → DEAL cycle (never a timeout).
   resetRound(meta = {}) {

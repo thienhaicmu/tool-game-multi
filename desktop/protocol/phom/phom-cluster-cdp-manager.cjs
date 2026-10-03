@@ -21,6 +21,9 @@ const EventEmitter = require('node:events');
 // ---------------------------------------------------------------------------
 
 const SLOTS = Object.freeze(['A', 'B', 'C']);
+// RESERVE browsers (the 4th/5th ticked profile): open and logged in, NOT playing — they wait behind the Phỏm tool
+// until the user swaps one into a playing slot (swapSlot).
+const RESERVES = Object.freeze(['D', 'E']);
 
 class PhomClusterCdpManager extends EventEmitter {
   constructor(deps = {}) {
@@ -61,9 +64,7 @@ class PhomClusterCdpManager extends EventEmitter {
     const hostSlot = SLOTS.includes(config.hostSlot) ? config.hostSlot : 'A';
     const clusterGameUrl = config.gameUrl != null ? config.gameUrl : null;
     const slots = new Map();
-    for (const s of SLOTS) {
-      const p = bySlot.get(s);
-      slots.set(s, { slot: s, profileId: null,
+    const entry = (s, p, role) => ({ slot: s, profileId: null,
         // Authoritative launch identity from the saved profile projection (§3): the
         // browser profile key (user-data-dir/agent/proxy owner) and the shared game
         // URL travel WITH the slot so openProfile never re-derives from the slot letter.
@@ -71,16 +72,19 @@ class PhomClusterCdpManager extends EventEmitter {
         gameUrl: p.gameUrl != null ? p.gameUrl : clusterGameUrl,
         label: p.label || `Profile ${s}`,
         proxyRef: p.proxyRef || null, agent: p.agent || null,
-        role: s === hostSlot ? 'HOST' : 'FOLLOWER', cdpConnected: false, agentApplied: null, proxyState: 'NOT_TESTED',
+        role, cdpConnected: false, agentApplied: null, proxyState: 'NOT_TESTED',
         observedIp: null, error: null, lastSeq: -1, seen: new Set() });
-    }
-    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, stopped: false, orchestrationStopped: false };
+    for (const s of SLOTS) slots.set(s, entry(s, bySlot.get(s), s === hostSlot ? 'HOST' : 'FOLLOWER'));
+    const reserves = new Map();
+    (Array.isArray(config.reserves) ? config.reserves : []).slice(0, RESERVES.length).forEach((p, i) => reserves.set(RESERVES[i], entry(RESERVES[i], p, 'RESERVE')));
+    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, reserves, stopped: false, orchestrationStopped: false };
     this._emit();
     return { ok: true, clusterSessionId: this._cluster.clusterSessionId, hostSlot };
   }
 
   _guard() { return this._cluster && !this._cluster.stopped; }
-  _slot(s) { return this._cluster ? this._cluster.slots.get(s) : null; }
+  _slot(s) { return this._cluster ? (this._cluster.slots.get(s) || this._cluster.reserves.get(s) || null) : null; }
+  _reserveKeys() { return this._cluster ? [...this._cluster.reserves.keys()] : []; }
 
   // §8/§13 openCluster — fan-out open the three BrowserRuns. PARTIAL if not all three.
   async openCluster() {
@@ -99,6 +103,15 @@ class PhomClusterCdpManager extends EventEmitter {
       if (res && res.ok) { slot.profileId = res.runId; slot.error = null; }
       else { slot.error = (res && res.error) || { code: 'PHOM_CHROMIUM_LAUNCH_FAILED' }; }
       results.push({ slot: s, ...res });
+    }
+    // reserves open once with the cluster; one the user closed stays closed
+    for (const s of this._reserveKeys()) {
+      const r = this._slot(s);
+      if (r.profileId || r.browserClosed) continue;
+      let res;
+      try { res = await this._openProfile(s, { proxyRef: r.proxyRef, browserProfileId: r.browserProfileId, gameUrl: r.gameUrl, agent: r.agent, label: r.label }); } catch (e) { res = { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: safe(e) } }; }
+      if (res && res.ok) { r.profileId = res.runId; r.error = null; } else { r.error = (res && res.error) || { code: 'PHOM_CHROMIUM_LAUNCH_FAILED' }; }
+      results.push({ slot: s, reserve: true, ...res });
     }
     this._emit();
     const opened = SLOTS.filter((s) => this._slot(s).profileId).length;
@@ -224,6 +237,40 @@ class PhomClusterCdpManager extends EventEmitter {
     return { ok: true, slot: slot.slot, exitReason: slot.exitReason };
   }
 
+  // THAY PROFILE — point a slot that has no live browser (closed by the user, crashed, never opened) at another saved
+  // profile: its own user-data-dir (= its own logged-in account), proxy, agent and game URL. openCluster then opens
+  // ONLY that slot; the other two browsers are untouched. A profile already running in another slot is refused.
+  reassignSlot(s, p = {}) {
+    if (!this._guard()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'no cluster' } };
+    const slot = this._slot(s);
+    if (!slot) return { ok: false, error: { code: 'PHOM_SLOT_UNKNOWN', message: `unknown slot ${s}` } };
+    if (slot.profileId && !slot.browserClosed) return { ok: false, error: { code: 'PHOM_SLOT_BUSY', message: 'Tắt trình duyệt của ô này trước khi thay profile.' } };
+    if (!p.browserProfileId) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_FOUND', message: 'no profile' } };
+    const inUse = [...SLOTS, ...this._reserveKeys()].find((o) => o !== s && this._slot(o).browserProfileId === p.browserProfileId && this._slot(o).profileId && !this._slot(o).browserClosed);
+    if (inUse) return { ok: false, error: { code: 'PHOM_PROFILE_IN_USE', message: 'Profile này đang chạy ở ô khác.' } };
+    slot.browserProfileId = p.browserProfileId;
+    slot.label = p.label || slot.label;
+    slot.proxyRef = p.proxyRef || null;
+    slot.agent = p.agent || null;
+    if (p.gameUrl != null) slot.gameUrl = p.gameUrl;
+    slot.proxyState = 'NOT_TESTED'; slot.observedIp = null; slot.agentApplied = null; slot.error = null;
+    this._emit();
+    return { ok: true, slot: s, browserProfileId: slot.browserProfileId };
+  }
+
+  // ĐỔI NGƯỜI CHƠI — a reserve browser takes a playing slot and the slot's browser becomes the reserve (both stay
+  // open, nothing reloads). Returns the two runs so the caller moves the windows and swaps the Phỏm session member.
+  swapSlot(s, r) {
+    if (!this._guard()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'no cluster' } };
+    if (!SLOTS.includes(s) || !this._cluster.reserves.has(r)) return { ok: false, error: { code: 'PHOM_SLOT_UNKNOWN', message: 'unknown slot' } };
+    const a = this._slot(s), b = this._slot(r);
+    if (!b.profileId || b.browserClosed) return { ok: false, error: { code: 'PHOM_RESERVE_NOT_OPEN', message: 'Trình duyệt dự bị này đã tắt.' } };
+    const KEYS = ['profileId', 'browserProfileId', 'label', 'proxyRef', 'agent', 'gameUrl', 'browserClosed', 'exitReason', 'cdpConnected', 'agentApplied', 'proxyState', 'observedIp', 'error', 'lastSeq', 'seen'];
+    for (const k of KEYS) { const t = a[k]; a[k] = b[k]; b[k] = t; }
+    this._emit();
+    return { ok: true, slot: s, reserve: r, playingRun: a.profileId, benchedRun: b.profileId && !b.browserClosed ? b.profileId : null };
+  }
+
   // §13 stopCluster — EXPLICIT browser close (ĐÓNG 3 TRÌNH DUYỆT / app shutdown). This is
   // the ONLY manager path that closes the owned runs. Tears down ONLY owned runs, idempotent.
   async stopCluster() {
@@ -232,7 +279,7 @@ class PhomClusterCdpManager extends EventEmitter {
     this._cluster.stopped = true;
     try { if (this._host && this._host.stop) this._host.stop(); } catch { /* ignore */ }
     const closed = [];
-    for (const s of SLOTS) {
+    for (const s of [...SLOTS, ...this._reserveKeys()]) {
       const slot = this._slot(s);
       if (slot.profileId) { try { await this._closeRun(slot.profileId); closed.push(slot.profileId); } catch { /* best effort */ } }
     }
@@ -252,6 +299,8 @@ class PhomClusterCdpManager extends EventEmitter {
       // else NOT_OPEN. (User-close/crash flips it via the run's own exit -> onRunExit.)
       profiles[s] = {
         slot: s, role: slot.role, profileId: slot.profileId,
+        // which saved profile this slot runs (THAY PROFILE changes it), for the tool's "free profiles" list
+        deviceProfileId: slot.browserProfileId || null, label: slot.label || null,
         browserState: slot.browserClosed ? exitReasonToBrowserState(slot.exitReason) : (slot.profileId ? 'OPEN' : 'NOT_OPEN'),
         exitReason: slot.browserClosed ? (slot.exitReason || 'UNKNOWN_EXIT') : null,
         pid: info.pid != null ? info.pid : null, cdpPort: info.port != null ? info.port : null, userDataDir: info.userDataDir || null,
@@ -261,8 +310,11 @@ class PhomClusterCdpManager extends EventEmitter {
         error: slot.error || null,
       };
     }
+    const reserves = {};
+    for (const [k, r] of c.reserves) reserves[k] = { slot: k, profileId: r.profileId, deviceProfileId: r.browserProfileId || null, label: r.label || null, browserState: r.browserClosed ? exitReasonToBrowserState(r.exitReason) : (r.profileId ? 'OPEN' : 'NOT_OPEN'), error: r.error || null };
     return {
       clusterSessionId: c.clusterSessionId, clusterProfileId: c.clusterProfileId || null, stopped: c.stopped,
+      reserves,
       // Two INDEPENDENT subsystems (§12): the browser cluster (OPEN while runs exist) and
       // the orchestration (stopped by DỪNG without closing browsers).
       browserClusterState: c.stopped ? 'CLOSED' : 'OPEN',
@@ -279,7 +331,7 @@ class PhomClusterCdpManager extends EventEmitter {
     };
   }
 
-  _slotForRun(runId) { if (!this._cluster) return null; for (const s of SLOTS) { const slot = this._cluster.slots.get(s); if (slot.profileId === runId) return slot; } return null; }
+  _slotForRun(runId) { if (!this._cluster) return null; for (const s of [...SLOTS, ...this._reserveKeys()]) { const slot = this._slot(s); if (slot.profileId === runId) return slot; } return null; }
   _emit() { this.emit('update', this.getClusterSnapshot()); }
 }
 
@@ -304,4 +356,4 @@ function exitReasonToBrowserState(reason) {
   }
 }
 
-module.exports = { PhomClusterCdpManager, SLOTS, normalizeExitReason, exitReasonToBrowserState };
+module.exports = { PhomClusterCdpManager, SLOTS, RESERVES, normalizeExitReason, exitReasonToBrowserState };

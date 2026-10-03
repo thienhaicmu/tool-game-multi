@@ -32,9 +32,10 @@ test('delete + proxy-change are blocked while the profile backs a LIVE Chromium 
 
 test('open-from-selection maps selection order → B1/B2/B3 (internal slots A/B/C) with each profile agent+proxy', () => {
   const fn = main.slice(main.indexOf('function openSelectedProfiles('), main.indexOf('function ensureCluster()'));
-  assert.match(fn, /ids\.length !== 3/); // exactly 3
+  assert.match(fn, /ids\.length < 3 \|\| ids\.length > 3 \+ RESERVE_SLOTS\.length/); // 3 play + up to 2 reserves
   assert.match(fn, /PHOM_GAME_URL_REQUIRED/); // game url required (unless local test)
-  assert.match(fn, /slot: SLOTS_ABC\[i\]/); // selection order i → slot A/B/C → B(i+1)
+  assert.match(fn, /slot: i < 3 \? SLOTS_ABC\[i\] : RESERVE_SLOTS\[i - 3\]/); // order i → slot A/B/C → B(i+1); 4th/5th → reserve D/E
+  assert.match(fn, /profiles: profiles\.slice\(0, 3\), reserves: profiles\.slice\(3\)/);
   assert.match(fn, /agent: deviceProfilesStore\.agentFor\(p\.id\)/); // each browser gets ITS profile agent
   assert.match(fn, /proxyRef: p\.proxyRef/);
   assert.match(fn, /profileId: p\.id/); // stable profile identity carried to the run

@@ -62,9 +62,11 @@ function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, scanFails = {}, s
 function mk(opts = {}) {
   const coord = fakeCoord(opts);
   const rnd = () => 0.5;
-  const group = createTableGroup({ coord, random: opts.random || rnd, sleep: (ms) => { coord.clock += ms; return Promise.resolve(); }, now: () => coord.clock });
+  const group = createTableGroup({ coord, random: opts.random || rnd, sleep: (ms) => { coord.clock += ms; return Promise.resolve(); }, now: () => coord.clock, rejoinDelayMs: 0, replacePollMs: 1, replaceWaitMs: opts.replaceWaitMs });
   return { coord, group };
 }
+// the kick → rejoin runs on its own timer (outside the queue): let it fire
+const tick = () => new Promise((r) => setTimeout(r, 3));
 const cmds = (coord, cmd) => coord.sent.filter((e) => e.cmd === cmd);
 
 test('PACE: every command waits a random 0.8–2.5s first; nothing is ever sent back-to-back', async () => {
@@ -104,7 +106,7 @@ test('SCENARIO (manual): Dò Key → KEY; the 1st to sit = SẴN SÀNG, the 2nd 
   assert.equal(cmds(coord, 'READY').length, 0, 'not ready yet: alone with the KEY the host would owe a start');
   const second = await group.scanTable('B3');                        // số bàn known → Tạo is simply Vào
   assert.equal(second.role, ROLE.NOT_READY, '2nd to sit = CHƯA SẴN SÀNG');
-  assert.equal(group.rejoinOn('B3'), true, 'with ReJoin on');
+  assert.equal(group.rejoinOn('B3'), false, 'manual: ReJoin stays off until its button is pressed (or TỰ ĐỘNG is ticked)');
   assert.deepEqual(cmds(coord, 'JOIN').map((e) => [e.id, e.rid, e.expectUid]), [['B3', coord.keyRid, 'uid-B2']]);
   assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B1'], 'SẴN SÀNG readied once CHƯA SS sat down');
   assert.ok(coord.sent.findIndex((e) => e.cmd === 'READY') > coord.sent.findIndex((e) => e.id === 'B3' && e.cmd === 'JOIN'));
@@ -152,16 +154,21 @@ test('T6 vs A3: manual — the SẴN SÀNG member is only REPORTED when kicked, 
   assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length, 0, 'manual: SẴN SÀNG is not rejoined');
   coord.seats.delete('B3');
   coord.fire('kicked', { id: 'B3', message: 'Bạn bị kick vì không sẵn sàng' });
-  await group.leave('B9');
-  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, 2, 'manual: CHƯA SS comes straight back');
+  await tick();
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, 1, 'manual, ReJoin not pressed: CHƯA SS is only reported');
   assert.ok(notices.includes('KICKED'));
+  await group.rejoin('B3');                                        // the user presses ReJoin: back now, and after every kick
+  coord.seats.delete('B3');
+  coord.fire('kicked', { id: 'B3', message: 'Bạn bị kick vì không sẵn sàng' });
+  await tick();
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, 3, 'manual + ReJoin pressed: comes straight back');
   await group.setAuto(true, { creatorId: 'B2', stake: 100 });   // A2: keeps the group, brings B1 back
   const before = cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length;
   for (let i = 0; i < 8; i++) {                                    // more than any per-minute cap would allow
     coord.seats.delete('B3');
     coord.fire('kicked', { id: 'B3', message: 'x' });
     coord.fire('kicked', { id: 'B3', message: 'x' });              // a duplicate report queues ONE rejoin
-    await group.leave('B9');
+    await tick();
   }
   assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3' && e.rid === rid).length, before + 8, 'back after every kick');
 });
@@ -176,12 +183,12 @@ test('ReJoin toggle: ON brings the browser back after a kick even with TỰ Đ�
   const joins = () => cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length;
   const n = joins();
   coord.seats.delete('B3'); coord.fire('kicked', { id: 'B3', message: 'x' });
-  await group.leave('B9');
+  await tick();
   assert.equal(joins(), n + 1, 'back by itself');
   const off = await group.rejoin('B3');
   assert.equal(off.rejoinOn, false);
   coord.seats.delete('B3'); coord.fire('kicked', { id: 'B3', message: 'x' });
-  await group.leave('B9');
+  await tick();
   assert.equal(joins(), n + 1, 'off: only reported');
 });
 
@@ -246,7 +253,7 @@ test('A4 vs T7: a lost table is replaced when auto is on, and only reported when
   auto.coord.seats.delete('B1');
   Object.assign(auto.coord, { joinTable: async function (id, r) { this.sent.push({ at: this.clock, id, cmd: 'JOIN', rid: r }); if (r === rid) return { ok: false, error: gone }; this.seats.set(id, r); return { ok: true, rid: r }; } });
   auto.coord.fire('kicked', { id: 'B1', message: 'x' });
-  await new Promise((r) => setTimeout(r, 0));
+  await tick();
   await auto.group.joinTable('B3', 999999); // drain
   assert.notEqual(auto.group.snapshot().rid, rid, 'auto: another table was taken');
   assert.equal(cmds(auto.coord, 'FIND').length, 2, 'by a fresh Dò Key');
@@ -322,4 +329,102 @@ test('BELL: the 4th player readies at the group table → one FOURTH_READY notic
   coord.seats.delete('B2');
   coord.fire('strangerReady', { id: 'B2', uid: 'x_8', name: 'khac' });
   assert.equal(bells.length, 2, 'only at the group table');
+});
+
+// ---- FAST REJOIN (P3 CHƯA SẴN SÀNG is kicked every ~10s) ---------------------------------------------------------
+test('REJOIN fast path: a kicked CHƯA SS member is back at once — no queue, no pacing, no duplicate 363', async () => {
+  const { coord, group } = mk();
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');                 // SẴN SÀNG
+  await group.joinTable('B3', group.rid());    // CHƯA SS
+  await group.rejoin('B3');                    // ReJoin pressed
+  const clockAtKick = coord.clock;
+  const sentAtKick = coord.sent.length;
+  coord.seats.delete('B3');
+  coord.fire('kicked', { id: 'B3', message: 'Bạn bị kick vì không sẵn sàng' });
+  await tick();
+  const after = coord.sent.slice(sentAtKick);
+  assert.equal(after[0].cmd, 'JOIN', 'the first command after the kick is the join itself');
+  assert.equal(after[0].id, 'B3'); assert.equal(after[0].rid, group.rid());
+  assert.equal(after[0].at, clockAtKick, 'no pacing before the rejoin');
+  assert.equal(after.filter((e) => e.cmd === 'PREF').length, 0, '363 is not sent again (the coordinator sends it after every join)');
+  assert.equal(group.roleOf('B3'), ROLE.NOT_READY, 'keeps its role');
+});
+
+test('REJOIN fast path is cancelled by Thoát bàn tất cả (timers cleared)', async () => {
+  const group = createTableGroup({ coord: fakeCoord(), sleep: () => Promise.resolve(), random: () => 0.5, rejoinDelayMs: 20 });
+  const coord = group._coord;
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');
+  await group.joinTable('B3', group.rid());
+  const n = cmds(coord, 'JOIN').length;
+  coord.seats.delete('B3'); coord.fire('kicked', { id: 'B3', message: 'x' });
+  await group.leaveAll();
+  await new Promise((r) => setTimeout(r, 40));
+  assert.equal(cmds(coord, 'JOIN').length, n, 'no rejoin after leaving all');
+});
+
+// ---- THAY ACC — the procedure --------------------------------------------------------------------------------------
+test('THAY ACC: the new browser takes the SAME role (+ReJoin) and sits at the group table once it is in the game', async () => {
+  const { coord, group } = mk({ ids: ['B1', 'B2', 'B3', 'B4'] });
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');                 // SẴN SÀNG
+  await group.joinTable('B3', group.rid());    // CHƯA SS
+  await group.rejoin('B3');                    // its ReJoin is on — it moves with the seat
+  const rid = group.rid();
+  let inGame = false;
+  coord.browserReady = (id) => id !== 'B4' || inGame;
+  const notices = []; group.on('notice', (n) => notices.push(n));
+  coord.seats.delete('B3');
+  const r = group.replaceMember('B3', 'B4');
+  assert.equal(r.moved, true); assert.equal(r.role, ROLE.NOT_READY);
+  assert.equal(group.roleOf('B4'), ROLE.NOT_READY); assert.equal(group.roleOf('B3'), null);
+  assert.equal(group.rejoinOn('B4'), true, 'CHƯA SS keeps its ReJoin');
+  await tick();
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B4').length, 0, 'waits while the new browser is not in the game');
+  inGame = true;
+  await tick(); await group.leave('B9');
+  const j = cmds(coord, 'JOIN').filter((e) => e.id === 'B4');
+  assert.equal(j.length, 1); assert.equal(j[0].rid, rid);
+  assert.ok(notices.some((n) => n.event === 'MEMBER_REPLACED' && n.from === 'B3' && n.id === 'B4'));
+  assert.ok(notices.some((n) => n.event === 'JOINED' && n.id === 'B4' && n.role === ROLE.NOT_READY));
+});
+
+test('THAY ACC before the số bàn is known: the new browser runs TẠO instead of VÀO', async () => {
+  const { coord, group } = mk({ ids: ['B1', 'B2', 'B3', 'B4'] });
+  await group.findTable('B2', { stake: 100 });
+  group._group.roles.set('B1', ROLE.READY);    // a member that has not found the table yet
+  group.replaceMember('B1', 'B4');
+  await tick(); await group.leave('B9');
+  assert.equal(cmds(coord, 'SCAN').filter((e) => e.id === 'B4').length, 1);
+});
+
+test('THAY ACC of the KEY: manual → group dissolved; TỰ ĐỘNG → the new browser forms a new group', async () => {
+  const m = mk({ ids: ['B1', 'B2', 'B3', 'B4'] });
+  await m.group.findTable('B2', { stake: 100 });
+  const res = m.group.replaceMember('B2', 'B4');
+  assert.equal(res.dissolved, true); assert.equal(res.reform, false);
+  assert.equal(m.group.active(), false);
+
+  const a = mk({ ids: ['B1', 'B4', 'B3'] });
+  await a.group.setAuto(true, { creatorId: 'B1', stake: 100 });
+  const finds = cmds(a.coord, 'FIND').length;
+  const r2 = a.group.replaceMember('B1', 'B4');
+  assert.equal(r2.reform, true);
+  await tick(); await a.group.leave('B9');
+  assert.equal(cmds(a.coord, 'FIND').length, finds + 1);
+  assert.equal(cmds(a.coord, 'FIND').at(-1).id, 'B4', 'the replacement is the new KEY');
+  assert.equal(a.group.autoActive(), true);
+});
+
+test('THAY ACC: gives up (notice) when the new browser never gets into the game', async () => {
+  const { coord, group } = mk({ ids: ['B1', 'B2', 'B3', 'B4'], replaceWaitMs: 0 });
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');
+  coord.browserReady = (id) => id !== 'B4';
+  const notices = []; group.on('notice', (n) => notices.push(n.event));
+  group.replaceMember('B1', 'B4');
+  coord.clock += 10;
+  await tick();
+  assert.ok(notices.includes('REPLACE_TIMEOUT'));
 });

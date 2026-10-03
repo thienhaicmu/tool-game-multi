@@ -102,6 +102,7 @@ else {
   // them from the SAME shared observation, i.e. with the cards of all three accounts known.
   const slotAnalyzers = { B1: createSafeCardAnalyzer(), B2: createSafeCardAnalyzer(), B3: createSafeCardAnalyzer() };
   const SLOTS_ABC = ['A', 'B', 'C'];
+  const RESERVE_SLOTS = ['D', 'E']; // the 4th/5th ticked profile: open, not playing, behind the tool
 
   const phomRoot = () => path.join(PHOM_USERDATA, 'phom');
   const ensureDir = (d) => { try { fs.mkdirSync(d, { recursive: true }); } catch { /* best effort */ } };
@@ -205,8 +206,33 @@ else {
     // A run's Chrome exited on its OWN (user closed the window / crash). Mark ONLY that
     // slot closed and disconnect ITS routing — never cascade a close to the other browsers
     // and never treat it as an orchestration teardown (§10).
-    onRunExit: (runId, record) => { try { lifecycleLog('MAIN_ON_RUN_EXIT', { runId, reason: record && record.reason }); if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ } },
+    onRunExit: (runId, record) => {
+      let closed = null;
+      try { lifecycleLog('MAIN_ON_RUN_EXIT', { runId, reason: record && record.reason }); if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) closed = phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ }
+      autoReplaceFromReserve(runId, closed);
+    },
   });
+  // Runs the TOOL is closing (⏻, Thay profile, Đóng tất cả) — their exit is the user's own choice in the tool, so no
+  // reserve is swapped in for them.
+  const toolClosingRuns = new Set();
+  // A PLAYING browser (P1/P2/P3) was closed straight from its window: the first open reserve (P4, then P5) takes that
+  // slot at once — same place, same Phỏm session position. Closing from the tool never does this.
+  function autoReplaceFromReserve(runId, closed) {
+    const rid = String(runId);
+    if (toolClosingRuns.delete(rid)) return;
+    if (!closed || !closed.ok || !SLOTS_ABC.includes(closed.slot) || !phomCluster || !phomCluster.active()) return;
+    const snap = phomCluster.getClusterSnapshot();
+    const reserve = RESERVE_SLOTS.find((r) => snap.reserves && snap.reserves[r] && snap.reserves[r].profileId && snap.reserves[r].browserState === 'OPEN');
+    if (!reserve) return;
+    swapSlot(closed.slot, reserve)
+      .then((res) => {
+        lifecycleLog('SLOT_AUTO_REPLACED', { slot: closed.slot, reserve, closedRun: rid, ok: !!(res && res.ok) });
+        send('phom:notice', res && res.ok
+          ? { event: 'SLOT_AUTO_REPLACED', slot: closed.slot, reserve, label: res.label || null }
+          : { event: 'SLOT_AUTO_REPLACE_FAILED', slot: closed.slot, error: res && res.error });
+      })
+      .catch(() => {});
+  }
 
   function resolveTargetClient(targetId) {
     const run = runManager && runManager.runForTarget(targetId);
@@ -367,13 +393,14 @@ else {
   function openSelectedProfiles({ profileIds, gameUrl, localTest } = {}) {
     ensureStores();
     const ids = Array.isArray(profileIds) ? profileIds.map((x) => String(x)) : [];
-    if (ids.length !== 3 || new Set(ids).size !== 3) return { ok: false, error: { code: 'PHOM_SELECT_THREE', message: 'Chọn đúng 3 hồ sơ khác nhau.' } };
+    // 3 play (P1/P2/P3); a 4th/5th opens as a RESERVE behind the tool, swapped in from the Phỏm tab
+    if (ids.length < 3 || ids.length > 3 + RESERVE_SLOTS.length || new Set(ids).size !== ids.length) return { ok: false, error: { code: 'PHOM_SELECT_THREE', message: 'Chọn 3 đến 5 hồ sơ khác nhau.' } };
     clusterLocalTest = !!(localTest && devBypass.allowed);
     // A typed Game URL (if any) OVERRIDES + is REMEMBERED; otherwise each profile falls back to its own
     // saved gameUrl so the URL never has to be re-typed on the next launch (§6.3.2-fix).
     const typedUrl = !localTestActive() && gameUrl != null ? String(gameUrl).trim() : '';
     const profiles = [];
-    for (let i = 0; i < 3; i++) {
+    for (let i = 0; i < ids.length; i++) {
       const p = deviceProfilesStore.get(ids[i]);
       if (!p) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_FOUND', message: `Hồ sơ ${ids[i]} không tồn tại.` } };
       const profUrl = localTestActive() ? 'about:blank' : (typedUrl || (p.gameUrl ? String(p.gameUrl).trim() : ''));
@@ -382,10 +409,10 @@ else {
       // this returns straight to the logged-in game — no re-login).
       if (!localTestActive() && profUrl && profUrl !== (p.gameUrl || '')) { try { deviceProfilesStore.update(ids[i], { gameUrl: profUrl }); } catch { /* best effort */ } }
       // slot A/B/C = the runtime B1/B2/B3 window; browserProfileId carries the flexible profile id.
-      profiles.push({ slot: SLOTS_ABC[i], browserProfileId: p.id, profileId: p.id, agent: deviceProfilesStore.agentFor(p.id), proxyRef: p.proxyRef || null, gameUrl: profUrl, label: p.name });
+      profiles.push({ slot: i < 3 ? SLOTS_ABC[i] : RESERVE_SLOTS[i - 3], browserProfileId: p.id, profileId: p.id, agent: deviceProfilesStore.agentFor(p.id), proxyRef: p.proxyRef || null, gameUrl: profUrl, label: p.name });
     }
     const clusterUrl = localTestActive() ? 'about:blank' : (profiles[0] ? profiles[0].gameUrl : typedUrl);
-    const res = ensureCluster().createCluster({ clusterProfileId: null, hostSlot: 'A', selectedStake: null, gameUrl: clusterUrl, profiles });
+    const res = ensureCluster().createCluster({ clusterProfileId: null, hostSlot: 'A', selectedStake: null, gameUrl: clusterUrl, profiles: profiles.slice(0, 3), reserves: profiles.slice(3) });
     if (res && res.ok === false) return res;
     return res && res.ok ? { ...res, localTest: localTestActive(), gameUrl: clusterUrl, mapping: ids.map((id, i) => ({ browser: 'B' + (i + 1), profileId: id })) } : res;
   }
@@ -446,6 +473,27 @@ else {
   // PHASE-6.2 — the FOUR-window arrangement (3 desktop Chromium windows + the Tool window). Browsers use
   // .slots[1..3]; the Tool window is placed at .tool.
   function clusterFourWindowArrangement() { return arrangeClusterWindows(allDisplayWorkAreas(), { gap: 8 }); }
+  // The window of a slot: A/B/C = the three playing places; a RESERVE browser (D/E, not playing) sits exactly where
+  // the Phỏm tool is, behind it.
+  function windowRectForSlot(slot) {
+    const arr = clusterFourWindowArrangement();
+    const idx = { A: 1, B: 2, C: 3 }[slot];
+    if (idx) return (arr && arr.slots && arr.slots[idx]) || gridRectForSlot(slot);
+    let tool = arr && arr.tool;
+    try { if (shell && !shell.isDestroyed()) tool = shell.getBounds(); } catch { /* arrangement fallback */ }
+    return tool || gridRectForSlot('A');
+  }
+  // Move a RUNNING browser's window (CDP Browser.setWindowBounds through its own page client). Best effort.
+  async function moveRunWindow(runId, rect) {
+    const client = runClientFor(runId);
+    if (!client || !client.Browser || !rect) return false;
+    try {
+      const { windowId } = await client.Browser.getWindowForTarget({});
+      await client.Browser.setWindowBounds({ windowId, bounds: { windowState: 'normal' } }).catch(() => {});
+      await client.Browser.setWindowBounds({ windowId, bounds: { left: Math.round(rect.x), top: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } });
+      return true;
+    } catch { return false; }
+  }
   // Re-tile all owned session runs into the 2×2 grid + place the control window BR.
   function restoreLayout() {
     try {
@@ -457,6 +505,8 @@ else {
       try { const arr = clusterFourWindowArrangement(); control = arr && arr.tool; } catch { control = null; }
       if (!control) control = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
       if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: Math.round(control.x), y: Math.round(control.y), width: Math.round(control.width), height: Math.round(control.height) });
+      // reserve browsers (4th/5th profile) open at the tool's place — keep the tool in front of them
+      if (shell && !shell.isDestroyed()) shell.moveTop();
       // Owned browser windows are external Chrome; re-applying geometry to a running
       // chrome.exe requires reopening. We report the target rects so the UI can guide
       // a reopen; we never move a window that is not one of our runs.
@@ -733,8 +783,81 @@ else {
   async function closeBrowserRun(runId) {
     const rid = String(runId == null ? '' : runId);
     if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
+    toolClosingRuns.add(rid); // the tool closes it → no automatic reserve swap
     try { await runManager.closeRun(rid); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(rid, 'USER_CLOSED_WINDOW'); return { ok: true }; }
-    catch (e) { return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
+    catch (e) { toolClosingRuns.delete(rid); return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
+  }
+
+  // THAY PROFILE / MỞ LẠI one slot (A/B/C = P1/P2/P3): an open browser is closed first; with a profileId the slot is
+  // pointed at that saved profile (its own login, proxy, agent), else it reopens its own. Only THAT slot opens; the new
+  // run takes the old one's place in the Phỏm session, so the other two keep their table and roles.
+  async function replaceSlot(slot, deviceProfileId) {
+    const s = String(slot || '').toUpperCase();
+    if (!SLOTS_ABC.includes(s)) return { ok: false, error: { code: 'PHOM_SLOT_UNKNOWN', message: `Ô ${slot} không tồn tại.` } };
+    if (!phomCluster || !phomCluster.active()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'Chưa mở trình duyệt nào — mở 3 profile ở tab Profile trước.' } };
+    ensureStores();
+    const before = phomCluster.getClusterSnapshot().profiles[s];
+    const oldRun = before.profileId;
+    if (oldRun && before.browserState === 'OPEN') {
+      if (phomSessions) { try { await phomSessions.leaveNow(oldRun); } catch { /* closing drops the seat anyway */ } }
+      const closed = await closeBrowserRun(oldRun);
+      if (!closed.ok) return closed;
+    }
+    if (deviceProfileId) {
+      const p = deviceProfilesStore.get(String(deviceProfileId));
+      if (!p) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_FOUND', message: `Hồ sơ ${deviceProfileId} không tồn tại.` } };
+      const url = localTestActive() ? 'about:blank' : (p.gameUrl ? String(p.gameUrl).trim() : '');
+      if (!localTestActive() && !url) return { ok: false, error: { code: 'PHOM_GAME_URL_REQUIRED', message: `Profile ${p.name || p.id} chưa có Game URL.` } };
+      const r = phomCluster.reassignSlot(s, { browserProfileId: p.id, label: p.name, proxyRef: p.proxyRef || null, agent: deviceProfilesStore.agentFor(p.id), gameUrl: url });
+      if (!r.ok) return r;
+    }
+    const open = await phomCluster.openCluster();
+    const after = phomCluster.getClusterSnapshot().profiles[s];
+    const newRun = after.profileId;
+    if (!newRun || after.browserState !== 'OPEN') {
+      const res = (open.results || []).find((x) => x.slot === s);
+      return { ok: false, error: (res && res.error) || after.error || { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: 'Không mở được trình duyệt.' } };
+    }
+    for (let i = 0; i < 8 && !runClientFor(newRun); i++) await new Promise((r) => setTimeout(r, 800)); // CDP needs a moment after launch
+    phomCluster.connectClusterCdp();
+    try { await phomCluster.applyClusterAgents(); } catch { /* the WEB agent applies nothing anyway */ }
+    let replaced = false;
+    if (phomSessions && oldRun && String(oldRun) !== String(newRun)) replaced = !!phomSessions.replaceRun(oldRun, newRun).replaced;
+    lifecycleLog('SLOT_REPLACED', { slot: s, oldRun, newRun, deviceProfileId: after.deviceProfileId, replacedInSession: replaced });
+    pushHeaderStates();
+    return { ok: true, slot: s, runId: newRun, deviceProfileId: after.deviceProfileId, label: after.label };
+  }
+
+  // ĐỔI NGƯỜI CHƠI — the reserve browser (D/E) plays in slot A/B/C at once (no close, no reload): it takes the slot's
+  // window place and its place in the Phỏm session; the browser it replaces (if still open) goes behind the tool.
+  async function swapSlot(slot, reserve) {
+    const s = String(slot || '').toUpperCase(), r = String(reserve || '').toUpperCase();
+    if (!phomCluster || !phomCluster.active()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'Chưa mở trình duyệt nào.' } };
+    const snap0 = phomCluster.getClusterSnapshot();
+    const before = snap0.profiles[s];
+    const oldRun = before ? before.profileId : null;
+    if (!snap0.reserves || !snap0.reserves[r] || snap0.reserves[r].browserState !== 'OPEN') return { ok: false, error: { code: 'PHOM_RESERVE_NOT_OPEN', message: 'Trình duyệt dự bị này đã tắt.' } };
+    // 1. the browser leaving the slot gives its seat back first (it stays open as a reserve, so it would keep it)
+    if (oldRun && before.browserState === 'OPEN' && phomSessions) {
+      const lv = await phomSessions.leaveNow(oldRun);
+      lifecycleLog('SLOT_SWAP_LEAVE', { slot: s, run: oldRun, ok: !!(lv && lv.ok) });
+    }
+    // 2. swap the cluster places, 3. the new browser takes the old one's place + role in the Phỏm session (main below)
+    const res = phomCluster.swapSlot(s, r);
+    if (!res.ok) return res;
+    const playRun = runManager && runManager.get(res.playingRun);
+    if (playRun) playRun.slot = s;
+    const benchRun = res.benchedRun && runManager && runManager.get(res.benchedRun);
+    if (benchRun) benchRun.slot = r;
+    let replaced = false;
+    if (phomSessions && oldRun && String(oldRun) !== String(res.playingRun)) replaced = !!phomSessions.replaceRun(oldRun, res.playingRun).replaced;
+    await moveRunWindow(res.playingRun, windowRectForSlot(s));
+    if (res.benchedRun) await moveRunWindow(res.benchedRun, windowRectForSlot(r));
+    try { if (shell && !shell.isDestroyed()) shell.moveTop(); } catch { /* the tool stays where it is */ }
+    const after = phomCluster.getClusterSnapshot().profiles[s];
+    lifecycleLog('SLOT_SWAPPED', { slot: s, reserve: r, playingRun: res.playingRun, benchedRun: res.benchedRun, replacedInSession: replaced });
+    pushHeaderStates();
+    return { ok: true, slot: s, runId: res.playingRun, deviceProfileId: after.deviceProfileId, label: after.label };
   }
 
   // Route ONE header button click (from the in-page binding) to the coordinator's manual API. The action
@@ -1010,10 +1133,7 @@ else {
     // the page's viewport is simply that window minus the browser chrome — nothing is emulated or scaled.
     const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
     let windowRect;
-    try {
-      const arr = clusterFourWindowArrangement();
-      windowRect = (arr && arr.slots && arr.slots[slotIndex]) || gridRectForSlot(slot);
-    } catch { windowRect = gridRectForSlot(slot); }
+    try { windowRect = windowRectForSlot(slot); } catch { windowRect = gridRectForSlot(slotIndex === 1 ? 'A' : slot); }
     const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, profileDir, sandboxDisabled: sandbox.sandboxDisabled });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
@@ -1225,6 +1345,10 @@ else {
     // ⏻ TẮT CHROMIUM: close ONLY this run's Chromium window/process (Tool + other browsers untouched).
     ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => closeBrowserRun(cfg && cfg.browserId)));
     ipcMain.handle('phom:cluster-open', guarded(() => ensureCluster().openCluster()));
+    // THAY PROFILE / MỞ LẠI one slot: { slot:'A'|'B'|'C', profileId? } — no profileId = reopen the slot's own profile.
+    // ĐỔI NGƯỜI CHƠI: { slot:'A'|'B'|'C', reserve:'D'|'E' } — an open reserve browser plays in that slot at once.
+    ipcMain.handle('phom:slot-swap', guarded(async (_e, cfg) => swapSlot(cfg && cfg.slot, cfg && cfg.reserve)));
+    ipcMain.handle('phom:slot-replace', guarded(async (_e, cfg) => replaceSlot(cfg && cfg.slot, cfg && cfg.profileId ? String(cfg.profileId) : null)));
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
     ipcMain.handle('phom:cluster-apply-agents', guarded(() => ensureCluster().applyClusterAgents()));
     // ĐÓNG 3 TRÌNH DUYỆT = EXPLICIT browser close (the ONLY app path that closes the runs).

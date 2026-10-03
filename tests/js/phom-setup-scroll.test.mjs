@@ -38,7 +38,7 @@ test('the footer is disabled + warns until every selected profile has its own Ga
   const f = fn(js, 'runGameFooter');
   assert.match(f, /el\('footer', \{ class: 'bar' \}/);
   assert.match(f, /missingUrl/);
-  assert.match(f, /n === 3 && !missingUrl/);
+  assert.match(f, /n >= 3 && n <= 5 && !missingUrl/);
   assert.match(f, /'Có profile thiếu Game URL'/);
 });
 
@@ -52,8 +52,9 @@ test('runtime resolves each browser URL from ITS profile (openProfile uses cfg.g
   // the cluster openProfile closure navigates to the per-profile gameUrl (never a shared/global URL)
   assert.match(main, /url: localTestActive\(\) \? 'about:blank' : \(\(cfg && cfg\.gameUrl\) \|\| 'about:blank'\)/);
   // reopen goes through clusterOpen (reuses the stored per-profile config incl. gameUrl + user-data-dir)
-  const re = fn(js, 'onReopenBrowser');
-  assert.match(re, /api\.clusterOpen\(\)/);
+  const re = fn(js, 'onReplaceSlot');
+  assert.match(re, /api\.replaceSlot\(/);
+  assert.match(main, /async function replaceSlot[\s\S]*?const url = [^\n]*p\.gameUrl/, 'a replacement profile opens at ITS saved URL');
   assert.equal(/window\.prompt|gameUrl:/.test(re), false, 'reopen never re-asks the URL');
 });
 

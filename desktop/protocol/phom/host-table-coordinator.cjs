@@ -82,6 +82,36 @@ class HostTableCoordinator extends EventEmitter {
     });
   }
 
+  // THAY PROFILE / mở lại — a NEW browser run takes the place of a closed one at the SAME position (P1/P2/P3 order),
+  // starting from nothing. The other browsers' state is untouched.
+  replaceProfile(oldId, p) {
+    const old = String(oldId);
+    if (!this._profiles.has(old) || !p || p.id == null || this._profiles.has(String(p.id))) return false;
+    const entries = [...this._profiles.entries()];
+    // LỌC BÀI follows the slot: the old account stops being "ours" at once; the new one binds by its own uid
+    this._cardObserver.unbindSlot('B' + (entries.findIndex(([id]) => id === old) + 1));
+    this._profiles = new Map();
+    for (const [id, rec] of entries) {
+      if (id !== old) { this._profiles.set(id, rec); continue; }
+      rec._manualGen += 1; rec._searchGen += 1; // cancels any wait the closed browser still had in flight
+      this._addProfile(p);
+    }
+    this._changed();
+    this.emit('hands', this.handsSnapshot());
+    return true;
+  }
+
+  // Bind a browser's slot (B1/B2/B3) in the card observer to its account as soon as the uid is known (a swapped-in
+  // browser is usually logged in already), so LỌC BÀI of that slot uses the new account without waiting for a deal.
+  rebindCardSlot(profileId) {
+    const rec = this._rec(profileId);
+    const uid = rec && rec.ctx.uid();
+    if (!uid) return false;
+    this._cardObserver.bindSlot('B' + (this.profileIds().indexOf(rec.id) + 1), uid, this._now());
+    this.emit('cards', this.cardObserverSnapshot());
+    return true;
+  }
+
   sessionId() { return this._sessionId; }
 
   // ---- observation -------------------------------------------------------------------------------------------

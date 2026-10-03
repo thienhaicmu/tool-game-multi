@@ -11,15 +11,19 @@ vm.runInThisContext(code);
 const P = globalThis.ProfileSelection;
 
 // §32 — select 1/2/3, block the 4th, unselect, replace
-test('select up to 3, block the 4th, order preserved', () => {
+test('select 3 to 5 (3 play + 2 reserves), block the 6th, order preserved', () => {
   let s = [];
   s = P.toggle(s, 'a'); s = P.toggle(s, 'b'); s = P.toggle(s, 'c');
   assert.deepEqual(s, ['a', 'b', 'c']);
   assert.equal(P.complete(s), true);
+  assert.equal(P.complete(['a', 'b']), false, 'fewer than 3 cannot open');
+  s = P.toggle(P.toggle(s, 'd'), 'e');
+  assert.deepEqual(s, ['a', 'b', 'c', 'd', 'e']);
+  assert.equal(P.complete(s), true);
+  assert.equal(P.browserOf(s, 'e'), 'B5');
   assert.equal(P.canSelectMore(s), false);
-  const s4 = P.toggle(s, 'd');
-  assert.deepEqual(s4, ['a', 'b', 'c'], '4th tick ignored');
-  assert.equal(P.canSelect(s, 'd'), false, 'cannot select a 4th');
+  assert.deepEqual(P.toggle(s, 'f'), s, '6th tick ignored');
+  assert.equal(P.canSelect(s, 'f'), false, 'cannot select a 6th');
   assert.equal(P.canSelect(s, 'a'), true, 'an already-selected profile stays toggleable');
 });
 

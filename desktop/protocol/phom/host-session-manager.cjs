@@ -35,21 +35,7 @@ class HostSessionManager extends EventEmitter {
     if (!this._featureEnabled()) return { ok: false, error: { code: 'PHOM_FEATURE_DISABLED', message: 'Phỏm QA feature flag is off' } };
     const ids = Array.isArray(runIds) ? runIds.map(String) : [];
     if (ids.length !== 3 || new Set(ids).size !== 3) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'exactly three distinct runs are required' } };
-    const profiles = ids.map((runId) => {
-      const meta = this._resolveProfileMeta(runId) || {};
-      return {
-        id: runId, displayName: meta.displayName || runId, uid: meta.uid || null,
-        send: async (payload, ctx) => {
-          if (!this._wsReplay) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no send seam' } };
-          if (!ctx || !ctx.targetId) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no game socket observed yet for this profile' } };
-          return this._wsReplay.sendProtocol(ctx, payload);
-        },
-        armProbe: async (ctx) => {
-          if (!this._wsReplay || !this._wsReplay.evaluateIn || !ctx || !ctx.targetId) return { ok: false };
-          return this._wsReplay.evaluateIn(ctx, armExpression());
-        },
-      };
-    });
+    const profiles = ids.map((runId) => this._profileFor(runId));
     this.endSession();
     const coord = new HostTableCoordinator({ profiles, now: this._now, environmentAuthorized: () => this.authorized(), sessionId: `PHOMHOST-${this._now()}` });
     const group = createTableGroup({ coord, log: (event, data) => this.emit('log', { tag: 'PHOM-GROUP', event, ...data }) });
@@ -68,6 +54,48 @@ class HostSessionManager extends EventEmitter {
     for (const id of ids) this._replayEarly(id, coord);
     this.emit('update', coord.snapshot());
     return { ok: true, sessionId: coord.sessionId() };
+  }
+
+  _profileFor(runId) {
+    const meta = this._resolveProfileMeta(runId) || {};
+    return {
+      id: runId, displayName: meta.displayName || runId, uid: meta.uid || null,
+      send: async (payload, ctx) => {
+        if (!this._wsReplay) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no send seam' } };
+        if (!ctx || !ctx.targetId) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no game socket observed yet for this profile' } };
+        return this._wsReplay.sendProtocol(ctx, payload);
+      },
+      armProbe: async (ctx) => {
+        if (!this._wsReplay || !this._wsReplay.evaluateIn || !ctx || !ctx.targetId) return { ok: false };
+        return this._wsReplay.evaluateIn(ctx, armExpression());
+      },
+    };
+  }
+
+  // THAY PROFILE / mở lại — the slot's closed run is replaced by a NEW run in place (same P1/P2/P3 position) without
+  // ending the session, so the other two browsers keep their table, group role and cards.
+  replaceRun(oldRunId, newRunId) {
+    const s = this._session;
+    const oldId = String(oldRunId), newId = String(newRunId);
+    if (!s || !s.runIds.has(oldId) || s.runIds.has(newId)) return { ok: false, replaced: false };
+    if (!s.coord.replaceProfile(oldId, this._profileFor(newId))) return { ok: false, replaced: false };
+    s.runIds.delete(oldId); s.runIds.add(newId);
+    this._early.delete(oldId);
+    this._replayEarly(newId, s.coord); // the new browser may already be logged in
+    s.coord.rebindCardSlot(newId);     // LỌC BÀI of that slot = the new account
+    // THAY ACC: the new browser takes the old one's role and sits at the group's table once it is in the game
+    if (this._group) this._group.replaceMember(oldId, newId);
+    this.emit('update', s.coord.snapshot());
+    this.emit('cards', s.coord.cardObserverSnapshot());
+    return { ok: true, replaced: true };
+  }
+
+  // A browser about to leave the session (swapped out to the reserves) leaves the table first — straight through the
+  // coordinator (confirmed by the server, no pacing): a benched browser must not keep a seat at the group's table.
+  async leaveNow(runId) {
+    const c = this._c();
+    if (!c || !c.isSeated(String(runId))) return { ok: true, already: true };
+    return c.leaveTable(String(runId));
   }
 
   endSession() {

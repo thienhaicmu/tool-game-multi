@@ -7,7 +7,7 @@ Tài liệu này là **đặc tả**. Module `desktop/protocol/phom/table-group.
 
 | Quy tắc | Nội dung |
 |---|---|
-| Vai trò | Theo **thứ tự thao tác** (không theo số acc): acc bấm **Dò Key** = **KEY** (chủ bàn, **không bao giờ tự bấm Bắt đầu**). Acc **ngồi vào bàn KEY thứ nhất** (Tạo hoặc Vào) = **SẴN SÀNG**. Acc **ngồi vào thứ hai** = **CHƯA SẴN SÀNG** (ReJoin tự bật — bị đá ~10 giây/lần vì chưa sẵn sàng thì vào lại ngay). Ba acc độc lập cho tới khi một acc bấm Dò Key. |
+| Vai trò | Theo **thứ tự thao tác** (không theo số acc): acc bấm **Dò Key** = **KEY** (chủ bàn, **không bao giờ tự bấm Bắt đầu**). Acc **ngồi vào bàn KEY thứ nhất** (Tạo hoặc Vào) = **SẴN SÀNG**. Acc **ngồi vào thứ hai** = **CHƯA SẴN SÀNG** (bị đá ~10 giây/lần vì chưa sẵn sàng; **tự vào lại chỉ khi bấm ReJoin hoặc tích TỰ ĐỘNG** — sau ~0,5 giây). Ba acc độc lập cho tới khi một acc bấm Dò Key. |
 | Vai trò giữ nguyên | Vai trò gắn với acc cho tới khi nhóm giải tán. Bị đá rồi vào lại vẫn giữ vai trò cũ. |
 | Bàn | Bàn của nhóm là **một bàn công khai trống** mà acc KEY ngồi vào **một mình** (Dò Key). Người chơi khác vào được — đó là mục đích. Tool **không tạo bàn riêng** (308 bắt buộc có mật khẩu nên không ai vào được). |
 | Mức cược | Luôn là mức **Tiền chọn ở tool Phỏm** (Dò Key dùng mức đó; Tạo dùng đúng mức acc KEY đang ngồi). Thanh trong trình duyệt không có ô chọn cược. |
@@ -53,12 +53,12 @@ vai trò · cược` và mọi người trong bàn dạng `👑tên-tiền ✓` 
 | **Dò Key** | **MỘT** acc duy nhất | Tạo "chìa khoá" cho nhóm: acc này vào kênh cược, gặp bàn có người lạ thì rời, cho tới khi **ngồi một mình** ở một bàn trống → thành **KEY** (chủ bàn). Lúc này chưa ai biết số bàn — kể cả KEY (server không báo). Đã có KEY đang ngồi thì acc khác bấm Dò Key sẽ bị từ chối (tránh tách nhóm ra 2 bàn). |
 | **Tạo** | Các acc **còn lại** (bấm cùng lúc được) | **Tìm ra số bàn của KEY**: hỏi server bàn trống liên tục, chỉ vào thử bàn có đúng 1 người, giữ lại nếu người đó là KEY. Tìm thấy → ngồi vào, số bàn (SS) tự điền vào mọi trình duyệt. |
 | **Vào** | Acc nào cũng được, khi ô SS đã có số | Vào **đúng số bàn trong ô SS** (op 8). Dùng cho acc thứ 3, hoặc vào lại bằng tay. |
-| **ReJoin** | Acc CHƯA SẴN SÀNG (tự bật) / bất kỳ | Công tắc: **bật** = bị server đá (vd "không sẵn sàng", ~10 giây/lần) thì **tự vào lại ngay**. Bấm lại để tắt. |
+| **ReJoin** | Bất kỳ (bấm tay; TỰ ĐỘNG tích thì tự bật) | Công tắc: **bật** = bị server đá (vd "không sẵn sàng", ~10 giây/lần) thì **tự vào lại sau ~0,5 giây**. Bấm lại để tắt. Không bấm và không tích TỰ ĐỘNG → bị đá chỉ được báo. |
 | **Lọc Bài** | Bất kỳ | Bật/tắt khung dưới thanh: lá **NÊN ĐÁNH / CÓ THỂ / ĐỪNG ĐÁNH / TRONG PHỎM** của **chính acc đó** (người đánh sau không ăn được) + **số lá còn lại** — cùng dữ liệu với tab PHỎM của tool Phỏm QA. |
 | **Thoát** | Bất kỳ | Rời bàn (không tắt trình duyệt). Tắt ReJoin của acc đó. |
 | **Copy** | Bất kỳ | Copy số bàn trong ô SS. |
 
-Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi thứ nhất = SẴN SÀNG) → **acc 3 Vào** (ngồi thứ hai = CHƯA SẴN SÀNG + ReJoin) → người lạ vào ghế 4 và bấm sẵn sàng → **🔔 chuông reo 3 tiếng ở tool Phỏm QA** → anh **bấm sẵn sàng tay cho acc 3** → **KEY bấm Bắt đầu**. Hoặc acc 2 + acc 3 cùng bấm **Tạo** (ai tìm thấy trước là SẴN SÀNG). Chế độ TỰ ĐỘNG làm các bước tới chuông giống hệt; sẵn sàng của acc 3 và Bắt đầu luôn bấm tay.
+Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi thứ nhất = SẴN SÀNG) → **acc 3 Vào** (ngồi thứ hai = CHƯA SẴN SÀNG — bấm **ReJoin** cho acc này, hoặc tích TỰ ĐỘNG) → người lạ vào ghế 4 và bấm sẵn sàng → **🔔 chuông reo 3 tiếng ở tool Phỏm QA** → anh **bấm sẵn sàng tay cho acc 3** → **KEY bấm Bắt đầu**. Hoặc acc 2 + acc 3 cùng bấm **Tạo** (ai tìm thấy trước là SẴN SÀNG). Chế độ TỰ ĐỘNG làm các bước tới chuông giống hệt; sẵn sàng của acc 3 và Bắt đầu luôn bấm tay.
 
 ## 1. Chế độ TAY — thanh công cụ trong từng trình duyệt
 
@@ -67,7 +67,7 @@ Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi t
 | Mã | Người dùng | Tool làm (theo thứ tự, mỗi bước có nhịp) | Kết quả |
 |---|---|---|---|
 | **T1** | Bấm **Dò Key** | (1) nếu acc đang ngồi bàn khác → rời bàn · (2) tắt "tự sẵn sàng" · (3) chơi nhanh vào **kênh của mức cược chọn ở tool** (`[3,…,<kênh>,"",true]`) · (4) bàn đã có người lạ → rời, chơi nhanh lại · (5) lặp tới khi **ngồi một mình** (là chủ bàn) · tối đa **3 phút** · bấm **Dừng** để thôi | Acc = **KEY**, ngồi một mình. Chưa có số bàn (thanh hiện KÊNH). Nhóm cũ (nếu có) giải tán. |
-| **T2a** | Bấm **Tạo** (ở acc KHÁC acc KEY, sau khi KEY đã ngồi) | (1) rời bàn đang ngồi · (2) tắt "tự sẵn sàng" · (3) hỏi **313** — game **tự gửi lệnh vào bàn** đó `[3,"Simms",<số bàn>,""]` ngay khi nhận trả lời; tool **sửa chính lệnh đó** sang mật khẩu `​` (giống tool đối thủ) nên bị từ chối 103 — acc **không bao giờ ngồi vào bàn người lạ, tự sẵn sàng rồi đánh luôn** · (4) bàn được gọi tên → tool cũng vào thử bằng mật khẩu `\u200B` (luôn bị từ chối) · (5) bàn **đúng 1 người** → vào thật bằng **op 8** · (6) bàn đó có acc KEY → xong; **không có KEY** → rời ngay, hỏi tiếp · tối đa **3 phút** · bấm lại **Tạo.** để dừng · (7) nhận vai trò lúc ngồi vào: chưa ai SẴN SÀNG → SẴN SÀNG, còn lại → CHƯA SẴN SÀNG (ReJoin tự bật) | Số bàn của KEY = **SS của nhóm**, tự điền vào ô SS mọi trình duyệt. Các acc đang Tạo cùng lúc dừng và Vào số bàn đó. Đã có SS thì Tạo = Vào. |
+| **T2a** | Bấm **Tạo** (ở acc KHÁC acc KEY, sau khi KEY đã ngồi) | (1) rời bàn đang ngồi · (2) tắt "tự sẵn sàng" · (3) hỏi **313** — game **tự gửi lệnh vào bàn** đó `[3,"Simms",<số bàn>,""]` ngay khi nhận trả lời; tool **sửa chính lệnh đó** sang mật khẩu `​` (giống tool đối thủ) nên bị từ chối 103 — acc **không bao giờ ngồi vào bàn người lạ, tự sẵn sàng rồi đánh luôn** · (4) bàn được gọi tên → tool cũng vào thử bằng mật khẩu `\u200B` (luôn bị từ chối) · (5) bàn **đúng 1 người** → vào thật bằng **op 8** · (6) bàn đó có acc KEY → xong; **không có KEY** → rời ngay, hỏi tiếp · tối đa **3 phút** · bấm lại **Tạo.** để dừng · (7) nhận vai trò lúc ngồi vào: chưa ai SẴN SÀNG → SẴN SÀNG, còn lại → CHƯA SẴN SÀNG (ReJoin chỉ bật khi bấm nút hoặc tích TỰ ĐỘNG) | Số bàn của KEY = **SS của nhóm**, tự điền vào ô SS mọi trình duyệt. Các acc đang Tạo cùng lúc dừng và Vào số bàn đó. Đã có SS thì Tạo = Vào. |
 | **T2** | Ô SS = số bàn nhóm, bấm **Vào** | nhận vai trò (như T2a bước 7) · rời bàn đang ngồi · đặt "tự sẵn sàng" theo vai trò · vào đúng số bàn bằng **op 8** · bàn đó phải có acc KEY (không có → rời) · SẴN SÀNG: bấm sẵn sàng | Ô SS **không bao giờ** chứa số kênh cược (log 2026-10-03: KEY ngồi qua kênh 139, ô SS hiện 139, Vào bị từ chối mã 166). Vào lỗi → trả lại vai trò. |
 | **T2b** | Ô SS = số bàn **khác** nhóm, bấm **Vào** | vào bàn với mật khẩu rỗng (như bấm bàn trong sảnh) | Không có vai trò. |
 | **T3** | Bấm **ReJoin** (công tắc) | **Bật**: vào lại bàn nhóm (như T2, giữ vai trò) và từ đó **mỗi lần bị đá tự vào lại ngay**, kể cả khi TỰ ĐỘNG không tích. Bấm lần nữa khi đang ngồi → **tắt** (vẫn ngồi). | Nút hiện "ReJoin ●" khi bật. Thoát bàn thì tắt. |
@@ -85,10 +85,23 @@ Chỉ chạy khi ô **được tích**. Acc KEY = acc đầu tiên (thứ tự A
 |---|---|---|
 | **A1** | Tích ô, **chưa có nhóm** (cần chọn Tiền) | (1) từng acc đang ngồi bàn nào đó → rời bàn · (2) T1 (Dò Key) cho acc KEY · (3) T2a (Tạo) cho acc thứ 2 (SẴN SÀNG) — ra số bàn · (4) T2 (Vào) cho acc thứ 3 (CHƯA SẴN SÀNG) · (5) bật **ReJoin** cho acc SẴN SÀNG và CHƯA SẴN SÀNG · (6) acc SẴN SÀNG bấm sẵn sàng · người thứ 4 sẵn sàng → 🔔 (bước bấm tay giống chế độ tay) — đúng những nút người dùng sẽ bấm tay, cùng nhịp |
 | **A2** | Tích ô, **đã có nhóm** (tạo bằng tay) | Giữ nhóm. Acc của nhóm đang không ngồi → vào lại. Acc đang ở game nhưng chưa trong nhóm → Tạo (chưa có số bàn) hoặc Vào. |
-| **A3** | Một acc **bị đá** | chờ nhịp → vào lại đúng số bàn (op 8), giữ vai trò. **Mỗi lần**, không giới hạn (acc CHƯA SẴN SÀNG bị đá ~10 giây/lần là bình thường). Chỉ dừng khi bàn không còn (A4). |
+| **A3** | Một acc **bị đá** (TỰ ĐỘNG tích, hoặc ReJoin của acc đó bật) | sau **~0,5 giây** — không xếp hàng, không chờ nhịp, không gửi lại 363 (log 2026-10-03: kiểu cũ mất ~8 giây) — vào lại đúng số bàn (op 8), giữ vai trò. **Mỗi lần**, không giới hạn (acc CHƯA SẴN SÀNG bị đá ~10 giây/lần là bình thường). Chỉ dừng khi bàn không còn (A4). |
 | **A4** | **Bàn không còn** (vào lại báo "Phòng không tồn tại") | làm lại A1 với cùng Tiền và cùng acc KEY (Dò Key bàn trống mới). |
 | **A5** | Bấm **Bàn khác** | làm lại A1 (mọi acc rời bàn cũ, Dò Key bàn trống mới, gom lại). |
 | **A6** | **Bỏ tích** ô | huỷ mọi việc tự động đang chờ; tắt các ReJoin mà TỰ ĐỘNG đã bật (ReJoin người dùng tự bật thì giữ); ghế giữ nguyên; nhóm giữ nguyên (tiếp tục bằng tay). |
+
+## 2b. Thay acc — P4 / P5 dự bị
+
+Tick **3–5 profile** ở tab Profile: 3 profile đầu chơi ở **P1 · P2 · P3**; profile 4 / 5 mở làm **dự bị** — cửa sổ nằm
+**đúng chỗ tool Phỏm, phía sau tool**, chưa nằm trong nhóm.
+
+| Mã | Khi | Tool làm, theo thứ tự |
+|---|---|---|
+| **R1** | Bấm **Đổi** trên thẻ P1/P2/P3 (chọn P4/P5 dự bị) | (1) acc đang chơi ở ô đó **rời bàn** (op 4, chờ server xác nhận — trình duyệt này vẫn mở, không được giữ ghế) · (2) đổi chỗ: trình duyệt dự bị vào ô, cửa sổ chuyển vào vị trí ô; trình duyệt cũ lui ra sau tool, thành dự bị · (3) làm R3 |
+| **R2** | Trình duyệt **đang chơi bị tắt trực tiếp** (đóng cửa sổ Chromium) | dự bị đầu tiên còn mở — **P4 trước, rồi P5** — tự vào ô đó (R1 bước 2–3). Tắt bằng nút trong tool (⏻, Thay profile, Đóng tất cả) thì **không** tự thay. |
+| **R3** | Sau R1 / R2 / mở profile mới vào ô đã tắt | (1) acc mới **nhận đúng vai** của acc cũ (SẴN SÀNG / CHƯA SẴN SÀNG) và **trạng thái ReJoin** của ô · (2) **Lọc bài** của ô chuyển sang acc mới ngay; acc cũ thành người lạ · (3) chờ acc mới **vào game** (kiểm tra mỗi giây, tối đa 2 phút) → **Vào** số bàn nhóm (op 8), hoặc **Tạo** nếu chưa có số bàn · (4) kiểm tra sẵn sàng như sau mỗi lần vào bàn |
+| **R4** | Acc bị thay là **KEY** | bàn mất chủ → **giải tán nhóm**. TỰ ĐỘNG tích → acc mới vào game xong thì **lập nhóm mới** (A1) với acc mới làm KEY. Không tích → báo; bấm Dò Key tay. |
+| **R5** | Acc mới chưa vào game sau 2 phút | báo "chưa vào game"; đăng nhập rồi bấm Tạo / Vào tay. |
 
 ## 3. Nút trên tool (dùng cho cả hai chế độ)
 

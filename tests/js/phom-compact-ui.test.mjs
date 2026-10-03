@@ -57,7 +57,9 @@ test('the header action router acts on ONE browser via the run-scoped coordinato
 
 test('the Tool is the 4th window of the deterministic cluster arrangement', () => {
   assert.match(main, /arrangeClusterWindows/);
-  assert.match(main, /clusterFourWindowArrangement\(\)[\s\S]*?arr\.slots\[slotIndex\]/);
+  assert.match(main, /function windowRectForSlot[\s\S]*?clusterFourWindowArrangement\(\)[\s\S]*?arr\.slots\[idx\]/);
+  // a reserve browser (D/E, not playing) sits at the tool's place, behind it
+  assert.match(main, /function windowRectForSlot[\s\S]*?let tool = arr && arr\.tool;/);
   assert.match(main, /clusterFourWindowArrangement\(\);\s*control = arr && arr\.tool/);
 });
 
@@ -102,12 +104,13 @@ test('Profile table: P badge · name · agent · proxy · Game URL · Edit/Dupli
   assert.match(js, /api\.profileSetProxy\(pid/);
 });
 
-test('Profile footer: browser engine · count · Mở trình duyệt (only 3 ticked, each with a Game URL)', () => {
+test('Profile footer: browser engine · count · Mở trình duyệt (3–5 ticked, each with a Game URL)', () => {
   const f = fn(js, 'runGameFooter');
   assert.match(f, /api\.browserRuntimeSet/);
-  assert.match(f, /const ready = n === 3 && !missingUrl;/);
+  assert.match(f, /const ready = n >= 3 && n <= 5 && !missingUrl;/);
   assert.match(f, /'Mở trình duyệt'/);
   assert.match(f, /Đã chọn \$\{n\} \/ 3/);
+  assert.match(f, /3 chơi \+ \$\{n - 3\} dự bị/);
   assert.equal(/Môi trường|Window mode/.test(f), false, 'no decorative labels');
 });
 
