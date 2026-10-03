@@ -103,7 +103,9 @@ contextBridge.exposeInMainWorld('desktopCapture', {
   onCdpError: callback => ipcRenderer.on('cdp-error', (_event, error) => callback(error)),
   onEvent: callback => {
     const listener = (_event, payload) => callback(payload);
+    const batchListener = (_event, batch) => { for (const payload of batch || []) callback(payload); };
     ipcRenderer.on('capture-event', listener);
-    return () => ipcRenderer.removeListener('capture-event', listener);
+    ipcRenderer.on('capture-events', batchListener);
+    return () => { ipcRenderer.removeListener('capture-event', listener); ipcRenderer.removeListener('capture-events', batchListener); };
   }
 });

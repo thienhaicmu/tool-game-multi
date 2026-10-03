@@ -217,9 +217,15 @@ async function copy(text, label) {
 }
 
 // ---- capture stream ----
+// Every game WS frame arrives here; keep only the most recent rows so a long session doesn't
+// grow this window without bound (the main process caps its own store the same way).
+const KEEP_ROWS = 5000;
 api.onEvent && api.onEvent((ev) => {
   if (ev.kind === 'request') {
-    if (!reqs.has(ev.id)) order.push(ev.id);
+    if (!reqs.has(ev.id)) {
+      order.push(ev.id);
+      if (order.length > KEEP_ROWS + 1000) { for (const id of order.splice(0, order.length - KEEP_ROWS)) if (id !== selectedId) reqs.delete(id); }
+    }
     const prev = reqs.get(ev.id) || {};
     const causedBy = ev.causedBy || prev.causedBy || null;
     reqs.set(ev.id, { ...prev, id: ev.id, method: ev.method, url: ev.url, targetId: ev.targetId, cdpRequestId: ev.requestId, resourceType: (ev.resourceType || '').toLowerCase(), causedBy, status: prev.status ?? null, duration: prev.duration ?? null, ...urlParts(ev.url) });
@@ -235,7 +241,19 @@ api.onEvent && api.onEvent((ev) => {
     markActionsDirty();
   }
 });
-function markDirty() { if (listDirty) return; listDirty = true; requestAnimationFrame(() => { listDirty = false; renderList(); }); }
+// The request list sits in the diagnostics workspace, hidden in normal use; rebuilding it on every
+// frame while nobody can see it was pure renderer load. Render once it becomes visible instead.
+let listVisible = false, listStale = false;
+if (typeof IntersectionObserver === 'function') {
+  new IntersectionObserver((entries) => {
+    listVisible = entries.some((e) => e.isIntersecting);
+    if (listVisible && listStale) { listStale = false; renderList(); }
+  }).observe($('list'));
+} else listVisible = true;
+function markDirty() {
+  if (!listVisible) { listStale = true; return; }
+  if (listDirty) return; listDirty = true; requestAnimationFrame(() => { listDirty = false; renderList(); });
+}
 function markActionsDirty() { if (actionsDirty) return; actionsDirty = true; requestAnimationFrame(() => { actionsDirty = false; renderActions(); }); }
 
 // ---- request list (windowed) ----
@@ -1163,6 +1181,18 @@ renderActions();
     renderCta();
   }
 
+  function renderLive() {
+    if (!snap) return;
+    const odd = snap.liveOdd;
+    const oddTxt = odd != null ? Number(odd).toFixed(2) + 'x' : '—';
+    const target = snap.config ? snap.config.stopOdd : (snap.active ? snap.active.stopOdd : null);
+    $('at-sid').textContent = snap.liveSid != null ? snap.liveSid : '—';
+    const oddEl = $('at-odd'); oddEl.textContent = oddTxt;
+    oddEl.className = 'at-odd' + (odd != null && target != null && odd >= target ? ' trig' : '');
+    const sSid = $('at-s-sid'); if (sSid) sSid.textContent = snap.liveSid != null ? '#' + snap.liveSid : '—';
+    const sOdd = $('at-s-odd'); if (sOdd) sOdd.textContent = oddTxt;
+  }
+
   function pnlCls(n) { return n > 0 ? 'pnl-pos' : (n < 0 ? 'pnl-neg' : ''); }
   // One coloured cell per round: odd (top) + tiền lãi/lỗ (bottom). Màu theo kết quả.
   function resCell(r) {
@@ -1200,7 +1230,8 @@ renderActions();
     const strip = $('at-oddstrip');
     const buf = (cur && cur.recentOdds) || [];
     strip.innerHTML = buf.length ? buf.slice(-30).map((o, i, a) => `<span class="sid odd ${i === a.length - 1 ? 'trig' : ''}">${esc(Number(o.odd).toFixed(2))}</span>`).join('') : '<span class="muted">none</span>';
-    if (snap && snap.running && cur) { snap.liveOdd = cur.currentOdd; snap.liveSid = cur.sid; render(); }
+    // Per-tick: only the live sid/odd fields change; history/metrics re-render on autotest-update.
+    if (snap && snap.running && cur) { snap.liveOdd = cur.currentOdd; snap.liveSid = cur.sid; renderLive(); }
   });
   api.onAutotestUpdate && api.onAutotestUpdate(async (s) => {
     snap = s; if (!$('at-panel').hidden) render();

@@ -82,6 +82,11 @@ class TrafficStore {
     this._ringWindowMs = Number(deps.ringWindowMs != null ? deps.ringWindowMs : DEFAULTS.ringWindowMs);
     this._ringMax = Number(deps.ringMaxRecords || DEFAULTS.ringMaxRecords);
     this._postWindowMs = Number(deps.postWindowMs != null ? deps.postWindowMs : DEFAULTS.postWindowMs);
+    // flushIntervalMs > 0 batches lines per run and writes them in one append per interval (the
+    // app's game sockets produce a frame every few ms; a synchronous open+append+close per frame
+    // ran on the main thread). 0 (default) writes each record immediately.
+    this._flushMs = Number(deps.flushIntervalMs || 0);
+    this._flushTimer = null;
     this._seq = 0;
     this._runs = new Map();       // runId -> { size, ring:[], episodes:[{file, until}] }
     this._runBrowser = new Map(); // runId -> browserId (for path nesting + resolution)
@@ -90,7 +95,7 @@ class TrafficStore {
   _runState(runId) {
     const id = String(runId);
     let s = this._runs.get(id);
-    if (!s) { s = { size: null, ring: [], episodes: [] }; this._runs.set(id, s); }
+    if (!s) { s = { size: null, ring: [], episodes: [], pending: [], pendingBytes: 0, dirReady: false }; this._runs.set(id, s); }
     return s;
   }
 
@@ -220,16 +225,36 @@ class TrafficStore {
     this._appendToRing(o.runId, rec);
     if (!this._dir) return rec; // memory-only mode
     const line = JSON.stringify(rec) + '\n';
-    try {
-      const dir = this._runDir(o.runId);
-      this._fs.mkdirSync(dir, { recursive: true });
-      this._rotateIfNeeded(o.runId, Buffer.byteLength(line, 'utf8'));
-      this._fs.appendFileSync(this._activeFile(o.runId), line, 'utf8');
-      const s = this._runState(o.runId);
-      s.size = (s.size == null ? this._currentSize(o.runId) : s.size) + Buffer.byteLength(line, 'utf8');
-      this._teeToEpisodes(o.runId, line, rec.ts);
-    } catch { /* best effort — never throw into runtime */ }
+    const s = this._runState(o.runId);
+    s.pending.push({ line, ts: rec.ts });
+    s.pendingBytes += Buffer.byteLength(line, 'utf8');
+    if (this._flushMs <= 0 || s.pendingBytes >= 256 * 1024) this._flushRun(o.runId);
+    else if (!this._flushTimer) {
+      this._flushTimer = setTimeout(() => { this._flushTimer = null; this.flushAll(); }, this._flushMs);
+      if (this._flushTimer.unref) this._flushTimer.unref();
+    }
     return rec;
+  }
+
+  // Write a run's buffered lines (one append) and tee them into any open failure episode.
+  _flushRun(runId) {
+    const s = this._runs.get(String(runId));
+    if (!s || !s.pending.length) return;
+    const batch = s.pending; s.pending = []; s.pendingBytes = 0;
+    const chunk = batch.map((b) => b.line).join('');
+    const bytes = Buffer.byteLength(chunk, 'utf8');
+    try {
+      if (!s.dirReady) { this._fs.mkdirSync(this._runDir(runId), { recursive: true }); s.dirReady = true; }
+      this._rotateIfNeeded(runId, bytes);
+      this._fs.appendFileSync(this._activeFile(runId), chunk, 'utf8');
+      s.size = (s.size == null ? this._currentSize(runId) : s.size) + bytes;
+      this._teeToEpisodes(runId, batch);
+    } catch { s.dirReady = false; /* best effort — never throw into runtime */ }
+  }
+
+  flushAll() {
+    if (this._flushTimer) { clearTimeout(this._flushTimer); this._flushTimer = null; }
+    for (const id of this._runs.keys()) this._flushRun(id);
   }
 
   _appendToRing(runId, rec) {
@@ -239,13 +264,14 @@ class TrafficStore {
     while (s.ring.length && (s.ring[0].ts < cutoff || s.ring.length > this._ringMax)) s.ring.shift();
   }
 
-  _teeToEpisodes(runId, line, ts) {
+  _teeToEpisodes(runId, batch) {
     const s = this._runState(runId);
     if (!s.episodes.length) return;
+    const lastTs = batch[batch.length - 1].ts;
     s.episodes = s.episodes.filter((ep) => {
-      if (ts > ep.until) return false; // window elapsed → stop teeing, keep the file
-      try { this._fs.appendFileSync(ep.file, line, 'utf8'); } catch { /* best effort */ }
-      return true;
+      const lines = batch.filter((b) => b.ts <= ep.until).map((b) => b.line).join('');
+      if (lines) { try { this._fs.appendFileSync(ep.file, lines, 'utf8'); } catch { /* best effort */ } }
+      return lastTs <= ep.until; // window elapsed → stop teeing, keep the file
     });
   }
 
@@ -261,6 +287,7 @@ class TrafficStore {
     if (!this._dir || runId == null) return null;
     const id = String(runId);
     const when = at != null ? at : this._now();
+    this._flushRun(id); // buffered lines belong to the active file (they're already in the ring snapshot below)
     const s = this._runState(id);
     const post = postWindowMs != null ? postWindowMs : this._postWindowMs;
     const open = s.episodes.find((ep) => when <= ep.until);
@@ -286,6 +313,7 @@ class TrafficStore {
   // ------------------------------------------------------------------ read/export
   // All records for a run within [fromMs,toMs], de-duplicated by seq, ordered by (ts,seq).
   readRun(runId, { fromMs = null, toMs = null } = {}) {
+    this.flushAll();
     const files = this._filesForRun(runId, { includeEpisodes: true });
     const bySeq = new Map();
     for (const f of files) {
@@ -496,6 +524,7 @@ class TrafficStore {
   stats() {
     const runs = [];
     let total = 0;
+    this.flushAll();
     if (this._dir) {
       this._eachRunDir((b, r, dir) => {
         let bytes = 0; const files = this._filesForRun(r, { includeEpisodes: true, browserId: b });

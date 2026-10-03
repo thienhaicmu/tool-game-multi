@@ -20,7 +20,8 @@ const WS_HOOK = `(() => {
     const WS = g.__wsoNativeWebSocket || g.WebSocket; if (!WS || !WS.prototype || !WS.prototype.send) return;
     try { g.__wsoNativeWebSocket = WS; } catch(e){}
     const socks = g.__wsoSocks = g.__wsoSocks || [];
-    const track = function(ws){ try { if (ws && socks.indexOf(ws) === -1) socks.push(ws); } catch(e){} return ws; };
+    // Closed sockets are dropped on every track so a long session's reconnects don't pile up dead sockets.
+    const track = function(ws){ try { if (ws && socks.indexOf(ws) === -1) { for (let i = socks.length - 1; i >= 0; i--) { if (!socks[i] || socks[i].readyState === 3) socks.splice(i, 1); } socks.push(ws); } } catch(e){} return ws; };
     const nativeSend = WS.prototype.send;
     // g.__wsoOutFilter (unset = nothing changes): a product may rewrite one of the page's OWN outgoing frames —
     // Phỏm's TẠO turns the game's automatic table join into a refused probe (see phom-probe-guard.cjs).
@@ -79,13 +80,23 @@ class WsReplay {
   constructor(deps = {}) {
     this._resolveClient = deps.resolveClient || (() => null);
     this._getCaptured = deps.getCaptured || (() => undefined);
+    this._onNewDocument = new WeakMap(); // client -> Set(sessionKey) already registered for future documents
   }
 
   // Inject the send-hook into a session (root when sessionId is undefined, or a
   // flattened child OOPIF iframe session where the game socket usually lives).
+  // Every bet/cashout calls this, and Chromium keeps EVERY addScriptToEvaluateOnNewDocument
+  // registration (no dedupe) and replays all of them on each new document — so the
+  // new-document registration happens once per client+session; the evaluate still runs
+  // each time (the hook's own version guard makes it a no-op on a hooked context).
   async injectSession(client, sessionId) {
     try {
-      try { await client.Page.addScriptToEvaluateOnNewDocument({ source: WS_HOOK }, sessionId); } catch { /* survives-nav best-effort */ }
+      const key = sessionId || '';
+      let done = this._onNewDocument.get(client);
+      if (!done) { done = new Set(); this._onNewDocument.set(client, done); }
+      if (!done.has(key)) {
+        try { await client.Page.addScriptToEvaluateOnNewDocument({ source: WS_HOOK }, sessionId); done.add(key); } catch { /* survives-nav best-effort (no Page domain in a worker) */ }
+      }
       await client.Runtime.evaluate({ expression: WS_HOOK, includeCommandLineAPI: false }, sessionId);
     } catch { /* no DOM (worker) / detached — ignore */ }
   }

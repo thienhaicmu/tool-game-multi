@@ -158,7 +158,7 @@ function ensureDiagnosticLog() {
 // isolated per profile and cleaned with it. Reuses the shared redaction policy.
 function ensureTrafficStore() {
   if (trafficStore) return trafficStore;
-  trafficStore = new TrafficStore({ dir: path.join(appInstance.paths.root, 'traffic') });
+  trafficStore = new TrafficStore({ dir: path.join(appInstance.paths.root, 'traffic'), flushIntervalMs: 1000 });
   return trafficStore;
 }
 
@@ -217,6 +217,9 @@ function runRetentionCleanup(reason = 'periodic') {
     try { summary.diagnostics = log.purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.diagnostics = { error: String(e && e.message || e) }; }
     // Traffic evidence: same 48h age retention (bounded independently by per-run size rotation).
     try { summary.traffic = ensureTrafficStore().purgeExpired({ now, maxAgeMs: RETENTION_MS }); } catch (e) { summary.traffic = { error: String(e && e.message || e) }; }
+    // Capture journals: one file per app session, never removed before — same 48h age (by last
+    // write), the live session's own journal excluded.
+    try { summary.sessions = purgeExpiredSessionJournals(now); } catch (e) { summary.sessions = { error: String(e && e.message || e) }; }
     try {
       if (summary.history && summary.history.deleted) log.log({ level: 'INFO', category: 'HISTORY', event: 'RETENTION_HISTORY_DELETED', deleted: summary.history.deleted, kept: summary.history.kept });
       if (summary.autoExec && summary.autoExec.deleted) log.log({ level: 'INFO', category: 'HISTORY', event: 'RETENTION_AUTO_EXEC_DELETED', deleted: summary.autoExec.deleted });
@@ -228,6 +231,17 @@ function runRetentionCleanup(reason = 'periodic') {
     try { log.log({ level: 'ERROR', category: 'APP', event: 'RETENTION_CLEANUP_FAILED', message: String(e && e.message || e) }); } catch { /* best effort */ }
   } finally { _retentionRunning = false; }
   return summary;
+}
+function purgeExpiredSessionJournals(now) {
+  const dir = appInstance.paths.sessions;
+  let names; try { names = fs.readdirSync(dir); } catch { return { dropped: 0 }; }
+  let dropped = 0;
+  for (const name of names) {
+    if (!name.endsWith('.jsonl') || name === sessionId + '.jsonl') continue;
+    const file = path.join(dir, name);
+    try { if (now - fs.statSync(file).mtimeMs > RETENTION_MS) { fs.unlinkSync(file); dropped++; } } catch { /* best effort */ }
+  }
+  return { dropped };
 }
 function startRetentionSchedule() {
   runRetentionCleanup('startup'); // §17/§30 — run on startup, no UI/profile selection needed
@@ -294,6 +308,7 @@ function importJournalNow() {
   const database = process.env.OBSERVATORY_DATABASE;
   if (!database || importInProgress || !journal) return;
   importInProgress = true;
+  journal.flushSync(); // the importer reads the file; hand it everything captured so far
   const python = process.env.OBSERVATORY_PYTHON || 'python';
   const journalPath = path.join(appInstance.paths.sessions, sessionId + '.jsonl');
   const child = spawn(python, ['-m', 'websec_observer.cli.main', 'import-journal', journalPath, database, sessionId], { cwd: path.join(__dirname, '..'), windowsHide: true, stdio: 'ignore' });
@@ -332,7 +347,19 @@ function emit(event) {
   try { journal?.append(normalized); } catch { /* journal failure must not stop capture */ }
   const activeId = runManager ? runManager.activeRunId() : null;
   const forActive = !run || !activeId || run.id === activeId;
-  if (forActive && shell && !shell.isDestroyed()) shell.webContents.send('capture-event', normalized);
+  if (forActive) queueCaptureEvent(normalized);
+}
+// One IPC per game frame flooded the Control renderer; ship them in small batches instead.
+let _captureQueue = [];
+let _captureTimer = null;
+function queueCaptureEvent(ev) {
+  _captureQueue.push(ev);
+  if (_captureTimer) return;
+  _captureTimer = setTimeout(() => {
+    _captureTimer = null;
+    const batch = _captureQueue; _captureQueue = [];
+    if (shell && !shell.isDestroyed()) shell.webContents.send('capture-events', batch);
+  }, 200);
 }
 
 function windowStatePath() { return appInstance.paths.windowState; }
@@ -517,7 +544,9 @@ function resolveTargetSession(targetId) {
   const run = runManager && runManager.runForTarget(targetId);
   return run && run.targetManager ? run.targetManager.getSession(targetId) : undefined;
 }
-const capture = new CaptureCorrelator({ resolveClient: resolveTargetClient });
+// Bounded: hours of Aviator ODD frames per profile otherwise accumulate in the main process forever.
+// Debug replay/detail only ever reaches recent records.
+const capture = new CaptureCorrelator({ resolveClient: resolveTargetClient, maxEntries: 20000 });
 // User-action tracking: records clicks in the target (page + iframes) and links
 // each click to the requests it triggers, so you can see which action fired which
 // request. Correlation is time-based on the same target.
@@ -1533,6 +1562,11 @@ capture.on('update', req => {
   } catch { /* best effort */ }
 });
 
+// The Network domain keeps response bodies for getResponseBody inside the GAME's renderer
+// (Chromium's default pool is ~100MB+), filled with game assets over a long session. Only
+// small game-act JSON bodies are ever read back, so keep that pool small.
+const NETWORK_ENABLE_PARAMS = { maxTotalBufferSize: 16 * 1024 * 1024, maxResourceBufferSize: 4 * 1024 * 1024 };
+
 // WU2: attach full network capture to a target's own CDP client and route every
 // event through the shared correlator, tagged with this target's id.
 async function attachCdpCapture(client, target) {
@@ -1540,7 +1574,7 @@ async function attachCdpCapture(client, target) {
   capturedClients.add(client);
   const { Network } = client;
   const tid = target.cdpTargetId;
-  try { await Network.enable(); } catch { return; }
+  try { await Network.enable(NETWORK_ENABLE_PARAMS); } catch { return; }
   // CRI passes (params, sessionId): sessionId is undefined for this page's own
   // session and set for flattened child sessions (OOPIF / worker) — see below.
   Network.requestWillBeSent((p, sid) => capture.onRequestWillBeSent(tid, p, sid));
@@ -1574,7 +1608,7 @@ async function attachCdpCapture(client, target) {
     // frames (OOPIF) and workers need this session.
     if (type === 'page') return;
     try {
-      await client.Network.enable({}, sessionId);
+      await client.Network.enable(NETWORK_ENABLE_PARAMS, sessionId);
       // Recurse so nested OOPIFs / workers under this child also attach.
       await client.Target.setAutoAttach(autoAttachArgs, sessionId);
     } catch { /* child gone or unsupported */ }
@@ -1703,6 +1737,8 @@ app.on('before-quit', event => {
     // WU-D.2 (D2-001) journal import still runs. shutdownAllManagedBrowsers force-kills any
     // straggler, so no phantom Chrome regardless of graceful-close timing.
     try { await shutdownAllManagedBrowsers(4000); } catch { /* best effort */ }
+    try { if (journal) journal.flushSync(); } catch { /* best effort */ }
+    try { if (trafficStore) trafficStore.flushAll(); } catch { /* best effort */ }
     try {
       if (!importStarted) {
         const child = importJournalOnExit();
@@ -1744,11 +1780,13 @@ handle('list-sessions', () => {
 handle('read-session', (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return [];
   const file = path.join(appInstance.paths.sessions, String(id) + '.jsonl');
+  try { journal?.flushSync(); } catch { /* best effort */ }
   try { return fs.readFileSync(file, 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line)); } catch { return []; }
 });
 handle('export-session', async (_event, id) => {
   if (!/^[a-f0-9-]{36}$/i.test(String(id))) return { ok: false, error: 'Invalid session id' };
   const source = path.join(appInstance.paths.sessions, String(id) + '.jsonl');
+  try { journal?.flushSync(); } catch { /* best effort */ }
   if (!fs.existsSync(source)) return { ok: false, error: 'Session not found' };
   const choice = await dialog.showSaveDialog(shell, { defaultPath: `observatory-${id}.jsonl`, filters: [{ name: 'Session journal', extensions: ['jsonl'] }] });
   if (choice.canceled || !choice.filePath) return { ok: false, error: 'Export canceled' };

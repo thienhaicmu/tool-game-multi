@@ -49,6 +49,10 @@ class CaptureCorrelator extends EventEmitter {
     // returning false drops a frame before anything is built for it.
     this._keepWsFrames = options.keepWsFrames !== false;
     this._wsFilter = typeof options.wsFilter === 'function' ? options.wsFilter : null;
+    // maxEntries (unset = unbounded, the old behaviour): a long-running product caps the store so hours of
+    // game frames can't grow the main process without bound. The oldest settled records go first; in-flight
+    // requests and open sockets are never evicted.
+    this._maxEntries = Number(options.maxEntries) > 0 ? Number(options.maxEntries) : 0;
     this._current = new Map();        // cdpKey -> capturedId (in-flight hop)
     this._pendingReqExtra = new Map();// cdpKey -> requestWillBeSentExtraInfo params
     this._pendingRespExtra = new Map();// cdpKey -> responseReceivedExtraInfo params
@@ -62,6 +66,29 @@ class CaptureCorrelator extends EventEmitter {
   // sessionId distinguishes flattened child sessions (OOPIF / worker) that share
   // one connection but reuse requestId numbering independently.
   _key(targetId, requestId, sessionId) { return `${targetId}:${sessionId || ''}:${requestId}`; }
+
+  _put(id, req) {
+    this._store.set(id, req);
+    if (this._maxEntries && this._store.size > this._maxEntries) this._evict();
+  }
+
+  // Drop the oldest settled records down to 90% of the cap (batched so eviction is not paid per insert).
+  _evict() {
+    const target = Math.floor(this._maxEntries * 0.9);
+    const live = new Set(this._current.values());
+    for (const c of this._ws.values()) live.add(c.id);
+    for (const id of this._store.keys()) {
+      if (this._store.size <= target) break;
+      if (!live.has(id)) this._store.delete(id);
+    }
+    // ExtraInfo that never met its main event (cache/service-worker hits, or arriving after the
+    // request settled) would otherwise wait here forever.
+    const cap = Math.max(1000, this._maxEntries);
+    for (const m of [this._pendingReqExtra, this._pendingRespExtra]) {
+      if (m.size <= cap) continue;
+      for (const k of m.keys()) { if (m.size <= cap / 2) break; m.delete(k); }
+    }
+  }
 
   onRequestWillBeSent(targetId, p, sessionId) {
     const cdpKey = this._key(targetId, p.requestId, sessionId);
@@ -92,8 +119,8 @@ class CaptureCorrelator extends EventEmitter {
       redirectFromId, response: null, failure: null, state: 'REQUEST_SENT',
       seq: this._seq++,
     };
-    this._store.set(id, request);
     this._current.set(cdpKey, id);
+    this._put(id, request);
     const pendingExtra = this._pendingReqExtra.get(cdpKey);
     if (pendingExtra) { this._mergeRequestExtra(request, pendingExtra); this._pendingReqExtra.delete(cdpKey); }
     this.emit('request', request);
@@ -212,8 +239,8 @@ class CaptureCorrelator extends EventEmitter {
       redirectFromId: null, response: null, failure: null, state: 'REQUEST_SENT',
       isWebSocket: true, seq: this._seq++,
     };
-    this._store.set(id, req);
     this._ws.set(cdpKey, { id, url: p.url, frameSeq: 0 });
+    this._put(id, req);
     this.emit('request', req);
   }
 
@@ -274,7 +301,7 @@ class CaptureCorrelator extends EventEmitter {
       response: { status: 101, statusText: dir === 'send' ? 'Frame Sent' : 'Frame Received', headers: {}, setCookies: [], mimeType: null, body: { state: 'UNAVAILABLE', reason: 'websocket frame' } },
       failure: null, state: 'BODY_AVAILABLE', isWebSocket: true, wsDirection: dir, seq: this._seq++,
     };
-    if (this._keepWsFrames) this._store.set(id, req);
+    if (this._keepWsFrames) this._put(id, req);
     this.emit('request', req);
     this.emit('response', req);
   }
