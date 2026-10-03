@@ -52,6 +52,7 @@ const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
 const { rectForSlot, toolWindowBounds, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
+const anDanh = require('./protocol/phom/an-danh.cjs');
 const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
 const { evaluateHeaderAction } = headerActionGuard;
 const { normalizeWindowBounds } = require('./window-bounds.cjs');
@@ -491,6 +492,7 @@ else {
   const headerReady = Object.create(null);      // runId -> true once the header bridge installed (binding ready)
   const headerDomPresent = Object.create(null); // runId -> true when the PAGE confirmed #__phom_header exists
   const headerLastPushed = Object.create(null); // runId -> last pushed state JSON (skip unchanged evaluates)
+  let anDanhOn = false; // the tool's ẨN DANH switch — default OFF (the game's own default is ON)
   const headerEnterStartedAt = Object.create(null); // runId -> monotonic ms at ENTER_GAME accept (latency)
   const headerEnterTimer = Object.create(null);     // runId -> bounded ENTERING timeout handle (§10 not-stuck)
   // PHASE 6.3.6 — the USER-selected FINDER (room anchor), by Player index 1/2/3; null = none chosen yet (every
@@ -858,6 +860,8 @@ else {
       if (run.browserAgent) applyBrowserAgent(client, run.browserAgent, run).catch(() => {});
       // Ensure the WS send-hook is present before the game opens its socket.
       wsReplay.injectSession(client, undefined).catch(() => {});
+      // ẨN DANH switch (default OFF) — this document now + every later one (reload / VÀO GAME).
+      if (!target.type || target.type === 'PAGE') anDanh.applyAnDanh(client, anDanhOn).catch(() => {});
       // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG)
       // and route its clicks to the coordinator. The boot carries this run's IDENTITY (slot/profile/run)
       // so every action is self-labelled. Best-effort; a CDP hiccup never blocks attach. On a re-attach
@@ -1168,6 +1172,19 @@ else {
     // THE mức cược lives in the Phỏm tool; the in-page bars search at this stake (they have no picker of their own).
     ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setStake(cfg && cfg.stake); }));
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
+    // ẨN DANH switch (default OFF) — forced into every open browser now and into every one opened later.
+    ipcMain.handle('phom:an-danh-get', () => ({ ok: true, on: anDanhOn }));
+    ipcMain.handle('phom:an-danh-set', guarded(async (_e, cfg) => {
+      anDanhOn = !!(cfg && cfg.on);
+      const results = {};
+      for (const run of (runManager ? runManager.list() : [])) {
+        if (run.status === RUN_STATUS.CLOSED) continue;
+        const client = runClientFor(run.id);
+        if (client) results[run.id] = await anDanh.applyAnDanh(client, anDanhOn);
+      }
+      headerLog('AN_DANH_SET', { on: anDanhOn, results });
+      return { ok: true, on: anDanhOn, results };
+    }));
     // ONE snapshot for the whole Phỏm screen. The renderer used to make six IPC round-trips per refresh
     // (browsers + remaining + cards + one analyze per account) and repeat them on every push; now main builds the
     // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer

@@ -43,6 +43,8 @@
   let sharedRid = null;
   let autoStake = '';
   let autoBusy = false;
+  let anDanhOn = false; // ẨN DANH switch — default OFF
+  let anDanhBusy = false;
   const assign = { A: { runId: null }, B: { runId: null }, C: { runId: null } };
   const manualEntering = {};    // runId → VÀO GAME in flight
   const manualEnterError = {};  // runId → why VÀO GAME failed (retryable)
@@ -126,6 +128,7 @@
     try { const ag = await api.agents(); agents = (ag && ag.agents) || []; defaultAgent = (ag && ag.defaultAgent) || 'WEB'; } catch { agents = []; }
     try { session = await api.sessionState(); } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
+    try { const ad = await api.getAnDanh(); anDanhOn = !!(ad && ad.on); } catch { anDanhOn = false; }
     await refreshProfilesX();
     await refreshBrowserRuntime();
     // a renderer reload with the browsers still open re-binds the slots (the cards never read CHƯA MỞ)
@@ -567,10 +570,14 @@
     sel.value = autoStake;
     const box = el('input', { type: 'checkbox', id: 'phq-auto', disabled: autoBusy ? 'disabled' : null, onchange: (e) => onAutoToggle(e.target.checked) });
     box.checked = autoOn;
+    const anDanhBox = el('input', { type: 'checkbox', id: 'phq-andanh', disabled: anDanhBusy ? 'disabled' : null, onchange: (e) => onAnDanhToggle(e.target.checked) });
+    anDanhBox.checked = anDanhOn;
     return el('footer', { class: 'bar' },
       el('label', { class: 'field', for: 'phq-stake' }, 'Mức cược', sel),
       el('label', { class: 'switch' + (autoOn ? ' on' : ''), for: 'phq-auto', title: 'Bật: Dò Key → Tạo → Vào cho 3 acc như bấm tay; bị đá tự ReJoin; mất bàn tự tìm bàn khác. Tắt: không làm gì tự động.' },
         box, el('span', { class: 'knob' }), autoBusy ? 'Đang xử lý…' : 'Tự động'),
+      el('label', { class: 'switch' + (anDanhOn ? ' on' : ''), for: 'phq-andanh', title: 'Chế độ ẩn danh của game trên cả 3 trình duyệt. Tắt (mặc định): hiện số bàn thật, không có người chơi giả, xem được chat/bài/hiệu ứng. Bật: giữ ẩn danh như game (áp dụng từ bàn/ván sau).' },
+        anDanhBox, el('span', { class: 'knob' }), anDanhBusy ? 'Đang xử lý…' : 'Ẩn danh'),
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Rời bàn này và tìm bàn chờ khác cho cả nhóm', onclick: () => onNewTable() }, 'Bàn khác'),
       el('button', { class: 'btn danger-outline', title: 'Cả 3 acc rời bàn (tắt tự động)', onclick: step(() => api.leaveAll(), 'Đã thoát bàn tất cả.') }, 'Thoát bàn tất cả'),
@@ -604,6 +611,14 @@
     if (res && res.ok === false) note(errText(res), true);
     else if (on) note('Tự động đang giữ bàn ' + (res && res.rid != null ? res.rid : '') + '.');
     await refreshManual(); renderApp();
+  }
+  async function onAnDanhToggle(on) {
+    anDanhBusy = true; renderApp();
+    let res; try { res = await api.setAnDanh(on); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    anDanhBusy = false;
+    if (res && res.ok === false) note(errText(res), true);
+    else { anDanhOn = !!(res && res.on); note(anDanhOn ? 'Bật ẩn danh — áp dụng từ bàn/ván sau.' : 'Đã tắt ẩn danh.'); }
+    renderApp();
   }
   async function onNewTable() {
     const g = manualGroup; if (!g) return;

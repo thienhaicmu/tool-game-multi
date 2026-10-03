@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   setAuto: (on, browserId, stake) => ipcRenderer.invoke('phom:auto-set', { on, browserId, stake }),
   setStake: (stake) => ipcRenderer.invoke('phom:set-stake', { stake }),
   newTable: (browserId) => ipcRenderer.invoke('phom:new-table', { browserId }),
+  getAnDanh: () => ipcRenderer.invoke('phom:an-danh-get'),
+  setAnDanh: (on) => ipcRenderer.invoke('phom:an-danh-set', { on }),
   leaveAll: () => ipcRenderer.invoke('phom:leave-all'),
   uiSnapshot: () => ipcRenderer.invoke('phom:ui-snapshot'),
   onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
