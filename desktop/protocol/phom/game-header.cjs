@@ -110,6 +110,7 @@ function bootScript(opts = {}) {
   var SLOTN = (function(){ var sid=String(ID.slotId||''); var m=/^B(\\d)$/i.exec(sid); if(m) return Number(m[1]); var abc={A:1,B:2,C:3}[sid.toUpperCase()]; return abc||null; })();
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
   var SHADOW = 'text-shadow:0 1px 2px #000,0 0 3px #000;';
+  var OUTLINE = 'text-shadow:-.5px -.5px 0 #0b2545,0 -.5px 0 #0b2545,.5px -.5px 0 #0b2545,.5px 0 0 #0b2545,.5px .5px 0 #0b2545,0 .5px 0 #0b2545,-.5px .5px 0 #0b2545,-.5px 0 0 #0b2545;'; // same navy as the name box
   // The strip: fixed across the top, NO background (it sits over the game), clicks pass through between controls.
   const bar = document.createElement('div'); bar.id = '__phom_header';
   bar.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;align-items:center;gap:2px;flex-wrap:nowrap;box-sizing:border-box;height:22px;width:100%;padding:0 2px;background:transparent;color:#fff;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;user-select:none;pointer-events:none;');
@@ -122,8 +123,9 @@ function bootScript(opts = {}) {
   const hideBtn = mk('button','margin-left:auto;flex-shrink:0;height:19px;padding:0 4px;border-radius:3px;border:0;background:#ffffff;color:#111;font:800 12px Inter,Segoe UI,sans-serif;cursor:pointer;pointer-events:auto;text-shadow:none!important;');
   hideBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'' }); };
   bar.appendChild(handle); bar.appendChild(act); bar.appendChild(hideBtn);
-  // Under the strip, centred in yellow: everyone at the table as name-money (👑 host, ✓ ready), or what is happening.
-  const infoLine = mk('div','position:fixed;top:23px;left:0;right:0;z-index:2147483647;text-align:center;padding:0 8px;color:#fde047;font:700 11px/15px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+SHADOW+'pointer-events:auto;display:none;');
+  // Under the strip, centred in the name's blue: everyone at the table as name-money (👑 host, ✓ ready), or what is happening.
+  // OUTLINE = a crisp 1px black stroke around each letter: the soft shadow alone vanished over the game's yellow artwork
+  const infoLine = mk('div','position:fixed;top:23px;left:0;right:0;z-index:2147483647;text-align:center;padding:0 8px;color:#4fd8ff;font:700 11px/15px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+OUTLINE+'pointer-events:auto;display:none;');
   bar.appendChild(infoLine);
   const feedback = mk('div','position:fixed;left:4px;top:40px;max-width:300px;padding:6px 9px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
   feedback.setAttribute('role','alert');
@@ -229,7 +231,7 @@ function bootScript(opts = {}) {
       } else if(state.primary){
         var p = state.primary;
         act.appendChild(txtBtn(p.label || p.action, '#2563eb', function(){ emit(p.action); }, p.label, !!p.disabled));
-        var st = mk('span','color:#fde047;font-weight:700;white-space:nowrap;'+SHADOW); st.textContent = state.statusLabel || ''; act.appendChild(st);
+        var st = mk('span','color:#4fd8ff;font-weight:700;white-space:nowrap;'+OUTLINE); st.textContent = state.statusLabel || ''; act.appendChild(st);
       }
     }
     paintInfo(state);

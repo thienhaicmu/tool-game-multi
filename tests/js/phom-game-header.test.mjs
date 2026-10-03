@@ -308,7 +308,8 @@ test('BC: the bar is the reference strip — no background, fixed at the top, on
   for (const c of ["chip('SS', '#e3170a')", "txtBtn('Copy','#ff9800'", "'Vào','#2e9e3e'", "'#ffe600'", "'#8e24aa'", "'#e53935'", "txtBtn('Thoát','#1e6fe0'", 'background:#ffffff;color:#111']) assert.ok(src.includes(c), c);
   assert.match(src, /position:fixed;top:0;left:0;right:0;[^']*width:100%;[^']*background:transparent;/, 'no background over the game');
   assert.equal(/__drag/.test(src), false, 'a fixed strip is not draggable');
-  assert.match(src, /const infoLine = mk\('div','position:fixed;top:23px;left:0;right:0;[^']*text-align:center;[^']*color:#fde047;/);
+  assert.match(src, /const infoLine = mk\('div','position:fixed;top:23px;left:0;right:0;[^']*text-align:center;[^']*color:#4fd8ff;[^']*'\+OUTLINE\+'/, 'status text in the name colour with a thin navy letter outline');
+  assert.match(src, /var OUTLINE = 'text-shadow:-.5px -.5px 0 #0b2545,/);
   assert.equal(/localStorage|sessionStorage/.test(src), false, 'no persistent storage in the injected header');
   assert.match(src, /hideBtn\.textContent = __collapsed \? 'Show' : 'Hide';/);
   // only what the reference tool has: SS · Copy · Vào · ReJoin · Tạo · Dò Key · Thoát (+ VÀO GAME / TẢI LẠI before the game)
