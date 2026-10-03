@@ -669,11 +669,26 @@ else {
       // Data freshness: frames were seen once but stopped (lost hook after a reload / target swap) → say it.
       dataStale: !!(opened && b.lastFrameAt != null && (nowMs() - Number(b.lastFrameAt)) > HEADER_STALE_MS),
       staleSec: b.lastFrameAt != null ? Math.round((nowMs() - Number(b.lastFrameAt)) / 1000) : null,
+      // a RESERVE (P4/P5, behind the tool): same bar, marked DỰ BỊ
+      ...reserveViewFor(runId),
       // TỰ ĐỘNG on: the bar says so (and, GĐ3, locks its table buttons)
       auto: !!(phomSessions && phomSessions.active() && phomSessions.autoActive && phomSessions.autoActive()),
       autoBusy: phomSessions && phomSessions.active() && phomSessions.groupBusy ? (GROUP_BUSY_WORD[phomSessions.groupBusy()] || null) : null,
       error: headerError[String(runId)] || null,
     };
+  }
+  // Is this run a RESERVE (cluster slot D/E = P4/P5)? Read from the cluster snapshot — the one place that knows.
+  // Cached for 250ms: the bars repaint often and the cluster snapshot is not free.
+  let _reserveMap = null, _reserveMapAt = 0;
+  function reserveViewFor(runId) {
+    if (!_reserveMap || nowMs() - _reserveMapAt > 250) {
+      _reserveMap = Object.create(null); _reserveMapAt = nowMs();
+      const snap = phomCluster && phomCluster.active() ? phomCluster.getClusterSnapshot() : null;
+      const rs = (snap && snap.reserves) || {};
+      RESERVE_SLOTS.forEach((k, i) => { if (rs[k] && rs[k].profileId != null) _reserveMap[String(rs[k].profileId)] = 'P' + (4 + i); });
+    }
+    const label = _reserveMap[String(runId)];
+    return label ? { reserve: true, reserveLabel: label } : { reserve: false };
   }
   // The bar's table buttons (locked while TỰ ĐỘNG runs, rule D1). VÀO GAME / TẢI LẠI stay usable.
   const headerFindConfirm = Object.create(null); // runId -> until (ms): a Dò Key asked to confirm replacing the group
@@ -868,12 +883,14 @@ else {
     // 2. swap the cluster places, 3. the new browser takes the old one's place + role in the Phỏm session (main below)
     const res = phomCluster.swapSlot(s, r);
     if (!res.ok) return res;
+    _reserveMap = null; // who is a reserve just changed
     const playRun = runManager && runManager.get(res.playingRun);
     if (playRun) playRun.slot = s;
     const benchRun = res.benchedRun && runManager && runManager.get(res.benchedRun);
     if (benchRun) benchRun.slot = r;
     let replaced = false;
-    if (phomSessions && oldRun && String(oldRun) !== String(res.playingRun)) replaced = !!phomSessions.replaceRun(oldRun, res.playingRun).replaced;
+    // the reserve is a warm member of the session already: the two swap places (it takes the role and sits at once)
+    if (phomSessions && oldRun && String(oldRun) !== String(res.playingRun)) replaced = !!phomSessions.swapRuns(oldRun, res.playingRun).replaced;
     await moveRunWindow(res.playingRun, windowRectForSlot(s));
     if (res.benchedRun) await moveRunWindow(res.benchedRun, windowRectForSlot(r));
     try { if (shell && !shell.isDestroyed()) shell.moveTop(); } catch { /* the tool stays where it is */ }

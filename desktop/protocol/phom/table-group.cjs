@@ -520,7 +520,8 @@ class TableGroup extends EventEmitter {
   reset() { this._clearTimers(); this._auto = false; this._gen++; this._group = null; this._busy = null; this._emit(); }
 
   // ---- helpers ----------------------------------------------------------------
-  _orderedIds() { return this._coord ? this._coord.profileIds() : []; }
+  // The PLAYING accounts (P1/P2/P3) — TỰ ĐỘNG only ever seats these; a reserve (P4/P5) acts only when the user asks.
+  _orderedIds() { return this._coord ? (typeof this._coord.playingIds === 'function' ? this._coord.playingIds() : this._coord.profileIds()) : []; }
   // The CHƯA SẴN SÀNG member is kicked every ~10s by design. It comes back by itself ONLY when the user asked for it:
   // its ReJoin button, or the TỰ ĐỘNG checkbox (user rule 2026-10-03) — with TỰ ĐỘNG on its ReJoin is switched on
   // here as it sits down, so the bar shows it; in manual mode a kick is only reported until ReJoin is pressed.

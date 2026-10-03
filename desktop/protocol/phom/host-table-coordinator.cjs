@@ -40,6 +40,8 @@ const SEARCH_BUDGET_MS = 180000;
 // browser, 183s: 2009× cmd 10004 + 519× 10003 for mini-games gid 10112/10110/10888, 149× 1015, 61× 10000 jackpots,
 // 7× 10 "nổ hũ" ticker — about 15 frames/s). A push that names another game's gid, or is one of those broadcast
 // commands, is dropped right after the context has seen it: no update, no log, no IPC.
+// What a RESERVE browser's own frames still decide: its own host, join and kick (its bar works like the others).
+const RESERVE_TYPES = new Set(['HOST_CHANGED', 'TABLE_STATE', 'JOIN_ACCEPTED', 'LEAVE_ACK']);
 const FOREIGN_PUSH_CMDS = new Set([10, 1015, 10000, 10003, 10004]);
 function isForeignPush(cls, meta) {
   if (!cls || cls.known || cls.op !== 5 || meta.direction === 'send') return false;
@@ -101,13 +103,34 @@ class HostTableCoordinator extends EventEmitter {
     return true;
   }
 
+  // The PLAYING browsers: the first three in order (P1/P2/P3). A 4th/5th one is a RESERVE (P4/P5): a full browser of the
+  // session (its bar works like the others) that TỰ ĐỘNG never seats and LỌC BÀI does not cover.
+  playingIds() { return this.profileIds().slice(0, 3); }
+  // ĐỔI — two browsers of the session swap places (a reserve takes a playing slot, the playing one becomes the
+  // reserve). Their own state is untouched; LỌC BÀI follows the slots at once.
+  swapProfiles(aId, bId) {
+    const a = String(aId), b = String(bId);
+    if (a === b || !this._profiles.has(a) || !this._profiles.has(b)) return false;
+    const entries = [...this._profiles.entries()];
+    const ia = entries.findIndex(([id]) => id === a), ib = entries.findIndex(([id]) => id === b);
+    for (const i of [ia, ib]) if (i < 3) this._cardObserver.unbindSlot('B' + (i + 1));
+    [entries[ia], entries[ib]] = [entries[ib], entries[ia]];
+    this._profiles = new Map(entries);
+    this.rebindCardSlot(a); this.rebindCardSlot(b);
+    this._changed();
+    this.emit('hands', this.handsSnapshot());
+    return true;
+  }
+
   // Bind a browser's slot (B1/B2/B3) in the card observer to its account as soon as the uid is known (a swapped-in
   // browser is usually logged in already), so LỌC BÀI of that slot uses the new account without waiting for a deal.
   rebindCardSlot(profileId) {
     const rec = this._rec(profileId);
     const uid = rec && rec.ctx.uid();
     if (!uid) return false;
-    this._cardObserver.bindSlot('B' + (this.profileIds().indexOf(rec.id) + 1), uid, this._now());
+    const idx = this.profileIds().indexOf(rec.id);
+    if (idx > 2) return false; // a reserve has no LỌC BÀI slot
+    this._cardObserver.bindSlot('B' + (idx + 1), uid, this._now());
     this.emit('cards', this.cardObserverSnapshot());
     return true;
   }
@@ -124,11 +147,13 @@ class HostTableCoordinator extends EventEmitter {
     if (isForeignPush(cls, meta)) return cls;
     const seq = Number.isFinite(meta.seq) ? meta.seq : null;
     if (cls.isHandEvent) rec.hand = reduceHand(rec.hand, cls, { profileId: rec.id, profileUid: rec.ctx.uid(), seq, now });
-    if (cls.isHandEvent || cls.type === 'TABLE_STATE') {
-      const idx = this.profileIds().indexOf(rec.id);
+    // A RESERVE (P4/P5) may sit at another table: its frames never feed the group-table facts (cards, round, readiness)
+    const idx = this.profileIds().indexOf(rec.id);
+    const playing = idx < 3;
+    if (playing && (cls.isHandEvent || cls.type === 'TABLE_STATE')) {
       this._cardObserver.ingestFrame({ slot: 'B' + (idx + 1), browserIndex: idx + 1, ownUid: rec.ctx.uid(), cls, seq, now });
     }
-    switch (cls.type) {
+    switch (playing ? cls.type : RESERVE_TYPES.has(cls.type) ? cls.type : null) {
       case 'DEAL': this._roundRunning = true; this._readyUids.clear(); break;
       case 'ROUND_END': {
         const wasRunning = this._roundRunning;
@@ -146,7 +171,7 @@ class HostTableCoordinator extends EventEmitter {
         const ts = rec.ctx.tableState();
         const h = ts && ts.seats.find((s) => s.host);
         rec._hostUid = h ? h.uid : null;
-        if (ts) for (const s of ts.seats) if (s.ready && s.uid) this._readyUids.add(s.uid);
+        if (playing && ts) for (const s of ts.seats) if (s.ready && s.uid) this._readyUids.add(s.uid);
         if (meta.direction !== 'send' && !meta.replay) this._logSeats('TABLE_DIAG', rec, cls, cls.json && cls.json[1] && cls.json[1].ps);
         break;
       }
@@ -570,7 +595,7 @@ class HostTableCoordinator extends EventEmitter {
   // ---- views ----------------------------------------------------------------------------------------------------
   // Are all browsers proven to sit at ONE table? Read from every browser's own ps[] — never from one browser's count.
   coSeatStatus() {
-    const recs = [...this._profiles.values()];
+    const recs = [...this._profiles.values()].slice(0, 3); // the playing browsers only — a reserve is not expected there
     const seated = recs.filter((r) => this._ownSeated(r));
     const base = { rid: null, seatedCount: seated.length, browserCount: recs.length };
     if (!seated.length) return { ok: false, result: 'IDLE', reason: null, playerCount: null, ...base };

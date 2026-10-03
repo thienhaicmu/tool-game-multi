@@ -33,8 +33,9 @@ class HostSessionManager extends EventEmitter {
   // The three runs of this session. (Callers may still pass the old hostId; who leads is the user's DÒ KEY now.)
   startSession({ runIds } = {}) {
     if (!this._featureEnabled()) return { ok: false, error: { code: 'PHOM_FEATURE_DISABLED', message: 'Phỏm QA feature flag is off' } };
+    // P1/P2/P3 play; a 4th/5th run is a RESERVE (P4/P5) — a full member of the session, never seated by TỰ ĐỘNG
     const ids = Array.isArray(runIds) ? runIds.map(String) : [];
-    if (ids.length !== 3 || new Set(ids).size !== 3) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'exactly three distinct runs are required' } };
+    if (ids.length < 3 || ids.length > 5 || new Set(ids).size !== ids.length) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'three to five distinct runs are required' } };
     const profiles = ids.map((runId) => this._profileFor(runId));
     this.endSession();
     const coord = new HostTableCoordinator({ profiles, now: this._now, environmentAuthorized: () => this.authorized(), sessionId: `PHOMHOST-${this._now()}` });
@@ -88,6 +89,21 @@ class HostSessionManager extends EventEmitter {
     this.emit('update', s.coord.snapshot());
     this.emit('cards', s.coord.cardObserverSnapshot());
     return { ok: true, replaced: true };
+  }
+
+  // ĐỔI — a reserve already in the session (warm: in the game, its bar live) takes a playing slot: the two swap places;
+  // the reserve takes the replaced account's role and sits at the group's table (it is in the game already, so at
+  // once). Falls back to replaceRun when the new run is not a member yet (a profile opened into a closed slot).
+  swapRuns(oldRunId, newRunId) {
+    const s = this._session;
+    const oldId = String(oldRunId), newId = String(newRunId);
+    if (!s || !s.runIds.has(oldId)) return { ok: false, swapped: false };
+    if (!s.runIds.has(newId)) return this.replaceRun(oldId, newId);
+    if (!s.coord.swapProfiles(oldId, newId)) return { ok: false, swapped: false };
+    if (this._group) this._group.replaceMember(oldId, newId);
+    this.emit('update', s.coord.snapshot());
+    this.emit('cards', s.coord.cardObserverSnapshot());
+    return { ok: true, swapped: true, replaced: true };
   }
 
   // A browser about to leave the session (swapped out to the reserves) leaves the table first — straight through the

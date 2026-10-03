@@ -182,7 +182,7 @@ test('LỌC BÀI follows the slot: the replaced account is no longer ours; the n
 test('wiring: swap IPC moves the windows (reserve → behind the tool) and swaps the session member', () => {
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /ipcMain\.handle\('phom:slot-swap'/);
-  assert.match(main, /async function swapSlot[\s\S]*?phomSessions\.replaceRun\(oldRun, res\.playingRun\)[\s\S]*?moveRunWindow\(res\.playingRun, windowRectForSlot\(s\)\)[\s\S]*?moveRunWindow\(res\.benchedRun, windowRectForSlot\(r\)\)[\s\S]*?shell\.moveTop\(\)/);
+  assert.match(main, /async function swapSlot[\s\S]*?phomSessions\.swapRuns\(oldRun, res\.playingRun\)[\s\S]*?moveRunWindow\(res\.playingRun, windowRectForSlot\(s\)\)[\s\S]*?moveRunWindow\(res\.benchedRun, windowRectForSlot\(r\)\)[\s\S]*?shell\.moveTop\(\)/);
   assert.match(read('desktop/phom-preload.cjs'), /swapSlot: \(slot, reserve\) => ipcRenderer\.invoke\('phom:slot-swap'/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /const swap = replacePicker\(slot, false\)/);
@@ -218,4 +218,60 @@ test('wiring: IPC phom:slot-replace → replaceSlot (close, reassign, open, repl
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /s\.chromiumClosed\) \{ const pk = replacePicker\(slot, true\)/);
   assert.match(ui, /api\.replaceSlot\(slot,/);
+});
+
+// ---- GĐ4 — warm reserves: full members of the session (same bar), never seated by TỰ ĐỘNG -----------------------
+function makeSession5() {
+  const mgr = new HostSessionManager({
+    wsReplay: { sendProtocol: async () => ({ ok: true }) }, authorized: () => true, featureEnabled: () => true,
+    now: (() => { let t = 0; return () => (t += 1); })(),
+    resolveProfileMeta: () => ({}),
+  });
+  const r = mgr.startSession({ runIds: ['A', 'B', 'C', 'D', 'E'] });
+  return { mgr, r };
+}
+
+test('a session takes 3 to 5 runs; P4/P5 are members (their bar works) but not playing', () => {
+  const { mgr, r } = makeSession5();
+  assert.equal(r.ok, true);
+  const coord = mgr._session.coord;
+  assert.deepEqual(coord.profileIds(), ['A', 'B', 'C', 'D', 'E']);
+  assert.deepEqual(coord.playingIds(), ['A', 'B', 'C']);
+  assert.equal(mgr.manualBrowserSnapshot().length, 5, 'the reserves have their own state (their bar)');
+  assert.equal(new HostSessionManager({ featureEnabled: () => true }).startSession({ runIds: ['A', 'B'] }).ok, false);
+});
+
+test('a reserve sitting at ANOTHER table never feeds the group table\'s cards / round', () => {
+  const { mgr } = makeSession5();
+  mgr.setIdentity('D', { uid: '1_44' });
+  mgr.routeFrame({ id: 'D' }, frame(JSON.stringify([5, { b: 100, Mu: 4, ps: [{ uid: '1_44', sit: 0, C: true }, { uid: '1_99', sit: 1 }], cmd: 202 }])));
+  const cards = mgr.cardObserverSnapshot();
+  assert.equal(cards.players['1_99'], undefined, 'strangers of the reserve\'s table are not in LỌC BÀI');
+  assert.equal(Object.values(cards.slotBinding).includes('1_44'), false);
+  assert.equal(mgr.coSeatStatus().browserCount, 3, 'co-seat counts the playing browsers only');
+});
+
+test('ĐỔI with a warm reserve: the two swap places, the reserve takes the role; LỌC BÀI follows the slot', () => {
+  const { mgr } = makeSession5();
+  const coord = mgr._session.coord;
+  mgr.setIdentity('B', { uid: '1_22' }); coord.rebindCardSlot('B');
+  mgr.setIdentity('D', { uid: '1_44' });
+  seedGroup(mgr, { A: 'KEY', B: 'READY' });
+  const r = mgr.swapRuns('B', 'D');
+  assert.equal(r.swapped, true);
+  assert.deepEqual(coord.profileIds(), ['A', 'D', 'C', 'B', 'E'], 'D plays as P2, B is now the reserve');
+  assert.equal(mgr.groupRoleOf('D'), 'READY'); assert.equal(mgr.groupRoleOf('B'), null);
+  const cards = mgr.cardObserverSnapshot();
+  assert.equal(cards.slotBinding.B2, '1_44');
+  assert.equal(cards.players['1_22'].controlled, false);
+  mgr.endSession();
+});
+
+test('TỰ ĐỘNG only ever works with the playing accounts', () => {
+  const { mgr } = makeSession5();
+  assert.deepEqual(mgr._group._orderedIds(), ['A', 'B', 'C']);
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /function reserveViewFor[\s\S]*?reserve: true, reserveLabel: label/);
+  assert.match(main, /\.\.\.reserveViewFor\(runId\)/);
+  assert.match(read('ui-phom/phom-qa.js'), /for \(const r of openReserves\(\)\) if \(r\.profileId && !runIds\.includes\(r\.profileId\)\) runIds\.push\(r\.profileId\)/);
 });

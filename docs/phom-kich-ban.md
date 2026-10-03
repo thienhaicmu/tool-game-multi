@@ -97,7 +97,10 @@ Chỉ chạy khi ô **được tích**. Acc KEY = acc đầu tiên (thứ tự A
 ## 2b. Thay acc — P4 / P5 dự bị
 
 Tick **3–5 profile** ở tab Profile: 3 profile đầu chơi ở **P1 · P2 · P3**; profile 4 / 5 mở làm **dự bị** — cửa sổ nằm
-**đúng chỗ tool Phỏm, phía sau tool**, chưa nằm trong nhóm.
+**đúng chỗ tool Phỏm, phía sau tool**. Dự bị **chạy nóng**: tool tự VÀO GAME cho nó, thanh trên trình duyệt có **đủ nút
+như acc đang chơi** (ghi "DỰ BỊ P4 · …"). Dự bị **không** thuộc nhóm: TỰ ĐỘNG không bao giờ cho dự bị ngồi bàn, Lọc bài chỉ
+tính P1–P3, và bài / ván ở bàn khác của dự bị không lẫn vào bàn nhóm. Trong ô chọn **Đổi**, mỗi dự bị kèm trạng thái
+("ở sảnh" = đổi vào là ngồi ngay).
 
 | Mã | Khi | Tool làm, theo thứ tự |
 |---|---|---|

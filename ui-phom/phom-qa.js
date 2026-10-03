@@ -675,7 +675,11 @@
   function replacePicker(slot, closed) {
     const cs = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
     const own = cs.deviceProfileId || '';
-    const opts = openReserves().map((r) => ({ value: 'R:' + r.slot, label: (r.label || r.deviceProfileId) + ' (dự bị)' }));
+    // each reserve with its live state (a warm one is "Ở SẢNH" — it sits down at once)
+    const opts = openReserves().map((r) => {
+      const st = (manualBrowserById(r.profileId) || {}).state;
+      return { value: 'R:' + r.slot, label: (r.label || r.deviceProfileId) + ' (dự bị' + (st && st.code ? ' · ' + (st.code === 'LOBBY' || st.code === 'ERROR' ? 'ở sảnh' : st.code === 'IN_TABLE' ? 'đang ngồi bàn khác' : st.code === 'NOT_IN_GAME' ? 'chưa vào game' : st.code === 'ENTERING' ? 'đang vào game' : 'bận') : '') + ')' };
+    });
     if (closed) for (const p of freeProfilesFor(slot)) opts.push({ value: p.id, label: (p.name || p.id) + (p.id === own ? ' (cũ)' : '') });
     if (!opts.length) return null;
     if (replacePick[slot] == null || !opts.some((o) => o.value === replacePick[slot])) replacePick[slot] = closed && opts.some((o) => o.value === own) ? own : opts[0].value;
@@ -803,11 +807,13 @@
   }
 
   // ================= session plumbing =================
-  // The passive session observes the three runs (socket, login, table) as soon as they are open; it sends nothing.
+  // The passive session observes the runs (socket, login, table) as soon as they are open; it sends nothing. P1–P3 play,
+  // the open reserves (P4/P5) follow them in order: warm members with a working bar (GĐ4).
   async function ensurePassiveSession() {
     if (phomSessionStarted) return;
     const runIds = SLOTS.map((sl) => assign[sl].runId).filter(Boolean);
     if (runIds.length !== 3) return;
+    for (const r of openReserves()) if (r.profileId && !runIds.includes(r.profileId)) runIds.push(r.profileId);
     try { const start = await api.startSession({ runIds }); if (start && start.ok !== false) phomSessionStarted = true; } catch {}
   }
   // The fallback poll while the Phỏm tab is visible (pushes keep it current anyway; an idle lobby pushes rarely).
