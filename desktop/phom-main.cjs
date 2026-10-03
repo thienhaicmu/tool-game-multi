@@ -125,9 +125,7 @@ else {
   const wsReplay = new WsReplay({ resolveClient: (tid) => resolveTargetClient(tid), getCaptured: (id) => capture.get(id) });
   // TEST D — passive recorder of the game's own frames between a user START/STOP (see frame-recorder.cjs).
   const frameRecorder = createFrameRecorder();
-  const lastCaptureByRun = Object.create(null); // runId -> file name of that browser's last Test D capture
   // Stop the recording and write it as JSON + a readable one-line-per-frame .txt under userData/phom-captures.
-  // Shared by the Tool window (IPC) and the in-Chromium header (⋯ menu).
   function stopAndSaveCapture() {
     const out = frameRecorder.stop();
     if (!out) return { ok: false, error: { code: 'PHOM_NOT_RECORDING', message: 'Chưa bắt đầu ghi gói' } };
@@ -141,7 +139,6 @@ else {
       for (const f of out.frames) lines.push(String(f.t).padStart(7) + 'ms  [' + (f.label || f.runId) + ']  ' + f.summary);
       fs.writeFileSync(base + '.txt', lines.join('\n'), 'utf8');
       const name = path.basename(base + '.txt');
-      for (const id of (out.runIds || [])) lastCaptureByRun[id] = name;
       return { ok: true, path: base + '.json', txtPath: base + '.txt', fileName: name, frameCount: out.frameCount, dropped: out.dropped, byType: out.byType, preview: lines.slice(0, 60), runIds: out.runIds };
     } catch (e) {
       return { ok: false, error: { code: 'PHOM_CAPTURE_WRITE_FAILED', message: String(e && e.message || e) } };
@@ -216,11 +213,6 @@ else {
       try { electronShell.showItemInFolder(dest); } catch { /* best effort */ }
       return { ok: true, path: dest, frames: out.length - 2 };
     } catch (e) { return { ok: false, error: { code: 'PHOM_WS_EXPORT_FAILED', message: String(e && e.message || e) } }; }
-  }
-  // Is THIS browser currently being recorded (a recording of one browser, or of all)?
-  function captureActiveFor(runId) {
-    const st = frameRecorder.status();
-    return !!(st && st.recording && (!st.runIds || st.runIds.includes(String(runId))));
   }
   // Resolve + validate the pinned custom Chromium runtime once (dev vs packaged). No
   // system-Chrome fallback: an invalid runtime blocks browser launches with a typed error.
@@ -727,14 +719,9 @@ else {
       // PHASE 6.3.6 — ENTERING is BOUNDED: shown only while pending + not authoritatively inGame + within the
       // timeout window since the click. A fired-but-never-entered click reverts to NOT_IN_GAME (never stuck).
       entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),
-      joining: false,
       manualState: b.manualState || null,
-      // §32/§34 — live search progress so the header shows "ĐANG TÌM BÀN… 12s · lần 6" instead of a label that
-      // cannot be told apart from a hang, and offers HỦY.
+      // live search progress ("ĐANG DÒ BÀN KEY 12s · lần 6") so a long search never looks like a hang
       searchElapsedSec: b.searchElapsedSec || 0,
-      // TEST D — recording state for THIS browser's ⋯ menu
-      capturing: captureActiveFor(runId),
-      lastCapture: lastCaptureByRun[String(runId)] || null,
       searchAttempt: b.searchAttempt || 0,
       searchKind: b.searchKind || null,
       rejoinOn: !!b.rejoinOn,
@@ -742,35 +729,20 @@ else {
       joinedViaChannel: !!b.joinedViaChannel, // §stake-channel — label it KÊNH, never SS (see deriveHeaderState)
       lastRid: b.lastRid != null ? b.lastRid : null,
       sharedRid,
-      betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
       // The session stake (picked in the tool) — shown on the bar and used by its TẠO.
       stake: phomSessions && phomSessions.active() ? phomSessions.selectedStake() : null,
-      // §group — role at the tool-created table + readiness + chủ bàn, for the bar's role chip. `seatedAtTable` says
-      // whether this browser is REALLY sitting at that table right now (a role alone never implies a seat).
-      groupRole: b.groupRole || null, ready: !!b.ready, isTableHost: !!b.isTableHost,
+      groupRole: b.groupRole || null,
       // DÒ KEY done somewhere else: the KEY is sitting at its table, so TẠO here has a table to look for.
       keySeated: b.groupRole !== 'KEY' && (browsers || []).some((x) => x && x.groupRole === 'KEY' && x.manualState === 'JOINED'),
-      seatedAtTable: b.manualState === 'JOINED' && b.rid != null,
       // Data freshness: frames were seen once but stopped (lost hook after a reload / target swap) → say it.
       dataStale: !!(opened && b.lastFrameAt != null && (nowMs() - Number(b.lastFrameAt)) > HEADER_STALE_MS),
       staleSec: b.lastFrameAt != null ? Math.round((nowMs() - Number(b.lastFrameAt)) / 1000) : null,
       error: headerError[String(runId)] || null,
-      // §create — the SỐ BÀN list for the ⋯ menu: tables with a free seat, emptiest first. `roomListAt` (not an
-      // age) so the pushed state stays byte-identical between frames and the push de-dup keeps working.
-      ...headerRoomList(runId),
     };
   }
   // A browser whose game frames stopped arriving is reported as such after this long (and re-hooked, see
   // maybeRehookCapture) instead of silently reading "CHƯA VÀO GAME".
   const HEADER_STALE_MS = 20000;
-  function headerRoomList(runId) {
-    let l = null; try { l = phomSessions && phomSessions.active() ? phomSessions.roomList(runId) : null; } catch { l = null; }
-    if (!l || !Array.isArray(l.rooms)) return { rooms: [], roomListAt: null };
-    const rooms = l.rooms.filter((r) => !r.locked && Number(r.uC) < Number(r.Mu || 4))
-      .sort((a, b) => (Number(a.uC) - Number(b.uC)) || (Number(a.b) - Number(b.b))).slice(0, 40);
-    return { rooms, roomListAt: l.at };
-  }
-
   // A browser whose game frames stopped arriving lost its capture hook (the page reloaded / the game swapped the
   // target it runs in). Re-enable the CDP network events and re-inject the send hook on that run's CURRENT session
   // instead of leaving the tool blind — at most once every 30s per browser, and only while its Chromium is open.
@@ -938,22 +910,11 @@ else {
         // T2a — TẠO: find the KEY's table (its số bàn) and sit there; the số bàn then fills every bar's SS.
         ensurePhomSessions();
         res = await phomSessions.scanTable(rid);
-      } else if (action === 'NEW_TABLE') {
-        // BÀN KHÁC — leave this table and take another public one (manual: only this browser; auto: the group).
-        ensurePhomSessions();
-        res = await phomSessions.newTable();
       } else if (action === 'JOIN_CODE') {
         // §create — VÀO SỐ BÀN typed/picked in the header (no password is ever sent — §no-password).
         ensurePhomSessions();
         const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
         res = await phomSessions.joinTable(rid, joinRid);
-      } else if (action === 'CAPTURE_START') {
-        // TEST D from the header: record THIS browser (the one the player is about to click in by hand).
-        const run = runManager && runManager.get(rid);
-        res = { ok: true, ...frameRecorder.start({ runIds: [rid], label: 'Test D — ' + ((run && run.profileLabel) || rid) }) };
-      } else if (action === 'CAPTURE_STOP') {
-        res = stopAndSaveCapture();
-        if (res && res.ok) { try { electronShell.showItemInFolder(res.txtPath); } catch { /* best effort */ } }
       } else if (action === 'CANCEL_FIND') {
         // §34 — DỪNG: stop the DÒ KEY / TẠO this browser is running. Runs alongside it (exempt from single-flight);
         // the coordinator's search generation is what actually ends it.
@@ -966,14 +927,8 @@ else {
         ensurePhomSessions();
         res = await phomSessions.leaveTable(rid);
       } else if (action === 'RELOAD') {
-        // PHASE 6.3.8 — the header's ⟳ button reuses the SAME reload logic as phom:reload-web (no new action).
+        // TẢI LẠI WEB (shown when the frames stopped) — the same reload as the tool window's ⟳.
         res = await reloadWebRun(rid);
-      } else if (action === 'STOP') {
-        // PHASE 6.3.8 — the header's ⏻ button reuses the SAME close logic as phom:close-browser.
-        res = await closeBrowserRun(rid);
-      } else if (action === 'FOCUS') {
-        // PHASE 6.3.8 — bring this Chromium OS window to the front (reuses the existing focusBrowser).
-        res = focusBrowser(rid) || { ok: true };
       } else {
         res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
       }

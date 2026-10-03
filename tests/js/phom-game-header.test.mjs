@@ -35,21 +35,18 @@ test('opened + not in game -> VÀO GAME (ENTER_GAME)', () => {
   assert.equal(s.primary.disabled, undefined);
 });
 
-test('in game + JOINING -> busy ĐANG VÀO BÀN', () => {
+test('in game + JOINING -> ĐANG VÀO BÀN, and Vào shows it is running (Vào.)', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINING' });
   assert.match(s.statusLabel, /ĐANG VÀO BÀN/);
-  assert.equal(s.primary.busy, true);
+  assert.equal(s.joining, true);
+  assert.equal(s.canAct, true, 'the button row stays');
 });
 
-test('JOINED -> REJOIN primary + THOÁT PHÒNG (danger) secondary; RID shown', () => {
+test('JOINED -> SS <rid>, the whole button row, Thoát enabled', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 700100, sharedRid: 700100 });
-  assert.equal(s.statusLabel, 'SS 700100'); // §co-seat — the joined status shows the table number (SS = rid)
-  assert.equal(s.primary.action, 'REJOIN');
-  assert.equal(s.secondary.length, 1);
-  assert.equal(s.secondary[0].action, 'LEAVE');
-  assert.equal(s.secondary[0].label, 'THOÁT PHÒNG'); // NOT "THOÁT GAME"
-  assert.equal(s.secondary[0].danger, true);
-  assert.equal(s.rid, '700100');
+  assert.equal(s.statusLabel, 'SS 700100');
+  assert.equal(s.canAct, true); assert.equal(s.inTable, true); assert.equal(s.primary, null);
+  assert.equal(s.rid, '700100'); assert.equal(s.ssDefault, 700100);
 });
 
 test('account passes through when known; RID falls back to lastRid then —', () => {
@@ -300,32 +297,22 @@ test('main: bounded ENTERING timeout is armed on ENTER and cancelled on authorit
 // isFinder is a PROP of the derived view (true = may FIND). No finder chosen → true for every browser; a
 // finder chosen → true only for that browser. finderIndex drives the dynamic "CHỜ PLAYER N TÌM BÀN" label.
 
-test('FINDER-08 with no finder, NO browser is ever put in WAIT_ANCHOR', () => {
-  const s = gh.deriveHeaderState({ opened: true, inGame: true, isFinder: true, finderIndex: null });
-  assert.notEqual(s.primary.action, 'WAIT_ANCHOR');
+test('in the lobby with no group the bar tells the user to press Dò Key on ONE account', () => {
+  const s = gh.deriveHeaderState({ opened: true, inGame: true });
+  assert.match(s.statusLabel, /Dò Key/); assert.equal(s.canAct, true);
 });
 
-test('BC: bootScript is a compact draggable single-row header with per-slot accent, collapse + quick menu', () => {
+test('BC: the bar is the reference strip — no background, fixed at the top, only the table buttons + Hide', () => {
   const src = gh.bootScript({ slotId: 'B2', profileId: 'p', runId: 'r' });
-  // per-player accent (B1 blue / B2 green / B3 orange) + "Player N" badge from the slot id
   assert.match(src, /SLOTN===1\?'#2563eb':SLOTN===2\?'#16a34a':SLOTN===3\?'#ea580c'/);
-  // single FLOATING row (fixed, not a full-width bar; no body margin push)
-  // the reference tool's strip: fixed across the top, white, never dragged (screenshots 2026-10-03)
-  assert.match(src, /position:fixed;top:0;left:0;right:0;[^']*width:100%;[^']*background:#fff;/);
-  assert.equal(/marginTop\s*=\s*'34px'/.test(src), false, 'no longer pushes the game with a full-width bar');
-  // draggable (page-local; clamped inside the viewport). No storage → F5-safe like the optimistic overlay.
+  assert.match(src, /position:fixed;top:0;left:0;right:0;[^']*width:100%;[^']*background:transparent;/, 'no background over the game');
   assert.equal(/__drag/.test(src), false, 'a fixed strip is not draggable');
-  // and the players line centred under it, yellow
   assert.match(src, /const infoLine = mk\('div','position:fixed;top:23px;left:0;right:0;[^']*text-align:center;[^']*color:#fde047;/);
   assert.equal(/localStorage|sessionStorage/.test(src), false, 'no persistent storage in the injected header');
-  // collapse toggle (page-local)
-  assert.match(src, /__collapsed/);
-  assert.match(src, /collapseBtn\.onclick/);
-  // lifecycle actions are always available; FOCUS lives in the quick menu — all map to existing actions
-  assert.match(src, /emit\('RELOAD'\)/);
-  assert.match(src, /emit\('STOP'\)/);
-  assert.match(src, /emit\('FOCUS'\)/);
-  // no invented game actions in the page
+  assert.match(src, /hideBtn\.textContent = __collapsed \? 'Show' : 'Hide';/);
+  // only what the reference tool has: SS · Copy · Vào · ReJoin · Tạo · Dò Key · Thoát (+ VÀO GAME / TẢI LẠI before the game)
+  for (const a of ['JOIN_CODE', 'REJOIN', 'SCAN_TABLE', 'FIND_TABLE', 'CANCEL_FIND', 'LEAVE']) assert.match(src, new RegExp("emit\\('" + a + "'"));
+  assert.equal(/menuBtn|menuItem|emit\('STOP'\)|emit\('FOCUS'\)|emit\('NEW_TABLE'\)|CAPTURE_|rooms/.test(src), false, 'the ⋮ menu and its extras are gone');
   assert.equal(/emit\('HOST'\)|emit\('READY'\)|emit\('KICK'\)/.test(src), false);
 });
 
@@ -345,22 +332,19 @@ test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Dò Key 
   assert.doesNotMatch(src, /\^d\+\$/);
 });
 
-test('BC: the header router handles RELOAD/STOP/FOCUS by REUSING existing run helpers (no new IPC)', () => {
+test('BC: the header router handles only what the bar sends; TẢI LẠI reuses the tool window\'s reload', () => {
   assert.match(main, /async function reloadWebRun\(runId\)/);
-  assert.match(main, /async function closeBrowserRun\(runId\)/);
-  // the header binding routes the lifecycle actions to the shared helpers / existing focus
   assert.match(main, /action === 'RELOAD'\) \{[\s\S]*?res = await reloadWebRun\(rid\);/);
-  assert.match(main, /action === 'STOP'\) \{[\s\S]*?res = await closeBrowserRun\(rid\);/);
-  assert.match(main, /action === 'FOCUS'\) \{[\s\S]*?res = focusBrowser\(rid\)/);
-  // the IPC handlers reuse the SAME helpers (unchanged contract)
+  assert.equal(/action === 'STOP'|action === 'FOCUS'|action === 'NEW_TABLE'|action === 'CAPTURE_/.test(main), false);
+  // the tool window keeps reload / close per browser
   assert.match(main, /ipcMain\.handle\('phom:reload-web', guarded\(async \(_e, cfg\) => reloadWebRun\(cfg && cfg\.browserId\)\)\)/);
   assert.match(main, /ipcMain\.handle\('phom:close-browser', guarded\(async \(_e, cfg\) => closeBrowserRun\(cfg && cfg\.browserId\)\)\)/);
 });
 
-test('unconfirmed leave must retry leave before offering another join', () => {
+test('unconfirmed leave says so and keeps Thoát on the bar', () => {
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'LEAVE_UNCONFIRMED', sharedRid: 123 });
-  assert.equal(s.primary.action, 'LEAVE');
-  assert.equal(s.statusClass, 'warn');
+  assert.match(s.statusLabel, /CHƯA XÁC NHẬN RỜI BÀN/);
+  assert.equal(s.canAct, true);
 });
 
 test('DÒ KEY / TẠO on the bar: the bar stays while it searches (Tạo. / Dò Key.), progress in the line under it; ReJoin shows ON', () => {
@@ -370,9 +354,9 @@ test('DÒ KEY / TẠO on the bar: the bar stays while it searches (Tạo. / Dò 
   assert.equal(searching.canAct, true, 'every button stays, like the reference tool');
   assert.equal(searching.searchKind, 'SCAN');
   assert.equal(gh.deriveHeaderState({ ...base, manualState: 'SEARCHING', searchKind: 'KEY' }).statusLabel, 'ĐANG DÒ KEY');
-  assert.equal(gh.deriveHeaderState({ ...base, manualState: 'READY' }).primary.action, 'FIND_TABLE');
+  assert.match(gh.deriveHeaderState({ ...base, manualState: 'READY' }).statusLabel, /bấm Dò Key/);
   const next = gh.deriveHeaderState({ ...base, manualState: 'READY', keySeated: true });
-  assert.equal(next.primary.action, 'SCAN_TABLE'); assert.equal(next.keySeated, true);
+  assert.match(next.statusLabel, /KEY đã ngồi · bấm Tạo/); assert.equal(next.keySeated, true);
   assert.equal(gh.deriveHeaderState({ ...base, manualState: 'JOINED', rid: 7907972, rejoinOn: true }).rejoinOn, true);
   assert.equal(gh.HEADER_ACTIONS.SCAN_TABLE.short, 'Tạo'); assert.equal(gh.HEADER_ACTIONS.FIND_TABLE.short, 'Dò Key');
   const src = gh.bootScript();

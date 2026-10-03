@@ -415,7 +415,9 @@ test('ACCOUNT: the login identity gives the account name + ID before it sits any
   const st = gh.deriveHeaderState({ opened: true, inGame: true, account: 'gdufuud', accountId: '365473596' });
   assert.equal(st.account, 'gdufuud'); assert.equal(st.accountId, '365473596');
   assert.match(gh.bootScript(), /var acc = hasAcc \? state\.account \+ \(state\.money != null \? '-' \+ state\.money : ''\) : '';/, 'name-money, like the reference tool');
-  assert.match(gh.bootScript(), /nameEl\.textContent = hasAcc \? acc \+ \(state\.accountId \? ' · ID ' \+ state\.accountId : ''\) : '';/);
+  // on the strip: name · ID (money is in the yellow line and the tooltip)
+  assert.match(gh.bootScript(), /nameEl\.textContent = hasAcc \? state\.account \+ \(state\.accountId \? ' · ID ' \+ state\.accountId : ''\) : '';/);
+  assert.match(gh.bootScript(), /nameEl\.title = hasAcc \? acc \+/);
 });
 
 test('MONEY: the account money comes from the wallet push (cmd 317: gold + held) and, at a table, from its seat', () => {

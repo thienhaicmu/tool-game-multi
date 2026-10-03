@@ -1,128 +1,77 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// PHASE 6.3.2 / 6.3.8 — the in-Chromium GAME HEADER (BROWSER CONTROL). Every managed Chromium (B1/B2/B3)
-// gets a compact, tool-OWNED control injected into its page. PHASE 6.3.8 reshapes it into a single
-// COMPACT, DRAGGABLE, FLOATING header row (mobile-landscape friendly, ~851×393) that never obstructs the
-// game: a player badge (B1/B2/B3 accent) + status + a STATE-DEPENDENT icon row of the ONLY existing
-// actions (VÀO GAME → TÌM BÀN/VÀO BÀN → REJOIN + THOÁT PHÒNG, plus RELOAD/STOP/FOCUS), a ⋮ quick menu,
-// and a ─ collapse toggle. It never mutates the game's own DOM/canvas/data (its own #__phom_header only).
+// The IN-PAGE BAR — the reference tool's control strip, injected into every managed Chromium (screenshots + captures
+// 2026-10-02/03):
 //
-// The bar is a DUMB view: the MAIN process derives the state (deriveHeaderState) from the authoritative
-// coordinator snapshot and pushes it in via window.__phomHeaderRender(state); button clicks call the CDP
-// binding window.__phomAction(JSON.stringify({action,stake})). No business logic lives in the page.
-// This module is PURE (a string generator + pure derivers) so it is unit-testable without a browser.
+//   1 nhatvuong452535 · ID 642487221   SS [7919569] Copy  Vào  ReJoin  Tạo  Dò Key  Thoát          Hide
+//                 👑gdufuud-453384,nhatvuong452535-328627,thekiet2k4-431503✓          (yellow, centred)
+//
+// No background: it sits over the game. The running button ends with '.' (Dò Key. / Tạo. / ReJoin. / Vào.) and a
+// second click stops it. Before the browser is in the game the row shows only VÀO GAME (or TẢI LẠI when its frames
+// stopped). What each button does: docs/phom-kich-ban.md §0b.
+//
+// The bar is a DUMB view: main derives the state (deriveHeaderState) from the coordinator + group and pushes it via
+// window.__phomHeaderRender(state); clicks call the CDP binding window.__phomAction. It never touches the game's own
+// DOM/canvas (only #__phom_header). This module is pure (a string generator + derivers), unit-testable.
 // ---------------------------------------------------------------------------
 
-// PHASE 6.3.8 — icon + short label + tooltip for every header action. The action SET is state-dependent
-// (deriveHeaderState) but the presentation (icon/label/tip) is a single source of truth. NO new actions are
-// invented here: every id maps to an existing tool action (ENTER_GAME/JOIN_CODE/REJOIN/LEAVE/FIND_TABLE/SCAN_TABLE and
-// the lifecycle RELOAD/STOP/FOCUS). HOST/READY/KICK/DevTools/screenshot are intentionally absent (no action).
 const HEADER_ACTIONS = Object.freeze({
-  ENTER_GAME:  { icon: '▶', short: 'Vào Game', tip: 'Đưa Player vào game' },
-  JOIN_CODE:   { icon: '🚪', short: 'Vào', tip: 'Vào đúng số bàn trong ô SS' },
-  REJOIN:      { icon: '↻', short: 'Rejoin', tip: 'Vào lại bàn hiện tại' },
-  LEAVE:       { icon: '✕', short: 'Thoát bàn', tip: 'Rời bàn hiện tại (không tắt Chromium)' },
-  FIND_TABLE:  { icon: '🔑', short: 'Dò Key', tip: 'Ngồi một mình ở một bàn trống (acc KEY)' },
-  SCAN_TABLE:  { icon: '🔍', short: 'Tạo', tip: 'Dò ra bàn của acc KEY rồi vào' },
-  CANCEL_FIND: { icon: '■', short: 'Dừng', tip: 'Dừng dò bàn' },
-  RELOAD:      { icon: '⟳', short: 'Tải lại', tip: 'Tải lại web trong Chromium (giữ profile)' },
-  STOP:        { icon: '⏻', short: 'Tắt', tip: 'Tắt Chromium này (không xóa profile)' },
-  FOCUS:       { icon: '↑', short: 'Lên trước', tip: 'Đưa cửa sổ Chromium lên trên cùng' },
+  ENTER_GAME:  { short: 'Vào Game', tip: 'Đưa acc vào game Phỏm' },
+  JOIN_CODE:   { short: 'Vào', tip: 'Vào đúng số bàn trong ô SS' },
+  REJOIN:      { short: 'ReJoin', tip: 'Tự vào lại sau mỗi lần bị đá' },
+  LEAVE:       { short: 'Thoát', tip: 'Rời bàn (không tắt trình duyệt)' },
+  FIND_TABLE:  { short: 'Dò Key', tip: 'MỘT acc: ngồi một mình ở bàn trống, thành KEY' },
+  SCAN_TABLE:  { short: 'Tạo', tip: 'Các acc khác: dò ra bàn của KEY rồi vào' },
+  CANCEL_FIND: { short: 'Dừng', tip: 'Dừng dò bàn' },
+  RELOAD:      { short: 'Tải lại', tip: 'Tải lại web trong trình duyệt này' },
 });
-function actionMeta(action) { return HEADER_ACTIONS[action] || { icon: '•', short: action || '', tip: action || '' }; }
-// Attach icon/short/tip to a primary/secondary descriptor for the icon-row renderer (presentation only).
-function toActionIcon(a) {
-  if (!a || !a.action) return null;
-  const m = actionMeta(a.action);
-  return {
-    action: a.action, icon: m.icon, short: m.short, tip: m.tip,
-    label: a.label != null ? a.label : m.short,
-    disabled: !!a.disabled, busy: !!a.busy, danger: !!a.danger,
-    rid: a.rid != null ? a.rid : undefined,
-  };
-}
 
-// Derive the header view-model for ONE browser from its authoritative fields (§4/§15). Mirrors the manual
-// browserAction decision + REJOIN/THOÁT PHÒNG. PHASE 6.3.8 ALSO exposes `actions` (the ordered GAME/TABLE
-// icon set for the row); the lifecycle (RELOAD/STOP/FOCUS) + chrome (⋮/─) are static page UI, not state.
-//   view = { account, opened, inGame, entering, joining, manualState, rid, lastRid, sharedRid,
-//            stake, groupRole, seatedAtTable, dataStale, error }
+//   view = { account, accountId, money, opened, inGame, entering, dataStale, staleSec, manualState, searchKind,
+//            searchElapsedSec, searchAttempt, rid, lastRid, joinedViaChannel, sharedRid, stake, groupRole, keySeated,
+//            rejoinOn, playerCount, players, error }
 function deriveHeaderState(view = {}) {
-  const account = view.account && String(view.account).trim() ? String(view.account) : '—';
-  const rid = view.rid != null ? String(view.rid) : (view.lastRid != null ? String(view.lastRid) : '—');
   const s = view.manualState;
   const joined = !!view.inGame && s === 'JOINED' && view.rid != null;
-  let statusLabel, statusClass, primary, secondary = [];
-  if (!view.opened) { statusLabel = 'CHƯA MỞ'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME', disabled: true }; }
-  // The tool stopped receiving this browser's game frames: it cannot know the real state, so it says exactly that
-  // and offers the only fix (reload the page in this Chromium) instead of claiming "CHƯA VÀO GAME".
-  else if (view.dataStale) { statusLabel = 'MẤT DỮ LIỆU' + (view.staleSec ? ' ' + view.staleSec + 's' : '') + ' · TẢI LẠI'; statusClass = 'danger'; primary = { action: 'RELOAD', label: 'TẢI LẠI WEB' }; }
-  else if (view.entering) { statusLabel = 'ĐANG VÀO GAME'; statusClass = 'warn'; primary = { action: 'ENTER_GAME', label: 'ĐANG VÀO GAME…', busy: true, disabled: true }; }
-  else if (!view.inGame) { statusLabel = 'CHƯA VÀO GAME'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME' }; }
-  else if (s === 'KICKED') { statusLabel = 'BỊ ĐÁ · bấm ReJoin'; statusClass = 'danger'; primary = { action: 'REJOIN', label: 'REJOIN' }; }
-  // DÒ KEY / TẠO running: how far it got, and the way to stop it (the reference tool's second click on the button).
-  else if (s === 'SEARCHING') {
-    statusLabel = (view.searchKind === 'SCAN' ? 'ĐANG DÒ BÀN KEY' : 'ĐANG DÒ KEY') + (view.searchElapsedSec ? ' ' + view.searchElapsedSec + 's' : '') + (view.searchAttempt ? ' · lần ' + view.searchAttempt : '');
-    statusClass = 'warn'; primary = { action: 'CANCEL_FIND', label: 'DỪNG', danger: true };
-  }
-  else if (s === 'LEAVE_UNCONFIRMED') { statusLabel = 'CHƯA XÁC NHẬN RỜI'; statusClass = 'warn'; primary = { action: 'LEAVE', label: 'THỬ RỜI BÀN LẠI', danger: true }; }
-  else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN_CODE', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
-  else if (joined) {
-    // SS = the số bàn this browser is seated at, like the reference tool's bar.
-    const ss = view.rid != null ? String(view.rid) : null;
-    // §stake-channel — "SS" means the 7-digit SỐ BÀN. A seat taken through the lobby stake channel has no số bàn
-    // yet (the server picked the table behind that id), so calling it SS sent users looking for a code to copy
-    // that does not exist. It is still the id the other browsers JOIN — only the wording changes.
-    statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + (ss != null ? ss : '—') + (view.groupRole === 'READY' || view.ready ? ' · ✓' : '');
-    statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }];
-  }
-  // In the game but NOT at the table, while this browser still holds a role at the group's table: say it is out of
-  // the table and make ReJoin the primary action (the role chip alone used to look like it was still seated).
-  else if (view.groupRole && view.sharedRid != null) { statusLabel = 'NGOÀI BÀN · SS ' + view.sharedRid; statusClass = 'warn'; primary = { action: 'REJOIN', label: 'VÀO LẠI BÀN' }; }
-  // In the game, not at a table: the group's số bàn is offered (VÀO), else there is nothing to do but TÌM BÀN.
-  else if (view.sharedRid != null) { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'JOIN_CODE', label: 'VÀO BÀN', rid: Number(view.sharedRid) }; }
-  // A KEY is seated but its số bàn is not known yet: the next step for this browser is TẠO.
-  else if (view.keySeated) { statusLabel = 'ĐÃ VÀO GAME · KEY đã ngồi'; statusClass = 'ok'; primary = { action: 'SCAN_TABLE', label: 'TẠO' }; }
-  else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND_TABLE', label: 'DÒ KEY' }; }
-  // PHASE 6.3.8 — the ordered GAME/TABLE icon set (primary first, then secondary). Lifecycle is added by the page.
-  const actions = [toActionIcon(primary), ...secondary.map(toActionIcon)].filter(Boolean);
-  return { account, accountId: view.accountId != null ? String(view.accountId) : null, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null,
-    // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
-    capturing: !!view.capturing, lastCapture: view.lastCapture || null,
-    // §find — the header can look for a table / join a số bàn whenever the browser is in the game (not mid-op).
-    // The reference tool's bar stays put while it works: every button is always there once the browser is in the game;
-    // the one that is running shows a trailing '.' and a second click stops it.
+  let statusLabel, primary = null;
+  if (!view.opened) { statusLabel = 'CHƯA MỞ'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME', disabled: true }; }
+  // Frames stopped arriving: the tool cannot know the real state, so it says so and offers the only fix.
+  else if (view.dataStale) { statusLabel = 'MẤT DỮ LIỆU' + (view.staleSec ? ' ' + view.staleSec + 's' : '') + ' · TẢI LẠI'; primary = { action: 'RELOAD', label: 'TẢI LẠI WEB' }; }
+  else if (view.entering) { statusLabel = 'ĐANG VÀO GAME'; primary = { action: 'ENTER_GAME', label: 'ĐANG VÀO GAME…', busy: true, disabled: true }; }
+  else if (!view.inGame) { statusLabel = 'CHƯA VÀO GAME'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME' }; }
+  else if (s === 'KICKED') statusLabel = 'BỊ ĐÁ' + (view.rejoinOn ? ' · đang vào lại' : ' · bấm ReJoin');
+  else if (s === 'SEARCHING') statusLabel = (view.searchKind === 'SCAN' ? 'ĐANG DÒ BÀN KEY' : 'ĐANG DÒ KEY') + (view.searchElapsedSec ? ' ' + view.searchElapsedSec + 's' : '') + (view.searchAttempt ? ' · lần ' + view.searchAttempt : '');
+  else if (s === 'LEAVE_UNCONFIRMED') statusLabel = 'CHƯA XÁC NHẬN RỜI BÀN — bấm Thoát lại';
+  else if (s === 'JOINING' || s === 'RECONNECTING') statusLabel = 'ĐANG VÀO BÀN';
+  else if (joined) statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + view.rid;
+  else if (view.groupRole && view.sharedRid != null) statusLabel = 'NGOÀI BÀN · SS ' + view.sharedRid + ' · bấm ReJoin';
+  else if (view.sharedRid != null) statusLabel = 'Ở SẢNH · SS ' + view.sharedRid + ' · bấm Vào';
+  else if (view.keySeated) statusLabel = 'Ở SẢNH · KEY đã ngồi · bấm Tạo';
+  else statusLabel = 'Ở SẢNH · bấm Dò Key (một acc)';
+  return {
+    account: view.account && String(view.account).trim() ? String(view.account) : '—',
+    accountId: view.accountId != null ? String(view.accountId) : null,
+    money: view.money != null ? Number(view.money) : null,
+    rid: view.rid != null ? String(view.rid) : (view.lastRid != null ? String(view.lastRid) : '—'),
+    statusLabel, primary, error: view.error || null,
+    // the whole button row is there once the browser is in the game; the running one ends with '.'
     canAct: !!view.inGame && !view.dataStale,
     searchKind: s === 'SEARCHING' ? (view.searchKind || 'KEY') : null,
-    joining: s === 'JOINING' || s === 'RECONNECTING' || !!view.joining,
-    // Under the bar: the account (name-money) and its table — ID Bàn, Số người and who sits there.
-    money: view.money != null ? Number(view.money) : null,
-    joinedViaChannel: !!view.joinedViaChannel,
+    joining: s === 'JOINING' || s === 'RECONNECTING',
+    inTable: joined, joinedViaChannel: !!view.joinedViaChannel,
     playerCount: Number(view.playerCount) || 0,
     players: Array.isArray(view.players) ? view.players.map((p) => ({ name: String(p.name || '?'), money: p.money != null ? Number(p.money) : null, host: !!p.host, ready: !!p.ready, self: !!p.self, ours: !!p.ours })) : [],
-    // The role chip is only "live" while this browser really sits at the table; otherwise it is shown dimmed.
-    seatedAtTable: !!view.seatedAtTable,
-    dataStale: !!view.dataStale,
-    // The stake comes from the Phỏm tool (one place), so the bar only displays it and TÌM BÀN needs it.
     stake: Number(view.stake) > 0 ? Number(view.stake) : null,
-    rooms: Array.isArray(view.rooms) ? view.rooms.map((r) => ({ rid: r.rid, b: r.b, uC: r.uC, Mu: r.Mu })) : [],
-    // §group — the reference-tool bar: role chip, SS pre-filled with this browser's / the group's số bàn.
-    groupRole: view.groupRole || null, isTableHost: !!view.isTableHost, inTable: joined,
-    canRejoin: joined || view.lastRid != null || view.sharedRid != null,
-    // ReJoin is a toggle (reference tool): ON = this browser comes back by itself after every kick.
-    rejoinOn: !!view.rejoinOn,
-    // A KEY sits at the group's table (TẠO has something to look for); this browser is not that KEY.
-    keySeated: !!view.keySeated, isKey: view.groupRole === 'KEY',
+    groupRole: view.groupRole || null, isKey: view.groupRole === 'KEY', keySeated: !!view.keySeated,
+    rejoinOn: !!view.rejoinOn, canRejoin: joined || view.lastRid != null || view.sharedRid != null,
     // SS = the group's số bàn, else the table this browser sits at — never a stake CHANNEL (live run 2026-10-03: the
     // KEY's channel 139 landed in the SS box and every Vào with it was refused, code 166).
     ssDefault: view.sharedRid != null ? Number(view.sharedRid) : (joined && !view.joinedViaChannel ? Number(view.rid) : null),
-    roomListAt: view.roomListAt != null ? view.roomListAt : null };
+  };
 }
 
-// The one-time page bootstrap script (injected via Page.addScriptToEvaluateOnNewDocument + evaluated
-// immediately). Idempotent: builds #__phom_header once; exposes window.__phomHeaderRender(state). Button
-// clicks call the CDP binding window.__phomAction. Namespaced; no game-DOM mutation beyond its own bar.
+// The one-time page bootstrap (Page.addScriptToEvaluateOnNewDocument + evaluated at once). Idempotent: builds
+// #__phom_header once and exposes window.__phomHeaderRender(state).
 function bootScript(opts = {}) {
   const bindingName = opts.bindingName || '__phomAction';
   const identity = { slotId: opts.slotId != null ? String(opts.slotId) : null, profileId: opts.profileId != null ? String(opts.profileId) : null, runId: opts.runId != null ? String(opts.runId) : null };
@@ -133,101 +82,68 @@ function bootScript(opts = {}) {
   const ID = ${JSON.stringify(identity)};
   const OBSLOG = ${obsLog};
   const CLICKLOG = ${clickLog};
-  // 6.3.2.10 PROFILING (gated) — a single-clock page timer: stamp at click, report at the next header render.
+  // PROFILING (gated) — a single-clock page timer: stamp at click, report at the next render.
   const CLK = (window.performance && performance.now) ? function(){ return performance.now(); } : function(){ return Date.now(); };
-  // 6.3.2.2 idempotent + SELF-HEALING: if the boot already ran but the game wiped the bar out of the DOM
-  // (SPA body swap), re-mount it instead of returning early — so the header can never silently vanish.
+  // Idempotent + SELF-HEALING: the boot already ran but the game wiped the bar (SPA body swap) → re-mount it.
   if (window.__phomHeaderInstalled) { if (!document.getElementById('__phom_header') && window.__phomHeaderMount) window.__phomHeaderMount(); return; }
   window.__phomHeaderInstalled = true;
-  // Every action carries the browser IDENTITY (slot/profile/run) + a correlation actionId so a single
-  // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
+  // Every action carries the browser IDENTITY + a correlation actionId, so a click can never be attributed to the
+  // wrong browser.
   function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } if(OPTIMISTIC_ACTIONS[action]) applyOptimistic(action); window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
-  // Only the GAME/TABLE flow actions paint an optimistic busy overlay; lifecycle (RELOAD/STOP/FOCUS) do not.
-  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, REJOIN:1, LEAVE:1, FIND_TABLE:1, SCAN_TABLE:1, JOIN_CODE:1, NEW_TABLE:1 };
-  // 6.3.2.11 OPTIMISTIC visual state (page-local only). __authState = last AUTHORITATIVE state pushed by main;
-  // __optAction = a transient action the user just clicked. The click paints an immediate busy state with NO
-  // CDP/main round-trip; the next authoritative __phomHeaderRender CLEARS it and wins. Only the status/action
-  // LABEL is optimistic — never RID/ACCOUNT/membership (those stay authoritative, §15).
+  // Only VÀO GAME paints an optimistic busy state; every table button shows its own state ('.') from main.
+  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1 };
+  // __authState = last AUTHORITATIVE state from main; the next __phomHeaderRender always wins over an optimistic one.
   var __authState = null, __optAction = null;
-  // Page-local UI state only (no persistent web storage — a new document resets it, F5-safe like optimistic).
-  var __collapsed = false;
-  // §create — the SS (số bàn) box is created ONCE and re-attached on every paint, so a repaint never wipes what the
-  // user is typing.
+  var __collapsed = false, __lastError = null;
+  // The SS box is created ONCE and re-attached on every paint, so a repaint never wipes what the user is typing.
   var __ssValue = '';
-  var __ssAuto = null; // the last số bàn the header filled in by itself (a user edit is never overwritten)
+  var __ssAuto = null; // the last số bàn the bar filled in by itself (a user edit is never overwritten)
   var ssInput = document.createElement('input');
   ssInput.setAttribute('style','width:58px;height:18px;padding:0 3px;box-sizing:border-box;border-radius:2px;border:1px solid #9ca3af;background:#fff;color:#111827;font:600 11px Inter,Segoe UI,sans-serif;');
-  ssInput.placeholder = 'Số bàn'; ssInput.inputMode = 'numeric';
+  ssInput.placeholder = 'Số bàn'; ssInput.inputMode = 'numeric'; ssInput.setAttribute('aria-label', 'Số bàn muốn vào');
   ssInput.addEventListener('input', function(){ __ssValue = ssInput.value; });
   ssInput.addEventListener('mousedown', function(ev){ ev.stopPropagation(); });
-  // Report the header's REAL DOM presence to main (once per mount/remount) so the Tool shows HEADER = Sẵn sàng.
+  // The bar's REAL DOM presence goes to main once per mount/remount (Tool shows HEADER = Sẵn sàng).
   function emitStatus(){ try { window[BID] && window[BID](JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId })); } catch(e){} }
-  // PHASE 6.3.8 — per-player accent (B1 blue / B2 green / B3 orange) + "Player N" derived from the slot id.
-  // Player number from the slot id. Two schemes exist: 'B1'/'B2'/'B3' and the Tool's 'A'/'B'/'C' — the header only
-  // understood the first, so a browser on slot 'B' showed a bare "Player" with no number and no accent colour.
+  // Player number from the slot id ('B1'/'B2'/'B3' or the tool's 'A'/'B'/'C').
   var SLOTN = (function(){ var sid=String(ID.slotId||''); var m=/^B(\\d)$/i.exec(sid); if(m) return Number(m[1]); var abc={A:1,B:2,C:3}[sid.toUpperCase()]; return abc||null; })();
   var ACCENT = SLOTN===1?'#2563eb':SLOTN===2?'#16a34a':SLOTN===3?'#ea580c':'#6b7280';
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
-  // ---- the floating, compact, single-row header (mobile-landscape; never a full-width toolbar) ----
+  var SHADOW = 'text-shadow:0 1px 2px #000,0 0 3px #000;';
+  // The strip: fixed across the top, NO background (it sits over the game), clicks pass through between controls.
   const bar = document.createElement('div'); bar.id = '__phom_header';
-  bar.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;align-items:center;gap:3px;flex-wrap:nowrap;box-sizing:border-box;height:22px;width:100%;padding:0 4px;background:#fff;color:#111827;border:0;border-bottom:1px solid #d1d5db;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.25);user-select:none;pointer-events:none;');
-  // drag handle = badge + name + status (dragging the identity area moves the whole control).
-  const handle = mk('div','display:flex;align-items:center;gap:4px;min-width:0;');
-  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = SLOTN ? String(SLOTN) : '?';
-  const nameEl = mk('span','font-weight:700;color:#1d4ed8;white-space:nowrap;'); nameEl.textContent = ''; nameEl.style.display='none';
-  const statusDot = mk('span','width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto;');
-  const stLabel = mk('span','color:#cbd5e1;font-weight:500;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
-  handle.appendChild(badge); handle.appendChild(nameEl); statusDot.style.display='none'; handle.appendChild(statusDot); handle.appendChild(stLabel); stLabel.style.display='none';
-  const act = mk('div','display:flex;align-items:center;gap:3px;flex-wrap:nowrap;min-width:0;'); act.id='__ph_act';
-  const menuWrap = mk('div','position:relative;display:flex;align-items:center;gap:3px;');
-  const menuBtn = mk('button','width:18px;height:18px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;'); menuBtn.textContent='⋮'; menuBtn.title='Tùy chọn';
-  const collapseBtn = mk('button','width:auto;padding:0 5px;height:18px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:13px;line-height:1;'); collapseBtn.title='Thu gọn / mở rộng';
-  const menu = mk('div','position:absolute;top:26px;right:0;min-width:200px;background:#111827;border:1px solid #374151;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.4);padding:4px;display:none;z-index:2147483647;');
-  menuWrap.appendChild(menuBtn); menuWrap.appendChild(collapseBtn); menuWrap.appendChild(menu);
-  bar.appendChild(handle); bar.appendChild(act); bar.appendChild(menuWrap);
-  // The line UNDER the bar (reference tool): ID Bàn · Số người · who sits there (name-money, 👑 host, ✓ ready).
-  const infoLine = mk('div','position:fixed;top:23px;left:0;right:0;z-index:2147483647;text-align:center;padding:0 8px;color:#fde047;font:700 11px/15px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px #000,0 0 3px #000;pointer-events:auto;display:none;');
+  bar.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;align-items:center;gap:3px;flex-wrap:nowrap;box-sizing:border-box;height:22px;width:100%;padding:0 4px;background:transparent;color:#fff;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;user-select:none;pointer-events:none;');
+  bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Điều khiển Phỏm');
+  const handle = mk('div','display:flex;align-items:center;gap:4px;min-width:0;flex-shrink:0;pointer-events:auto;');
+  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:4px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = SLOTN ? String(SLOTN) : '?';
+  const nameEl = mk('span','font-weight:700;color:#fff;white-space:nowrap;'+SHADOW); nameEl.style.display='none';
+  handle.appendChild(badge); handle.appendChild(nameEl);
+  const act = mk('div','display:flex;align-items:center;gap:3px;flex-wrap:nowrap;min-width:0;pointer-events:auto;'); act.id='__ph_act';
+  const hideBtn = mk('button','margin-left:auto;flex-shrink:0;height:18px;padding:0 5px;border-radius:3px;border:0;background:rgba(17,24,39,.7);color:#fff;font:700 11px Inter,Segoe UI,sans-serif;cursor:pointer;pointer-events:auto;');
+  hideBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'' }); };
+  bar.appendChild(handle); bar.appendChild(act); bar.appendChild(hideBtn);
+  // Under the strip, centred in yellow: everyone at the table as name-money (👑 host, ✓ ready), or what is happening.
+  const infoLine = mk('div','position:fixed;top:23px;left:0;right:0;z-index:2147483647;text-align:center;padding:0 8px;color:#fde047;font:700 11px/15px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+SHADOW+'pointer-events:auto;display:none;');
   bar.appendChild(infoLine);
-  const feedback = mk('div','position:fixed;left:4px;top:40px;max-width:280px;padding:8px 10px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
+  const feedback = mk('div','position:fixed;left:4px;top:40px;max-width:300px;padding:6px 9px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
   feedback.setAttribute('role','alert');
   bar.appendChild(feedback);
   var feedbackTimer = null;
-  function showFeedback(message){
-    clearTimeout(feedbackTimer);
-    feedback.textContent=message; feedback.style.display='block';
-    feedbackTimer=setTimeout(function(){ feedback.style.display='none'; },6000);
-  }
-  // Scoped presentation applies only to the tool-owned header.
+  function showFeedback(message){ clearTimeout(feedbackTimer); feedback.textContent=message; feedback.style.display='block'; feedbackTimer=setTimeout(function(){ feedback.style.display='none'; },6000); }
   const uiStyle = document.createElement('style');
-  uiStyle.textContent = '#__phom_header button{min-height:18px;min-width:18px}#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}#__phom_header button:hover:not(:disabled){filter:brightness(1.15)}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header input{flex-shrink:0}#__phom_header #__ph_act>*{flex-shrink:0}#__phom_header [data-quick-menu]{max-width:calc(100vw - 16px);max-height:calc(100vh - 40px);overflow:auto}';
+  uiStyle.textContent = '#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:1px}#__phom_header button:hover:not(:disabled){filter:brightness(1.15)}#__phom_header button:disabled{opacity:.55}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header #__ph_act>*{flex-shrink:0}';
   bar.appendChild(uiStyle);
-  bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Điều khiển Phỏm');
-  handle.title = 'Trình duyệt và tài khoản';
-  handle.style.pointerEvents = 'auto';
-  handle.style.flexShrink = '0';
-  stLabel.style.maxWidth = '100px';
-  stLabel.style.textShadow = '0 1px 3px #000,0 0 2px #000';
-  act.style.pointerEvents = 'auto';
-  menuWrap.style.pointerEvents = 'auto';
-  menuWrap.style.flexShrink = '0';
-  menuWrap.style.marginLeft = 'auto';
-  ssInput.setAttribute('aria-label', 'Số bàn muốn vào');
-  menu.setAttribute('data-quick-menu', '');
-  menu.style.top = '26px';
-  menuBtn.setAttribute('aria-label', 'Tùy chọn trình duyệt');
-  menuBtn.setAttribute('aria-expanded', 'false');
-  collapseBtn.setAttribute('aria-label', 'Thu gọn thanh điều khiển');
-  // Mount idempotently (floating overlay — does NOT push the game view). On a real (re)mount, tell main.
+  // Mount idempotently (an overlay — never pushes the game view). On a real (re)mount, tell main.
   function ready(){ if(document.body){ if(!document.getElementById('__phom_header')){ document.body.appendChild(bar); emitStatus(); } } else { requestAnimationFrame(ready); } }
-  window.__phomHeaderMount = ready; // allow the bridge / render to re-mount after an SPA body swap
+  window.__phomHeaderMount = ready;
   ready();
-  // REAL self-heal (§5) — a Cocos/SPA bootstrap that rebuilds <body> AFTER load removes the bar. NARROW
-  // in-PAGE observers re-mount the bar the instant it is removed — NEVER observing the whole game DOM.
+  // Self-heal — a Cocos/SPA bootstrap that rebuilds <body> after load removes the bar. NARROW observers (html + body
+  // children only, never the whole game DOM) re-mount it the instant it is gone.
   var __c = { observerCallbacks:0, mutationRecords:0, remountRequests:0, actualRemounts:0 };
   window.__phomHeaderCounters = __c;
   var __remountScheduled = false;
   function scheduleRemount(){
-    if (document.getElementById('__phom_header')) return;                 // present → no-op (loop-safe §5)
+    if (document.getElementById('__phom_header')) return;
     __c.remountRequests++;
     if (__remountScheduled) return; __remountScheduled = true;
     requestAnimationFrame(function(){ __remountScheduled = false; if(!document.getElementById('__phom_header')){ __c.actualRemounts++; if(OBSLOG){ try{ console.log('[PHOM-HDR] remount', ID.slotId||ID.runId, JSON.stringify(__c)); }catch(e){} } ready(); } });
@@ -236,48 +152,28 @@ function bootScript(opts = {}) {
     if (!window.__phomHeaderObserver && typeof MutationObserver !== 'undefined') {
       var __bodyObs = null, __bodyTarget = null;
       var observeBody = function(){
-        if (!document.body || __bodyTarget === document.body) return;      // already watching this body
+        if (!document.body || __bodyTarget === document.body) return;
         if (__bodyObs) { try{ __bodyObs.disconnect(); }catch(e){} }
         __bodyTarget = document.body;
         __bodyObs = new MutationObserver(function(m){ __c.observerCallbacks++; __c.mutationRecords += m.length; scheduleRemount(); });
         __bodyObs.observe(document.body, { childList: true, subtree: false });
-        if (OBSLOG){ try{ console.log('[PHOM-HDR] observe body', ID.slotId||ID.runId); }catch(e){} }
       };
       var __htmlObs = new MutationObserver(function(m){ __c.observerCallbacks++; __c.mutationRecords += m.length; observeBody(); scheduleRemount(); });
-      __htmlObs.observe(document.documentElement, { childList: true, subtree: false }); // body replace/create
+      __htmlObs.observe(document.documentElement, { childList: true, subtree: false });
       observeBody();
       window.__phomHeaderObserver = { disconnect: function(){ try{ __htmlObs.disconnect(); }catch(e){} try{ if(__bodyObs) __bodyObs.disconnect(); }catch(e){} } };
       window.addEventListener('pagehide', function(){ try { window.__phomHeaderObserver.disconnect(); } catch(e){} window.__phomHeaderObserver = null; }, { once:true });
     }
   } catch(e){}
-  // ---- one compact icon button (icon + optional short label + tooltip; disabled/busy aware) ----
-  function iconBtn(icon, label, showLabel, dis, danger, onClick, tip){
-    var bg = danger ? '#7f1d1d' : '#2563eb'; var bd = danger ? '#991b1b' : '#1d4ed8';
-    var b = mk('button', 'display:inline-flex;align-items:center;justify-content:center;gap:3px;height:22px;min-width:22px;padding:0 '+(showLabel?'6px':'4px')+';border-radius:6px;border:1px solid '+bd+';background:'+bg+';color:#fff;font:600 11px Inter,Segoe UI,sans-serif;cursor:'+(dis?'not-allowed':'pointer')+';opacity:1;white-space:nowrap;');
-    b.textContent = showLabel ? (icon+' '+label) : icon; b.title = tip || label || ''; b.setAttribute('aria-label', tip || label || '');
-    if(dis) b.disabled = true; else if(onClick) b.onclick = onClick;
-    return b;
-  }
-  function closeMenu(){ menu.style.display='none'; menuBtn.setAttribute('aria-expanded','false'); }
-  function menuItem(label, onClick){ var it=mk('button','display:block;width:100%;text-align:left;border:0;background:transparent;padding:8px 10px;border-radius:6px;cursor:pointer;color:#e5e7eb;font-weight:500;white-space:normal;'); it.type='button'; it.textContent=label; it.onmouseenter=function(){it.style.background='#1f2937';}; it.onmouseleave=function(){it.style.background='transparent';}; it.onclick=function(){ try{onClick();}catch(e){} closeMenu(); }; return it; }
-  menuBtn.onclick = function(){ var open=menu.style.display==='none'; menu.style.display=open?'block':'none'; menuBtn.setAttribute('aria-expanded',String(open)); if(open){ var bounds=menu.getBoundingClientRect(); if(bounds.left<4){ menu.style.right='auto'; menu.style.left=(4-menuWrap.getBoundingClientRect().left)+'px'; } } };
-  bar.addEventListener('keydown', function(ev){ if(ev.key==='Escape'){ closeMenu(); menuBtn.focus(); } });
-  collapseBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'', statusClass:'off' }); };
-  // Clicking outside closes the quick menu.
-  window.addEventListener('mousedown', function(ev){ if(menu.style.display!=='none' && !menuWrap.contains(ev.target)) closeMenu(); }, true);
-  // Paint ONE state object (authoritative OR optimistic). Layout = the reference tool's in-web bar:
-  //   [P1 ● name-money · ID] [SS ____] Copy · Vào · ReJoin · Tạo · Dò Key · Thoát  [⋮][─]
-  //   ID Bàn: … · Số người: … · vai trò · cược · 👑name-money ✓ …                     (the line under it)
-  // Before the browser is in the game the row shows only VÀO GAME / TẢI LẠI.
   function txtBtn(label, bg, onClick, tip, dis){
-    var b = mk('button','height:18px;padding:0 4px;border-radius:3px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';opacity:1;');
+    var b = mk('button','height:18px;padding:0 4px;border-radius:3px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';');
     b.textContent = label; b.title = tip || label;
     if(dis) b.disabled = true; else b.onclick = onClick;
     return b;
   }
-  function chip(label, bg, fg, tip){ var c = mk('span','height:18px;padding:0 6px;border-radius:5px;background:'+bg+';color:'+(fg||'#fff')+';font:800 10px/18px Inter,Segoe UI,sans-serif;white-space:nowrap;'); c.textContent = label; if(tip) c.title = tip; return c; }
-  // ID Bàn · Số người · Vai trò · Cược, then everyone at the table as name-money (👑 host, ✓ ready; our accounts bold,
-  // strangers dimmed) — so the user sees at a glance whether the accounts really sit together.
+  function chip(label, bg){ var c = mk('span','height:18px;padding:0 5px;border-radius:3px;background:'+bg+';color:#fff;font:800 10px/18px Inter,Segoe UI,sans-serif;white-space:nowrap;'); c.textContent = label; return c; }
+  function ssRid(){ var v = String(ssInput.value||'').trim(); var n = Number(v); return v !== '' && isFinite(n) && n > 0 ? n : null; }
+  // The yellow line: name-money of everyone at the table (ours bright, strangers dimmer) — else what is happening.
   function paintInfo(state){
     infoLine.textContent = '';
     if(__collapsed || !state.canAct){ infoLine.style.display='none'; return; }
@@ -285,7 +181,6 @@ function bootScript(opts = {}) {
     var detail = (state.inTable ? 'ID Bàn: ' + (state.joinedViaChannel ? 'chưa có (kênh ' + state.rid + ')' : state.rid) + ' · Số người: ' + (state.playerCount || state.players.length) : (state.statusLabel || ''))
       + (state.groupRole ? ' · ' + ROLE[state.groupRole] : '') + ' · ' + (state.stake != null ? 'Cược ' + state.stake : 'CHƯA CHỌN CƯỢC');
     if(state.inTable && state.players.length){
-      // exactly the reference tool's line: name-money of everyone at the table, comma separated (ours brighter)
       state.players.forEach(function(pl, i){
         if(i) infoLine.appendChild(document.createTextNode(','));
         var sp = mk('span', pl.ours ? '' : 'color:#e5e7eb;font-weight:500;');
@@ -297,27 +192,19 @@ function bootScript(opts = {}) {
     infoLine.title = detail;
     infoLine.style.display = '';
   }
-  function ssRid(){ var v = String(ssInput.value||'').trim(); var n = Number(v); return v !== '' && isFinite(n) && n > 0 ? n : null; }
   function paint(state){
     if(!document.getElementById('__phom_header')) ready();
-    var sc = state.statusClass;
-    statusDot.style.background = sc==='ok'?'#34d399':sc==='warn'?'#fbbf24':sc==='danger'?'#f87171':'#9ca3af';
-    stLabel.textContent = state.statusLabel||''; stLabel.title = state.statusLabel||'';
-    // The account on this browser: name + in-game ID, visible as soon as it has logged in.
     var hasAcc = state.account && state.account !== '—';
     var acc = hasAcc ? state.account + (state.money != null ? '-' + state.money : '') : '';
-    // On the strip: name · ID (like the reference tool's '1 nhatvuong452535'); money is in the yellow line and the tooltip.
     nameEl.textContent = hasAcc ? state.account + (state.accountId ? ' · ID ' + state.accountId : '') : '';
     nameEl.title = hasAcc ? acc + (state.accountId ? ' — ID ' + state.accountId : '') : '';
     nameEl.style.display = hasAcc ? '' : 'none';
-    collapseBtn.textContent = __collapsed ? 'Show' : 'Hide';
-    collapseBtn.setAttribute('aria-label', __collapsed ? 'Mở rộng thanh điều khiển' : 'Thu gọn thanh điều khiển');
-    collapseBtn.setAttribute('aria-expanded', String(!__collapsed));
-    act.textContent='';
+    badge.title = (SLOTN ? 'Player ' + SLOTN : 'Player') + ' · ' + (state.statusLabel||'');
+    hideBtn.textContent = __collapsed ? 'Show' : 'Hide';
+    act.textContent = '';
     act.style.display = __collapsed ? 'none' : 'flex';
     if(!__collapsed){
       if(state.canAct){
-        // Auto-fill the SS box with the group's số bàn unless the user typed something else.
         if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
         ssInput.value = __ssValue;
         act.appendChild(chip('SS', '#dc2626'));
@@ -337,76 +224,39 @@ function bootScript(opts = {}) {
         var keying = state.searchKind === 'KEY';
         act.appendChild(txtBtn(keying ? 'Dò Key.' : 'Dò Key', keying ? '#5b21b6' : '#7c3aed', function(){ if(keying){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('FIND_TABLE'); },
           keying ? 'Đang tìm bàn trống — bấm để dừng' : state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước' : 'DÒ KEY: chỉ bấm ở MỘT acc — ngồi một mình ở bàn trống cược ' + state.stake + ', acc này thành KEY (chủ bàn)'));
-        act.appendChild(txtBtn('Thoát','#991b1b',function(){ emit('LEAVE'); },'THOÁT: rời bàn (không tắt Chromium)', !state.inTable));
-      } else {
+        act.appendChild(txtBtn('Thoát','#991b1b',function(){ emit('LEAVE'); },'THOÁT: rời bàn (không tắt trình duyệt)', !state.inTable));
+      } else if(state.primary){
         var p = state.primary;
-        if(p) act.appendChild(iconBtn(OPT_ICON[p.action]||'•', p.label||p.action, true, !!p.disabled, !!p.danger, function(){ emit(p.action, p.rid!=null?{ rid:p.rid }:null); }, p.label));
+        act.appendChild(txtBtn(p.label || p.action, '#2563eb', function(){ emit(p.action); }, p.label, !!p.disabled));
+        var st = mk('span','color:#fde047;font-weight:700;white-space:nowrap;'+SHADOW); st.textContent = state.statusLabel || ''; act.appendChild(st);
       }
-      // Only a RECORDING indicator stays visible (stop with one click); recording itself starts from ⋮.
-      if(state.capturing) act.appendChild(iconBtn('■','Lưu WS',false,false,true,function(){ emit('CAPTURE_STOP'); },'Đang ghi WS — bấm để dừng & lưu'));
-      if(state.error){ var e=mk('span','color:#f87171;font-size:13px;cursor:help;'); e.textContent='⚠'; e.title=String(state.error); act.appendChild(e); }
     }
     paintInfo(state);
-    // Quick menu (⋮): secondary + lifecycle actions and the số bàn list.
-    menu.textContent='';
-    var statusInfo=mk('div','padding:6px 10px;color:#e5e7eb;'); statusInfo.textContent=state.statusLabel||''; menu.appendChild(statusInfo);
-    badge.title = (SLOTN ? 'Player '+SLOTN : 'Player') + ' · ' + (state.statusLabel||'');
-    if(state.canAct){
-      if(state.inTable) menu.appendChild(menuItem('Bàn khác · acc KEY dò bàn trống mới', function(){ emit('NEW_TABLE'); }));
-    }
-    menu.appendChild(menuItem('↑ Đưa cửa sổ lên trên cùng', function(){ emit('FOCUS'); }));
-    menu.appendChild(menuItem('⟳ Tải lại web', function(){ emit('RELOAD'); }));
-    menu.appendChild(menuItem('⏻ Tắt Chromium', function(){ emit('STOP'); }));
-    menu.appendChild(menuItem(state.capturing ? '⏹ Dừng & lưu ghi gói WS' : '⏺ Ghi gói WS (chẩn đoán)', function(){ emit(state.capturing ? 'CAPTURE_STOP' : 'CAPTURE_START'); }));
-    // SỐ BÀN list (the server's table list, broadcast ~1/min): pick one → it fills the SS box.
-    if(Array.isArray(state.rooms)){
-      var age = state.roomListAt ? Math.max(0, Math.round((Date.now()-Number(state.roomListAt))/1000)) : null;
-      var hd=mk('div','padding:6px 10px;color:#93c5fd;font-weight:600;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
-      hd.textContent='📋 Số bàn còn chỗ: '+state.rooms.length+(age!=null?(' · '+age+'s trước'):' · chưa nhận danh sách');
-      menu.appendChild(hd);
-      var box=mk('div','max-height:220px;overflow:auto;');
-      state.rooms.forEach(function(r){ box.appendChild(menuItem(r.rid+' · cược '+r.b+' · '+r.uC+'/'+(r.Mu||4), function(){ __ssValue=String(r.rid); ssInput.value=__ssValue; })); });
-      menu.appendChild(box);
-    }
-    if(state.lastCapture){ var cap=mk('div','padding:6px 10px;color:#86efac;font-weight:500;white-space:nowrap;'); cap.textContent='📄 Đã lưu: '+state.lastCapture; menu.appendChild(cap); }
-    var info = mk('div','padding:8px 10px;color:#9ca3af;font-weight:500;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
-    info.textContent = (SLOTN?('P'+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.accountId ? ' · ID ' + state.accountId : '') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '');
-    menu.appendChild(info);
-    // 6.3.2.10 PROFILING (gated) — click→visual in ONE (page) clock on the FIRST paint after a click.
+    // a failed action is said in words, once (e.g. "Đã có acc KEY (P1) đang ngồi — ở acc này bấm Tạo")
+    if(state.error && state.error !== __lastError) showFeedback(String(state.error));
+    __lastError = state.error || null;
     if(CLICKLOG && window.__phClickT!=null){ try{ console.log('[PHOM-CLK] CLICK_TO_RENDER', Math.round(CLK()-window.__phClickT)+'ms', 'action='+window.__phClickA, '->', state.statusLabel||''); }catch(e){} window.__phClickT=null; }
   }
-  // Build the minimal OPTIMISTIC busy state for a just-clicked action. Reuses ACCOUNT/RID from the last
-  // authoritative state (never fabricates them); only the status label + a disabled busy primary are new.
+  // The OPTIMISTIC state for a just-clicked action: only the label + a disabled busy primary are new; ACCOUNT/RID come
+  // from the last authoritative state, never fabricated.
   function optState(action){
     var base = __authState || {};
-    var label = action==='ENTER_GAME' ? 'ĐANG VÀO GAME…'
-      : (action==='FIND_TABLE'||action==='NEW_TABLE') ? 'ĐANG DÒ KEY…'
-      : action==='SCAN_TABLE' ? 'ĐANG DÒ BÀN KEY…'
-      : action==='JOIN_CODE' ? 'ĐANG VÀO BÀN…'
-      : action==='REJOIN' ? 'ĐANG VÀO BÀN…'
-      : action==='LEAVE' ? 'ĐANG THOÁT PHÒNG…'
-      : 'ĐANG XỬ LÝ…';
-    return { account: base.account, rid: base.rid, statusLabel: label, statusClass:'warn', primary:{ action: action, label: label, disabled: true, busy: true }, actions: [{ action: action, icon:(OPT_ICON[action]||'•'), short:label, label:label, disabled:true, busy:true }], secondary: [], error: null };
+    var label = 'ĐANG VÀO GAME…';
+    return { account: base.account, accountId: base.accountId, rid: base.rid, statusLabel: label, primary:{ action: action, label: label, disabled: true, busy: true }, error: null };
   }
-  var OPT_ICON = { ENTER_GAME:'▶', JOIN_CODE:'🚪', REJOIN:'↻', LEAVE:'✕', FIND_TABLE:'🔑', SCAN_TABLE:'🔍', CANCEL_FIND:'■' };
-  // Synchronous, page-local: show the busy state the instant the user clicks — no CDP, no main round-trip.
   function applyOptimistic(action){ try { __optAction = action; paint(optState(action)); } catch(e){} }
   // AUTHORITATIVE render from main ALWAYS wins: store it, clear any optimistic overlay, paint it.
   window.__phomHeaderRender = function(state){ try { __authState = state; __optAction = null; paint(state); } catch(e){} };
 })();`;
 }
 
-// 6.3.2.11 — PURE mirror of the in-page optimistic logic (for unit tests + a single source of truth for the
-// busy labels). optimisticState(action, authState) is what the page paints synchronously on click: only the
-// status label + a disabled busy primary are new; ACCOUNT/RID are reused from the authoritative state and
-// never fabricated (§15). deriveEffectiveHeaderState picks the optimistic overlay when set, else authState.
+// PURE mirror of the in-page optimistic logic (single source of truth for the busy labels, unit-tested).
 function optimisticLabel(action) {
   switch (action) {
     case 'ENTER_GAME': return 'ĐANG VÀO GAME…';
-    case 'FIND_TABLE': case 'NEW_TABLE': return 'ĐANG DÒ KEY…';
+    case 'FIND_TABLE': return 'ĐANG DÒ KEY…';
     case 'SCAN_TABLE': return 'ĐANG DÒ BÀN KEY…';
-    case 'JOIN_CODE': return 'ĐANG VÀO BÀN…';
-    case 'REJOIN': return 'ĐANG VÀO BÀN…';
+    case 'JOIN_CODE': case 'REJOIN': return 'ĐANG VÀO BÀN…';
     case 'LEAVE': return 'ĐANG THOÁT PHÒNG…';
     default: return 'ĐANG XỬ LÝ…';
   }
@@ -414,24 +264,19 @@ function optimisticLabel(action) {
 function optimisticState(action, authState) {
   const base = authState || {};
   const label = optimisticLabel(action);
-  return { account: base.account, rid: base.rid, statusLabel: label, statusClass: 'warn', primary: { action, label, disabled: true, busy: true }, secondary: [], error: null };
+  return { account: base.account, rid: base.rid, statusLabel: label, primary: { action, label, disabled: true, busy: true }, error: null };
 }
 function deriveEffectiveHeaderState({ authState = null, optAction = null } = {}) {
   return optAction ? optimisticState(optAction, authState) : authState;
 }
 
-// PHASE 6.3.6 — BOUNDED ENTER ("VÀO GAME") state. The in-engine tile click is INVOKED != ENTERED (the click
-// firing is NOT proof the game was entered — readiness is only the authoritative Simms session evidence
-// socketReady+connected+channelList → inGame). So the ENTERING flag MUST be temporary: it is shown only while
-// the enter is genuinely in flight — pending AND not yet authoritatively inGame AND within a bounded window
-// since the click. A click that fired but never entered (page stayed/returned to lobby) therefore reverts to
-// NOT_IN_GAME ("VÀO GAME") instead of a permanent "ĐANG VÀO GAME…" (§10/§11). Transport/CDP/header health is
-// NEVER treated as IN_GAME. Pure + deterministic (clock injected) so it is unit-testable without a browser.
+// BOUNDED "ĐANG VÀO GAME": the tile click is INVOKED != ENTERED, so the entering state lasts only while the enter is
+// in flight — pending, not yet in the game, within the window since the click — and then reverts to VÀO GAME.
 const ENTER_GAME_TIMEOUT_MS = 15000;
 function enteringActive({ pending = false, inGame = false, startedAt = null, now = 0, timeoutMs = ENTER_GAME_TIMEOUT_MS } = {}) {
-  if (!pending || inGame) return false;          // authoritative IN_GAME (or nothing pending) always wins
-  if (startedAt == null) return true;            // pending but no clock yet → just-clicked, still active
-  return (Number(now) - Number(startedAt)) < Number(timeoutMs); // bounded: stale ENTER reverts to NOT_IN_GAME
+  if (!pending || inGame) return false;
+  if (startedAt == null) return true;
+  return (Number(now) - Number(startedAt)) < Number(timeoutMs);
 }
 
 module.exports = { deriveHeaderState, bootScript, optimisticLabel, optimisticState, deriveEffectiveHeaderState, enteringActive, ENTER_GAME_TIMEOUT_MS, HEADER_ACTIONS };

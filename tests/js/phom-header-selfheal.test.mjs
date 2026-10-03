@@ -49,7 +49,7 @@ test('§13 header layout is a compact floating single row (badge/handle · actio
   assert.match(src, /display:flex;align-items:center/);           // single flex row
   assert.match(src, /const handle = mk\('div','display:flex;align-items:center;gap:4px;/); // slot + account
   assert.match(src, /const act = mk\('div',/);                    // state-dependent action row
-  assert.match(src, /bar\.appendChild\(handle\); bar\.appendChild\(act\); bar\.appendChild\(menuWrap\)/);
+  assert.match(src, /bar\.appendChild\(handle\); bar\.appendChild\(act\); bar\.appendChild\(hideBtn\)/);
 });
 
 test('bootScript reports REAL DOM presence to main on mount/remount (__HEADER_STATUS), not per frame', () => {

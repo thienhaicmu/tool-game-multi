@@ -77,15 +77,15 @@ test('a renderer reload with the browsers still open re-binds the slots (chips n
 // Header state honesty (bug from the live bar, 2026-09-21): a browser that holds a group role but is NOT sitting at
 // the table used to read "ĐÃ VÀO GAME" with a solid role chip; a browser whose frames stopped arriving read
 // "CHƯA VÀO GAME" although its game was running.
-test('bar: a role without a seat reads NGOÀI BÀN and offers VÀO LẠI BÀN (role chip dimmed)', () => {
+test('bar: a role without a seat reads NGOÀI BÀN · bấm ReJoin; seated reads SS <rid>', () => {
   const gh = require('../../desktop/protocol/phom/game-header.cjs');
   const s = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', groupRole: 'KEY', sharedRid: 3803041, betOptions: [100] });
   assert.match(s.statusLabel, /NGOÀI BÀN · SS 3803041/);
-  assert.equal(s.primary.action, 'REJOIN');
-  assert.equal(s.seatedAtTable, false);
+  assert.match(s.statusLabel, /bấm ReJoin/);
+  assert.equal(s.inTable, false); assert.equal(s.canRejoin, true);
   const seated = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 3803041, groupRole: 'KEY', seatedAtTable: true });
   assert.equal(seated.statusLabel, 'SS 3803041', 'a public table has no password to show');
-  assert.equal(seated.seatedAtTable, true);
+  assert.equal(seated.inTable, true);
   // the role is written in the line under the bar (reference tool layout), next to ID Bàn / Số người
   assert.match(gh.bootScript({}), /var ROLE = \{ KEY:'KEY', READY:'SẴN SÀNG', NOT_READY:'CHƯA SS' \};/);
 });

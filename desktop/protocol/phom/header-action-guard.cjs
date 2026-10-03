@@ -18,11 +18,9 @@ const REASONS = Object.freeze({
   DUPLICATE_ACTION:    { code: 'PHOM_HEADER_BUSY',          message: 'Đang xử lý thao tác trước…' },
 });
 
-// §34 — actions that must stay clickable WHILE a long operation is running. A persistent TÌM BÀN can hold the
-// browser for a minute, and single-flight is about not stacking two table operations — it was never meant to
-// trap the user: HỦY is the way out of the very operation that is busy, and ⟳ / ⏻ / ↑ are lifecycle escapes
-// that own their own teardown. Identity + duplicate-click checks still apply to them.
-const BUSY_EXEMPT_ACTIONS = Object.freeze(new Set(['CANCEL_FIND', 'RELOAD', 'STOP', 'FOCUS', 'CAPTURE_START', 'CAPTURE_STOP']));
+// Actions that must stay clickable WHILE a long operation runs: DỪNG (the second click on Dò Key. / Tạo.) is the way
+// out of the very search that is busy, and TẢI LẠI owns its own teardown. Identity + duplicate checks still apply.
+const BUSY_EXEMPT_ACTIONS = Object.freeze(new Set(['CANCEL_FIND', 'RELOAD']));
 function isBusyExempt(action) { return BUSY_EXEMPT_ACTIONS.has(String(action || '')); }
 
 function evaluateHeaderAction({ payload = {}, boundRunId, runProfileId = null, busy = false, lastActionId = null } = {}) {

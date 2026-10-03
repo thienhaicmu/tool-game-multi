@@ -83,31 +83,20 @@ test('Test D is wired: capture hook → recorder → IPC → Tool menu', () => {
 // browser they are about to click in (it first shipped only in the Tool window's ⋯ menu, which nobody looked at).
 const gh = require('../../desktop/protocol/phom/game-header.cjs');
 const { evaluateHeaderAction, isBusyExempt } = require('../../desktop/protocol/phom/header-action-guard.cjs');
-test('Test D in the header: the ⋯ menu toggles start/stop for THIS browser', () => {
+test('Test D lives in the tool window — the in-page bar has no recorder controls any more', () => {
   const src = gh.bootScript({ slotId: 'B' });
-  // recording lives in the ⋮ menu (it was removed from the bar's main row)
-  assert.match(src, /Ghi gói WS \(chẩn đoán\)/);
-  assert.match(src, /Dừng & lưu ghi gói WS/);
-  assert.match(src, /emit\(state\.capturing \? 'CAPTURE_STOP' : 'CAPTURE_START'\)/);
-  const idle = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY' });
-  assert.equal(idle.capturing, false);
-  const rec = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'READY', capturing: true, lastCapture: 'test-D-x.txt' });
-  assert.equal(rec.capturing, true);
-  assert.equal(rec.lastCapture, 'test-D-x.txt');
+  assert.equal(/CAPTURE_START|CAPTURE_STOP|Ghi gói WS/.test(src), false);
+  assert.equal('capturing' in gh.deriveHeaderState({ opened: true, inGame: true }), false);
 });
-test('Test D in the header: start/stop work even while a search holds the browser', () => {
-  assert.equal(isBusyExempt('CAPTURE_START'), true);
-  assert.equal(isBusyExempt('CAPTURE_STOP'), true);
-  assert.equal(evaluateHeaderAction({ payload: { action: 'CAPTURE_STOP' }, boundRunId: 'r', busy: true }).ok, true);
+test('only DỪNG and TẢI LẠI run alongside a busy browser', () => {
+  assert.equal(isBusyExempt('CANCEL_FIND'), true); assert.equal(isBusyExempt('RELOAD'), true);
+  assert.equal(isBusyExempt('CAPTURE_STOP'), false);
+  assert.equal(evaluateHeaderAction({ payload: { action: 'CANCEL_FIND' }, boundRunId: 'r', busy: true }).ok, true);
 });
-test('Test D in the header: main routes the actions and tells each header whether it is recorded', () => {
+test('Test D: the tool window records and saves through the same helper', () => {
   const main = read('desktop/phom-main.cjs');
-  assert.match(main, /action === 'CAPTURE_START'/);
-  assert.match(main, /frameRecorder\.start\(\{ runIds: \[rid\]/);
-  assert.match(main, /action === 'CAPTURE_STOP'/);
-  assert.match(main, /res = stopAndSaveCapture\(\);/);
-  assert.match(main, /capturing: captureActiveFor\(runId\),/);
   assert.match(main, /ipcMain\.handle\('phom:frames-record-stop', \(\) => stopAndSaveCapture\(\)\);/);
+  assert.equal(/captureActiveFor/.test(main), false);
 });
 // the header showed a bare "Player" for the Tool's A/B/C slot ids — the number is what tells the player which is which
 test('the header shows the Player number for both slot schemes', () => {
