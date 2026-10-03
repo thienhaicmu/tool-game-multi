@@ -52,6 +52,10 @@ class TableGroup extends EventEmitter {
     this._scanning = new Set(); // browsers running a manual TẠO right now (they run side by side)
     if (this._coord) {
       this._coord.on('kicked', ({ id, message } = {}) => this._onKicked(id, message));
+      if (typeof this._coord.on === 'function') {
+        this._coord.on('strangerReady', (e = {}) => this._onStrangerReady(e.id, e));
+        this._coord.on('roundEnd', () => this._onRoundEnd());
+      }
     }
   }
 
@@ -136,7 +140,7 @@ class TableGroup extends EventEmitter {
     await this._coord.setAutoReadyPref(id, false); // KEY never auto-readies
     const res = await this._coord.findKeyTable(id, { stake: Number(stake), pace: () => this.pace(gen) });
     if (!res.ok) { this._event('FIND_FAILED', { id, error: res.error }); return res; }
-    this._group = { rid: null, stake: Number(stake), creatorId: id, keyUid: this._coord.uidOf(id), roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), rejoinOn: new Set(), autoRejoin: new Set(), rejoinPending: new Set(), recreating: false };
+    this._group = { rid: null, stake: Number(stake), creatorId: id, keyUid: this._coord.uidOf(id), roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), rejoinOn: new Set(), autoRejoin: new Set(), rejoinPending: new Set(), bellRung: new Set(), recreating: false };
     this._event('KEY_SEATED', { id, channel: res.channel });
     this._emit();
     return { ...res, role: ROLE.KEY, roles: { [id]: ROLE.KEY } };
@@ -186,13 +190,10 @@ class TableGroup extends EventEmitter {
         this.joinTable(other, g.rid);
       }
     }
-    if (claim.role === ROLE.READY && await this.pace(gen)) {
-      await this._coord.setAutoReadyPref(id, true);
-      await this._coord.sendTableReady(id, g.rid);
-    }
     this._seated(id, claim.role);
     this._event('JOINED', { id, rid: g.rid, role: claim.role });
     this._emit();
+    await this._readyCheck(gen);
     return { ...res, role: claim.role };
   }
   // DỪNG — stop the DÒ KEY / TẠO this browser is running. Not queued: it must reach the search that holds the queue.
@@ -209,26 +210,23 @@ class TableGroup extends EventEmitter {
     if (!this._coord.browserReady(id)) return { ok: false, error: { code: 'PHOM_NOT_IN_GAME', message: 'Acc chưa vào game' } };
     const g = this._group;
     const ours = !!g && Number(g.rid) === r;
-    const claim = ours ? this._claimRole(id) : null;
     if (ours) {
-      if (!await this.pace(gen)) return this._release(claim, CANCELLED);
-      await this._coord.setAutoReadyPref(id, claim.role === ROLE.READY);
+      if (!await this.pace(gen)) return CANCELLED;
+      await this._coord.setAutoReadyPref(id, false);
     }
-    if (!await this.pace(gen)) return this._release(claim, CANCELLED);
+    if (!await this.pace(gen)) return CANCELLED;
     // op 8; at the group's own table the KEY must be there, else it is not our table any more
     const res = await this._coord.joinTable(id, r, ours ? { expectUid: g.keyUid } : {});
     if (!res.ok) {
       this._event('JOIN_FAILED', { id, rid: r, error: res.error });
       if (ours && this._isMissingRoom(res)) await this._onTableLost(gen);
-      return this._release(claim, res);
+      return res;
     }
-    if (ours && claim.role === ROLE.READY) {
-      if (!await this.pace(gen)) return { ...res, role: claim.role };
-      await this._coord.sendTableReady(id, r);
-    }
+    const claim = ours && this._group === g ? this._claimRole(id) : null;
     if (claim) this._seated(id, claim.role);
     this._event('JOINED', { id, rid: r, role: claim ? claim.role : null });
     this._emit();
+    if (claim) await this._readyCheck(gen);
     return { ...res, role: claim ? claim.role : null };
   }
 
@@ -418,20 +416,45 @@ class TableGroup extends EventEmitter {
     return Number(this._coord.seatedRid(String(id))) === Number(g.rid);
   }
   _rolesObject() { return this._group ? Object.fromEntries(this._group.roles) : {}; }
-  // The FIRST account to join the KEY is CHƯA SẴN SÀNG, the second SẴN SÀNG — the reference tool's order, and the reason
-  // for it (live run 2026-10-03 07:13): once every non-host player is ready, the server kicks the host for not starting
-  // (~16s later). A not-ready member keeps the KEY from ever owing a start; it is kicked itself every ~10s and ReJoin
-  // brings it straight back.
+  // Roles follow the ORDER OF OPERATION (the user's scenario): the account that sits down at the KEY's table first is
+  // SẴN SÀNG, the next one CHƯA SẴN SÀNG (with ReJoin). Kept until the group is dissolved; a kicked member keeps its own.
   _claimRole(id) {
     const g = this._group;
     if (g.roles.has(id)) return { id, role: g.roles.get(id), claimed: false };
-    const role = [...g.roles.values()].includes(ROLE.NOT_READY) ? ROLE.READY : ROLE.NOT_READY;
+    const role = [...g.roles.values()].includes(ROLE.READY) ? ROLE.NOT_READY : ROLE.READY;
     g.roles.set(id, role);
     return { id, role, claimed: true };
   }
-  _release(claim, res) {
-    if (claim && claim.claimed && this._group) this._group.roles.delete(claim.id);
-    return res;
+  // SẴN SÀNG presses ready — [5,"Simms",-1,{cmd:5}] — only once the CHƯA SẴN SÀNG member sits at the table too, and
+  // again after every round. Why the wait (live run 2026-10-03 07:13): once every non-host player is ready, the server
+  // kicks the host for not starting ~16s later; with the not-ready member seated the KEY never owes a start.
+  async _readyCheck(gen) {
+    const g = this._group;
+    if (!g || this._coord.roundRunning()) return;
+    const ids = [...g.roles.entries()];
+    const ready = ids.find(([, role]) => role === ROLE.READY);
+    const notReady = ids.find(([, role]) => role === ROLE.NOT_READY);
+    if (!ready || !notReady) return;
+    const [rid] = ready;
+    if (!this._atGroupTable(rid) || !this._atGroupTable(notReady[0]) || this._coord.isReady(rid)) return;
+    if (!await this.pace(gen) || this._group !== g || this._coord.isReady(rid) || this._coord.roundRunning()) return;
+    const res = await this._coord.sendTableReady(rid);
+    if (res && res.ok !== false) this._event('READY_SENT', { id: rid, rid: g.rid });
+  }
+  // The 4th player — not one of ours — pressed ready at the group's table: ring the tool window's bell (three times) so
+  // the user readies the CHƯA SẴN SÀNG account by hand and the KEY starts the round. Once per player per round.
+  _onStrangerReady(profileId, { uid, name } = {}) {
+    const g = this._group;
+    if (!g || !this._atGroupTable(String(profileId)) || uid == null || g.bellRung.has(uid)) return;
+    g.bellRung.add(uid);
+    const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
+    this._event('FOURTH_READY', { uid, name: name || null, rid: g.rid, notReadyId: nr ? nr[0] : null, keyId: g.creatorId });
+  }
+  _onRoundEnd() {
+    const g = this._group;
+    if (!g) return;
+    g.bellRung.clear(); // a new round: the 4th player readies again
+    this._enqueue('READY', (gen) => this._readyCheck(gen));
   }
   async _leaveIfSeated(id, gen) {
     if (!this._coord.isSeated(id)) return { ok: true };

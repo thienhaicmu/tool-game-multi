@@ -283,19 +283,38 @@
     if (!n || !n.event) return '';
     const who = playerLabelOf(n.id);
     switch (n.event) {
-      case 'TABLE_FOUND': return 'Đã vào bàn chờ ' + n.rid + '.';
+      case 'KEY_SEATED': return who + ' là KEY (chủ bàn) — các acc khác bấm Tạo / Vào.';
+      case 'TABLE_FOUND': return 'Số bàn ' + n.rid + ' — đã điền vào ô SS của mọi trình duyệt.';
+      case 'READY_SENT': return who + ' đã sẵn sàng.';
+      case 'FOURTH_READY': return '🔔 Người thứ 4' + (n.name ? ' (' + n.name + ')' : '') + ' đã sẵn sàng — ' + (n.notReadyId ? playerLabelOf(n.notReadyId) + ' bấm Sẵn sàng, ' : '') + playerLabelOf(n.keyId) + ' (KEY) bấm Bắt đầu.';
+      case 'SCAN_FAILED': return who + ' chưa dò ra bàn KEY: ' + errText({ error: n.error }) + '.';
       case 'GROUP_FORMED': return 'Cả nhóm đã vào bàn ' + n.rid + '.';
       case 'JOINED': return who + ' đã vào bàn' + (n.role ? ' · ' + roleLabel(n.role) : '') + '.';
       case 'JOIN_FAILED': return who + ' vào bàn không được: ' + errText({ error: n.error }) + '.';
       case 'FIND_FAILED': return 'Tìm bàn không được: ' + errText({ error: n.error }) + '.';
       case 'LEAVE_FAILED': return who + ' chưa rời được bàn: ' + errText({ error: n.error }) + '.';
       case 'KICKED': return who + ' bị đá khỏi bàn' + (n.message ? ' (' + n.message + ')' : '') + (n.auto ? ' — đang tự vào lại…' : ' — bấm ReJoin để vào lại.');
-      case 'REJOIN_EXHAUSTED': return who + ' bị đá quá nhiều lần trong 1 phút — tự vào lại đã dừng.';
-      case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang tìm bàn khác…' : ' — bấm Tìm bàn để vào bàn khác.');
+      case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang dò bàn khác…' : ' — bấm Dò Key để vào bàn khác.');
       case 'GROUP_DISSOLVED': return 'Đã thoát bàn tất cả.';
       case 'AUTO_OFF': return 'Đã tắt tự động.';
       default: return '';
     }
+  }
+  // 🔔 The 4th player is ready: three bell strikes in the tool window (WebAudio, nothing to ship).
+  function ringBell(times = 3) {
+    try {
+      const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
+      const ctx = ringBell.ctx || (ringBell.ctx = new AC());
+      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      for (let i = 0; i < times; i++) {
+        const t = ctx.currentTime + i * 0.6;
+        for (const [f, g] of [[880, 0.35], [1320, 0.18]]) {
+          const o = ctx.createOscillator(); const v = ctx.createGain();
+          o.type = 'sine'; o.frequency.value = f; v.gain.setValueAtTime(g, t); v.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
+          o.connect(v); v.connect(ctx.destination); o.start(t); o.stop(t + 0.56);
+        }
+      }
+    } catch { /* no sound device — the notice still shows */ }
   }
   function playerLabelOf(runId) { const b = runId != null ? manualBrowserById(runId) : null; return b && b.browserIndex ? 'P' + b.browserIndex : 'Một acc'; }
   function roleLabel(role) { const v = ROLE_VIEW[role]; return v ? v[0] : role; }
@@ -1466,7 +1485,7 @@
   // One push carries the whole screen state (main already coalesces it), so nothing is fetched on receipt.
   if (api.onUi) api.onUi((snap) => { applyUiSnapshot(snap); if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
   // The group flow reports what it just did; show it on the note line (one short sentence, never a code).
-  if (api.onNotice) api.onNotice((n) => { const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST|EXHAUST/.test(n.event)); });
+  if (api.onNotice) api.onNotice((n) => { if (n && n.event === 'FOURTH_READY') ringBell(3); const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST/.test(n.event)); });
   // PHASE 6.3.6 — reflect the current finder choice on load (main owns it; renderer mirrors for the selector UI).
   if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });

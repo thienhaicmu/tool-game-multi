@@ -98,8 +98,14 @@ class HostTableCoordinator extends EventEmitter {
     }
     switch (cls.type) {
       case 'DEAL': this._roundRunning = true; this._readyUids.clear(); break;
-      case 'ROUND_END': this._roundRunning = false; this._readyUids.clear(); break;
-      case 'USER_READY': this._readyUids.add(cls.uid); break;
+      case 'ROUND_END': {
+        const wasRunning = this._roundRunning;
+        this._roundRunning = false; this._readyUids.clear();
+        if (wasRunning) this.emit('roundEnd', {}); // once, though all three browsers receive it
+        break;
+      }
+      case 'USER_READY': this._readyUids.add(cls.uid); this._maybeStrangerReady(rec, cls.uid); break;
+      case 'SEAT_UPDATE': if (cls.present && cls.seat && cls.seat.r === true) this._maybeStrangerReady(rec, String(cls.seat.uid)); break;
       case 'HOST_CHANGED': rec._hostUid = cls.uid; break;
       case 'TABLE_STATE': {
         const ts = rec.ctx.tableState();
@@ -616,6 +622,14 @@ class HostTableCoordinator extends EventEmitter {
     const ts = rec.ctx.tableState(); const uid = rec.ctx.uid();
     const mine = ts && uid ? ts.seats.find((s) => s.uid === uid) : null;
     return mine && mine.m != null ? Number(mine.m) : rec.ctx.money();
+  }
+  // A player who is NOT one of the three controlled accounts readied at a table this browser sits at (the 4th seat) —
+  // table-group rings the tool's bell. Every browser at that table reports it; the group keeps it to once per round.
+  _maybeStrangerReady(rec, uid) {
+    if (uid == null || !this._ownSeated(rec)) return;
+    for (const r of this._profiles.values()) if (r.ctx.uid() === uid) return;
+    const seat = rec.ctx.tableState().seats.find((s) => s.uid === uid);
+    this.emit('strangerReady', { id: rec.id, uid, name: seat && seat.dn ? seat.dn : null });
   }
   // Ready = this browser signalled READY since the last deal/end, or its own seat row says so.
   _isReady(rec) {

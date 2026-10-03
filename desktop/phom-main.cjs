@@ -707,7 +707,7 @@ else {
   // Build the raw header view for ONE browser from authoritative snapshots (no button logic here — that
   // is deriveHeaderState). opened = a live (non-closed) run; inGame mirrors the renderer's slotInPhom
   // (socketReady + connected + channelList received). account = the logged-in display name (dn) or —.
-  function headerViewFor(runId, browsers, sharedRid) {
+  function headerViewFor(runId, browsers, sharedRid, cardsCtx) {
     const run = runManager && runManager.get(String(runId));
     const opened = !!(run && run.status !== RUN_STATUS.CLOSED);
     const b = (browsers || []).find((x) => x && String(x.profileId) === String(runId)) || {};
@@ -738,7 +738,24 @@ else {
       dataStale: !!(opened && b.lastFrameAt != null && (nowMs() - Number(b.lastFrameAt)) > HEADER_STALE_MS),
       staleSec: b.lastFrameAt != null ? Math.round((nowMs() - Number(b.lastFrameAt)) / 1000) : null,
       error: headerError[String(runId)] || null,
+      // LỌC BÀI — this account's safe-card analysis (the PHỎM tab's, same analyzer) + the cards still unseen
+      filter: headerFilterFor(b.browserIndex, cardsCtx),
     };
+  }
+  function headerCardsContext() {
+    if (!phomSessions || !phomSessions.active()) return null;
+    try { return { cards: phomSessions.cardObserverSnapshot(), remaining: phomSessions.remainingCards() }; } catch { return null; }
+  }
+  // Card labels only (rank + suit + colour) — small, and byte-stable between frames so the push de-dup keeps working.
+  function headerFilterFor(browserIndex, ctx) {
+    if (!ctx || !browserIndex) return null;
+    const uid = ctx.cards && ctx.cards.slotBinding ? ctx.cards.slotBinding['B' + browserIndex] : null;
+    const rem = ctx.remaining && ctx.remaining.count != null ? ctx.remaining.count : null;
+    if (!uid) return { status: 'NO_HAND', remaining: rem };
+    let a = null; try { a = safeCardAnalyzer.analyze({ snapshot: ctx.cards, targetPlayerUid: uid }); } catch { a = null; }
+    if (!a || a.status !== 'OK') return { status: a ? a.status : 'NO_HAND', remaining: rem };
+    const lab = (list) => (list || []).map((c) => ({ t: (c.rank || '?') + (c.suit || '?'), red: c.color === 'red', rec: a.recommendedCode != null && c.code === a.recommendedCode }));
+    return { status: 'OK', safe: lab(a.safeCards), likely: lab(a.likelySafeCards), risky: lab(a.riskyCards), own: lab(a.ownMeldCards), remaining: rem };
   }
   // A browser whose game frames stopped arriving is reported as such after this long (and re-hooked, see
   // maybeRehookCapture) instead of silently reading "CHƯA VÀO GAME".
@@ -774,11 +791,12 @@ else {
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
     maybeRehookCapture(browsers); // a browser whose frames stopped gets its hook re-installed (§data-stale)
     const sharedRid = headerSharedRid();
+    const cardsCtx = headerCardsContext();
     for (const run of runManager.list()) {
       if (run.status === RUN_STATUS.CLOSED) continue;
       const client = runClientFor(run.id);
       if (!client) continue;
-      const view = headerViewFor(run.id, browsers, sharedRid);
+      const view = headerViewFor(run.id, browsers, sharedRid, cardsCtx);
       const rid = String(run.id);
       maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
       if (view.inGame) {

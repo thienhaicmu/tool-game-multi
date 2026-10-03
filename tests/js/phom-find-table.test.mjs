@@ -112,7 +112,7 @@ function mkGroup(simOpts) {
     coord._rec(id).send = async (frame) => {
       const j = JSON.parse(frame);
       if (j[0] === 6 && j[3] && j[3].cmd === 363) { sim.sent[id].push(j); sim.pref[id] = j[3].aRd === 'true'; sim.order.push(['pref', id, j[3].aRd]); return { ok: true }; }
-      if (j[0] === 5 && j[3] && j[3].cmd === 5) { sim.sent[id].push(j); sim.readyFrames.push(id); const room = sim.rooms.get(j[2]); if (room) sim.readyBroadcast(room, sim.uids[id]); return { ok: true }; }
+      if (j[0] === 5 && j[3] && j[3].cmd === 5) { sim.sent[id].push(j); sim.readyFrames.push(id); const room = j[2] === -1 ? [...sim.rooms.values()].find((r) => r.seats.includes(sim.uids[id])) : sim.rooms.get(j[2]); if (room) sim.readyBroadcast(room, sim.uids[id]); return { ok: true }; }
       return inner(frame);
     };
   }
@@ -235,7 +235,7 @@ test('DỪNG: cancelSearch stops a running TẠO at its next step', async () => 
 
 // ---- the group (docs/phom-kich-ban.md) on the sim ----
 
-test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (CHƯA SS); Vào joins it (SẴN SÀNG) with op 8', async () => {
+test('SCENARIO (manual, sim): Dò Key → KEY; Tạo finds the số bàn (1st = SẴN SÀNG); Vào joins it (2nd = CHƯA SS) with op 8; ready once both sit', async () => {
   const { coord, sim, group } = mkGroup({ scan: ['lone'] });
   group.setStake(20000);
   const k = await group.findTable('B3', {});             // the bar sends no stake: the tool's Tiền is used
@@ -243,13 +243,14 @@ test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (CHƯA 
   assert.equal(op(sim, 'B3', 3)[0][2], 145, 'the channel of the stake chosen in the tool (20000)');
   assert.equal(group.rid(), null, 'no số bàn yet');
   const s = await group.scanTable('B1');
-  assert.equal(s.ok, true, JSON.stringify(s.error || s)); assert.equal(s.role, 'NOT_READY');
+  assert.equal(s.ok, true, JSON.stringify(s.error || s)); assert.equal(s.role, 'READY');
+  assert.deepEqual(sim.readyFrames, [], 'not ready while alone with the KEY');
   const rid = [...sim.rooms.values()].find((r) => r.seats[0] === '1_3').rid;
   assert.equal(group.rid(), rid, 'the KEY\'s table is the group\'s số bàn');
   assert.equal(sim.special.lone.seats.includes('1_1'), false, 'the lone stranger\'s table was left');
   assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B3').rid, rid, 'the KEY now shows the số bàn');
   const v = await group.joinTable('B2', rid);
-  assert.equal(v.ok, true, JSON.stringify(v.error || v)); assert.equal(v.role, 'READY');
+  assert.equal(v.ok, true, JSON.stringify(v.error || v)); assert.equal(v.role, 'NOT_READY');
   assert.deepEqual(op(sim, 'B2', 8).at(-1), [8, 'Simms', rid, '', 8]);
   assert.deepEqual([...sim.rooms.get(rid).seats].sort(), ['1_1', '1_2', '1_3']);
   for (const id of ['B1', 'B2']) {
@@ -257,18 +258,20 @@ test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (CHƯA 
     const seatAt = sim.order.findIndex((e) => e[0] === 'seat' && e[1] === id && e[2] === rid);
     assert.ok(prefAt >= 0 && prefAt < seatAt, `${id}: auto-ready preference set before it sits down`);
   }
-  assert.deepEqual(sim.readyFrames, ['B2'], 'only SẴN SÀNG readies; the KEY never sends cmd 5');
-  assert.equal(sim.pref.B1, false, 'CHƯA SS never auto-readies');
+  assert.deepEqual(sim.readyFrames, ['B1'], 'only SẴN SÀNG readies — once CHƯA SS sits; the KEY never sends cmd 5');
+  assert.deepEqual(op(sim, 'B1', 5).at(-1), [5, 'Simms', -1, { cmd: 5 }]);
+  assert.equal(sim.pref.B1, false); assert.equal(sim.pref.B2, false, 'auto-ready always off, like the reference tool');
 });
 
-test('A1 (auto): TỰ ĐỘNG forms KEY / CHƯA SS / SẴN SÀNG at ONE table, one browser after another', async () => {
+test('A1 (auto): TỰ ĐỘNG forms KEY / SẴN SÀNG / CHƯA SS at ONE table, one browser after another', async () => {
   const { sim, group } = mkGroup({ strangersFirst: 1, scan: ['full', 'lone'] });
   const r = await group.setAuto(true, { creatorId: 'B2', stake: 20000 });
   assert.equal(r.ok, true, JSON.stringify(r.error || r));
-  assert.deepEqual(r.roles, { B2: 'KEY', B1: 'NOT_READY', B3: 'READY' });
+  assert.deepEqual(r.roles, { B2: 'KEY', B1: 'READY', B3: 'NOT_READY' });
   assert.deepEqual([...sim.rooms.get(r.rid).seats].sort(), ['1_1', '1_2', '1_3']);
   assert.equal(asks(sim, 'B3').length, 0, 'the third account joins the known số bàn — no search');
-  assert.equal(sim.pref.B2, false); assert.equal(sim.pref.B1, false); assert.equal(sim.pref.B3, true);
+  assert.equal(sim.pref.B2, false); assert.equal(sim.pref.B1, false); assert.equal(sim.pref.B3, false);
+  assert.deepEqual(sim.readyFrames, ['B1']);
 });
 
 test('A3 (auto): the NOT_READY account is kicked again and again — it comes back EVERY time (no per-minute cap)', async () => {
@@ -276,30 +279,30 @@ test('A3 (auto): the NOT_READY account is kicked again and again — it comes ba
   const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
   assert.equal(r.ok, true, JSON.stringify(r.error || r));
   for (let i = 0; i < 7; i++) {
-    sim.kick('B2');
-    await until(() => sim.rooms.get(r.rid).seats.includes('1_2'));
-    assert.ok(sim.rooms.get(r.rid).seats.includes('1_2'), `kick ${i + 1}: back at the table`);
+    sim.kick('B3');
+    await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
+    assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'), `kick ${i + 1}: back at the table`);
   }
-  assert.ok(op(sim, 'B2', 8).filter((f) => f[2] === r.rid).length >= 7);
-  assert.equal(sim.pref.B2, false, 'still CHƯA SS');
+  assert.ok(op(sim, 'B3', 8).filter((f) => f[2] === r.rid).length >= 7);
+  assert.equal(sim.pref.B3, false, 'still CHƯA SS');
 });
 
 test('T6 + ReJoin toggle (manual): a kick is only reported, until ReJoin is switched on; pressing it again switches off', async () => {
   const { coord, sim, group } = mkGroup();
   const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
   await group.setAuto(false);
-  sim.kick('B3'); await tick(); await tick();
-  assert.equal(sim.rooms.get(r.rid).seats.includes('1_3'), false, 'manual: no automatic rejoin');
-  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B3').manualState, 'KICKED');
-  const on = await group.rejoin('B3');
+  sim.kick('B2'); await tick(); await tick();
+  assert.equal(sim.rooms.get(r.rid).seats.includes('1_2'), false, 'manual: SẴN SÀNG is not rejoined');
+  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B2').manualState, 'KICKED');
+  const on = await group.rejoin('B2');
   assert.equal(on.ok, true, JSON.stringify(on.error || on)); assert.equal(on.rejoinOn, true);
-  sim.kick('B3');
-  await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
-  assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'), 'ReJoin on: back by itself');
-  const off = await group.rejoin('B3');
+  sim.kick('B2');
+  await until(() => sim.rooms.get(r.rid).seats.includes('1_2'));
+  assert.ok(sim.rooms.get(r.rid).seats.includes('1_2'), 'ReJoin on: back by itself');
+  const off = await group.rejoin('B2');
   assert.equal(off.rejoinOn, false);
-  sim.kick('B3'); await tick(); await tick();
-  assert.equal(sim.rooms.get(r.rid).seats.includes('1_3'), false, 'ReJoin off again');
+  sim.kick('B2'); await tick(); await tick();
+  assert.equal(sim.rooms.get(r.rid).seats.includes('1_2'), false, 'ReJoin off again');
 });
 
 test('A4 (auto): the table is gone when a kicked member comes back → the group is formed again at a new table', async () => {
@@ -392,14 +395,14 @@ test('AUTO = MANUAL: TỰ ĐỘNG presses Dò Key → Tạo → Vào and switche
   assert.ok(asks(sim, 'B2').length >= 1);
   assert.equal(asks(sim, 'B3').length, 0); assert.deepEqual(op(sim, 'B3', 8).at(-1), [8, 'Simms', r.rid, '', 8]);
   const on = Object.fromEntries(coord.manualBrowserSnapshot().map((b) => [b.profileId, group.rejoinOn(b.profileId)]));
-  assert.deepEqual(on, { B1: false, B2: true, B3: true }, 'like pressing ReJoin on CHƯA SS and SẴN SÀNG');
+  assert.deepEqual(on, { B1: false, B2: true, B3: true }, 'like pressing ReJoin on SẴN SÀNG and CHƯA SS');
   await group.setAuto(false);
-  assert.equal(group.rejoinOn('B2'), true, 'CHƯA SS keeps its ReJoin (it is kicked every ~10s by design)');
-  assert.equal(group.rejoinOn('B3'), false, 'the ReJoin TỰ ĐỘNG switched on goes off');
+  assert.equal(group.rejoinOn('B3'), true, 'CHƯA SS keeps its ReJoin (it is kicked every ~10s by design)');
+  assert.equal(group.rejoinOn('B2'), false, 'the ReJoin TỰ ĐỘNG switched on goes off');
   // …but a ReJoin the USER switched on stays on
-  await group.rejoin('B3'); // seated + was off → it is a "switch on + join"
-  sim.kick('B3'); await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
-  assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'));
+  await group.rejoin('B2'); // seated + was off → it is a "switch on + join"
+  sim.kick('B2'); await until(() => sim.rooms.get(r.rid).seats.includes('1_2'));
+  assert.ok(sim.rooms.get(r.rid).seats.includes('1_2'));
 });
 
 test('ACCOUNT: the login identity gives the account name + ID before it sits anywhere; the bar shows both', () => {
@@ -451,4 +454,45 @@ test('PLAYERS: each browser lists who sits at its table — name, money, host, r
   assert.deepEqual(b3.players.map((p) => p.ours), [true, true, true, false], 'our three + the stranger');
   assert.equal(b3.players[0].host, true, 'the KEY is the host');
   assert.equal(b3.players.filter((p) => p.self).length, 1);
+});
+
+test('BELL (sim): a stranger sits in seat 4 and presses ready → ONE FOURTH_READY (the tool window rings 3 times)', async () => {
+  const { sim, group } = mkGroup();
+  const bells = []; group.on('notice', (n) => { if (n.event === 'FOURTH_READY') bells.push(n); });
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r.error || r));
+  const room = sim.rooms.get(r.rid);
+  room.seats.push('stranger_4'); sim.broadcast(room);
+  assert.equal(bells.length, 0, 'sitting down is not enough');
+  sim.readyBroadcast(room, 'stranger_4');           // [5,{uid,cmd:5}] reaches all three browsers
+  assert.equal(bells.length, 1, 'once, though three browsers saw it');
+  assert.deepEqual([bells[0].notReadyId, bells[0].keyId], ['B3', 'B1'], 'the CHƯA SS account readies by hand, the KEY starts');
+  sim.readyBroadcast(room, '1_2');                   // one of ours readying never rings
+  assert.equal(bells.length, 1);
+});
+
+test('SS SYNC: the số bàn Tạo found is in the SS box of all three bars; the KEY never shows its channel there', async () => {
+  const { coord, sim, group } = mkGroup();
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  const gh = require('../../desktop/protocol/phom/game-header.cjs');
+  for (const b of coord.manualBrowserSnapshot()) {
+    const st = gh.deriveHeaderState({ opened: true, inGame: true, manualState: b.manualState, rid: b.rid, joinedViaChannel: b.joinedViaChannel, sharedRid: group.rid() });
+    assert.equal(st.ssDefault, r.rid, b.profileId);
+  }
+  assert.ok(sim);
+});
+
+test('LỌC BÀI on the bar: a toggle that shows THIS account\'s safe / risky / meld cards and the cards still unseen', () => {
+  const gh = require('../../desktop/protocol/phom/game-header.cjs');
+  const filter = { status: 'OK', safe: [{ t: '10♥', red: true, rec: true }], likely: [], risky: [{ t: 'Q♠', red: false }], own: [], remaining: 23 };
+  const st = gh.deriveHeaderState({ opened: true, inGame: true, filter });
+  assert.deepEqual(st.filter, filter);
+  const src = gh.bootScript();
+  assert.match(src, /txtBtn\(__filterOn \? 'Lọc Bài\.' : 'Lọc Bài'/);
+  assert.match(src, /group\('NÊN ĐÁNH', '#86efac', f\.safe\); group\('CÓ THỂ', '#fde047', f\.likely\); group\('ĐỪNG ĐÁNH', '#fca5a5', f\.risky\); group\('TRONG PHỎM', '#93c5fd', f\.own\);/);
+  assert.match(src, /'· Còn lại ' \+ f\.remaining \+ ' lá'/);
+  // main feeds it from the SAME analyzer the tool window's PHỎM tab uses
+  const main = readMain();
+  assert.match(main, /filter: headerFilterFor\(b\.browserIndex, cardsCtx\)/);
+  assert.match(main, /safeCardAnalyzer\.analyze\(\{ snapshot: ctx\.cards, targetPlayerUid: uid \}\)/);
 });

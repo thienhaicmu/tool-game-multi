@@ -112,7 +112,10 @@ test('group events reach the screen as one plain-Vietnamese line (never a raw co
   assert.match(main, /phomSessions\.on\('notice', \(n\) => send\('phom:notice', n\)\)/);
   assert.match(preload, /onNotice: \(cb\) => ipcRenderer\.on\('phom:notice'/);
   const t = fn('noticeText');
-  for (const ev of ['TABLE_FOUND', 'JOINED', 'KICKED', 'TABLE_LOST', 'REJOIN_EXHAUSTED', 'GROUP_DISSOLVED']) assert.ok(t.includes(ev), ev);
+  for (const ev of ['KEY_SEATED', 'TABLE_FOUND', 'JOINED', 'READY_SENT', 'FOURTH_READY', 'KICKED', 'TABLE_LOST', 'GROUP_DISSOLVED']) assert.ok(t.includes(ev), ev);
+  // the 4th player readied: three bell strikes in the tool window, then the line says who does what
+  assert.match(read('ui-phom/phom-qa.js'), /if \(n && n\.event === 'FOURTH_READY'\) ringBell\(3\);/);
+  assert.match(fn('ringBell'), /createOscillator/);
   assert.match(t, /default: return '';/); // an unknown event is never shown as a code
 });
 

@@ -20,13 +20,14 @@ function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, scanFails = {}, s
     isSeated(id) { return this.seats.has(id); },
     seatedRid(id) { return this.seats.has(id) ? this.seats.get(id) : null; },
     lastRidOf(id) { return this.seats.get(id) ?? null; },
-    isReady: () => false,
+    ready: new Set(), round: false,
+    isReady(id) { return this.ready.has(id); },
     isTableHost: () => false,
     tableHostUid: () => null,
-    roundRunning: () => false,
+    roundRunning() { return this.round; },
     async leaveTable(id) { this.sent.push({ at: this.clock, id, cmd: 'LEAVE' }); this.seats.delete(id); return { ok: true }; },
     async setAutoReadyPref(id, on) { this.sent.push({ at: this.clock, id, cmd: 'PREF', on }); return { ok: true }; },
-    async sendTableReady(id, rid) { this.sent.push({ at: this.clock, id, cmd: 'READY', rid }); return { ok: true }; },
+    async sendTableReady(id) { this.sent.push({ at: this.clock, id, cmd: 'READY' }); this.ready.add(id); return { ok: true }; },
     // DÒ KEY: seated alone at a fresh table whose số bàn nobody knows yet (shown under the stake channel)
     async findKeyTable(id, opts) {
       if (opts && typeof opts.pace === 'function') await opts.pace();
@@ -88,32 +89,26 @@ test('QUEUE: two operations asked for at once run one after another, never inter
   assert.ok(order.indexOf('B2:JOIN') > order.indexOf('B1:FIND'));
 });
 
-test('T1 + T2a + T2: Dò Key makes KEY; Tạo finds the số bàn (CHƯA SS, ReJoin on); Vào joins it (SẴN SÀNG)', async () => {
+test('SCENARIO (manual): Dò Key → KEY; the 1st to sit = SẴN SÀNG, the 2nd = CHƯA SS + ReJoin; SẴN SÀNG readies once CHƯA SS sits', async () => {
   const { coord, group } = mk();
-  const created = await group.findTable('B2', { stake: 500 });
+  const created = await group.findTable('B2', { stake: 500 });       // any account can be the KEY
   assert.equal(created.ok, true);
   assert.equal(group.roleOf('B2'), ROLE.KEY);
   assert.equal(group.rid(), null, 'no số bàn until Tạo finds it');
-  assert.deepEqual(cmds(coord, 'PREF').map((e) => [e.id, e.on]), [['B2', false]], 'KEY never auto-readies');
-  const first = await group.scanTable('B1');
+  const first = await group.scanTable('B1');                         // Tạo: finds the KEY's table, sits first
   assert.equal(first.ok, true, JSON.stringify(first.error || first));
-  assert.equal(first.role, ROLE.NOT_READY, 'the first to join the KEY is never ready — the host would owe a start');
-  assert.equal(group.rejoinOn('B1'), true, 'and its ReJoin is on: it is kicked every ~10s by design');
-  assert.equal(cmds(coord, 'SCAN')[0].keyUid, 'uid-B2', 'Tạo looks for the uid of the KEY');
-  assert.equal(cmds(coord, 'SCAN')[0].stake, 500, 'at the stake the KEY sat at');
-  assert.equal(group.rid(), coord.keyRid);
-  assert.equal(coord.seatedRid('B2'), coord.keyRid, 'the KEY adopts the số bàn');
-  const second = await group.scanTable('B3'); // số bàn known → Tạo is simply Vào
-  assert.equal(second.role, ROLE.READY);
-  assert.equal(cmds(coord, 'SCAN').length, 1);
-  assert.deepEqual(cmds(coord, 'JOIN').map((e) => [e.id, e.rid, e.expectUid]), [['B3', coord.keyRid, 'uid-B2']], 'VÀO at the group table checks the KEY is there');
-  for (const [id, cmd] of [['B1', 'SCAN'], ['B3', 'JOIN']]) {
-    const pref = coord.sent.findIndex((e) => e.id === id && e.cmd === 'PREF');
-    const sit = coord.sent.findIndex((e) => e.id === id && e.cmd === cmd);
-    assert.ok(pref >= 0 && pref < sit, id);
-  }
-  assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B3']);
-  assert.equal(cmds(coord, 'PREF').find((e) => e.id === 'B1').on, false, 'searching never auto-readies');
+  assert.equal(first.role, ROLE.READY, '1st to sit at the KEY = SẴN SÀNG');
+  assert.equal(cmds(coord, 'SCAN')[0].keyUid, 'uid-B2'); assert.equal(cmds(coord, 'SCAN')[0].stake, 500);
+  assert.equal(group.rid(), coord.keyRid, 'the số bàn — in every SS box');
+  assert.equal(coord.seatedRid('B2'), coord.keyRid, 'the KEY adopts it');
+  assert.equal(cmds(coord, 'READY').length, 0, 'not ready yet: alone with the KEY the host would owe a start');
+  const second = await group.scanTable('B3');                        // số bàn known → Tạo is simply Vào
+  assert.equal(second.role, ROLE.NOT_READY, '2nd to sit = CHƯA SẴN SÀNG');
+  assert.equal(group.rejoinOn('B3'), true, 'with ReJoin on');
+  assert.deepEqual(cmds(coord, 'JOIN').map((e) => [e.id, e.rid, e.expectUid]), [['B3', coord.keyRid, 'uid-B2']]);
+  assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B1'], 'SẴN SÀNG readied once CHƯA SS sat down');
+  assert.ok(coord.sent.findIndex((e) => e.cmd === 'READY') > coord.sent.findIndex((e) => e.id === 'B3' && e.cmd === 'JOIN'));
+  assert.ok(cmds(coord, 'PREF').every((e) => e.on === false), 'auto-ready always off, like the reference tool');
 });
 
 test('T2a: Tạo without a KEY, or on the KEY itself, is refused before anything is sent', async () => {
@@ -124,14 +119,14 @@ test('T2a: Tạo without a KEY, or on the KEY itself, is refused before anything
   assert.equal(cmds(coord, 'SCAN').length, 0);
 });
 
-test('T2a: a failed Tạo takes no role — the next one to find the KEY is CHƯA SS', async () => {
+test('T2a: a failed Tạo takes no role — the next one to sit is SẴN SÀNG', async () => {
   const { group } = mk({ scanFails: { B1: { code: 'PHOM_NO_KEY_TABLE', message: 'nope' } } });
   await group.findTable('B2', { stake: 100 });
   const failed = await group.scanTable('B1');
   assert.equal(failed.ok, false);
   assert.equal(group.roleOf('B1'), null);
   const next = await group.scanTable('B3');
-  assert.equal(next.role, ROLE.NOT_READY);
+  assert.equal(next.role, ROLE.READY);
 });
 
 test('T5: leaving frees a READY / NOT_READY role but the KEY keeps its own', async () => {
@@ -148,28 +143,27 @@ test('T6 vs A3: manual — the SẴN SÀNG member is only REPORTED when kicked, 
   const { coord, group } = mk();
   const notices = []; group.on('notice', (n) => notices.push(n.event));
   await group.findTable('B2', { stake: 100 });
-  await group.scanTable('B1');                 // CHƯA SS, ReJoin on
-  await group.joinTable('B3', group.rid());    // SẴN SÀNG
+  await group.scanTable('B1');                 // SẴN SÀNG
+  await group.joinTable('B3', group.rid());    // CHƯA SS, ReJoin on
   const rid = group.rid();
-  coord.seats.delete('B3');
-  coord.fire('kicked', { id: 'B3', message: 'x' });
-  await new Promise((r) => setImmediate(r));
-  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, 1, 'manual: SẴN SÀNG is not rejoined');
   coord.seats.delete('B1');
-  coord.fire('kicked', { id: 'B1', message: 'Bạn bị kick vì không sẵn sàng' });
+  coord.fire('kicked', { id: 'B1', message: 'x' });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length, 0, 'manual: SẴN SÀNG is not rejoined');
+  coord.seats.delete('B3');
+  coord.fire('kicked', { id: 'B3', message: 'Bạn bị kick vì không sẵn sàng' });
   await group.leave('B9');
-  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length, 1, 'manual: CHƯA SS comes straight back');
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, 2, 'manual: CHƯA SS comes straight back');
   assert.ok(notices.includes('KICKED'));
-  await group.setAuto(true, { creatorId: 'B2', stake: 100 });   // A2: keeps the group, brings B1/B3 back
-  const before = cmds(coord, 'JOIN').filter((e) => e.id === 'B1').length;
+  await group.setAuto(true, { creatorId: 'B2', stake: 100 });   // A2: keeps the group, brings B1 back
+  const before = cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length;
   for (let i = 0; i < 8; i++) {                                    // more than any per-minute cap would allow
-    coord.seats.delete('B1');
-    coord.fire('kicked', { id: 'B1', message: 'x' });
-    coord.fire('kicked', { id: 'B1', message: 'x' });              // a duplicate report queues ONE rejoin
-    await group.leave('B9');                                      // drains the queue (the rejoin is ahead of it)
+    coord.seats.delete('B3');
+    coord.fire('kicked', { id: 'B3', message: 'x' });
+    coord.fire('kicked', { id: 'B3', message: 'x' });              // a duplicate report queues ONE rejoin
+    await group.leave('B9');
   }
-  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B1' && e.rid === rid).length, before + 8, 'auto: back after every kick');
-  assert.equal(notices.includes('REJOIN_EXHAUSTED'), false);
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3' && e.rid === rid).length, before + 8, 'back after every kick');
 });
 
 test('ReJoin toggle: ON brings the browser back after a kick even with TỰ ĐỘNG off; pressing it again switches OFF', async () => {
@@ -191,18 +185,19 @@ test('ReJoin toggle: ON brings the browser back after a kick even with TỰ Đ�
   assert.equal(joins(), n + 1, 'off: only reported');
 });
 
-test('T2a side by side: two browsers run Tạo at once; the first to find the KEY sits (CHƯA SS), the other stops and joins (SẴN SÀNG)', async () => {
+test('T2a side by side: two browsers run Tạo at once; the first to find the KEY sits (SẴN SÀNG), the other stops and joins (CHƯA SS)', async () => {
   const { coord, group } = mk({ scanHangs: ['B3'] });
   await group.findTable('B2', { stake: 100 });
   const slow = group.scanTable('B3');           // still searching…
   const fast = await group.scanTable('B1');     // …while this one finds the KEY (not queued behind B3)
-  assert.equal(fast.role, ROLE.NOT_READY);
+  assert.equal(fast.role, ROLE.READY);
   const r3 = await slow;
   assert.equal(r3.cancelled, true, 'B3 stopped scanning');
   await group.leave('B9');                      // drains the queued join
   assert.ok(cmds(coord, 'CANCEL').some((e) => e.id === 'B3'));
   assert.deepEqual(cmds(coord, 'JOIN').map((e) => [e.id, e.rid]), [['B3', coord.keyRid]], 'and joined the số bàn B1 found');
-  assert.equal(group.roleOf('B3'), ROLE.READY);
+  assert.equal(group.roleOf('B3'), ROLE.NOT_READY);
+  assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B1']);
   assert.equal(cmds(coord, 'SCAN').length, 2, 'both were scanning at the same time');
 });
 
@@ -220,7 +215,7 @@ test('A1: TỰ ĐỘNG forms the group — leave, Dò Key, Tạo, then Vào — 
   coord.seats.set('B1', 111); coord.seats.set('B2', 222);
   const res = await group.setAuto(true, { creatorId: 'B1', stake: 1000 });
   assert.equal(res.ok, true, JSON.stringify(res.error || res));
-  assert.deepEqual(res.roles, { B1: 'KEY', B2: 'NOT_READY', B3: 'READY' });
+  assert.deepEqual(res.roles, { B1: 'KEY', B2: 'READY', B3: 'NOT_READY' });
   const seq = coord.sent.map((e) => e.id + ':' + e.cmd);
   assert.deepEqual(seq.slice(0, 2), ['B1:LEAVE', 'B2:LEAVE'], 'old seats are released first');
   assert.ok(seq.indexOf('B1:FIND') < seq.indexOf('B2:SCAN') && seq.indexOf('B2:SCAN') < seq.indexOf('B3:JOIN'), 'Dò Key → Tạo → Vào');
@@ -266,8 +261,8 @@ test('A6: unticking TỰ ĐỘNG cancels what is queued and stops rejoining; sea
   assert.equal(group.autoActive(), false);
   assert.equal(coord.seats.size, seatedBefore, 'nobody was moved');
   const before = cmds(coord, 'JOIN').length;
-  coord.seats.delete('B3');                       // the SẴN SÀNG member
-  coord.fire('kicked', { id: 'B3', message: 'x' });
+  coord.seats.delete('B2');                       // the SẴN SÀNG member
+  coord.fire('kicked', { id: 'B2', message: 'x' });
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(cmds(coord, 'JOIN').length, before, 'no automatic rejoin any more');
   assert.ok(group.active(), 'the group itself is kept for manual play');
@@ -299,4 +294,32 @@ test('STAKE: one stake for the session — set in the tool, reused by a bar TÌM
   const auto = await group.setAuto(true, { creatorId: 'B2' });
   assert.equal(auto.ok, true, JSON.stringify(auto.error || auto));
   assert.equal(cmds(coord, 'FIND').at(-1).stake, 500);
+});
+
+test('ROUND: after each round SẴN SÀNG readies again (auto-ready stays off); never during a round', async () => {
+  const { coord, group } = mk();
+  await group.setAuto(true, { creatorId: 'B1', stake: 100 });
+  assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B2']);
+  coord.round = true; coord.ready.clear();             // a round is dealt
+  coord.fire('roundEnd', {}); await group.leave('B9');
+  assert.equal(cmds(coord, 'READY').length, 1, 'not while a round runs');
+  coord.round = false;                                  // the round is over
+  coord.fire('roundEnd', {}); await group.leave('B9');
+  assert.deepEqual(cmds(coord, 'READY').map((e) => e.id), ['B2', 'B2'], 'ready again for the next round');
+});
+
+test('BELL: the 4th player readies at the group table → one FOURTH_READY notice (bell) per player per round', async () => {
+  const { coord, group } = mk();
+  const bells = []; group.on('notice', (n) => { if (n.event === 'FOURTH_READY') bells.push(n); });
+  await group.setAuto(true, { creatorId: 'B1', stake: 100 });
+  // the three browsers each see it
+  for (const id of ['B1', 'B2', 'B3']) coord.fire('strangerReady', { id, uid: 'x_9', name: 'nguoila' });
+  assert.equal(bells.length, 1);
+  assert.deepEqual([bells[0].name, bells[0].notReadyId, bells[0].keyId], ['nguoila', 'B3', 'B1'], 'who readies by hand, who starts');
+  coord.fire('roundEnd', {}); await group.leave('B9');
+  coord.fire('strangerReady', { id: 'B1', uid: 'x_9', name: 'nguoila' });
+  assert.equal(bells.length, 2, 'rings again next round');
+  coord.seats.delete('B2');
+  coord.fire('strangerReady', { id: 'B2', uid: 'x_8', name: 'khac' });
+  assert.equal(bells.length, 2, 'only at the group table');
 });
