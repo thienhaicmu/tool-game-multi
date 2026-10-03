@@ -146,3 +146,22 @@ test('VERIFY-04: three browsers each at a DIFFERENT table is NOT "đủ 3 cùng 
   assert.equal(st.ok, false, 'three separate tables must never read as co-seated');
   assert.equal(st.result, 'TABLE_MISMATCH');
 });
+
+// Live log 2026-10-03 11:14: the KEY was kicked 15 s after the 2nd account sat down, "Bạn thoát vì không bắt đầu" —
+// the game's own auto-ready had readied that account. The reference tool turns auto-ready off right AFTER every
+// accepted join (363 aRd "false", 4–7 ms after [3,true,0,-1,null]); a 363 sent before the join does not hold.
+test('auto-ready OFF right after every accepted join — not after a refusal, not for a replayed frame', async () => {
+  const { HostTableCoordinator: C } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
+  const sent = [];
+  const coord = new C({ now: Date.now, environmentAuthorized: () => true, sessionId: 't', profiles: [{ id: 'B1', uid: '1_1', send: async (f) => { sent.push(f); return { ok: true }; } }] });
+  const feed = (raw, extra = {}) => coord.ingest('B1', { raw, direction: 'recv', targetId: 'T1', url: 'wss://sim', now: Date.now(), ...extra });
+  feed('[5,{"uid":"1_1","As":{"gold":1},"cmd":100,"id":0}]');
+  feed('[3,false,103,8104124,"Sai mật khẩu phòng"]');
+  feed('[3,true,0,-1,null]', { replay: true });
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sent, [], 'a refusal or a replayed frame changes nothing');
+  feed('[3,true,0,-1,null]');
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(sent, ['[6,"Simms","channelPlugin",{"cmd":363,"aRd":"false"}]']);
+  coord.stop();
+});

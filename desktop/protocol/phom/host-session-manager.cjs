@@ -98,7 +98,7 @@ class HostSessionManager extends EventEmitter {
     if (!e) return;
     this._early.set(id, { ring: [], pinned: e.pinned }); // the identity stays pinned for a later restart
     const frames = [...e.pinned.values()].filter((f) => !e.ring.includes(f)).concat(e.ring).sort((a, b) => (a.now - b.now) || ((a.seq || 0) - (b.seq || 0)));
-    for (const f of frames) { try { coord.ingest(id, f); } catch { /* a bad frame never blocks the session */ } }
+    for (const f of frames) { try { coord.ingest(id, { ...f, replay: true }); } catch { /* a bad frame never blocks the session */ } } // replay: state only, no reaction
   }
   // A new document (F5, ⟳, redirect) = a new login: what was buffered for the old page is void.
   forgetEarly(id) { this._early.delete(String(id)); }

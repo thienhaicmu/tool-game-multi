@@ -108,7 +108,6 @@ function bootScript(opts = {}) {
   function emitStatus(){ try { window[BID] && window[BID](JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId })); } catch(e){} }
   // Player number from the slot id ('B1'/'B2'/'B3' or the tool's 'A'/'B'/'C').
   var SLOTN = (function(){ var sid=String(ID.slotId||''); var m=/^B(\\d)$/i.exec(sid); if(m) return Number(m[1]); var abc={A:1,B:2,C:3}[sid.toUpperCase()]; return abc||null; })();
-  var ACCENT = SLOTN===1?'#2563eb':SLOTN===2?'#16a34a':SLOTN===3?'#ea580c':'#6b7280';
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
   var SHADOW = 'text-shadow:0 1px 2px #000,0 0 3px #000;';
   // The strip: fixed across the top, NO background (it sits over the game), clicks pass through between controls.
@@ -116,11 +115,11 @@ function bootScript(opts = {}) {
   bar.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;align-items:center;gap:2px;flex-wrap:nowrap;box-sizing:border-box;height:22px;width:100%;padding:0 2px;background:transparent;color:#fff;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;user-select:none;pointer-events:none;');
   bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Điều khiển Phỏm');
   const handle = mk('div','display:flex;align-items:center;gap:4px;min-width:0;flex-shrink:0;pointer-events:auto;');
-  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:19px;padding:0 4px;box-sizing:border-box;border-radius:4px;border:1px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.95);background:'+ACCENT+';color:#fff;font-weight:800;font-size:12px;'); badge.textContent = SLOTN ? String(SLOTN) : '?';
-  const nameEl = mk('span','font-weight:800;font-size:12px;color:#fff;white-space:nowrap;'+SHADOW); nameEl.style.display='none';
+  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:12px;height:19px;padding:0 2px;color:#fff;font-weight:800;font-size:13px;'+SHADOW); badge.textContent = SLOTN ? String(SLOTN) : '?';
+  const nameEl = mk('span','box-sizing:border-box;height:19px;padding:0 5px;border-radius:3px;background:#0b2545;color:#4fd8ff;font:800 12px/19px Inter,Segoe UI,sans-serif;white-space:nowrap;box-shadow:0 1px 3px rgba(0,0,0,.95);'); nameEl.style.display='none';
   handle.appendChild(badge); handle.appendChild(nameEl);
   const act = mk('div','display:flex;align-items:center;gap:2px;flex-wrap:nowrap;min-width:0;pointer-events:auto;'); act.id='__ph_act';
-  const hideBtn = mk('button','margin-left:auto;flex-shrink:0;height:19px;padding:0 3px;border-radius:3px;border:0;background:#111827;color:#fff;font:800 12px Inter,Segoe UI,sans-serif;cursor:pointer;pointer-events:auto;');
+  const hideBtn = mk('button','margin-left:auto;flex-shrink:0;height:19px;padding:0 4px;border-radius:3px;border:0;background:#ffffff;color:#111;font:800 12px Inter,Segoe UI,sans-serif;cursor:pointer;pointer-events:auto;text-shadow:none!important;');
   hideBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'' }); };
   bar.appendChild(handle); bar.appendChild(act); bar.appendChild(hideBtn);
   // Under the strip, centred in yellow: everyone at the table as name-money (👑 host, ✓ ready), or what is happening.
@@ -132,7 +131,7 @@ function bootScript(opts = {}) {
   var feedbackTimer = null;
   function showFeedback(message){ clearTimeout(feedbackTimer); feedback.textContent=message; feedback.style.display='block'; feedbackTimer=setTimeout(function(){ feedback.style.display='none'; },6000); }
   const uiStyle = document.createElement('style');
-  uiStyle.textContent = '#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:1px}#__phom_header button,#__phom_header .__ph_chip{opacity:1!important;border:1px solid #fff!important;box-shadow:0 1px 3px rgba(0,0,0,.95),0 0 0 1px rgba(0,0,0,.6);text-shadow:0 1px 1px rgba(0,0,0,.7)}#__phom_header button:hover:not(:disabled){filter:brightness(1.2)}#__phom_header button:disabled{background:#374151!important;color:#d1d5db!important;border-color:#9ca3af!important}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header #__ph_act>*{flex-shrink:0}';
+  uiStyle.textContent = '#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:1px}#__phom_header button,#__phom_header .__ph_chip{opacity:1!important;border:1px solid #fff!important;box-shadow:0 1px 3px rgba(0,0,0,.95),0 0 0 1px rgba(0,0,0,.6);text-shadow:0 1px 1px rgba(0,0,0,.7)}#__phom_header button:hover:not(:disabled){filter:brightness(1.2)}#__phom_header button:disabled{filter:saturate(.45) brightness(.85);cursor:not-allowed}#__phom_header button.__ph_dark{text-shadow:none}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header #__ph_act>*{flex-shrink:0}';
   bar.appendChild(uiStyle);
   // Mount idempotently (an overlay — never pushes the game view). On a real (re)mount, tell main.
   function ready(){ if(document.body){ if(!document.getElementById('__phom_header')){ document.body.appendChild(bar); emitStatus(); } } else { requestAnimationFrame(ready); } }
@@ -166,8 +165,9 @@ function bootScript(opts = {}) {
       window.addEventListener('pagehide', function(){ try { window.__phomHeaderObserver.disconnect(); } catch(e){} window.__phomHeaderObserver = null; }, { once:true });
     }
   } catch(e){}
-  function txtBtn(label, bg, onClick, tip, dis){
-    var b = mk('button','height:19px;padding:0 3px;border-radius:3px;border:0;background:'+bg+';color:#fff;font:800 12px/1 Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';');
+  function txtBtn(label, bg, onClick, tip, dis, fg){
+    var b = mk('button','height:19px;padding:0 4px;border-radius:3px;border:0;background:'+bg+';color:'+(fg||'#fff')+';font:800 12px/1 Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';');
+    if(fg) b.className = '__ph_dark';
     b.textContent = label; b.title = tip || label;
     if(dis) b.disabled = true; else b.onclick = onClick;
     return b;
@@ -208,24 +208,24 @@ function bootScript(opts = {}) {
       if(state.canAct){
         if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
         ssInput.value = __ssValue;
-        act.appendChild(chip('SS', '#dc2626'));
+        act.appendChild(chip('SS', '#e3170a'));
         act.appendChild(ssInput);
-        act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v); }catch(e){} },'Copy số bàn'));
+        act.appendChild(txtBtn('Copy','#ff9800',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v); }catch(e){} },'Copy số bàn'));
         function needStake(){ if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm lại.'); return true; } feedback.style.display='none'; return false; }
         // VÀO — sit at the số bàn in the SS box (op 8).
-        act.appendChild(txtBtn(state.joining ? 'Vào.' : 'Vào','#16a34a',function(){ var r=ssRid(); if(r==null){ showFeedback('Ô SS chưa có số bàn — bấm Tạo ở acc này để dò ra bàn của KEY.'); return; } emit('JOIN_CODE',{ rid:r }); },'VÀO: vào đúng số bàn trong ô SS', state.joining));
+        act.appendChild(txtBtn(state.joining ? 'Vào.' : 'Vào','#2e9e3e',function(){ var r=ssRid(); if(r==null){ showFeedback('Ô SS chưa có số bàn — bấm Tạo ở acc này để dò ra bàn của KEY.'); return; } emit('JOIN_CODE',{ rid:r }); },'VÀO: vào đúng số bàn trong ô SS', state.joining));
         // REJOIN — a toggle: on = come back by itself after every kick.
-        act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin.' : 'ReJoin', state.rejoinOn ? '#0f766e' : '#334155',function(){ emit('REJOIN'); }, state.rejoinOn ? 'REJOIN đang BẬT — bị đá sẽ tự vào lại ngay. Bấm để tắt' : 'REJOIN: vào bàn chung và tự vào lại mỗi lần bị đá', !state.canRejoin));
+        act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin.' : 'ReJoin', state.rejoinOn ? '#ffc400' : '#ffe600',function(){ emit('REJOIN'); }, state.rejoinOn ? 'REJOIN đang BẬT — bị đá sẽ tự vào lại ngay. Bấm để tắt' : 'REJOIN: vào bàn chung và tự vào lại mỗi lần bị đá', !state.canRejoin, '#111'));
         // TẠO — the OTHER accounts: find the KEY's table and sit there (fills every SS box). Second click stops it.
         var scanning = state.searchKind === 'SCAN';
-        act.appendChild(txtBtn(scanning ? 'Tạo.' : 'Tạo', scanning ? '#075985' : '#0369a1', function(){ if(scanning){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('SCAN_TABLE'); },
+        act.appendChild(txtBtn(scanning ? 'Tạo.' : 'Tạo', scanning ? '#6a1b9a' : '#8e24aa', function(){ if(scanning){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('SCAN_TABLE'); },
           scanning ? 'Đang dò bàn của acc KEY — bấm để dừng' : state.isKey ? 'Đây là acc KEY — bấm Tạo ở acc khác' : 'TẠO: dò ra bàn của acc KEY rồi ngồi vào — số bàn tự điền vào ô SS của mọi trình duyệt',
           !scanning && (state.isKey || !(state.keySeated || state.ssDefault != null))));
         // DÒ KEY — ONE account only: sit ALONE at an empty table and become the KEY (chủ bàn). Second click stops it.
         var keying = state.searchKind === 'KEY';
-        act.appendChild(txtBtn(keying ? 'Dò Key.' : 'Dò Key', keying ? '#5b21b6' : '#7c3aed', function(){ if(keying){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('FIND_TABLE'); },
+        act.appendChild(txtBtn(keying ? 'Dò Key.' : 'Dò Key', keying ? '#b71c1c' : '#e53935', function(){ if(keying){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('FIND_TABLE'); },
           keying ? 'Đang tìm bàn trống — bấm để dừng' : state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước' : 'DÒ KEY: chỉ bấm ở MỘT acc — ngồi một mình ở bàn trống cược ' + state.stake + ', acc này thành KEY (chủ bàn)'));
-        act.appendChild(txtBtn('Thoát','#991b1b',function(){ emit('LEAVE'); },'THOÁT: rời bàn (không tắt trình duyệt)', !state.inTable));
+        act.appendChild(txtBtn('Thoát','#1e6fe0',function(){ emit('LEAVE'); },'THOÁT: rời bàn (không tắt trình duyệt)', !state.inTable));
       } else if(state.primary){
         var p = state.primary;
         act.appendChild(txtBtn(p.label || p.action, '#2563eb', function(){ emit(p.action); }, p.label, !!p.disabled));

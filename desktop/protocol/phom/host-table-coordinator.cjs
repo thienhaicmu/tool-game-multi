@@ -106,17 +106,29 @@ class HostTableCoordinator extends EventEmitter {
         break;
       }
       case 'USER_READY': this._readyUids.add(cls.uid); this._maybeStrangerReady(rec, cls.uid); break;
-      case 'SEAT_UPDATE': if (cls.present && cls.seat && cls.seat.r === true) this._maybeStrangerReady(rec, String(cls.seat.uid)); break;
+      case 'SEAT_UPDATE':
+        if (cls.present && cls.seat && cls.seat.r === true) this._maybeStrangerReady(rec, String(cls.seat.uid));
+        if (meta.direction !== 'send' && !meta.replay) this._logSeats('SEAT_DIAG', rec, cls, [cls.json && cls.json[1] && cls.json[1].p]);
+        break;
       case 'HOST_CHANGED': rec._hostUid = cls.uid; break;
       case 'TABLE_STATE': {
         const ts = rec.ctx.tableState();
         const h = ts && ts.seats.find((s) => s.host);
         rec._hostUid = h ? h.uid : null;
         if (ts) for (const s of ts.seats) if (s.ready && s.uid) this._readyUids.add(s.uid);
+        if (meta.direction !== 'send' && !meta.replay) this._logSeats('TABLE_DIAG', rec, cls, cls.json && cls.json[1] && cls.json[1].ps);
         break;
       }
       case 'JOIN_ACCEPTED':
         if (meta.direction !== 'send') this._log('JOIN_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode, reason: cls.resultMessage || null });
+        // Auto-ready OFF right after EVERY accepted join, as the reference tool does (capture 2026-10-02: 363 aRd
+        // "false" 4–7 ms after each [3,true,0,-1,null] — Dò Key, Vào, every ReJoin). Sent before the join it did not
+        // hold: the game's own auto-ready readied the 2nd account and the server kicked the KEY 15 s later, "Bạn thoát
+        // vì không bắt đầu" (live log 2026-10-03 11:14). Whoever made the join — the tool or the game itself.
+        if (cls.accepted === true && meta.direction !== 'send' && !meta.replay && this._guard()) {
+          Promise.resolve(rec.send(buildAutoReadyPrefFrame(false), rec.ctx.sendContext())).catch(() => {});
+          this._log('AUTO_READY_OFF', rec, {});
+        }
         break;
       case 'LEAVE_ACK':
         // The server removed this browser (code 2, e.g. "Bạn bị kick vì không sẵn sàng"). What to do about it is the
@@ -680,6 +692,25 @@ class HostTableCoordinator extends EventEmitter {
       const slot = rec ? 'B' + (this.profileIds().indexOf(rec.id) + 1) : null;
       this.emit('log', redactDiagnostic({ tag: 'PHOM-COSEAT', event, at: this._now(), slot, runId: rec ? rec.id : null, ...data }));
     } catch { /* never throw from logging */ }
+  }
+  // What the server says about each seat, as THIS browser received it (diagnosis: the game drew our own accounts as
+  // "Ẩn Danh Tính · $?????" to each other while the reference tool's accounts saw names + avatars — every field
+  // name is kept so a flag the reference captures never show, e.g. mT, stands out).
+  _logSeats(event, rec, cls, seats) {
+    if (!Array.isArray(seats)) return;
+    if (event === 'TABLE_DIAG') { // a table state repeats during play: log it only when who sits there changed
+      const sig = seats.map((s) => s && s.uid + ':' + s.mT).join('|');
+      if (rec._seatDiagSig === sig) return;
+      rec._seatDiagSig = sig;
+    }
+    const top = cls.json && cls.json[1] && typeof cls.json[1] === 'object' ? Object.keys(cls.json[1]).filter((k) => k !== 'ps' && k !== 'p') : [];
+    this._log(event, rec, {
+      table: top.join(','), t: cls.json && cls.json[1] ? cls.json[1].t : undefined,
+      seats: seats.filter((s) => s && typeof s === 'object').map((s) => ({
+        uid: shortUid(s.uid), name: s.dn, avatar: s.a, mT: s.mT, pi: s.pi, host: s.C, ready: s.r, sit: s.sit,
+        fields: Object.keys(s).sort().join(','),
+      })),
+    });
   }
   _guard() { return this._authorizedFn() && !this._stopped; }
   _unauthorized() {

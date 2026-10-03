@@ -304,7 +304,8 @@ test('in the lobby with no group the bar tells the user to press Dò Key on ONE 
 
 test('BC: the bar is the reference strip — no background, fixed at the top, only the table buttons + Hide', () => {
   const src = gh.bootScript({ slotId: 'B2', profileId: 'p', runId: 'r' });
-  assert.match(src, /SLOTN===1\?'#2563eb':SLOTN===2\?'#16a34a':SLOTN===3\?'#ea580c'/);
+  // the reference tool's colours: SS red · Copy orange · Vào green · ReJoin yellow · Tạo purple · Dò Key red · Thoát blue · Hide white
+  for (const c of ["chip('SS', '#e3170a')", "txtBtn('Copy','#ff9800'", "'Vào','#2e9e3e'", "'#ffe600'", "'#8e24aa'", "'#e53935'", "txtBtn('Thoát','#1e6fe0'", 'background:#ffffff;color:#111']) assert.ok(src.includes(c), c);
   assert.match(src, /position:fixed;top:0;left:0;right:0;[^']*width:100%;[^']*background:transparent;/, 'no background over the game');
   assert.equal(/__drag/.test(src), false, 'a fixed strip is not draggable');
   assert.match(src, /const infoLine = mk\('div','position:fixed;top:23px;left:0;right:0;[^']*text-align:center;[^']*color:#fde047;/);
@@ -326,9 +327,9 @@ test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Dò Key 
   assert.match(src, /txtBtn\(keying \? 'Dò Key\.' : 'Dò Key', [^,]+, function\(\)\{ if\(keying\)\{ emit\('CANCEL_FIND'\); return; \} if\(needStake\(\)\) return; emit\('FIND_TABLE'\); \}/);
   assert.match(src, /txtBtn\(scanning \? 'Tạo\.' : 'Tạo', [^,]+, function\(\)\{ if\(scanning\)\{ emit\('CANCEL_FIND'\); return; \} if\(needStake\(\)\) return; emit\('SCAN_TABLE'\); \}/);
   // Vào parses the SS box without a regex (a lost backslash once turned /^\\d+$/ into /^d+$/ and the button did nothing)
-  assert.match(src, /txtBtn\(state\.joining \? 'Vào\.' : 'Vào','#16a34a',function\(\)\{ var r=ssRid\(\); if\(r==null\)\{ showFeedback\([^)]+\); return; \} emit\('JOIN_CODE',\{ rid:r \}\); \}/);
+  assert.match(src, /txtBtn\(state\.joining \? 'Vào\.' : 'Vào','#2e9e3e',function\(\)\{ var r=ssRid\(\); if\(r==null\)\{ showFeedback\([^)]+\); return; \} emit\('JOIN_CODE',\{ rid:r \}\); \}/);
   assert.match(src, /txtBtn\(state\.rejoinOn \? 'ReJoin\.' : 'ReJoin'/);
-  assert.match(src, /txtBtn\('Thoát','#991b1b',function\(\)\{ emit\('LEAVE'\); \}/);
+  assert.match(src, /txtBtn\('Thoát','#1e6fe0',function\(\)\{ emit\('LEAVE'\); \}/);
   assert.doesNotMatch(src, /\^d\+\$/);
 });
 
