@@ -45,7 +45,6 @@
   let autoBusy = false;
   let anDanhOn = false; // ẨN DANH switch — default OFF
   let anDanhBusy = false;
-  const replacePick = { A: null, B: null, C: null }; // THAY PROFILE: the profile picked for a closed slot
   const replaceBusy = { A: false, B: false, C: false };
   const assign = { A: { runId: null }, B: { runId: null }, C: { runId: null } };
   const manualEntering = {};    // runId → VÀO GAME in flight
@@ -215,7 +214,9 @@
     if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + manualBrowsers.length;
     const g = manualGroup;
     const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.money, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.lastError && b.lastError.code].join(',')).join(';');
-    const cards = ['B1', 'B2', 'B3'].map((sl) => { const a = safeBySlot[sl]; return a ? a.roundSeq + ':' + a.nextPlayerLabel + ':' + (a.targetCards || []).map((c) => c.code + c.classification).join('') : '-'; }).join('|');
+    const cards = ['B1', 'B2', 'B3'].map((sl) => { const a = safeBySlot[sl]; return a ? a.roundSeq + ':' + a.nextPlayerLabel + ':' + (a.targetCards || []).map((c) => c.code + c.classification).join('') : '-'; }).join('|')
+      + '|' + safeTab + safeFollowTurn + (cardsSnap && cardsSnap.currentTurnUid)
+      + '|' + manualBrowsers.map((b) => b.state && b.state.label).join(',') + '|' + JSON.stringify((clusterSnap && clusterSnap.reserves) || {});
     const slots = SLOTS.map((s) => [assign[s].runId, manualEntering[assign[s].runId], manualEnterError[assign[s].runId], clusterSnap && clusterSnap.profiles && clusterSnap.profiles[s] && clusterSnap.profiles[s].browserState].join(',')).join(';');
     return [uiState, activeTab, g && g.rid, g && g.stake, g && g.auto, g && g.busy, g && g.recreating, autoStake, autoBusy,
       coSeat && coSeat.result, coSeat && coSeat.seatedCount, sharedRid, browsers, cards, slots, remainingCount(), noteText()].join('|');
@@ -452,6 +453,7 @@
     r.appendChild(statusLine());
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
     r.appendChild(playerGrid());
+    r.appendChild(safePanel());
     r.appendChild(controlFooter());
   }
   const BUSY_LABEL = { FIND: 'Đang tìm bàn…', JOIN: 'Đang vào bàn…', REJOIN: 'Đang vào lại…', LEAVE: 'Đang rời bàn…', LEAVE_ALL: 'Đang rời hết…', AUTO_ON: 'Đang bật tự động…', REGROUP: 'Đang gom bàn mới…' };
@@ -479,9 +481,13 @@
     return el('div', { class: 'stat ' + v[1], title: coSeat && coSeat.reason ? coSeat.reason : 'Số acc mình cùng ngồi một bàn' }, el('span', null, 'Cùng bàn'), el('b', null, v[0]));
   }
 
+  // One row of compact cards: P1 · P2 · P3 playing, then a card per reserve (P4 · P5) — the grid takes 3, 4 or 5 columns.
   function playerGrid() {
-    const grid = el('div', { class: 'players' });
+    const reserves = clusterSnap && clusterSnap.reserves ? Object.values(clusterSnap.reserves).filter((r) => r && r.profileId) : [];
+    // playing cards get more room than the reserves (their state words matter more)
+    const grid = el('div', { class: 'players', style: 'grid-template-columns: repeat(3, minmax(0, 1.4fr))' + (reserves.length ? ` repeat(${reserves.length}, minmax(0, 1fr))` : '') });
     SLOTS.forEach((slot, i) => grid.appendChild(playerCard(i + 1, slot, assign[slot].runId)));
+    reserves.forEach((r) => grid.appendChild(reserveCard(r)));
     return grid;
   }
   // What one account is doing, in words (never a colour alone).
@@ -514,27 +520,99 @@
     const b = s.b;
     const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : null;
     const role = ROLE_VIEW[b.groupRole];
-    const actions = el('div', { class: 'pc-actions' });
-    if (!runId) actions.appendChild(el('span', { class: 'muted' }, 'Mở ở tab Profile'));
-    else if (s.chromiumClosed) { const pk = replacePicker(slot, true); if (pk) actions.appendChild(pk); }
+    const tools = el('span', { class: 'pc-tools' });
+    let extra = null; // a CLOSED slot's way back: take a reserve, reopen, or another profile
+    if (!runId) tools.appendChild(el('span', { class: 'muted' }, 'Mở ở tab Profile'));
+    else if (s.chromiumClosed) extra = closedSlotActions(slot);
     else {
-      if (!s.inGame) actions.appendChild(el('button', { class: 'btn primary sm', disabled: s.entering ? 'disabled' : null, title: 'Vào game Phỏm', onclick: () => manualEnterGame(runId) }, s.entering ? '…' : 'Vào game'));
-      actions.appendChild(iconButton('refresh', 'Tải lại web trong Chromium này', () => onReloadWeb(runId)));
-      actions.appendChild(iconButton('power', 'Tắt Chromium này', () => onCloseBrowser(runId), 'danger'));
-      const swap = replacePicker(slot, false); // only when a reserve browser is open
-      if (swap) actions.appendChild(swap);
+      if (!s.inGame) tools.appendChild(el('button', { class: 'btn primary xs', disabled: s.entering ? 'disabled' : null, title: 'Vào game Phỏm', onclick: () => manualEnterGame(runId) }, s.entering ? '…' : 'Vào game'));
+      tools.appendChild(iconButton('refresh', 'Tải lại web trong Chromium này', () => onReloadWeb(runId)));
+      tools.appendChild(iconButton('power', 'Tắt Chromium này', () => onCloseBrowser(runId), 'danger'));
     }
+    // compact card, 2 lines: [P · name · role] / [state … tools]; ID + money in the name's tooltip. Swapping is done from
+    // the reserve's own card (→1/→2/→3) or, for a closed slot, below (←P4/←P5).
+    const who = [account, b.accountId ? 'ID ' + b.accountId : '', b.money != null ? money(b.money) : ''].filter(Boolean).join(' · ');
     return el('section', { class: 'player st-' + s.cls, style: '--accent:' + ACCENT[index - 1] },
       el('div', { class: 'pc-head' },
         el('span', { class: 'p-badge' }, 'P' + index),
-        el('div', { class: 'pc-who' },
-          el('div', { class: 'pc-name', title: account || '' }, account || 'Chưa đăng nhập', b.isTableHost ? el('span', { title: 'Chủ bàn' }, ' 👑') : null),
-          el('div', { class: 'pc-meta' }, b.accountId ? 'ID ' + b.accountId : '', b.money != null ? (b.accountId ? ' · ' : '') + money(b.money) : '')),
+        el('div', { class: 'pc-name', title: who }, account || 'Chưa đăng nhập', b.isTableHost ? el('span', { title: 'Chủ bàn' }, ' 👑') : null),
         role ? el('span', { class: 'role ' + role[1], title: role[2] }, role[0]) : null),
-      el('div', { class: 'pc-state' }, el('span', { class: 'dot ' + s.cls }), el('span', null, s.label), b.rejoinOn ? el('span', { class: 'pill', title: 'Bị đá sẽ tự vào lại' }, 'ReJoin') : null, actions),
+      el('div', { class: 'pc-state', title: s.label + (who ? ' — ' + who : '') }, el('span', { class: 'dot ' + s.cls }), el('span', { class: 'pc-label' }, s.label), b.rejoinOn ? el('span', { class: 'pill rj', title: 'ReJoin bật — bị đá sẽ tự vào lại' }, 'RJ') : null, tools),
       s.enterErr ? el('div', { class: 'warn-text sm' }, s.enterErr) : null,
-      safeCardsFor('B' + index));
+      extra);
   }
+  // A RESERVE card (P4/P5): same compact look, dashed, marked DỰ BỊ; its →P1/→P2/→P3 buttons put it into that slot at
+  // once (the slot's browser becomes the reserve). A closed reserve can only be reopened from the Profile tab.
+  function reserveCard(r) {
+    const n = 4 + ['D', 'E'].indexOf(r.slot);
+    const open = r.browserState === 'OPEN';
+    const b = (open ? manualBrowserById(r.profileId) : null) || {};
+    const st = b.state || {};
+    const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : null;
+    const label = open ? (st.label ? st.label.replace(/^DỰ BỊ P\d · /, '') : 'Đang mở…') : 'Đã tắt';
+    const tone = open ? (st.tone || 'off') : 'off';
+    const tools = el('span', { class: 'pc-tools' });
+    if (open) {
+      if (st.code === 'NOT_IN_GAME') tools.appendChild(iconButton('play', 'Vào game Phỏm', () => manualEnterGame(r.profileId), 'primary'));
+      tools.appendChild(iconButton('refresh', 'Tải lại web trong Chromium này', () => onReloadWeb(r.profileId)));
+      tools.appendChild(iconButton('power', 'Tắt Chromium dự bị này', () => onCloseBrowser(r.profileId), 'danger'));
+    }
+    // compact, 2 lines: [P4 · name · state dot+words] / [→1 →2 →3 … tools] — the full state is in the tooltip
+    const swap = open ? el('span', { class: 'pc-swap', title: 'Cho P' + n + ' vào chơi thay ô…' },
+      ...SLOTS.map((slot, i) => el('button', { class: 'btn xs', disabled: replaceBusy[slot] ? 'disabled' : null, title: `P${n} vào chơi ở ô P${i + 1}; trình duyệt P${i + 1} hiện tại thành dự bị (rời bàn trước)`, onclick: () => onSwapSlot(slot, r.slot) }, '→' + (i + 1)))) : null;
+    const who = [account || r.label || r.deviceProfileId, b.accountId ? 'ID ' + b.accountId : '', b.money != null ? money(b.money) : '', 'DỰ BỊ — mở sẵn sau tool, chưa chơi'].filter(Boolean).join(' · ');
+    return el('section', { class: 'player reserve st-' + tone },
+      el('div', { class: 'pc-head' },
+        el('span', { class: 'p-badge', title: 'Dự bị' }, 'P' + n),
+        el('div', { class: 'pc-name', title: who }, account || r.label || r.deviceProfileId)),
+      el('div', { class: 'pc-state', title: label }, el('span', { class: 'dot ' + tone }), el('span', { class: 'pc-label res-label' }, label)),
+      el('div', { class: 'pc-res-actions' }, swap, tools));
+  }
+  // A CLOSED playing slot: ←P4 / ←P5 (an open reserve, at once), Mở lại (its own profile), or another free profile.
+  function closedSlotActions(slot) {
+    const cs = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
+    const box = el('div', { class: 'pc-into' });
+    for (const r of openReserves()) box.appendChild(el('button', { class: 'btn primary xs', disabled: replaceBusy[slot] ? 'disabled' : null, title: 'Trình duyệt dự bị vào chơi ở ô này', onclick: () => onSwapSlot(slot, r.slot) }, '←P' + (4 + ['D', 'E'].indexOf(r.slot))));
+    box.appendChild(el('button', { class: 'btn xs', disabled: replaceBusy[slot] ? 'disabled' : null, title: 'Mở lại profile cũ của ô này', onclick: () => onReplaceSlot(slot, cs.deviceProfileId || null) }, replaceBusy[slot] ? 'Đang mở…' : 'Mở lại'));
+    const others = freeProfilesFor(slot).filter((p) => p.id !== cs.deviceProfileId);
+    if (others.length) {
+      const sel = el('select', { class: 'sel xs', title: 'Mở một profile khác vào ô này', disabled: replaceBusy[slot] ? 'disabled' : null, onchange: (e) => { if (e.target.value) onReplaceSlot(slot, e.target.value); } },
+        el('option', { value: '' }, 'Profile khác…'), ...others.map((p) => el('option', { value: p.id }, p.name || p.id)));
+      box.appendChild(sel);
+    }
+    return box;
+  }
+  // LỌC BÀI — ONE panel, a tab per playing account (P1 · P2 · P3), the selected one gets the whole width so a full hand
+  // fits without scrolling late in the round. "Theo lượt" (default on) opens the tab of the account whose turn it is.
+  let safeTab = 'B1';
+  let safeFollowTurn = true;
+  try { const v = localStorage.getItem('phq-safe-follow'); if (v != null) safeFollowTurn = v === '1'; } catch { /* per-viewer convenience only */ }
+  function turnSlot() {
+    const c = cardsSnap; if (!c || !c.currentTurnUid || !c.slotBinding) return null;
+    for (const sl of ['B1', 'B2', 'B3']) if (c.slotBinding[sl] && String(c.slotBinding[sl]) === String(c.currentTurnUid)) return sl;
+    return null;
+  }
+  function safePanel() {
+    const turn = turnSlot();
+    if (safeFollowTurn && turn) safeTab = turn;
+    const tabs = el('div', { class: 'safe-tabs', role: 'tablist' });
+    ['B1', 'B2', 'B3'].forEach((sl, i) => {
+      const b = manualBrowserById(assign[SLOTS[i]].runId) || {};
+      const name = b.username && b.username !== 'USER_UNKNOWN' ? b.username : '';
+      const a = safeBySlot[sl];
+      const n = a && a.status === 'OK' ? (a.safeCards || []).length : null;
+      tabs.appendChild(el('button', { class: 'safe-tab' + (safeTab === sl ? ' active' : ''), role: 'tab', 'aria-selected': safeTab === sl ? 'true' : 'false', style: '--accent:' + ACCENT[i],
+        title: turn === sl ? 'Đang tới lượt acc này' : '', onclick: () => { safeTab = sl; if (turn && turn !== sl) setFollow(false); renderApp(); } },
+        el('b', null, 'P' + (i + 1)), name ? el('span', { class: 'st-name' }, name) : null,
+        turn === sl ? el('span', { class: 'turn-dot', 'aria-label': 'đang tới lượt' }, '● lượt') : null,
+        n != null ? el('span', { class: 'st-count', title: 'Số lá nên đánh' }, String(n)) : null));
+    });
+    const follow = el('input', { type: 'checkbox', id: 'phq-follow', onchange: (e) => { setFollow(e.target.checked); renderApp(); } });
+    follow.checked = safeFollowTurn;
+    tabs.appendChild(el('label', { class: 'follow', for: 'phq-follow', title: 'Tự mở tab của acc đang tới lượt' }, follow, 'Theo lượt'));
+    return el('section', { class: 'safe-panel' }, tabs, safeCardsFor(safeTab));
+  }
+  function setFollow(on) { safeFollowTurn = !!on; try { localStorage.setItem('phq-safe-follow', on ? '1' : '0'); } catch { /* ignore */ } }
 
   // LỌC BÀI for ONE account: the cards the NEXT player (table order) cannot eat, from all three accounts' cards.
   const SAFE_GROUPS = [
@@ -656,8 +734,8 @@
     await refreshManual(); renderApp();
   }
   // ĐỔI NGƯỜI CHƠI / THAY PROFILE — every slot can take an OPEN reserve browser (4th/5th ticked profile, waiting behind
-  // the tool) at once; a CLOSED slot can also reopen with its own profile or any profile not open anywhere.
-  // Option values: 'R:D' = swap in reserve D, else a saved profile id to open.
+  // the tool) at once — from the reserve's card (→P1/→P2/→P3) or a closed slot's card (←P4/←P5); a CLOSED slot can also
+  // reopen with its own profile or any profile not open anywhere.
   function openReserves() {
     const rs = (clusterSnap && clusterSnap.reserves) || {};
     return Object.values(rs).filter((r) => r && r.profileId && r.browserState === 'OPEN');
@@ -672,27 +750,6 @@
     for (const r of openReserves()) if (r.deviceProfileId) busy.add(r.deviceProfileId);
     return profilesX.filter((p) => !busy.has(p.id));
   }
-  function replacePicker(slot, closed) {
-    const cs = (clusterSnap && clusterSnap.profiles && clusterSnap.profiles[slot]) || {};
-    const own = cs.deviceProfileId || '';
-    // each reserve with its live state (a warm one is "Ở SẢNH" — it sits down at once)
-    const opts = openReserves().map((r) => {
-      const st = (manualBrowserById(r.profileId) || {}).state;
-      return { value: 'R:' + r.slot, label: (r.label || r.deviceProfileId) + ' (dự bị' + (st && st.code ? ' · ' + (st.code === 'LOBBY' || st.code === 'ERROR' ? 'ở sảnh' : st.code === 'IN_TABLE' ? 'đang ngồi bàn khác' : st.code === 'NOT_IN_GAME' ? 'chưa vào game' : st.code === 'ENTERING' ? 'đang vào game' : 'bận') : '') + ')' };
-    });
-    if (closed) for (const p of freeProfilesFor(slot)) opts.push({ value: p.id, label: (p.name || p.id) + (p.id === own ? ' (cũ)' : '') });
-    if (!opts.length) return null;
-    if (replacePick[slot] == null || !opts.some((o) => o.value === replacePick[slot])) replacePick[slot] = closed && opts.some((o) => o.value === own) ? own : opts[0].value;
-    const sel = el('select', { class: 'sel sm', title: closed ? 'Trình duyệt dự bị (đổi ngay) hoặc profile mở vào ô này' : 'Đổi ô này sang trình duyệt dự bị (đổi ngay, không tải lại)', disabled: replaceBusy[slot] ? 'disabled' : null, onchange: (e) => { replacePick[slot] = e.target.value; } },
-      ...opts.map((o) => el('option', { value: o.value }, o.label)));
-    sel.value = replacePick[slot];
-    const btn = el('button', { class: 'btn primary sm', disabled: replaceBusy[slot] ? 'disabled' : null, title: 'Cho trình duyệt đã chọn chơi ở ô này', onclick: () => onPickForSlot(slot, replacePick[slot]) }, replaceBusy[slot] ? '…' : (closed ? 'Mở' : 'Đổi'));
-    return el('span', { class: 'row' }, sel, btn);
-  }
-  function onPickForSlot(slot, value) {
-    if (value && value.startsWith('R:')) return onSwapSlot(slot, value.slice(2));
-    return onReplaceSlot(slot, value);
-  }
   // the Profile tab's badges follow the cluster: P1/P2/P3 = the playing profiles, then the open reserves
   function syncSelectionFromCluster() {
     const ps = (clusterSnap && clusterSnap.profiles) || {};
@@ -704,7 +761,7 @@
     const oldRun = assign[slot].runId;
     replaceBusy[slot] = true; note('Đang đổi người chơi…'); renderApp();
     let res; try { res = await api.swapSlot(slot, reserve); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    replaceBusy[slot] = false; replacePick[slot] = null;
+    replaceBusy[slot] = false;
     if (oldRun) clearEnter(oldRun);
     try { clusterSnap = await api.clusterSnapshot(); } catch {}
     bindSlotsFromCluster(); syncSelectionFromCluster();
@@ -720,7 +777,7 @@
     note(profileId && profileId !== cs.deviceProfileId ? `Đang mở ${p ? p.name : profileId} vào ô P${SLOTS.indexOf(slot) + 1}…` : 'Đang mở lại Chromium…');
     renderApp();
     let res; try { res = await api.replaceSlot(slot, profileId && profileId !== cs.deviceProfileId ? profileId : null); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    replaceBusy[slot] = false; replacePick[slot] = null;
+    replaceBusy[slot] = false;
     if (oldRun) clearEnter(oldRun);
     try { clusterSnap = await api.clusterSnapshot(); } catch {}
     bindSlotsFromCluster();
@@ -750,7 +807,9 @@
   }
   function reconcileEnterStates() { for (const slot of SLOTS) { const runId = assign[slot].runId; if (runId && slotInPhom(runId)) clearEnter(runId); } }
   function slotProfile(runId) { return (session && session.profiles || []).find((x) => x.id === runId) || null; }
-  function slotInPhom(runId) { const p = slotProfile(runId); return !!(p && p.socketReady && p.connected && (p.channelCount || 0) > 0); }
+  // In the Phỏm lobby — read from the SAME snapshot as the card's state words (manualBrowsers), the session list only
+  // as a fallback before the first snapshot, so the "Vào game" button and the state can never disagree.
+  function slotInPhom(runId) { const p = manualBrowserById(runId) || slotProfile(runId); return !!(p && p.socketReady && p.connected && (p.channelCount || 0) > 0); }
 
   // GHI WEBSOCKET (Test D) — record the game's own frames while the user acts, save them (secrets redacted) for a bug report
   async function openFrameCapture() {

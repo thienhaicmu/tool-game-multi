@@ -450,8 +450,20 @@ else {
       getRunInfo: runInfoFor,
       hostSession: ensurePhomSessions(),
     });
-    phomCluster.on('update', (snap) => send('phom:cluster', snap));
+    phomCluster.on('update', (snap) => { send('phom:cluster', snap); syncToolOnTop(snap); });
     return phomCluster;
+  }
+  // A RESERVE browser (P4/P5) sits exactly where the tool is; Chromium windows that open (or get focus) later would
+  // cover it. While any reserve is open the tool stays above them (always-on-top); with no reserve it is a normal
+  // window again. Changed only when the reserve count flips.
+  let _toolOnTop = false;
+  function syncToolOnTop(snap) {
+    const rs = (snap && snap.reserves) || {};
+    const want = !!(snap && !snap.stopped && Object.values(rs).some((r) => r && r.profileId && r.browserState === 'OPEN'));
+    if (want === _toolOnTop) return;
+    _toolOnTop = want;
+    try { if (shell && !shell.isDestroyed()) { shell.setAlwaysOnTop(want); if (want) shell.moveTop(); } } catch { /* best effort */ }
+    headerLog('TOOL_ON_TOP', { on: want });
   }
 
   function send(channel, payload) { try { if (shell && !shell.isDestroyed()) shell.webContents.send(channel, payload); } catch { /* best effort */ } }

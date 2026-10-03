@@ -122,11 +122,12 @@ test('player card: P badge in its accent, account + ID + money, role, state IN W
   assert.match(card, /'ID ' \+ b\.accountId/);
   assert.match(card, /money\(b\.money\)/);
   assert.match(card, /ROLE_VIEW\[b\.groupRole\]/);
-  assert.match(card, /el\('span', null, s\.label\)/, 'the state is written, not only a dot');
+  assert.match(card, /el\('span', \{ class: 'pc-label' \}, s\.label\)/, 'the state is written, not only a dot');
   assert.match(card, /manualEnterGame\(runId\)/);
   assert.match(card, /onReloadWeb\(runId\)/);
   assert.match(card, /onCloseBrowser\(runId\)/);
-  assert.match(card, /safeCardsFor\('B' \+ index\)/, 'its own Lọc Bài inside the card');
+  assert.equal(/safeCardsFor/.test(card), false, 'LỌC BÀI is the tabbed panel, not inside the card');
+  assert.match(fn(js, 'safePanel'), /safeCardsFor\(safeTab\)/);
   for (const st of ['Bị đá → ReJoin', "'Bị đá'", 'Đang Tạo (dò bàn KEY)…', 'Đang Dò Key…', 'Trong bàn', 'Ở sảnh Phỏm']) assert.ok(fn(js, 'slotState').includes(st), st);
 });
 

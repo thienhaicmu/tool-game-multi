@@ -185,7 +185,7 @@ test('wiring: swap IPC moves the windows (reserve → behind the tool) and swaps
   assert.match(main, /async function swapSlot[\s\S]*?phomSessions\.swapRuns\(oldRun, res\.playingRun\)[\s\S]*?moveRunWindow\(res\.playingRun, windowRectForSlot\(s\)\)[\s\S]*?moveRunWindow\(res\.benchedRun, windowRectForSlot\(r\)\)[\s\S]*?shell\.moveTop\(\)/);
   assert.match(read('desktop/phom-preload.cjs'), /swapSlot: \(slot, reserve\) => ipcRenderer\.invoke\('phom:slot-swap'/);
   const ui = read('ui-phom/phom-qa.js');
-  assert.match(ui, /const swap = replacePicker\(slot, false\)/);
+  assert.match(ui, /function reserveCard\(r\)[\s\S]*?onclick: \(\) => onSwapSlot\(slot, r\.slot\)/, 'a reserve card puts itself into P1/P2/P3 (→1/→2/→3)');
   assert.match(ui, /api\.swapSlot\(slot, reserve\)/);
 });
 
@@ -216,7 +216,8 @@ test('wiring: IPC phom:slot-replace → replaceSlot (close, reassign, open, repl
   assert.match(main, /phomSessions\.replaceRun\(oldRun, newRun\)/);
   assert.match(read('desktop/phom-preload.cjs'), /replaceSlot: \(slot, profileId\) => ipcRenderer\.invoke\('phom:slot-replace'/);
   const ui = read('ui-phom/phom-qa.js');
-  assert.match(ui, /s\.chromiumClosed\) \{ const pk = replacePicker\(slot, true\)/);
+  assert.match(ui, /else if \(s\.chromiumClosed\) extra = closedSlotActions\(slot\)/);
+  assert.match(ui, /function closedSlotActions[\s\S]*?onSwapSlot\(slot, r\.slot\)[\s\S]*?'Mở lại'[\s\S]*?'Profile khác…'/, 'closed slot: ←P4/←P5, Mở lại, another profile');
   assert.match(ui, /api\.replaceSlot\(slot,/);
 });
 
@@ -274,4 +275,13 @@ test('TỰ ĐỘNG only ever works with the playing accounts', () => {
   assert.match(main, /function reserveViewFor[\s\S]*?reserve: true, reserveLabel: label/);
   assert.match(main, /\.\.\.reserveViewFor\(runId\)/);
   assert.match(read('ui-phom/phom-qa.js'), /for \(const r of openReserves\(\)\) if \(r\.profileId && !runIds\.includes\(r\.profileId\)\) runIds\.push\(r\.profileId\)/);
+});
+
+test('with a reserve open the tool stays above it (P4/P5 open where the tool is); none → a normal window again', () => {
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /phomCluster\.on\('update', \(snap\) => \{ send\('phom:cluster', snap\); syncToolOnTop\(snap\); \}\)/);
+  const fn = main.slice(main.indexOf('function syncToolOnTop('), main.indexOf('function send('));
+  assert.match(fn, /Object\.values\(rs\)\.some\(\(r\) => r && r\.profileId && r\.browserState === 'OPEN'\)/);
+  assert.match(fn, /if \(want === _toolOnTop\) return;/, 'only when the reserve count flips');
+  assert.match(fn, /shell\.setAlwaysOnTop\(want\)/);
 });

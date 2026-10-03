@@ -15,9 +15,13 @@ test('3. the số bàn appears ONCE (status line), never repeated in the three p
   assert.equal(/\brid\b|'RID|Số bàn/.test(card), false, 'no per-card table number');
 });
 
-test('4. the three player cards take the free height; each scrolls its own Lọc Bài', () => {
-  assert.match(css, /\.players \{[^}]*flex: 1 1 auto[^}]*min-height: 0/);
+test('4. compact player cards; the tabbed LỌC BÀI panel takes the free height (one account at full width)', () => {
+  assert.match(css, /\.players \{[^}]*flex: 0 0 auto/);
+  assert.match(css, /\.safe-panel \{[^}]*flex: 1 1 auto[^}]*min-height: 0/);
   assert.match(css, /\.safe \{[^}]*flex: 1 1 auto[^}]*overflow-y: auto/);
+  assert.match(css, /\.pc-label \{[^}]*text-overflow: ellipsis/, 'a long state is cut with … (full text in the tooltip), never overlapping');
+  assert.match(css, /\.pc-res-actions \{[^}]*flex-wrap: wrap/, 'a reserve card\'s buttons wrap instead of overflowing');
+  assert.match(css, /\.safe \{[^}]*grid-template-columns: repeat\(auto-fill, minmax\(200px, 1fr\)\)/, 'LỌC BÀI groups side by side: a full hand fits one screen');
   assert.match(css, /#phq-root \{[^}]*flex-direction: column[^}]*overflow: hidden/);
 });
 
