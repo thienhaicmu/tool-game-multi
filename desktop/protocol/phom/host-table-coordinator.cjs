@@ -119,6 +119,7 @@ class HostTableCoordinator extends EventEmitter {
     const rec = this._rec(profileId);
     if (!rec) return null;
     const now = meta.now != null ? meta.now : this._now();
+    const wasHost = this.isTableHost(rec.id); // before a kick clears the table (KICKED diagnostics)
     const cls = rec.ctx.observe({ ...meta, now });
     if (isForeignPush(cls, meta)) return cls;
     const seq = Number.isFinite(meta.seq) ? meta.seq : null;
@@ -150,7 +151,9 @@ class HostTableCoordinator extends EventEmitter {
         break;
       }
       case 'JOIN_ACCEPTED':
-        if (meta.direction !== 'send') this._log('JOIN_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode, reason: cls.resultMessage || null });
+        // a refusal keeps the server's own frame (no secrets in it: [3,false,code,rid,text]) — 166 "Phòng đầy" at a
+        // 2-player table (live 2026-10-03) cannot be explained from the code alone
+        if (meta.direction !== 'send') this._log('JOIN_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode, reason: cls.resultMessage || null, ...(cls.accepted === true ? {} : { serverFrame: frameText(meta.raw), money: this._money(rec) }) });
         // Auto-ready OFF right after EVERY accepted join, as the reference tool does (capture 2026-10-02: 363 aRd
         // "false" 4–7 ms after each [3,true,0,-1,null] — Dò Key, Vào, every ReJoin). Sent before the join it did not
         // hold: the game's own auto-ready readied the 2nd account and the server kicked the KEY 15 s later, "Bạn thoát
@@ -166,7 +169,7 @@ class HostTableCoordinator extends EventEmitter {
         if (cls.accepted === true && cls.resultCode === 2 && meta.direction !== 'send') {
           rec._joinedRid = null; rec.manualState = 'KICKED';
           rec.lastError = { code: 'PHOM_KICKED', message: cls.resultMessage || 'Bị máy chủ đưa ra khỏi bàn' };
-          this._log('KICKED', rec, { reason: cls.resultMessage || null });
+          this._log('KICKED', rec, { reason: cls.resultMessage || null, serverFrame: frameText(meta.raw), host: wasHost, roundRunning: this._roundRunning });
           this.emit('kicked', { id: rec.id, message: cls.resultMessage || null });
         }
         break;
@@ -733,11 +736,14 @@ class HostTableCoordinator extends EventEmitter {
       if (rec._seatDiagSig === sig) return;
       rec._seatDiagSig = sig;
     }
-    const top = cls.json && cls.json[1] && typeof cls.json[1] === 'object' ? Object.keys(cls.json[1]).filter((k) => k !== 'ps' && k !== 'p') : [];
+    const body = cls.json && cls.json[1] && typeof cls.json[1] === 'object' ? cls.json[1] : null;
+    const top = body ? Object.keys(body).filter((k) => k !== 'ps' && k !== 'p') : [];
     this._log(event, rec, {
-      table: top.join(','), t: cls.json && cls.json[1] ? cls.json[1].t : undefined,
+      table: top.join(','), t: body ? body.t : undefined,
+      // the values that decide who may sit: stake, max players (Mu), game state, lock — "Phòng đầy" diagnosis
+      ...(event === 'TABLE_DIAG' && body ? { stake: body.b, maxPlayers: body.Mu, gameState: body.gS, locked: body.hpwd === true } : {}),
       seats: seats.filter((s) => s && typeof s === 'object').map((s) => ({
-        uid: shortUid(s.uid), name: s.dn, avatar: s.a, mT: s.mT, pi: s.pi, host: s.C, ready: s.r, sit: s.sit,
+        uid: shortUid(s.uid), name: s.dn, avatar: s.a, mT: s.mT, pi: s.pi, host: s.C, ready: s.r, sit: s.sit, money: s.m,
         fields: Object.keys(s).sort().join(','),
       })),
     });
@@ -764,6 +770,9 @@ function publicHand(rec) {
 }
 function errMsg(e) { return String(e && e.message || e); }
 function accountIdOf(uid) { if (uid == null) return null; const m = /^\d+_(\d+)$/.exec(String(uid)); return m ? m[1] : null; }
+// A short server reply kept verbatim in the diagnostic log (only refusals / kicks — never a login frame, which holds the
+// session token). Bounded so a log line never grows with the frame.
+function frameText(raw) { return typeof raw === 'string' && !/token|"pwd"|password/i.test(raw) ? raw.slice(0, 300) : null; }
 function shortUid(uid) { if (uid == null) return null; const s = String(uid); return s.length <= 6 ? s : `${s.slice(0, 4)}…${s.slice(-3)}`; }
 
 module.exports = { HostTableCoordinator };
