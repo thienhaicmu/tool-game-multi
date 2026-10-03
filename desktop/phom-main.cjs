@@ -53,6 +53,7 @@ const { rectForSlot, toolWindowBounds, arrangeClusterWindows } = require('./prot
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
 const anDanh = require('./protocol/phom/an-danh.cjs');
+const { deriveBrowserState } = require('./protocol/phom/browser-state.cjs');
 const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
 const { evaluateHeaderAction } = headerActionGuard;
 const { normalizeWindowBounds } = require('./window-bounds.cjs');
@@ -668,8 +669,22 @@ else {
       // Data freshness: frames were seen once but stopped (lost hook after a reload / target swap) → say it.
       dataStale: !!(opened && b.lastFrameAt != null && (nowMs() - Number(b.lastFrameAt)) > HEADER_STALE_MS),
       staleSec: b.lastFrameAt != null ? Math.round((nowMs() - Number(b.lastFrameAt)) / 1000) : null,
+      // TỰ ĐỘNG on: the bar says so (and, GĐ3, locks its table buttons)
+      auto: !!(phomSessions && phomSessions.active() && phomSessions.autoActive && phomSessions.autoActive()),
       error: headerError[String(runId)] || null,
     };
+  }
+  // GĐ2 — an error shown on a bar belongs to the state it happened in: once that browser's state changes (it got in,
+  // left, was kicked…) the old error is cleared instead of sticking until the next click.
+  const headerErrorState = Object.create(null); // runId -> state code when the error was set
+  function settleHeaderError(rid, code) {
+    if (headerError[rid] == null) { delete headerErrorState[rid]; return; }
+    if (headerErrorState[rid] == null) { headerErrorState[rid] = code; return; }
+    if (headerErrorState[rid] !== code) { delete headerError[rid]; delete headerErrorState[rid]; }
+  }
+  // The ONE state of a browser (browser-state.cjs) — the same object the bar renders, for the tool window's cards.
+  function browserStateFor(runId, browsers, sharedRid) {
+    return deriveBrowserState(headerViewFor(runId, browsers, sharedRid));
   }
   // A browser whose game frames stopped arriving is reported as such after this long (and re-hooked, see
   // maybeRehookCapture) instead of silently reading "CHƯA VÀO GAME".
@@ -721,6 +736,8 @@ else {
       // §5/§14 lag fix — the coordinator emits 'update' on EVERY observed WS frame; deriving is cheap but a
       // CDP Runtime.evaluate per frame per browser is an evaluate STORM that saturates the client the click
       // rides on. Skip the round-trip when this browser's derived state is byte-identical to the last push.
+      settleHeaderError(rid, deriveBrowserState(view).code); // a stale error goes once the state moved on
+      view.error = headerError[rid] || null;
       const json = JSON.stringify(gameHeader.deriveHeaderState(view));
       if (headerLastPushed[rid] === json) continue;
       headerLastPushed[rid] = json;
@@ -1312,7 +1329,12 @@ else {
     function phomUiSnapshot() {
       if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {} };
       const browsers = phomSessions.manualBrowserSnapshot() || [];
-      for (const b of browsers) { if (b && b.profileId != null) Object.assign(b, browserRuntimeStatus(b.profileId)); }
+      const shared = headerSharedRid();
+      for (const b of browsers) {
+        if (!b || b.profileId == null) continue;
+        Object.assign(b, browserRuntimeStatus(b.profileId));
+        b.state = browserStateFor(b.profileId, browsers, shared); // the same state the bar shows (GĐ2)
+      }
       const cards = phomSessions.cardObserverSnapshot();
       const analyses = {};
       const binding = (cards && cards.slotBinding) || {};

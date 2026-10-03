@@ -494,9 +494,11 @@
     const entering = opened && !inGame && !!manualEntering[runId];
     const enterErr = opened && !inGame && manualEnterError[runId];
     const inTable = inGame && b.manualState === 'JOINED' && b.rid != null;
+    // GĐ2 — the ONE state main derived for this browser (browser-state.cjs): the same words as its in-page bar
     const st = !runId ? ['Chưa mở', 'off']
       : chromiumClosed ? ['Đã tắt', 'off']
       : entering ? ['Đang vào game…', 'warn']
+      : b.state && b.state.label ? [b.state.label + (b.state.inTable && b.ready ? ' · đã sẵn sàng' : ''), b.state.tone || 'info']
       : b.manualState === 'RECONNECTING' ? ['Bị đá → ReJoin', 'warn']
       : b.manualState === 'KICKED' ? ['Bị đá', 'bad']
       : b.manualState === 'JOINING' ? ['Đang vào bàn…', 'warn']

@@ -17,6 +17,8 @@
 // DOM/canvas (only #__phom_header). This module is pure (a string generator + derivers), unit-testable.
 // ---------------------------------------------------------------------------
 
+const { deriveBrowserState } = require('./browser-state.cjs');
+
 const HEADER_ACTIONS = Object.freeze({
   ENTER_GAME:  { short: 'Vào Game', tip: 'Đưa acc vào game Phỏm' },
   JOIN_CODE:   { short: 'Vào', tip: 'Vào đúng số bàn trong ô SS' },
@@ -34,22 +36,16 @@ const HEADER_ACTIONS = Object.freeze({
 function deriveHeaderState(view = {}) {
   const s = view.manualState;
   const joined = !!view.inGame && s === 'JOINED' && view.rid != null;
-  let statusLabel, primary = null;
-  if (!view.opened) { statusLabel = 'CHƯA MỞ'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME', disabled: true }; }
-  // Frames stopped arriving: the tool cannot know the real state, so it says so and offers the only fix.
-  else if (view.dataStale) { statusLabel = 'MẤT DỮ LIỆU' + (view.staleSec ? ' ' + view.staleSec + 's' : '') + ' · TẢI LẠI'; primary = { action: 'RELOAD', label: 'TẢI LẠI WEB' }; }
-  else if (view.entering) { statusLabel = 'ĐANG VÀO GAME'; primary = { action: 'ENTER_GAME', label: 'ĐANG VÀO GAME…', busy: true, disabled: true }; }
-  else if (!view.inGame) { statusLabel = 'CHƯA VÀO GAME'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME' }; }
-  else if (s === 'KICKED') statusLabel = 'BỊ ĐÁ' + (view.rejoinOn ? ' · đang vào lại' : ' · bấm ReJoin');
-  else if (s === 'SEARCHING') statusLabel = (view.searchKind === 'SCAN' ? 'ĐANG DÒ BÀN KEY' : 'ĐANG DÒ KEY') + (view.searchElapsedSec ? ' ' + view.searchElapsedSec + 's' : '') + (view.searchAttempt ? ' · lần ' + view.searchAttempt : '');
-  else if (s === 'LEAVE_UNCONFIRMED') statusLabel = 'CHƯA XÁC NHẬN RỜI BÀN — bấm Thoát lại';
-  else if (s === 'JOINING' || s === 'RECONNECTING') statusLabel = 'ĐANG VÀO BÀN';
-  else if (joined) statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + view.rid;
-  else if (view.groupRole && view.sharedRid != null) statusLabel = 'NGOÀI BÀN · SS ' + view.sharedRid + ' · bấm ReJoin';
-  else if (view.sharedRid != null) statusLabel = 'Ở SẢNH · SS ' + view.sharedRid + ' · bấm Vào';
-  else if (view.keySeated) statusLabel = 'Ở SẢNH · KEY đã ngồi · bấm Tạo';
-  else statusLabel = 'Ở SẢNH · bấm Dò Key (một acc)';
+  // the words + state come from the ONE per-browser state (browser-state.cjs) the tool window's cards show too
+  const st = deriveBrowserState(view);
+  const statusLabel = st.label;
+  let primary = null;
+  if (st.code === 'CLOSED') primary = { action: 'ENTER_GAME', label: 'VÀO GAME', disabled: true };
+  else if (st.code === 'DATA_STALE') primary = { action: 'RELOAD', label: 'TẢI LẠI WEB' };
+  else if (st.code === 'ENTERING') primary = { action: 'ENTER_GAME', label: 'ĐANG VÀO GAME…', busy: true, disabled: true };
+  else if (st.code === 'NOT_IN_GAME') primary = { action: 'ENTER_GAME', label: 'VÀO GAME' };
   return {
+    stateCode: st.code, tone: st.tone, reserve: st.reserve,
     account: view.account && String(view.account).trim() ? String(view.account) : '—',
     accountId: view.accountId != null ? String(view.accountId) : null,
     money: view.money != null ? Number(view.money) : null,
