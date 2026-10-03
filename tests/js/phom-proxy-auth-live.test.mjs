@@ -30,7 +30,11 @@ const USER = 'phomuser', PASS = 'phom-secret-pw';
 
 // The site behind the proxy.
 function startOrigin() {
-  const server = http.createServer((req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>t</title><body>OK-PROXIED</body>'); });
+  const server = http.createServer((req, res) => {
+    if (req.url.startsWith('/asset')) { res.writeHead(200, { 'content-type': 'text/plain' }); res.end('ASSET-OK'); return; }
+    if (req.url.startsWith('/game')) { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>g</title><body>G<script>fetch("/asset?" + Date.now()).then((r) => r.text()).then((t) => { document.body.textContent = t; }, () => { document.body.textContent = "ASSET-FAIL"; });</script></body>'); return; }
+    res.writeHead(200, { 'content-type': 'text/html' }); res.end('<!doctype html><title>t</title><body>OK-PROXIED</body>');
+  });
   // Same rule as the proxy below: a browser-dropped socket must never escape as an uncaught ECONNRESET.
   server.on('clientError', (_err, socket) => { try { socket.destroy(); } catch { /* already gone */ } });
   server.on('connection', (socket) => socket.on('error', () => {}));
@@ -118,6 +122,26 @@ test('§52 authenticated proxy: bind on about:blank, then navigate → the page 
   } finally { origin.server.close(); proxy.server.close(); }
 });
 
+// Only documents are intercepted (pausing every game asset made a proxied game stall); the page's assets must still
+// get through the same authenticated proxy on Chromium's cached credentials.
+test('§52 authenticated proxy: the page\'s own assets load through the proxy without being intercepted', async (t) => {
+  if (!chromePath()) { t.skip('Chrome not installed'); return; }
+  const origin = await startOrigin();
+  const proxy = await startAuthProxy();
+  try {
+    await withChrome(proxy.port, async (client) => {
+      const paused = [];
+      client.Fetch.requestPaused((p) => paused.push(p.resourceType));
+      await bindProxyAuth(client, { runProxy: { requiresAuth: true }, username: USER, resolvePassword: () => PASS });
+      await client.Page.navigate({ url: `http://127.0.0.1:${origin.port}/game` });
+      const ok = await waitFor(async () => (await bodyText(client)).includes('ASSET-OK'));
+      assert.ok(ok, 'the asset fetched by the page came back through the proxy');
+      assert.ok(paused.length >= 1 && paused.every((r) => r === 'Document'), `only documents paused: ${paused.join(',')}`);
+      assert.equal(proxy.seen.badCreds, 0);
+    });
+  } finally { origin.server.close(); proxy.server.close(); }
+});
+
 test('§52 control: WITHOUT the handler the same proxy blocks the page (the bug the ordering fixes)', async (t) => {
   if (!chromePath()) { t.skip('Chrome not installed'); return; }
   const origin = await startOrigin();
@@ -156,9 +180,11 @@ test('§52 wiring: auth-first launch, navigate after binding, page target only, 
   assert.match(main, /const authFirst = !!\(gate\.runProxy && gate\.runProxy\.requiresAuth\);/);
   assert.match(main, /run\.launcher\.open\(authFirst \? 'about:blank' : String\(url \|\| ''\)\)/);
   assert.match(main, /if \(pending && \(!target\.type \|\| target\.type === 'PAGE'\)\) \{/);
-  assert.match(main, /run\._pendingNavigateUrl = null;\s*client\.Page\.navigate\(\{ url: pending \}\)/);
+  assert.match(main, /run\._pendingNavigateUrl = null;\s*headerLog\('PROXY_NAVIGATE', \{ runId: run\.id, slotId: run\.slot, watchdog: false \}\);\s*client\.Page\.navigate\(\{ url: pending \}\)/);
+  // …and never left on about:blank: a watchdog loads the game if the bind never ran
+  assert.match(main, /if \(authFirst\) \{[\s\S]*?PROXY_NAVIGATE_WATCHDOG_MS = 12000[\s\S]*?if \(!pending \|\| run\.status === RUN_STATUS\.CLOSED\) return;/);
   const handler = fs.readFileSync(new URL('../../desktop/browser-run/proxy-auth-handler.cjs', import.meta.url), 'utf8');
-  assert.match(handler, /patterns: \[\{ urlPattern: '\*' \}\]/, 'authRequired only fires for INTERCEPTED requests');
+  assert.match(handler, /patterns: \[\{ urlPattern: '\*', resourceType: 'Document' \}\]/, 'authRequired only fires for INTERCEPTED requests — documents only, assets are never paused');
   assert.equal(/Fetch\.enable\(\{ handleAuthRequests: true, patterns: \[\] \}\)/.test(handler), false, 'the intercept-nothing call is gone');
 });
 

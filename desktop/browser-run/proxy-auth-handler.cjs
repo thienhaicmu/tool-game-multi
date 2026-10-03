@@ -67,7 +67,10 @@ async function bindProxyAuth(client, ctx = {}) {
     // continued at once above) so the proxy challenge reaches onAuth — the same mechanism Puppeteer's
     // page.authenticate() uses. Verified against a real Chrome + a real 407 proxy in
     // tests/js/phom-proxy-auth-live.test.mjs (it was previously "runtime-unverified").
-    await client.Fetch.enable({ handleAuthRequests: true, patterns: [{ urlPattern: '*' }] });
+    // Only DOCUMENTS are intercepted: the game loads hundreds of assets, and pausing every one of them on a CDP
+    // round trip made a proxied game crawl or stall on its loading screen. The page's own document meets the 407
+    // first; Chromium then caches the proxy credentials, so assets, XHR and the WSS tunnel reuse them.
+    await client.Fetch.enable({ handleAuthRequests: true, patterns: [{ urlPattern: '*', resourceType: 'Document' }] });
   } catch { /* enable failed — caller treats as auth-unavailable */ }
   return async () => { try { await client.Fetch.disable(); } catch { /* ignore */ } };
 }

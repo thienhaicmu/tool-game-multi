@@ -67,7 +67,7 @@ const read = (rel) => readFileSync(new URL('../../' + rel, import.meta.url), 'ut
 test('Test D is wired: capture hook → recorder → IPC → Tool menu', () => {
   const main = read('desktop/phom-main.cjs'); const preload = read('desktop/phom-preload.cjs'); const ui = read('ui-phom/phom-qa.js');
   const hook = main.slice(main.indexOf("capture.on('request'"), main.indexOf("capture.on('request'") + 1500);
-  assert.ok(hook.indexOf('frameRecorder.record(') < hook.indexOf('phomSessions.routeFrame('), 'recorded before routing');
+  assert.ok(hook.indexOf('frameRecorder.record(') >= 0 && hook.indexOf('frameRecorder.record(') < hook.indexOf('ensurePhomSessions().routeFrame('), 'recorded before routing');
   for (const ch of ['phom:frames-record-start', 'phom:frames-record-stop', 'phom:frames-record-status', 'phom:frames-open-folder']) {
     assert.ok(main.includes("ipcMain.handle('" + ch + "'"), ch + ' handled in main'); assert.ok(preload.includes(ch), ch + ' exposed in preload');
   }

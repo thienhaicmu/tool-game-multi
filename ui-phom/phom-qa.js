@@ -817,7 +817,10 @@
     const a = safeBySlot[slot];
     const col = el('div', { class: 'safe-col' });
     const who = a && a.targetPlayerLabel ? playerLabel(a.targetPlayerLabel) : '';
-    col.appendChild(el('div', { class: 'safe-col-head' }, el('b', null, 'P' + index), ' ', el('span', { class: 'faint xs' }, (who === 'P' + index ? '' : who) + (a && a.nextPlayerLabel ? ' · lượt sau: ' + playerLabel(a.nextPlayerLabel) : ''))));
+    // the column carries the account's own name, the same as its chip above (B<n> = browser n)
+    const acc = (manualBrowsers || []).find((b) => b && Number(b.browserIndex) === index);
+    const name = acc && acc.username && acc.username !== 'USER_UNKNOWN' ? acc.username : (who === 'P' + index ? '' : who);
+    col.appendChild(el('div', { class: 'safe-col-head' }, el('b', null, 'P' + index), ' ', el('span', { class: 'faint xs' }, name + (a && a.nextPlayerLabel ? ' · lượt sau: ' + playerLabel(a.nextPlayerLabel) : ''))));
     if (!a || a.status !== 'OK') { col.appendChild(el('div', { class: 'faint sm' }, 'Chưa có bài')); return col; }
     const safe = a.safeCards || []; const likely = a.likelySafeCards || []; const risky = a.riskyCards || []; const own = a.ownMeldCards || [];
     if (safe.length) { col.appendChild(el('div', { class: 'faint xs' }, 'NÊN ĐÁNH (điểm cao trước)')); col.appendChild(safeCardRow(safe, 'meld', a.recommendedCode)); }

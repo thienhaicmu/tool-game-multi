@@ -4,9 +4,9 @@
 // The IN-PAGE BAR — the reference tool's control strip, injected into every managed Chromium (screenshots + captures
 // 2026-10-02/03):
 //
-//   1 nhatvuong452535 · ID 642487221  Lọc Bài  SS [7919569] Copy  Vào  ReJoin  Tạo  Dò Key  Thoát   Hide
+//   1 nhatvuong452535 · ID 642487221   SS [7919569] Copy  Vào  ReJoin  Tạo  Dò Key  Thoát          Hide
 //                 👑gdufuud-453384,nhatvuong452535-328627,thekiet2k4-431503✓          (yellow, centred)
-//   [Lọc Bài on] NÊN ĐÁNH 10♥ 9♣ · CÓ THỂ … · ĐỪNG ĐÁNH … · TRONG PHỎM … · Còn lại 23 lá   (this account's cards)
+// Lọc Bài (each account's safe cards) is in the Phỏm QA tool window, one column per account — not on the bars.
 //
 // No background: it sits over the game. The running button ends with '.' (Dò Key. / Tạo. / ReJoin. / Vào.) and a
 // second click stops it. Before the browser is in the game the row shows only VÀO GAME (or TẢI LẠI when its frames
@@ -63,8 +63,6 @@ function deriveHeaderState(view = {}) {
     playerCount: Number(view.playerCount) || 0,
     players: Array.isArray(view.players) ? view.players.map((p) => ({ name: String(p.name || '?'), money: p.money != null ? Number(p.money) : null, host: !!p.host, ready: !!p.ready, self: !!p.self, ours: !!p.ours })) : [],
     stake: Number(view.stake) > 0 ? Number(view.stake) : null,
-    // LỌC BÀI — this account's cards: NÊN ĐÁNH / CÓ THỂ / ĐỪNG ĐÁNH / TRONG PHỎM + how many cards are still unseen
-    filter: view.filter && typeof view.filter === 'object' ? view.filter : null,
     groupRole: view.groupRole || null, isKey: view.groupRole === 'KEY', keySeated: !!view.keySeated,
     rejoinOn: !!view.rejoinOn, canRejoin: joined || view.lastRid != null || view.sharedRid != null,
     // SS = the group's số bàn, else the table this browser sits at — never a stake CHANNEL (live run 2026-10-03: the
@@ -97,7 +95,7 @@ function bootScript(opts = {}) {
   var OPTIMISTIC_ACTIONS = { ENTER_GAME:1 };
   // __authState = last AUTHORITATIVE state from main; the next __phomHeaderRender always wins over an optimistic one.
   var __authState = null, __optAction = null;
-  var __collapsed = false, __lastError = null, __filterOn = false;
+  var __collapsed = false, __lastError = null;
   // The SS box is created ONCE and re-attached on every paint, so a repaint never wipes what the user is typing.
   var __ssValue = '';
   var __ssAuto = null; // the last số bàn the bar filled in by itself (a user edit is never overwritten)
@@ -128,10 +126,7 @@ function bootScript(opts = {}) {
   // Under the strip, centred in yellow: everyone at the table as name-money (👑 host, ✓ ready), or what is happening.
   const infoLine = mk('div','position:fixed;top:23px;left:0;right:0;z-index:2147483647;text-align:center;padding:0 8px;color:#fde047;font:700 11px/15px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+SHADOW+'pointer-events:auto;display:none;');
   bar.appendChild(infoLine);
-  // LỌC BÀI panel — this account's cards, under the yellow line (toggled by the Lọc Bài button)
-  const filterBox = mk('div','position:fixed;top:40px;left:0;right:0;z-index:2147483647;text-align:center;padding:0 8px;font:700 12px/18px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;'+SHADOW+'pointer-events:auto;display:none;');
-  bar.appendChild(filterBox);
-  const feedback = mk('div','position:fixed;left:4px;top:60px;max-width:300px;padding:6px 9px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
+  const feedback = mk('div','position:fixed;left:4px;top:40px;max-width:300px;padding:6px 9px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
   feedback.setAttribute('role','alert');
   bar.appendChild(feedback);
   var feedbackTimer = null;
@@ -198,24 +193,6 @@ function bootScript(opts = {}) {
     infoLine.title = detail;
     infoLine.style.display = '';
   }
-  function paintFilter(state){
-    filterBox.textContent = '';
-    if(__collapsed || !__filterOn || !state.canAct){ filterBox.style.display='none'; return; }
-    var f = state.filter;
-    function group(title, color, list){
-      if(!list || !list.length) return;
-      var g = mk('span','margin:0 6px;'); var h = mk('span','color:'+color+';'); h.textContent = title + ' '; g.appendChild(h);
-      list.forEach(function(c){ var x = mk('span','margin-right:3px;padding:0 2px;border-radius:2px;background:#fff;color:'+(c.red?'#dc2626':'#111827')+';'+(c.rec?'outline:2px solid #22c55e;':'')); x.textContent = c.t; g.appendChild(x); });
-      filterBox.appendChild(g);
-    }
-    if(!f || f.status !== 'OK') filterBox.appendChild(document.createTextNode('LỌC BÀI: chưa có bài (chờ chia bài)'));
-    else {
-      group('NÊN ĐÁNH', '#86efac', f.safe); group('CÓ THỂ', '#fde047', f.likely); group('ĐỪNG ĐÁNH', '#fca5a5', f.risky); group('TRONG PHỎM', '#93c5fd', f.own);
-      if(!(f.safe||[]).length && !(f.likely||[]).length && !(f.risky||[]).length) filterBox.appendChild(document.createTextNode('LỌC BÀI: chưa đủ dữ liệu'));
-    }
-    if(f && f.remaining != null){ var r = mk('span','margin-left:6px;color:#e5e7eb;'); r.textContent = '· Còn lại ' + f.remaining + ' lá'; filterBox.appendChild(r); }
-    filterBox.style.display = '';
-  }
   function paint(state){
     if(!document.getElementById('__phom_header')) ready();
     var hasAcc = state.account && state.account !== '—';
@@ -231,8 +208,6 @@ function bootScript(opts = {}) {
       if(state.canAct){
         if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
         ssInput.value = __ssValue;
-        // LỌC BÀI — show this account's safe cards and the cards still unseen (page-local toggle)
-        act.appendChild(txtBtn(__filterOn ? 'Lọc Bài.' : 'Lọc Bài', __filterOn ? '#a16207' : '#ca8a04', function(){ __filterOn = !__filterOn; paint(__authState||state); }, 'LỌC BÀI: lá an toàn của acc này (người đánh sau không ăn được) + số lá còn lại'));
         act.appendChild(chip('SS', '#dc2626'));
         act.appendChild(ssInput);
         act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v); }catch(e){} },'Copy số bàn'));
@@ -258,7 +233,6 @@ function bootScript(opts = {}) {
       }
     }
     paintInfo(state);
-    paintFilter(state);
     // a failed action is said in words, once (e.g. "Đã có acc KEY (P1) đang ngồi — ở acc này bấm Tạo")
     if(state.error && state.error !== __lastError) showFeedback(String(state.error));
     __lastError = state.error || null;

@@ -690,7 +690,10 @@ else {
 
   // Structured header lifecycle log (§24) — one line per step so an intermittent failure is diagnosable.
   // Gated behind PHOM_HEADER_LOG / PHOM_LIFECYCLE_LOG. NEVER logs cookies/tokens/secrets.
+  // The few steps that explain "the browser opened but never got into the game" always go to coseat.jsonl.
+  const ALWAYS_LOGGED = new Set(['AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE']);
   function headerLog(event, data = {}) {
+    if (ALWAYS_LOGGED.has(event)) { try { appendCoseatLog({ tag: 'PHOM-RUN', event, at: new Date().toISOString(), ...data }); } catch { /* best effort */ } }
     if (process.env.PHOM_HEADER_LOG !== '1' && process.env.PHOM_LIFECYCLE_LOG !== '1') return;
     try { lifecycleLog('PHOM_HEADER', { event, ...data }); } catch { /* best effort */ }
   }
@@ -707,7 +710,7 @@ else {
   // Build the raw header view for ONE browser from authoritative snapshots (no button logic here — that
   // is deriveHeaderState). opened = a live (non-closed) run; inGame mirrors the renderer's slotInPhom
   // (socketReady + connected + channelList received). account = the logged-in display name (dn) or —.
-  function headerViewFor(runId, browsers, sharedRid, cardsCtx) {
+  function headerViewFor(runId, browsers, sharedRid) {
     const run = runManager && runManager.get(String(runId));
     const opened = !!(run && run.status !== RUN_STATUS.CLOSED);
     const b = (browsers || []).find((x) => x && String(x.profileId) === String(runId)) || {};
@@ -738,24 +741,7 @@ else {
       dataStale: !!(opened && b.lastFrameAt != null && (nowMs() - Number(b.lastFrameAt)) > HEADER_STALE_MS),
       staleSec: b.lastFrameAt != null ? Math.round((nowMs() - Number(b.lastFrameAt)) / 1000) : null,
       error: headerError[String(runId)] || null,
-      // LỌC BÀI — this account's safe-card analysis (the PHỎM tab's, same analyzer) + the cards still unseen
-      filter: headerFilterFor(b.browserIndex, cardsCtx),
     };
-  }
-  function headerCardsContext() {
-    if (!phomSessions || !phomSessions.active()) return null;
-    try { return { cards: phomSessions.cardObserverSnapshot(), remaining: phomSessions.remainingCards() }; } catch { return null; }
-  }
-  // Card labels only (rank + suit + colour) — small, and byte-stable between frames so the push de-dup keeps working.
-  function headerFilterFor(browserIndex, ctx) {
-    if (!ctx || !browserIndex) return null;
-    const uid = ctx.cards && ctx.cards.slotBinding ? ctx.cards.slotBinding['B' + browserIndex] : null;
-    const rem = ctx.remaining && ctx.remaining.count != null ? ctx.remaining.count : null;
-    if (!uid) return { status: 'NO_HAND', remaining: rem };
-    let a = null; try { a = safeCardAnalyzer.analyze({ snapshot: ctx.cards, targetPlayerUid: uid }); } catch { a = null; }
-    if (!a || a.status !== 'OK') return { status: a ? a.status : 'NO_HAND', remaining: rem };
-    const lab = (list) => (list || []).map((c) => ({ t: (c.rank || '?') + (c.suit || '?'), red: c.color === 'red', rec: a.recommendedCode != null && c.code === a.recommendedCode }));
-    return { status: 'OK', safe: lab(a.safeCards), likely: lab(a.likelySafeCards), risky: lab(a.riskyCards), own: lab(a.ownMeldCards), remaining: rem };
   }
   // A browser whose game frames stopped arriving is reported as such after this long (and re-hooked, see
   // maybeRehookCapture) instead of silently reading "CHƯA VÀO GAME".
@@ -791,12 +777,11 @@ else {
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
     maybeRehookCapture(browsers); // a browser whose frames stopped gets its hook re-installed (§data-stale)
     const sharedRid = headerSharedRid();
-    const cardsCtx = headerCardsContext();
     for (const run of runManager.list()) {
       if (run.status === RUN_STATUS.CLOSED) continue;
       const client = runClientFor(run.id);
       if (!client) continue;
-      const view = headerViewFor(run.id, browsers, sharedRid, cardsCtx);
+      const view = headerViewFor(run.id, browsers, sharedRid);
       const rid = String(run.id);
       maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
       if (view.inGame) {
@@ -1069,8 +1054,9 @@ else {
       // aggregate), which routes to the host session; otherwise route directly.
       if (phomCluster && phomCluster.active()) {
         phomCluster.ingestEvent(run.id, { raw: req.body && req.body.raw, direction: req.wsDirection, seq: req.seq, targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url });
-      } else if (phomSessions) {
-        phomSessions.routeFrame(run, req);
+      } else {
+        // no session yet → the manager keeps the frames (the login identity above all) for when one starts
+        ensurePhomSessions().routeFrame(run, req);
       }
     } catch { /* never break capture */ }
   });
@@ -1122,7 +1108,7 @@ else {
           runProxy: run.proxy,
           username: run.proxyUsername || null,
           resolvePassword: () => proxyConfigStore && run.proxy ? proxyConfigStore.resolvePassword(run.proxy.id) : null,
-          onAuthFailure: (code) => send('phom:proxy-auth', { runId: run.id, code }),
+          onAuthFailure: (code) => { headerLog('PROXY_AUTH_FAILED', { runId: run.id, slotId: run.slot, code }); send('phom:proxy-auth', { runId: run.id, code }); },
         }).then((detach) => {
           run._detachProxyAuth = detach;
           // §52 — the proxy challenge is now answered by the tool, so the page may finally leave about:blank.
@@ -1130,6 +1116,7 @@ else {
           const pending = run._pendingNavigateUrl;
           if (pending && (!target.type || target.type === 'PAGE')) {
             run._pendingNavigateUrl = null;
+            headerLog('PROXY_NAVIGATE', { runId: run.id, slotId: run.slot, watchdog: false });
             client.Page.navigate({ url: pending }).catch(() => {});
           }
         }).catch(() => {});
@@ -1270,6 +1257,20 @@ else {
     if (!launched.ok) { runManager.failRun(run, launched.error); return { ok: false, error: launched.error }; }
     run.cdpEndpoint = launched.endpoint;
     connectRunEndpointWithRetry(run, launched.endpoint).catch(() => {});
+    // Safety net: the browser must never be left on about:blank. If the page target's auth bind never ran (the
+    // attach was missed / failed), load the game anyway — at worst Chromium asks for the proxy password itself.
+    if (authFirst) {
+      const PROXY_NAVIGATE_WATCHDOG_MS = 12000;
+      setTimeout(() => {
+        const pending = run._pendingNavigateUrl;
+        if (!pending || run.status === RUN_STATUS.CLOSED) return;
+        const client = runClientFor(run.id);
+        headerLog('PROXY_NAVIGATE', { runId: run.id, slotId: slot, watchdog: true, client: !!client });
+        if (!client || !client.Page) return;
+        run._pendingNavigateUrl = null;
+        client.Page.navigate({ url: pending }).catch(() => {});
+      }, PROXY_NAVIGATE_WATCHDOG_MS);
+    }
     return { ok: true, runId: run.id, proxy: gate.runProxy, agent: browserAgent.publicSnapshot(agent) };
   }
 
@@ -1319,7 +1320,8 @@ else {
     const bounds = fitToCurrentDisplay(loadWindowState());
     shell = new BrowserWindow({
       ...bounds, backgroundColor: '#f4f6fb', title: PRODUCT_NAME,
-      webPreferences: { preload: path.join(__dirname, 'phom-preload.cjs'), contextIsolation: true, sandbox: true },
+      // autoplay without a gesture: the 4th-player bell must ring even if nobody clicked the tool window first
+      webPreferences: { preload: path.join(__dirname, 'phom-preload.cjs'), contextIsolation: true, sandbox: true, autoplayPolicy: 'no-user-gesture-required' },
     });
     shell.on('close', saveWindowState);
     shell.loadURL('phom-app://ui/index.html');

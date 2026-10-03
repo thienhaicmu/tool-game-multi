@@ -11,6 +11,8 @@ const { HostTableCoordinator } = require('./host-table-coordinator.cjs');
 // run's own socket.
 // ---------------------------------------------------------------------------
 
+const EARLY_RING = 400;
+
 class HostSessionManager extends EventEmitter {
   constructor(deps = {}) {
     super();
@@ -20,6 +22,7 @@ class HostSessionManager extends EventEmitter {
     this._now = deps.now || (() => Date.now());
     this._featureEnabled = typeof deps.featureEnabled === 'function' ? deps.featureEnabled : (() => true);
     this._session = null; // { coord, runIds:Set }
+    this._early = new Map(); // runId -> { ring: [], pinned: Map(kind -> frame) } — frames seen before a session covered the run
   }
 
   featureEnabled() { return !!this._featureEnabled(); }
@@ -54,6 +57,10 @@ class HostSessionManager extends EventEmitter {
     coord.on('log', (l) => this.emit('log', l));
     coord.on('kicked', (k) => this.emit('kick', k)); // the tool window refreshes that browser at once
     this._session = { coord, runIds: new Set(ids) };
+    // A browser often logs in (cmd 100: who am I) before the tool starts the session — always so behind a slow
+    // proxy, where the first browser is in the lobby long before the third one opens. Those frames used to be
+    // dropped, so the account read as not logged in and VÀO GAME never fired by itself. Replay them, in order.
+    for (const id of ids) this._replayEarly(id, coord);
     this.emit('update', coord.snapshot());
     return { ok: true, sessionId: coord.sessionId() };
   }
@@ -65,10 +72,31 @@ class HostSessionManager extends EventEmitter {
   }
 
   routeFrame(run, req) {
-    if (!this._session || !run || !req || !req.isWebSocket || !req.wsDirection) return;
-    if (!this._session.runIds.has(String(run.id))) return;
-    this._session.coord.ingest(String(run.id), { raw: req.body && req.body.raw, direction: req.wsDirection, seq: req.seq, targetId: req.targetId, cdpSessionId: req.cdpSessionId || null, url: req.url, now: this._now() });
+    if (!run || !req || !req.isWebSocket || !req.wsDirection) return;
+    const frame = { raw: req.body && req.body.raw, direction: req.wsDirection, seq: req.seq, targetId: req.targetId, cdpSessionId: req.cdpSessionId || null, url: req.url, now: this._now() };
+    const covered = !!(this._session && this._session.runIds.has(String(run.id)));
+    this._keepEarly(String(run.id), frame, !covered); // the identity is kept even while covered: a restarted session needs it
+    if (covered) this._session.coord.ingest(String(run.id), frame);
   }
+  // Frames of a run no session covers yet: the last EARLY_RING of them (ring = true), plus — always — the latest
+  // login identity (cmd 100) and wallet (cmd 317), pinned so lobby chatter can never push them out.
+  _keepEarly(id, frame, ring) {
+    let e = this._early.get(id);
+    if (!e) { e = { ring: [], pinned: new Map() }; this._early.set(id, e); }
+    if (ring) { e.ring.push(frame); if (e.ring.length > EARLY_RING) e.ring.shift(); }
+    const raw = typeof frame.raw === 'string' ? frame.raw : '';
+    const m = /"cmd"\s*:\s*(100|317)(?!\d)/.exec(raw);
+    if (m) { const idm = /"id"\s*:\s*(\d+)/.exec(raw); e.pinned.set(m[1] + ':' + (idm ? idm[1] : ''), frame); }
+  }
+  _replayEarly(id, coord) {
+    const e = this._early.get(id);
+    if (!e) return;
+    this._early.set(id, { ring: [], pinned: e.pinned }); // the identity stays pinned for a later restart
+    const frames = [...e.pinned.values()].filter((f) => !e.ring.includes(f)).concat(e.ring).sort((a, b) => (a.now - b.now) || ((a.seq || 0) - (b.seq || 0)));
+    for (const f of frames) { try { coord.ingest(id, f); } catch { /* a bad frame never blocks the session */ } }
+  }
+  // A new document (F5, ⟳, redirect) = a new login: what was buffered for the old page is void.
+  forgetEarly(id) { this._early.delete(String(id)); }
   routeDisconnect(runId) { if (this._session && this._session.runIds.has(String(runId))) this._session.coord.markDisconnected(String(runId)); }
   // PH-2 — route a CDP websocket-closed for one run; the coordinator ignores it unless the closed
   // socket was that profile's bound game socket. Returns true if it flipped the profile offline.
@@ -90,7 +118,7 @@ class HostSessionManager extends EventEmitter {
   snapshot() { const c = this._c(); return c ? c.snapshot() : null; }
   roomList(id) { const c = this._c(); return c ? c.roomList(id != null ? String(id) : null) : { rooms: [], at: null, ageSec: null }; }
   // The page reloaded — forget that browser's old document.
-  resetBrowser(id) { const c = this._c(); return c ? c.resetBrowser(String(id)) : false; }
+  resetBrowser(id) { this.forgetEarly(id); const c = this._c(); return c ? c.resetBrowser(String(id)) : false; }
   remainingCards(opts) { const c = this._c(); return c ? c.remainingCards(opts) : { count: 0, codes: [], cards: [] }; }
   // The card-observation snapshot, or an empty/unknown shape when there is no active session (never fabricated).
   cardObserverSnapshot() { const c = this._c(); return c ? c.cardObserverSnapshot() : { players: {}, remaining: { count: 0, codes: [], cards: [] }, discardPile: [], capabilities: {} }; }

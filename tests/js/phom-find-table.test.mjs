@@ -482,17 +482,16 @@ test('SS SYNC: the số bàn Tạo found is in the SS box of all three bars; the
   assert.ok(sim);
 });
 
-test('LỌC BÀI on the bar: a toggle that shows THIS account\'s safe / risky / meld cards and the cards still unseen', () => {
+test('LỌC BÀI lives in the Phỏm QA tool (one column per account, named like its chip) — never on the browser bars', () => {
   const gh = require('../../desktop/protocol/phom/game-header.cjs');
-  const filter = { status: 'OK', safe: [{ t: '10♥', red: true, rec: true }], likely: [], risky: [{ t: 'Q♠', red: false }], own: [], remaining: 23 };
-  const st = gh.deriveHeaderState({ opened: true, inGame: true, filter });
-  assert.deepEqual(st.filter, filter);
-  const src = gh.bootScript();
-  assert.match(src, /txtBtn\(__filterOn \? 'Lọc Bài\.' : 'Lọc Bài'/);
-  assert.match(src, /group\('NÊN ĐÁNH', '#86efac', f\.safe\); group\('CÓ THỂ', '#fde047', f\.likely\); group\('ĐỪNG ĐÁNH', '#fca5a5', f\.risky\); group\('TRONG PHỎM', '#93c5fd', f\.own\);/);
-  assert.match(src, /'· Còn lại ' \+ f\.remaining \+ ' lá'/);
-  // main feeds it from the SAME analyzer the tool window's PHỎM tab uses
+  const st = gh.deriveHeaderState({ opened: true, inGame: true, filter: { status: 'OK', safe: [] } });
+  assert.equal('filter' in st, false, 'the bar state carries no card filter');
+  assert.equal(/Lọc Bài|__filterOn|NÊN ĐÁNH/.test(gh.bootScript()), false, 'no Lọc Bài button or panel in the page');
   const main = readMain();
-  assert.match(main, /filter: headerFilterFor\(b\.browserIndex, cardsCtx\)/);
-  assert.match(main, /safeCardAnalyzer\.analyze\(\{ snapshot: ctx\.cards, targetPlayerUid: uid \}\)/);
+  assert.equal(/headerFilterFor|headerCardsContext/.test(main), false);
+  // the tool window: the same analyzer, one analysis per browser slot B1..B3
+  assert.match(main, /analyses\[slot\] = safeCardAnalyzer\.analyze\(\{ snapshot: cards, targetPlayerUid: uid \}\)/);
+  const ui = require('fs').readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
+  assert.match(ui, /\['B1', 'B2', 'B3'\]\.forEach\(\(slot, i\) => cols\.appendChild\(safeColumn\(slot, i \+ 1\)\)\)/);
+  assert.match(ui, /const acc = \(manualBrowsers \|\| \[\]\)\.find\(\(b\) => b && Number\(b\.browserIndex\) === index\);/);
 });

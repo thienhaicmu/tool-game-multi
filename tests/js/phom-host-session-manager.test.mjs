@@ -120,3 +120,32 @@ test('routeFrame ignores runs outside the session', () => {
   const snap = mgr.snapshot();
   assert.equal(snap.profiles.every((p) => p.playerCount === 0), true);
 });
+
+// Behind a slow proxy the first browser logs in (cmd 100) long before the tool starts the session for all three.
+// Those frames were dropped, so the account never read as logged in and VÀO GAME never fired by itself.
+test('frames seen before the session (login identity first) are replayed when it starts', () => {
+  const { mgr } = makeManager();
+  const id0 = JSON.stringify([5, { uid: '1_A', As: { gold: 777 }, dn: 'nhatvuong', cmd: 100, id: 0 }]);
+  mgr.routeFrame({ id: 'A' }, wsFrame('A', id0, 1));
+  for (let i = 0; i < 500; i++) mgr.routeFrame({ id: 'A' }, wsFrame('A', JSON.stringify([5, { cmd: 10000, x: i }]), 2 + i)); // lobby chatter
+  mgr.startSession({ runIds: ['A', 'B', 'C'] });
+  const a = mgr.manualBrowserSnapshot().find((b) => b.profileId === 'A');
+  assert.equal(a.loggedIn, true, 'the identity survived the chatter and reached the session');
+  assert.equal(a.username, 'nhatvuong');
+  // a new document voids what was kept for the old page
+  mgr.endSession();
+  mgr.routeFrame({ id: 'B' }, wsFrame('B', id0.replace('1_A', '1_B'), 1));
+  mgr.resetBrowser('B');
+  mgr.startSession({ runIds: ['A', 'B', 'C'] });
+  assert.equal(mgr.manualBrowserSnapshot().find((b) => b.profileId === 'B').loggedIn, false);
+});
+
+test('a restarted session still knows who is logged in (the identity stays pinned)', () => {
+  const { mgr } = makeManager();
+  mgr.startSession({ runIds: ['A', 'B', 'C'] });
+  mgr.routeFrame({ id: 'C' }, wsFrame('C', JSON.stringify([5, { uid: '1_C', As: { gold: 5 }, dn: 'acc3', cmd: 100, id: 0 }]), 1));
+  assert.equal(mgr.manualBrowserSnapshot().find((b) => b.profileId === 'C').loggedIn, true);
+  mgr.startSession({ runIds: ['A', 'B', 'C'] }); // the tool window reloaded
+  const c = mgr.manualBrowserSnapshot().find((b) => b.profileId === 'C');
+  assert.equal(c.loggedIn, true); assert.equal(c.username, 'acc3');
+});
