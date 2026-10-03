@@ -310,11 +310,13 @@ test('BC: bootScript is a compact draggable single-row header with per-slot acce
   // per-player accent (B1 blue / B2 green / B3 orange) + "Player N" badge from the slot id
   assert.match(src, /SLOTN===1\?'#2563eb':SLOTN===2\?'#16a34a':SLOTN===3\?'#ea580c'/);
   // single FLOATING row (fixed, not a full-width bar; no body margin push)
-  assert.match(src, /position:fixed;top:4px;left:4px/);
+  // the reference tool's strip: fixed across the top, white, never dragged (screenshots 2026-10-03)
+  assert.match(src, /position:fixed;top:0;left:0;right:0;[^']*width:100%;[^']*background:#fff;/);
   assert.equal(/marginTop\s*=\s*'34px'/.test(src), false, 'no longer pushes the game with a full-width bar');
   // draggable (page-local; clamped inside the viewport). No storage → F5-safe like the optimistic overlay.
-  assert.match(src, /handle\.addEventListener\('mousedown'/);
-  assert.match(src, /bar\.style\.left=x\+'px'/);
+  assert.equal(/__drag/.test(src), false, 'a fixed strip is not draggable');
+  // and the players line centred under it, yellow
+  assert.match(src, /const infoLine = mk\('div','position:fixed;top:23px;left:0;right:0;[^']*text-align:center;[^']*color:#fde047;/);
   assert.equal(/localStorage|sessionStorage/.test(src), false, 'no persistent storage in the injected header');
   // collapse toggle (page-local)
   assert.match(src, /__collapsed/);

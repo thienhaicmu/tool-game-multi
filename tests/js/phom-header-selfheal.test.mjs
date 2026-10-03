@@ -45,9 +45,9 @@ test('bootScript exposes DEBUG-only observer counters (no per-mutation productio
 // draggable identity handle (badge+name+status), the state-dependent action row, then the ⋮/─ controls.
 test('§13 header layout is a compact floating single row (badge/handle · actions · menu)', () => {
   const src = gh.bootScript();
-  assert.match(src, /position:fixed;top:4px;left:4px/);          // compact floating top-left
+  assert.match(src, /position:fixed;top:0;left:0;right:0;/);      // the reference tool's strip across the top
   assert.match(src, /display:flex;align-items:center/);           // single flex row
-  assert.match(src, /const handle = mk\('div','display:flex;align-items:center;gap:4px;cursor:move/); // draggable identity area
+  assert.match(src, /const handle = mk\('div','display:flex;align-items:center;gap:4px;/); // slot + account
   assert.match(src, /const act = mk\('div',/);                    // state-dependent action row
   assert.match(src, /bar\.appendChild\(handle\); bar\.appendChild\(act\); bar\.appendChild\(menuWrap\)/);
 });

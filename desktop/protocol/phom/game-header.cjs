@@ -156,7 +156,7 @@ function bootScript(opts = {}) {
   var __ssValue = '';
   var __ssAuto = null; // the last số bàn the header filled in by itself (a user edit is never overwritten)
   var ssInput = document.createElement('input');
-  ssInput.setAttribute('style','width:62px;height:22px;padding:0 4px;box-sizing:border-box;border-radius:6px;border:1px solid #374151;background:#111827;color:#e5e7eb;font:600 11px Inter,Segoe UI,sans-serif;');
+  ssInput.setAttribute('style','width:58px;height:18px;padding:0 3px;box-sizing:border-box;border-radius:2px;border:1px solid #9ca3af;background:#fff;color:#111827;font:600 11px Inter,Segoe UI,sans-serif;');
   ssInput.placeholder = 'Số bàn'; ssInput.inputMode = 'numeric';
   ssInput.addEventListener('input', function(){ __ssValue = ssInput.value; });
   ssInput.addEventListener('mousedown', function(ev){ ev.stopPropagation(); });
@@ -170,25 +170,25 @@ function bootScript(opts = {}) {
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
   // ---- the floating, compact, single-row header (mobile-landscape; never a full-width toolbar) ----
   const bar = document.createElement('div'); bar.id = '__phom_header';
-  bar.setAttribute('style','position:fixed;top:4px;left:4px;z-index:2147483647;display:flex;align-items:center;gap:3px;flex-wrap:nowrap;box-sizing:border-box;min-height:22px;max-width:calc(100vw - 8px);padding:0;background:transparent;color:#e5e7eb;border:0;border-radius:0;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:none;user-select:none;pointer-events:none;');
+  bar.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;align-items:center;gap:3px;flex-wrap:nowrap;box-sizing:border-box;height:22px;width:100%;padding:0 4px;background:#fff;color:#111827;border:0;border-bottom:1px solid #d1d5db;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;box-shadow:0 1px 3px rgba(0,0,0,.25);user-select:none;pointer-events:none;');
   // drag handle = badge + name + status (dragging the identity area moves the whole control).
-  const handle = mk('div','display:flex;align-items:center;gap:4px;cursor:move;min-width:0;');
-  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = SLOTN ? 'P'+SLOTN : 'P?';
-  const nameEl = mk('span','font-weight:700;color:#fff;white-space:nowrap;text-shadow:0 1px 3px #000,0 0 2px #000;'); nameEl.textContent = ''; nameEl.style.display='none';
+  const handle = mk('div','display:flex;align-items:center;gap:4px;min-width:0;');
+  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:5px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = SLOTN ? String(SLOTN) : '?';
+  const nameEl = mk('span','font-weight:700;color:#1d4ed8;white-space:nowrap;'); nameEl.textContent = ''; nameEl.style.display='none';
   const statusDot = mk('span','width:8px;height:8px;border-radius:50%;background:#9ca3af;flex:0 0 auto;');
   const stLabel = mk('span','color:#cbd5e1;font-weight:500;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;');
-  handle.appendChild(badge); handle.appendChild(nameEl); handle.appendChild(statusDot); handle.appendChild(stLabel); stLabel.style.display='none';
+  handle.appendChild(badge); handle.appendChild(nameEl); statusDot.style.display='none'; handle.appendChild(statusDot); handle.appendChild(stLabel); stLabel.style.display='none';
   const act = mk('div','display:flex;align-items:center;gap:3px;flex-wrap:nowrap;min-width:0;'); act.id='__ph_act';
   const menuWrap = mk('div','position:relative;display:flex;align-items:center;gap:3px;');
-  const menuBtn = mk('button','width:22px;height:22px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;'); menuBtn.textContent='⋮'; menuBtn.title='Tùy chọn';
-  const collapseBtn = mk('button','width:22px;height:22px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:13px;line-height:1;'); collapseBtn.title='Thu gọn / mở rộng';
+  const menuBtn = mk('button','width:18px;height:18px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:14px;line-height:1;'); menuBtn.textContent='⋮'; menuBtn.title='Tùy chọn';
+  const collapseBtn = mk('button','width:auto;padding:0 5px;height:18px;border-radius:6px;padding:0;border:1px solid #374151;background:#1f2937;color:#e5e7eb;cursor:pointer;font-size:13px;line-height:1;'); collapseBtn.title='Thu gọn / mở rộng';
   const menu = mk('div','position:absolute;top:26px;right:0;min-width:200px;background:#111827;border:1px solid #374151;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.4);padding:4px;display:none;z-index:2147483647;');
   menuWrap.appendChild(menuBtn); menuWrap.appendChild(collapseBtn); menuWrap.appendChild(menu);
   bar.appendChild(handle); bar.appendChild(act); bar.appendChild(menuWrap);
   // The line UNDER the bar (reference tool): ID Bàn · Số người · who sits there (name-money, 👑 host, ✓ ready).
-  const infoLine = mk('div','position:absolute;left:0;top:26px;max-width:calc(100vw - 12px);padding:2px 6px;border-radius:5px;background:rgba(17,24,39,.82);color:#e5e7eb;font:600 11px/16px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:auto;display:none;');
+  const infoLine = mk('div','position:fixed;top:23px;left:0;right:0;z-index:2147483647;text-align:center;padding:0 8px;color:#fde047;font:700 11px/15px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-shadow:0 1px 2px #000,0 0 3px #000;pointer-events:auto;display:none;');
   bar.appendChild(infoLine);
-  const feedback = mk('div','position:absolute;left:0;top:48px;max-width:280px;padding:8px 10px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
+  const feedback = mk('div','position:fixed;left:4px;top:40px;max-width:280px;padding:8px 10px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
   feedback.setAttribute('role','alert');
   bar.appendChild(feedback);
   var feedbackTimer = null;
@@ -199,10 +199,10 @@ function bootScript(opts = {}) {
   }
   // Scoped presentation applies only to the tool-owned header.
   const uiStyle = document.createElement('style');
-  uiStyle.textContent = '#__phom_header button{min-height:22px;min-width:22px}#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}#__phom_header button:hover:not(:disabled){filter:brightness(1.15)}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header input{flex-shrink:0}#__phom_header #__ph_act>*{flex-shrink:0}#__phom_header [data-quick-menu]{max-width:calc(100vw - 16px);max-height:calc(100vh - 40px);overflow:auto}';
+  uiStyle.textContent = '#__phom_header button{min-height:18px;min-width:18px}#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:2px}#__phom_header button:hover:not(:disabled){filter:brightness(1.15)}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header input{flex-shrink:0}#__phom_header #__ph_act>*{flex-shrink:0}#__phom_header [data-quick-menu]{max-width:calc(100vw - 16px);max-height:calc(100vh - 40px);overflow:auto}';
   bar.appendChild(uiStyle);
   bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Điều khiển Phỏm');
-  handle.title = 'Kéo để di chuyển thanh điều khiển';
+  handle.title = 'Trình duyệt và tài khoản';
   handle.style.pointerEvents = 'auto';
   handle.style.flexShrink = '0';
   stLabel.style.maxWidth = '100px';
@@ -210,6 +210,7 @@ function bootScript(opts = {}) {
   act.style.pointerEvents = 'auto';
   menuWrap.style.pointerEvents = 'auto';
   menuWrap.style.flexShrink = '0';
+  menuWrap.style.marginLeft = 'auto';
   ssInput.setAttribute('aria-label', 'Số bàn muốn vào');
   menu.setAttribute('data-quick-menu', '');
   menu.style.top = '26px';
@@ -249,11 +250,6 @@ function bootScript(opts = {}) {
       window.addEventListener('pagehide', function(){ try { window.__phomHeaderObserver.disconnect(); } catch(e){} window.__phomHeaderObserver = null; }, { once:true });
     }
   } catch(e){}
-  // ---- draggable (clamped inside the viewport; position persisted per profile) ----
-  var __drag=null;
-  handle.addEventListener('mousedown', function(ev){ if(ev.button!==0) return; var r=bar.getBoundingClientRect(); __drag={dx:ev.clientX-r.left, dy:ev.clientY-r.top}; ev.preventDefault(); });
-  window.addEventListener('mousemove', function(ev){ if(!__drag) return; var x=ev.clientX-__drag.dx, y=ev.clientY-__drag.dy; x=Math.max(0,Math.min(window.innerWidth-bar.offsetWidth,x)); y=Math.max(0,Math.min(window.innerHeight-bar.offsetHeight,y)); bar.style.left=x+'px'; bar.style.top=y+'px'; bar.style.right='auto'; });
-  window.addEventListener('mouseup', function(){ __drag=null; });
   // ---- one compact icon button (icon + optional short label + tooltip; disabled/busy aware) ----
   function iconBtn(icon, label, showLabel, dis, danger, onClick, tip){
     var bg = danger ? '#7f1d1d' : '#2563eb'; var bd = danger ? '#991b1b' : '#1d4ed8';
@@ -274,7 +270,7 @@ function bootScript(opts = {}) {
   //   ID Bàn: … · Số người: … · vai trò · cược · 👑name-money ✓ …                     (the line under it)
   // Before the browser is in the game the row shows only VÀO GAME / TẢI LẠI.
   function txtBtn(label, bg, onClick, tip, dis){
-    var b = mk('button','height:22px;padding:0 7px;border-radius:6px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';opacity:1;');
+    var b = mk('button','height:18px;padding:0 4px;border-radius:3px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';opacity:1;');
     b.textContent = label; b.title = tip || label;
     if(dis) b.disabled = true; else b.onclick = onClick;
     return b;
@@ -286,19 +282,19 @@ function bootScript(opts = {}) {
     infoLine.textContent = '';
     if(__collapsed || !state.canAct){ infoLine.style.display='none'; return; }
     var ROLE = { KEY:'KEY', READY:'SẴN SÀNG', NOT_READY:'CHƯA SS' };
-    var head = state.inTable
-      ? 'ID Bàn: ' + (state.joinedViaChannel ? 'chưa có (kênh ' + state.rid + ')' : state.rid) + ' · Số người: ' + (state.playerCount || state.players.length)
-      : (state.statusLabel || '');
-    if(state.groupRole) head += ' · ' + ROLE[state.groupRole];
-    head += ' · ' + (state.stake != null ? 'Cược ' + state.stake : 'CHƯA CHỌN CƯỢC');
-    infoLine.appendChild(document.createTextNode(head));
-    (state.inTable ? state.players : []).forEach(function(pl){
-      var sp = mk('span', 'margin-left:8px;' + (pl.ours ? 'color:#fff;font-weight:800;' : 'color:#9ca3af;font-weight:500;'));
-      sp.textContent = (pl.host ? '👑' : '') + pl.name + (pl.money != null ? '-' + pl.money : '') + (pl.ready ? ' ✓' : '');
-      sp.title = (pl.ours ? 'Acc của tool' : 'Người chơi khác') + (pl.host ? ' · chủ bàn' : '') + (pl.ready ? ' · đã sẵn sàng' : '');
-      infoLine.appendChild(sp);
-    });
-    infoLine.title = infoLine.textContent;
+    var detail = (state.inTable ? 'ID Bàn: ' + (state.joinedViaChannel ? 'chưa có (kênh ' + state.rid + ')' : state.rid) + ' · Số người: ' + (state.playerCount || state.players.length) : (state.statusLabel || ''))
+      + (state.groupRole ? ' · ' + ROLE[state.groupRole] : '') + ' · ' + (state.stake != null ? 'Cược ' + state.stake : 'CHƯA CHỌN CƯỢC');
+    if(state.inTable && state.players.length){
+      // exactly the reference tool's line: name-money of everyone at the table, comma separated (ours brighter)
+      state.players.forEach(function(pl, i){
+        if(i) infoLine.appendChild(document.createTextNode(','));
+        var sp = mk('span', pl.ours ? '' : 'color:#e5e7eb;font-weight:500;');
+        sp.textContent = (pl.host ? '👑' : '') + pl.name + (pl.money != null ? '-' + pl.money : '') + (pl.ready ? '✓' : '');
+        sp.title = (pl.ours ? 'Acc của tool' : 'Người chơi khác') + (pl.host ? ' · chủ bàn' : '') + (pl.ready ? ' · đã sẵn sàng' : '');
+        infoLine.appendChild(sp);
+      });
+    } else infoLine.appendChild(document.createTextNode(detail));
+    infoLine.title = detail;
     infoLine.style.display = '';
   }
   function ssRid(){ var v = String(ssInput.value||'').trim(); var n = Number(v); return v !== '' && isFinite(n) && n > 0 ? n : null; }
@@ -310,10 +306,11 @@ function bootScript(opts = {}) {
     // The account on this browser: name + in-game ID, visible as soon as it has logged in.
     var hasAcc = state.account && state.account !== '—';
     var acc = hasAcc ? state.account + (state.money != null ? '-' + state.money : '') : '';
-    nameEl.textContent = hasAcc ? acc + (state.accountId ? ' · ID ' + state.accountId : '') : '';
-    nameEl.title = hasAcc ? 'Tài khoản ' + state.account + (state.accountId ? ' — ID ' + state.accountId : '') : '';
+    // On the strip: name · ID (like the reference tool's '1 nhatvuong452535'); money is in the yellow line and the tooltip.
+    nameEl.textContent = hasAcc ? state.account + (state.accountId ? ' · ID ' + state.accountId : '') : '';
+    nameEl.title = hasAcc ? acc + (state.accountId ? ' — ID ' + state.accountId : '') : '';
     nameEl.style.display = hasAcc ? '' : 'none';
-    collapseBtn.textContent = __collapsed ? '▸' : '─';
+    collapseBtn.textContent = __collapsed ? 'Show' : 'Hide';
     collapseBtn.setAttribute('aria-label', __collapsed ? 'Mở rộng thanh điều khiển' : 'Thu gọn thanh điều khiển');
     collapseBtn.setAttribute('aria-expanded', String(!__collapsed));
     act.textContent='';
@@ -323,6 +320,7 @@ function bootScript(opts = {}) {
         // Auto-fill the SS box with the group's số bàn unless the user typed something else.
         if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
         ssInput.value = __ssValue;
+        act.appendChild(chip('SS', '#dc2626'));
         act.appendChild(ssInput);
         act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v); }catch(e){} },'Copy số bàn'));
         function needStake(){ if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm lại.'); return true; } feedback.style.display='none'; return false; }
