@@ -259,6 +259,19 @@ class PhomClusterCdpManager extends EventEmitter {
     return { ok: true, slot: s, browserProfileId: slot.browserProfileId };
   }
 
+  // N4 — reopen a CLOSED reserve (P4/P5) with its own profile; openCluster then opens only it.
+  reopenReserve(r) {
+    if (!this._guard()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'no cluster' } };
+    const res = this._cluster.reserves.get(r);
+    if (!res) return { ok: false, error: { code: 'PHOM_SLOT_UNKNOWN', message: 'unknown reserve' } };
+    if (res.profileId && !res.browserClosed) return { ok: false, error: { code: 'PHOM_SLOT_BUSY', message: 'Dự bị này đang mở.' } };
+    const inUse = [...SLOTS, ...this._reserveKeys()].find((o) => o !== r && this._slot(o).browserProfileId === res.browserProfileId && this._slot(o).profileId && !this._slot(o).browserClosed);
+    if (inUse) return { ok: false, error: { code: 'PHOM_PROFILE_IN_USE', message: 'Profile này đang chạy ở ô khác.' } };
+    res.browserClosed = false; res.profileId = null; res.cdpConnected = false; res.error = null; res.exitReason = null;
+    this._emit();
+    return { ok: true, reserve: r };
+  }
+
   // ĐỔI NGƯỜI CHƠI — a reserve browser takes a playing slot and the slot's browser becomes the reserve (both stay
   // open, nothing reloads). Returns the two runs so the caller moves the windows and swaps the Phỏm session member.
   swapSlot(s, r) {

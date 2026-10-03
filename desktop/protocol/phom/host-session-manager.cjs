@@ -106,6 +106,27 @@ class HostSessionManager extends EventEmitter {
     return { ok: true, swapped: true, replaced: true };
   }
 
+  // N4 — reserves in and out: a reopened P4/P5 joins the session (warm, its bar works); a closed reserve — or a closed
+  // playing browser that a reserve replaced (it moved to the reserve position) — leaves it, so no dead member stays.
+  addRun(runId) {
+    const s = this._session; const id = String(runId);
+    if (!s || s.runIds.has(id) || s.runIds.size >= 5) return { ok: false, added: false };
+    if (!s.coord.addProfile(this._profileFor(id))) return { ok: false, added: false };
+    s.runIds.add(id);
+    this._replayEarly(id, s.coord);
+    this.emit('update', s.coord.snapshot());
+    return { ok: true, added: true };
+  }
+  removeRun(runId) {
+    const s = this._session; const id = String(runId);
+    if (!s || !s.runIds.has(id)) return { ok: false, removed: false };
+    if (!s.coord.removeProfile(id)) return { ok: false, removed: false };
+    s.runIds.delete(id); this._early.delete(id);
+    if (this._group) this._group.dropMember(id);
+    this.emit('update', s.coord.snapshot());
+    return { ok: true, removed: true };
+  }
+
   // A browser about to leave the session (swapped out to the reserves) leaves the table first — straight through the
   // coordinator (confirmed by the server, no pacing): a benched browser must not keep a seat at the group's table.
   async leaveNow(runId) {

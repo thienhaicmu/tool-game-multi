@@ -26,6 +26,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   browserRuntimeSet: (cfg) => ipcRenderer.invoke('phom:browser-runtime-set', cfg),
   // the three browsers
   clusterOpen: () => ipcRenderer.invoke('phom:cluster-open'),
+  openRounds: () => ipcRenderer.invoke('phom:rounds-open'),
+  reopenReserve: (reserve) => ipcRenderer.invoke('phom:reserve-reopen', { reserve }),
   swapSlot: (slot, reserve) => ipcRenderer.invoke('phom:slot-swap', { slot, reserve }),
   replaceSlot: (slot, profileId) => ipcRenderer.invoke('phom:slot-replace', { slot, profileId: profileId || null }),
   clusterConnect: () => ipcRenderer.invoke('phom:cluster-connect'),

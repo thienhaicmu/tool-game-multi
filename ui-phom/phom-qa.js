@@ -73,6 +73,7 @@
     monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
     copy: '<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>',
     rec: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/>',
+    folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
     grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   };
   function icon(name) {
@@ -556,6 +557,9 @@
       if (st.code === 'NOT_IN_GAME') tools.appendChild(iconButton('play', 'Vào game Phỏm', () => manualEnterGame(r.profileId), 'primary'));
       tools.appendChild(iconButton('refresh', 'Tải lại web trong Chromium này', () => onReloadWeb(r.profileId)));
       tools.appendChild(iconButton('power', 'Tắt Chromium dự bị này', () => onCloseBrowser(r.profileId), 'danger'));
+    } else {
+      // N4 — a closed reserve comes back right here (same profile, behind the tool, warm again)
+      tools.appendChild(el('button', { class: 'btn primary xs', disabled: reserveBusy[r.slot] ? 'disabled' : null, title: 'Mở lại trình duyệt dự bị này', onclick: () => onReopenReserve(r.slot) }, reserveBusy[r.slot] ? 'Đang mở…' : 'Mở lại'));
     }
     // compact, 2 lines: [P4 · name · state dot+words] / [→1 →2 →3 … tools] — the full state is in the tooltip
     const swap = open ? el('span', { class: 'pc-swap', title: 'Cho P' + n + ' vào chơi thay ô…' },
@@ -671,6 +675,7 @@
       el('button', { class: 'btn danger-outline', title: 'Cả 3 acc rời bàn (tắt tự động)', onclick: step(() => api.leaveAll(), 'Đã thoát bàn tất cả.') }, 'Thoát bàn tất cả'),
       iconButton('grid', 'Xếp lại 3 cửa sổ game', step(() => api.restoreLayout(), 'Đã xếp lại cửa sổ.')),
       iconButton('rec', 'Ghi WebSocket (gửi log khi báo lỗi)', () => openFrameCapture()),
+      iconButton('folder', 'Các ván đã lưu (xem lại Lọc bài từng bước) — mở thư mục', async () => { const r = await api.openRounds(); if (r && r.ok === false) note(errText(r), true); }),
       el('button', { class: 'btn danger', title: 'Đóng cả 3 trình duyệt', onclick: () => closeBrowsers() }, 'Đóng tất cả'));
   }
   // stakes = the server stakes the in-game browsers saw
@@ -756,6 +761,16 @@
     const ids = SLOTS.map((sl) => ps[sl] && ps[sl].deviceProfileId).filter(Boolean);
     if (ids.length !== 3) return;
     selectedProfileIds = ids.concat(openReserves().map((r) => r.deviceProfileId).filter(Boolean));
+  }
+  const reserveBusy = { D: false, E: false };
+  async function onReopenReserve(reserve) {
+    reserveBusy[reserve] = true; note('Đang mở lại trình duyệt dự bị…'); renderApp();
+    let res; try { res = await api.reopenReserve(reserve); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    reserveBusy[reserve] = false;
+    try { clusterSnap = await api.clusterSnapshot(); } catch {}
+    syncSelectionFromCluster();
+    if (res && res.ok === false) note(errText(res), true); else note('Đã mở lại dự bị P' + (4 + ['D', 'E'].indexOf(reserve)) + ' — tool tự vào game.');
+    await refreshManual(); renderApp();
   }
   async function onSwapSlot(slot, reserve) {
     const oldRun = assign[slot].runId;

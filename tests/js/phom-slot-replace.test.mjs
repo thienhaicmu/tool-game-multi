@@ -285,3 +285,40 @@ test('with a reserve open the tool stays above it (P4/P5 open where the tool is)
   assert.match(fn, /if \(want === _toolOnTop\) return;/, 'only when the reserve count flips');
   assert.match(fn, /shell\.setAlwaysOnTop\(want\)/);
 });
+
+// ---- N4 — no dead members; a closed reserve comes back from its own card -------------------------------------------
+test('N4: a closed reserve leaves the session; reopening adds it back (warm), never more than 5', () => {
+  const { mgr } = makeSession5();
+  assert.equal(mgr.removeRun('D').removed, true);
+  assert.deepEqual(mgr._session.coord.profileIds(), ['A', 'B', 'C', 'E']);
+  assert.equal(mgr.removeRun('B').removed, false, 'a playing browser is never removed this way');
+  assert.equal(mgr.addRun('F').added, true);
+  assert.deepEqual(mgr._session.coord.profileIds(), ['A', 'B', 'C', 'E', 'F']);
+  assert.equal(mgr.addRun('G').added, false, 'at most 3 playing + 2 reserves');
+});
+
+test('N4: a closed slot that took a reserve drops its dead browser from the session', () => {
+  const { mgr } = makeSession5();
+  mgr.swapRuns('B', 'D');                     // B was closed; D plays as P2, B moved to the reserve position
+  assert.equal(mgr.removeRun('B').removed, true);
+  assert.deepEqual(mgr._session.coord.profileIds(), ['A', 'D', 'C', 'E']);
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /if \(phomSessions && oldRun && !res\.benchedRun\) phomSessions\.removeRun\(oldRun\)/);
+  assert.match(main, /RESERVE_SLOTS\.includes\(closed\.slot\) && phomSessions\) phomSessions\.removeRun\(runId\)/);
+});
+
+test('N4: the cluster reopens ONLY that closed reserve; main re-adds it to the session; its card has Mở lại', async () => {
+  const { mgr, opened } = makeClusterWithReserves();
+  await mgr.openCluster();
+  const d = mgr.getClusterSnapshot().reserves.D.profileId;
+  assert.equal(mgr.reopenReserve('D').error.code, 'PHOM_SLOT_BUSY', 'an open reserve is not reopened');
+  mgr.markRunClosed(d, 'USER_CLOSED_WINDOW');
+  assert.equal(mgr.reopenReserve('D').ok, true);
+  await mgr.openCluster();
+  assert.equal(opened.length, 6, 'one browser opened');
+  assert.equal(opened[5].slot, 'D');
+  assert.equal(mgr.getClusterSnapshot().reserves.D.browserState, 'OPEN');
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /async function reopenReserve[\s\S]*?phomCluster\.reopenReserve\(r\)[\s\S]*?phomSessions\.addRun\(rs\.profileId\)/);
+  assert.match(read('ui-phom/phom-qa.js'), /onclick: \(\) => onReopenReserve\(r\.slot\)/);
+});

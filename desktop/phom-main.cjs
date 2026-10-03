@@ -54,6 +54,7 @@ const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
 const anDanh = require('./protocol/phom/an-danh.cjs');
 const crypto = require('node:crypto');
+const { createRoundJournal } = require('./protocol/phom/round-journal.cjs');
 const { deriveBrowserState } = require('./protocol/phom/browser-state.cjs');
 const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
 const { evaluateHeaderAction } = headerActionGuard;
@@ -143,9 +144,10 @@ else {
   function _archiveCoseat(dir, reason) {
     try { const p = coseatLogPath(); if (fs.existsSync(p)) { const arch = path.join(dir, 'coseat-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jsonl'); fs.renameSync(p, arch); } } catch { /* best effort */ }
     try { fs.writeFileSync(coseatLogPath(), '# SESSION ' + (reason || '') + ' ' + new Date().toISOString() + '\n'
-        // The file holds RAW protocol frames, which include this account's login/session token. It is a
-        // local diagnostic capture, not something to paste into a chat or a bug report unedited.
-        + '# CẢNH BÁO: file này chứa frame WebSocket thô, gồm cả token phiên đăng nhập — không chia sẻ nguyên văn.\n', 'utf8'); } catch { /* best effort */ }
+        // Every line goes through redactDiagnostic (appendCoseatLog): passwords / tokens / cookies are masked, and the
+        // few server frames kept verbatim (a refused join, a kick) are dropped when they could hold a secret. It still
+        // names accounts, tables and money — share it only with whoever debugs the tool.
+        + '# Nhật ký chẩn đoán Phỏm QA — mật khẩu/token đã được che; vẫn có tên acc, số bàn, tiền: chỉ gửi cho người hỗ trợ.\n', 'utf8'); } catch { /* best effort */ }
   }
   // §ws-log — the capture is ALWAYS ON and takes EVERY non-heartbeat frame of all three browsers, so it used
   // to do one BLOCKING fs.appendFileSync per frame on the Electron main process — the same thread that serves
@@ -211,6 +213,8 @@ else {
     onRunExit: (runId, record) => {
       let closed = null;
       try { lifecycleLog('MAIN_ON_RUN_EXIT', { runId, reason: record && record.reason }); if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) closed = phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ }
+      // N4 — a closed RESERVE leaves the Phỏm session (no dead member); MỞ LẠI on its card adds it back
+      try { if (closed && closed.ok && RESERVE_SLOTS.includes(closed.slot) && phomSessions) phomSessions.removeRun(runId); } catch { /* best effort */ }
       autoReplaceFromReserve(runId, closed);
     },
   });
@@ -798,8 +802,47 @@ else {
   function scheduleCardsBroadcast(cards) {
     _cardsPending = cards;
     if (_cardsTimer) return;
-    const c = _cardsPending; _cardsPending = null; if (c) send('phom:ui', phomUiSnapshot()); // leading edge
-    _cardsTimer = setTimeout(() => { _cardsTimer = null; if (_cardsPending) { _cardsPending = null; send('phom:ui', phomUiSnapshot()); } }, BROADCAST_MS);
+    const c = _cardsPending; _cardsPending = null; if (c) sendUiAndJournal(); // leading edge
+    _cardsTimer = setTimeout(() => { _cardsTimer = null; if (_cardsPending) { _cardsPending = null; sendUiAndJournal(); } }, BROADCAST_MS);
+  }
+  // ONE snapshot for the whole Phỏm screen (module scope: the IPC AND the throttled cards push call it — it used to live
+  // inside registerIpc(), so the push threw a swallowed ReferenceError and LỌC BÀI only refreshed on the window's poll). The renderer used to make six IPC round-trips per refresh
+  // (browsers + remaining + cards + one analyze per account) and repeat them on every push; now main builds the
+  // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
+  // reads or receives exactly one object.
+  function phomUiSnapshot() {
+    if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {} };
+    const browsers = phomSessions.manualBrowserSnapshot() || [];
+    const shared = headerSharedRid();
+    for (const b of browsers) {
+      if (!b || b.profileId == null) continue;
+      Object.assign(b, browserRuntimeStatus(b.profileId));
+      b.state = browserStateFor(b.profileId, browsers, shared); // the same state the bar shows (GĐ2)
+    }
+    const cards = phomSessions.cardObserverSnapshot();
+    const analyses = {};
+    const binding = (cards && cards.slotBinding) || {};
+    for (const slot of ['B1', 'B2', 'B3']) {
+      const uid = binding[slot];
+      if (uid) analyses[slot] = slotAnalyzers[slot].analyze({ snapshot: cards, targetPlayerUid: uid });
+    }
+    return {
+      ok: true, browsers, cards, analyses,
+      remaining: phomSessions.remainingCards(),
+      sharedRid: phomSessions.sharedRid(), sharedRidOwner: phomSessions.sharedRidOwner(),
+      coSeat: phomSessions.coSeatStatus(), group: phomSessions.groupSnapshot(),
+    };
+  }
+  // N5 — the snapshot the tool window gets also feeds the round journal (no second analysis: same object, same rate)
+  function sendUiAndJournal() {
+    const snap = phomUiSnapshot();
+    try { ensureRoundJournal().observe(snap.cards, snap.analyses); } catch { /* the journal never breaks the UI push */ }
+    send('phom:ui', snap);
+  }
+  let roundJournal = null;
+  function ensureRoundJournal() {
+    if (!roundJournal) roundJournal = createRoundJournal({ dir: path.join(app.getPath('userData'), 'phom-captures', 'rounds') });
+    return roundJournal;
   }
 
   // PHASE 6.3.8 — shared RELOAD / CLOSE run helpers, reused by BOTH the IPC handlers (phom:reload-web /
@@ -836,7 +879,12 @@ else {
     const rid = String(runId == null ? '' : runId);
     if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
     toolClosingRuns.add(rid); // the tool closes it → no automatic reserve swap
-    try { await runManager.closeRun(rid); if (phomCluster && phomCluster.markRunClosed) phomCluster.markRunClosed(rid, 'USER_CLOSED_WINDOW'); return { ok: true }; }
+    try {
+      await runManager.closeRun(rid);
+      const closed = phomCluster && phomCluster.markRunClosed ? phomCluster.markRunClosed(rid, 'USER_CLOSED_WINDOW') : null;
+      if (closed && closed.ok && RESERVE_SLOTS.includes(closed.slot) && phomSessions) phomSessions.removeRun(rid); // N4
+      return { ok: true };
+    }
     catch (e) { toolClosingRuns.delete(rid); return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
   }
 
@@ -880,6 +928,25 @@ else {
     return { ok: true, slot: s, runId: newRun, deviceProfileId: after.deviceProfileId, label: after.label };
   }
 
+  // N4 — MỞ LẠI a closed reserve (P4/P5) with its own profile, behind the tool, back in the Phỏm session (warm).
+  async function reopenReserve(reserve) {
+    const r = String(reserve || '').toUpperCase();
+    if (!RESERVE_SLOTS.includes(r)) return { ok: false, error: { code: 'PHOM_SLOT_UNKNOWN', message: `Ô ${reserve} không phải dự bị.` } };
+    if (!phomCluster || !phomCluster.active()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'Chưa mở trình duyệt nào.' } };
+    const ro = phomCluster.reopenReserve(r);
+    if (!ro.ok) return ro;
+    await phomCluster.openCluster();
+    const rs = phomCluster.getClusterSnapshot().reserves[r];
+    if (!rs || !rs.profileId || rs.browserState !== 'OPEN') return { ok: false, error: (rs && rs.error) || { code: 'PHOM_CHROMIUM_LAUNCH_FAILED', message: 'Không mở được trình duyệt.' } };
+    for (let i = 0; i < 8 && !runClientFor(rs.profileId); i++) await new Promise((res) => setTimeout(res, 800));
+    phomCluster.connectClusterCdp();
+    if (phomSessions) phomSessions.addRun(rs.profileId);
+    _reserveMap = null;
+    lifecycleLog('RESERVE_REOPENED', { reserve: r, runId: rs.profileId });
+    pushHeaderStates();
+    return { ok: true, reserve: r, runId: rs.profileId };
+  }
+
   // ĐỔI NGƯỜI CHƠI — the reserve browser (D/E) plays in slot A/B/C at once (no close, no reload): it takes the slot's
   // window place and its place in the Phỏm session; the browser it replaces (if still open) goes behind the tool.
   async function swapSlot(slot, reserve) {
@@ -905,6 +972,8 @@ else {
     let replaced = false;
     // the reserve is a warm member of the session already: the two swap places (it takes the role and sits at once)
     if (phomSessions && oldRun && String(oldRun) !== String(res.playingRun)) replaced = !!phomSessions.swapRuns(oldRun, res.playingRun).replaced;
+    // N4 — the slot's browser was already CLOSED: it moved to the reserve position dead — drop it from the session
+    if (phomSessions && oldRun && !res.benchedRun) phomSessions.removeRun(oldRun);
     await moveRunWindow(res.playingRun, windowRectForSlot(s));
     if (res.benchedRun) await moveRunWindow(res.benchedRun, windowRectForSlot(r));
     try { if (shell && !shell.isDestroyed()) shell.moveTop(); } catch { /* the tool stays where it is */ }
@@ -1379,33 +1448,6 @@ else {
       headerLog('AN_DANH_SET', { on: anDanhOn, results });
       return { ok: true, on: anDanhOn, results };
     }));
-    // ONE snapshot for the whole Phỏm screen. The renderer used to make six IPC round-trips per refresh
-    // (browsers + remaining + cards + one analyze per account) and repeat them on every push; now main builds the
-    // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
-    // reads or receives exactly one object.
-    function phomUiSnapshot() {
-      if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {} };
-      const browsers = phomSessions.manualBrowserSnapshot() || [];
-      const shared = headerSharedRid();
-      for (const b of browsers) {
-        if (!b || b.profileId == null) continue;
-        Object.assign(b, browserRuntimeStatus(b.profileId));
-        b.state = browserStateFor(b.profileId, browsers, shared); // the same state the bar shows (GĐ2)
-      }
-      const cards = phomSessions.cardObserverSnapshot();
-      const analyses = {};
-      const binding = (cards && cards.slotBinding) || {};
-      for (const slot of ['B1', 'B2', 'B3']) {
-        const uid = binding[slot];
-        if (uid) analyses[slot] = slotAnalyzers[slot].analyze({ snapshot: cards, targetPlayerUid: uid });
-      }
-      return {
-        ok: true, browsers, cards, analyses,
-        remaining: phomSessions.remainingCards(),
-        sharedRid: phomSessions.sharedRid(), sharedRidOwner: phomSessions.sharedRidOwner(),
-        coSeat: phomSessions.coSeatStatus(), group: phomSessions.groupSnapshot(),
-      };
-    }
     ipcMain.handle('phom:ui-snapshot', () => phomUiSnapshot());
     // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
     // saved preference + what each option currently resolves to (so SETUP can show availability).
@@ -1426,6 +1468,12 @@ else {
     ipcMain.handle('phom:cluster-open', guarded(() => ensureCluster().openCluster()));
     // THAY PROFILE / MỞ LẠI one slot: { slot:'A'|'B'|'C', profileId? } — no profileId = reopen the slot's own profile.
     // ĐỔI NGƯỜI CHƠI: { slot:'A'|'B'|'C', reserve:'D'|'E' } — an open reserve browser plays in that slot at once.
+    // N5 — open the folder of saved rounds (LỌC BÀI review): one JSON per round, the newest 50 kept.
+    ipcMain.handle('phom:rounds-open', async () => {
+      try { const j = ensureRoundJournal(); j.flush('OPEN_FOLDER'); fs.mkdirSync(j.dir(), { recursive: true }); const err = await electronShell.openPath(j.dir()); return err ? { ok: false, error: { code: 'OPEN_FAILED', message: err } } : { ok: true, dir: j.dir() }; }
+      catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: safeMsg(e) } }; }
+    });
+    ipcMain.handle('phom:reserve-reopen', guarded(async (_e, cfg) => reopenReserve(cfg && cfg.reserve)));
     ipcMain.handle('phom:slot-swap', guarded(async (_e, cfg) => swapSlot(cfg && cfg.slot, cfg && cfg.reserve)));
     ipcMain.handle('phom:slot-replace', guarded(async (_e, cfg) => replaceSlot(cfg && cfg.slot, cfg && cfg.profileId ? String(cfg.profileId) : null)));
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));

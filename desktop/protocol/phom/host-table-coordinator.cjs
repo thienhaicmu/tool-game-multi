@@ -103,6 +103,23 @@ class HostTableCoordinator extends EventEmitter {
     return true;
   }
 
+  // N4 — a RESERVE browser joins (reopened P4/P5) or leaves (closed) the session. A playing browser (P1–P3) is
+  // never removed this way: its slot is replaced (replaceProfile / swapProfiles).
+  addProfile(p) {
+    if (!p || p.id == null || this._profiles.has(String(p.id))) return false;
+    this._addProfile(p); this._changed();
+    return true;
+  }
+  removeProfile(id) {
+    const k = String(id);
+    if (!this._profiles.has(k) || this.profileIds().indexOf(k) < 3) return false;
+    const rec = this._profiles.get(k);
+    rec._manualGen += 1; rec._searchGen += 1; // ends anything it still had in flight
+    this._profiles.delete(k);
+    this._changed();
+    return true;
+  }
+
   // The PLAYING browsers: the first three in order (P1/P2/P3). A 4th/5th one is a RESERVE (P4/P5): a full browser of the
   // session (its bar works like the others) that TỰ ĐỘNG never seats and LỌC BÀI does not cover.
   playingIds() { return this.profileIds().slice(0, 3); }
