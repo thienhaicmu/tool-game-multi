@@ -68,7 +68,7 @@ test('mount is idempotent (guarded) — repeated boot keeps exactly one header',
 
 // ---- main-side truth + resync (no storm) ----
 test('main records header DOM presence from the page signal and force-repushes state on (re)mount', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 1200);
+  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 2200);
   assert.match(r, /if \(action === '__HEADER_STATUS'\)/);
   assert.match(r, /headerDomPresent\[rid\] = !!\(payload && payload\.present\)/);
   assert.match(r, /delete headerLastPushed\[rid\];/); // force re-push so the fresh bar is re-filled

@@ -53,6 +53,7 @@ const { rectForSlot, toolWindowBounds, arrangeClusterWindows } = require('./prot
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
 const anDanh = require('./protocol/phom/an-danh.cjs');
+const crypto = require('node:crypto');
 const { deriveBrowserState } = require('./protocol/phom/browser-state.cjs');
 const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
 const { evaluateHeaderAction } = headerActionGuard;
@@ -555,6 +556,7 @@ else {
   const headerReady = Object.create(null);      // runId -> true once the header bridge installed (binding ready)
   const headerDomPresent = Object.create(null); // runId -> true when the PAGE confirmed #__phom_header exists
   const headerLastPushed = Object.create(null); // runId -> last pushed state JSON (skip unchanged evaluates)
+  const headerKeys = Object.create(null); // runId -> Set of secrets its bar was booted with (N3)
   let anDanhOn = false; // the tool's ẨN DANH switch — default OFF (the game's own default is ON)
   const headerEnterStartedAt = Object.create(null); // runId -> monotonic ms at ENTER_GAME accept (latency)
   const headerEnterTimer = Object.create(null);     // runId -> bounded ENTERING timeout handle (§10 not-stuck)
@@ -918,6 +920,12 @@ else {
     const rid = String(runId == null ? '' : runId);
     const action = payload && payload.action;
     const actionId = (payload && payload.actionId) || null;
+    // N3 — only our own bar may act: the message must carry a key this run was given (a page script cannot know it)
+    const keys = headerKeys[rid];
+    if (!keys || !payload || typeof payload.key !== 'string' || !keys.has(payload.key)) {
+      headerLog('action-rejected', { runId: rid, action, reason: 'BAD_KEY' });
+      return { ok: false, error: { code: 'PHOM_HEADER_FORGED', message: 'Lệnh không đến từ thanh của tool — bỏ qua.' } };
+    }
     // §3/§8/§12 — INTERNAL: the page reports its real header DOM presence (on mount/remount, NOT per frame).
     // Record it (drives the honest Tool indicator) and force a state re-push so the freshly (re)mounted bar
     // gets its current content. This is the ONLY header-DOM signal — never a per-WS-frame CDP verify (§11).
@@ -1053,7 +1061,11 @@ else {
       // (transient CDP drop → poll re-adds the target with a NEW client) this runs again → header + binding
       // are reinstalled and the state re-pushed (§11 reattach). (§6.3.2 / §6.3.2.2)
       headerLog('cdp-attach', { runId: run.id, slotId: run.slot, targetId: target.cdpTargetId });
-      const boot = gameHeader.bootScript({ slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' });
+      // N3 — a fresh secret per attach; every key issued to this run stays valid (a page booted by an earlier attach
+      // keeps working), any other caller is refused in phomHeaderAction.
+      const headerKey = crypto.randomBytes(16).toString('hex');
+      (headerKeys[String(run.id)] || (headerKeys[String(run.id)] = new Set())).add(headerKey);
+      const boot = gameHeader.bootScript({ nonce: headerKey, slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' });
       // §54 — a new top-level document on this run's PAGE resets its Phỏm state (see onRunDocumentReplaced).
       if ((!target.type || target.type === 'PAGE') && client.Page && !client.__phomDocNav) {
         client.__phomDocNav = true;

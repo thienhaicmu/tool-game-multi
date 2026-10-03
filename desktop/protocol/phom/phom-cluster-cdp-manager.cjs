@@ -199,7 +199,8 @@ class PhomClusterCdpManager extends EventEmitter {
     // Route to the host session (updates ONLY this profile's state), then recompute aggregate.
     let cls = null;
     try { if (this._host) cls = this._host.routeFrame({ id: profileId }, { isWebSocket: true, wsDirection: meta.direction || 'recv', seq, targetId: meta.targetId, cdpSessionId: meta.cdpSessionId, url: meta.url, body: { raw: meta.raw } }); } catch { /* isolation: never throw across profiles */ }
-    this._emit();
+    // N2 — a game frame never changes the CLUSTER (browsers/slots/proxies): no snapshot + IPC per frame (it was
+    // ~15 frames/s per browser). The Phỏm state that a frame does change is pushed by the host session, throttled.
     return { accepted: true, envelope, classified: cls };
   }
 
@@ -332,7 +333,14 @@ class PhomClusterCdpManager extends EventEmitter {
   }
 
   _slotForRun(runId) { if (!this._cluster) return null; for (const s of [...SLOTS, ...this._reserveKeys()]) { const slot = this._slot(s); if (slot.profileId === runId) return slot; } return null; }
-  _emit() { this.emit('update', this.getClusterSnapshot()); }
+  // Announce the cluster only when it really changed (N2): identical snapshots are not re-sent to the tool window.
+  _emit() {
+    const snap = this.getClusterSnapshot();
+    let key = null; try { key = JSON.stringify(snap); } catch { key = null; }
+    if (key != null && key === this._lastEmitKey) return;
+    this._lastEmitKey = key;
+    this.emit('update', snap);
+  }
 }
 
 function safe(e) { return String((e && e.message) || e || '').slice(0, 200); }

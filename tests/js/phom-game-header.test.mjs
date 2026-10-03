@@ -175,7 +175,7 @@ test('verifyPresent reflects whether the bar + binding exist in the page', async
 const main = read('desktop/phom-main.cjs');
 
 test('main installs the header on attach with per-run identity + logging, routes clicks to the coordinator', () => {
-  assert.match(main, /gameHeader\.bootScript\(\{ slotId: run\.slot \|\| null, profileId: run\.profileId \|\| null, runId: run\.id, observerLog: process\.env\.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process\.env\.PHOM_CLICK_LOG === '1' \|\| process\.env\.PHOM_HEADER_LOG === '1' \}\)/);
+  assert.match(main, /gameHeader\.bootScript\(\{ nonce: headerKey, slotId: run\.slot \|\| null, profileId: run\.profileId \|\| null, runId: run\.id, observerLog: process\.env\.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process\.env\.PHOM_CLICK_LOG === '1' \|\| process\.env\.PHOM_HEADER_LOG === '1' \}\)/);
   assert.match(main, /headerBridge\.installHeader\(client, \{ runId: run\.id, slotId: run\.slot \|\| null, boot, onAction: \(rid, payload\) => phomHeaderAction\(rid, payload\), log: headerLog \}\)/);
 });
 

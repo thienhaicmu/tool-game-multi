@@ -69,7 +69,9 @@ async function installHeader(client, { runId, slotId, bindingName = '__phomActio
 async function verifyPresent(client, bindingName = '__phomAction') {
   if (!client || !client.Runtime) return false;
   try {
-    const r = await client.Runtime.evaluate({ expression: `!!(document.getElementById('__phom_header') && typeof window.${bindingName} === 'function')`, returnByValue: true });
+    // the boot removes the binding from window (N3 — page scripts must not reach it), so the installed flag is the proof
+    void bindingName;
+    const r = await client.Runtime.evaluate({ expression: `!!(document.getElementById('__phom_header') && window.__phomHeaderInstalled === true)`, returnByValue: true });
     return !!(r && r.result && r.result.value === true);
   } catch { return false; }
 }

@@ -23,7 +23,7 @@ const src = gh.bootScript({ slotId: 'B1', profileId: 'p', runId: 'r' });
 
 test('click applies the optimistic state FIRST, then emits — page-local, no CDP/main for the visual', () => {
   // emit() paints optimistic BEFORE the binding call (immediate feedback), then sends the action.
-  assert.match(src, /applyOptimistic\(action\); window\[BID\] && window\[BID\]/);
+  assert.match(src, /applyOptimistic\(action\); var sf = sendFn\(\); sf && sf\(/);
   // applyOptimistic paints synchronously in the page — it does NOT call the binding or Runtime.evaluate.
   assert.match(src, /function applyOptimistic\(action\)\{ try \{ __optAction = action; paint\(optState\(action\)\); \} catch/);
   assert.equal(/applyOptimistic[\s\S]{0,80}window\[BID\]/.test(src.slice(src.indexOf('function applyOptimistic'))), false, 'applyOptimistic itself never calls the binding');

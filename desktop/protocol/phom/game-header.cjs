@@ -76,8 +76,11 @@ function bootScript(opts = {}) {
   const identity = { slotId: opts.slotId != null ? String(opts.slotId) : null, profileId: opts.profileId != null ? String(opts.profileId) : null, runId: opts.runId != null ? String(opts.runId) : null };
   const obsLog = opts.observerLog ? 'true' : 'false';
   const clickLog = opts.clickLog ? 'true' : 'false';
+  // N3 — the per-run secret main checks on every action; it lives only in this closure (the page cannot read it)
+  const nonce = opts.nonce != null ? String(opts.nonce) : '';
   return `(() => {
   const BID = ${JSON.stringify(bindingName)};
+  const KEY = ${JSON.stringify(nonce)};
   const ID = ${JSON.stringify(identity)};
   const OBSLOG = ${obsLog};
   const CLICKLOG = ${clickLog};
@@ -86,9 +89,14 @@ function bootScript(opts = {}) {
   // Idempotent + SELF-HEALING: the boot already ran but the game wiped the bar (SPA body swap) → re-mount it.
   if (window.__phomHeaderInstalled) { if (!document.getElementById('__phom_header') && window.__phomHeaderMount) window.__phomHeaderMount(); return; }
   window.__phomHeaderInstalled = true;
+  // N3 — keep the page→tool channel to ourselves: take the binding once and remove it from window, so a page script
+  // can neither call it nor wrap it; every message also carries KEY, which only this closure knows.
+  var __send = null;
+  function sendFn(){ if(!__send && typeof window[BID] === 'function'){ __send = window[BID]; try { delete window[BID]; } catch(e){} } return __send; }
+  sendFn();
   // Every action carries the browser IDENTITY + a correlation actionId, so a click can never be attributed to the
   // wrong browser.
-  function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } if(OPTIMISTIC_ACTIONS[action]) applyOptimistic(action); window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
+  function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } if(OPTIMISTIC_ACTIONS[action]) applyOptimistic(action); var sf = sendFn(); sf && sf(JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId, key: KEY }, extra||{}))); } catch(e){} }
   // Only VÀO GAME paints an optimistic busy state; every table button shows its own state ('.') from main.
   var OPTIMISTIC_ACTIONS = { ENTER_GAME:1 };
   // __authState = last AUTHORITATIVE state from main; the next __phomHeaderRender always wins over an optimistic one.
@@ -103,7 +111,7 @@ function bootScript(opts = {}) {
   ssInput.addEventListener('input', function(){ __ssValue = ssInput.value; });
   ssInput.addEventListener('mousedown', function(ev){ ev.stopPropagation(); });
   // The bar's REAL DOM presence goes to main once per mount/remount (Tool shows HEADER = Sẵn sàng).
-  function emitStatus(){ try { window[BID] && window[BID](JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId })); } catch(e){} }
+  function emitStatus(){ try { var sf = sendFn(); sf && sf(JSON.stringify({ action:'__HEADER_STATUS', present:true, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId, key: KEY })); } catch(e){} }
   // Player number from the slot id ('B1'/'B2'/'B3' or the tool's 'A'/'B'/'C').
   var SLOTN = (function(){ var sid=String(ID.slotId||''); var m=/^B(\\d)$/i.exec(sid); if(m) return Number(m[1]); var abc={A:1,B:2,C:3}[sid.toUpperCase()]; return abc||null; })();
   const mk = (t,s)=>{const e=document.createElement(t);if(s)e.setAttribute('style',s);return e;};
@@ -169,7 +177,8 @@ function bootScript(opts = {}) {
     var b = mk('button','height:19px;padding:0 4px;border-radius:3px;border:0;background:'+bg+';color:'+(fg||'#fff')+';font:800 12px/1 Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';');
     if(fg) b.className = '__ph_dark';
     b.textContent = label; b.title = tip || label;
-    if(dis) b.disabled = true; else b.onclick = onClick;
+    // N3 — only a REAL click (the user's mouse / keyboard) acts; a click a page script dispatches is ignored
+    if(dis) b.disabled = true; else b.onclick = function(ev){ if(ev && ev.isTrusted === false) return; onClick(ev); };
     return b;
   }
   function chip(label, bg){ var c = mk('span','box-sizing:border-box;height:19px;padding:0 5px;border-radius:3px;background:'+bg+';color:#fff;font:800 11px/17px Inter,Segoe UI,sans-serif;white-space:nowrap;'); c.className = '__ph_chip'; c.textContent = label; return c; }
