@@ -326,3 +326,51 @@ test('NEXT-02: a STRANGER plays next → the hidden-hand reasoning still applies
   const r = createSafeCardAnalyzer().analyze({ snapshot: snap, targetPlayerUid: 'uidA' });
   assert.ok(r.targetCards.some((c) => c.classification !== CLASS.SAFE));
 });
+
+// ---- Lọc Bài per account (2026-10-03): "Chưa đủ dữ liệu" while the account held cards ----
+// A stranger plays next and little is discarded yet → nothing is provable, which hid every card. The CHƯA RÕ cards
+// are listed, the fewest open ways to be eaten first; and the next player is the next seat UP (table order).
+const snapOf = (players, extra = {}) => ({ roundSeq: 1, startedAt: 1, ledger: [], slotBinding: { B1: 'me' }, nextOf: {}, roundPlayers: Object.keys(players), players, ...extra });
+const P = (uid, seat, cards = [], controlled = false) => ({ uid, seat, currentCards: cards, controlled, name: uid });
+
+test('CHƯA RÕ cards are listed, least risky first, with how many ways they could be eaten', () => {
+  const a = createSafeCardAnalyzer();
+  // me: A♠(0) and 7♠(24) — next is a stranger; 3 of A's partners are unseen for both
+  const ledger = [{ code: 1, status: 'DISCARDED' }, { code: 2, status: 'DISCARDED' }]; // two of A's rank partners seen
+  const r = a.analyze({ snapshot: snapOf({ me: P('me', 0, [0, 24], true), x: P('x', 1) }, { ledger }), targetPlayerUid: 'me' });
+  assert.equal(r.status, STATUS.OK);
+  const codes = [...r.safeCards, ...r.likelySafeCards, ...r.unknownCards].map((c) => c.code);
+  assert.ok(codes.includes(0) && codes.includes(24), 'every card of the hand is shown somewhere');
+  for (let i = 1; i < r.unknownCards.length; i++) assert.ok(r.unknownCards[i - 1].openWays <= r.unknownCards[i].openWays, 'least risky first');
+  assert.ok(r.unknownCards.every((c) => c.openWays > 0));
+});
+
+test('table order: before any play the next player is the next seat UP (wrapping), not both neighbours', () => {
+  const a = createSafeCardAnalyzer();
+  const players = { me: P('me', 1, [0], true), lo: P('lo', 0), hi: P('hi', 2) };
+  assert.deepEqual(a.analyze({ snapshot: snapOf(players), targetPlayerUid: 'me' }).nextCandidates, ['hi']);
+  const last = { me: P('me', 2, [0], true), lo: P('lo', 0), mid: P('mid', 1) };
+  assert.deepEqual(createSafeCardAnalyzer().analyze({ snapshot: snapOf(last), targetPlayerUid: 'me' }).nextCandidates, ['lo'], 'the last seat wraps to the lowest');
+  // a play that shows otherwise wins
+  assert.deepEqual(createSafeCardAnalyzer().analyze({ snapshot: snapOf(players, { nextOf: { me: 'lo' } }), targetPlayerUid: 'me' }).nextCandidates, ['lo']);
+});
+
+test('the tool window shows the CHƯA RÕ group and only says Chưa đủ dữ liệu for an empty hand', () => {
+  const js = readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
+  assert.match(js, /'CHƯA RÕ — ít rủi ro trước'/);
+  assert.match(js, /if \(!safe\.length && !likely\.length && !risky\.length && !unknown\.length && !own\.length\) col\.appendChild\(el\('div', \{ class: 'faint sm' \}, 'Chưa đủ dữ liệu'\)\);/);
+});
+
+test('each P is analysed on its own but with ALL THREE accounts\' cards known (a card held by P2/P3 is never "hidden")', () => {
+  // P1 holds A♠ (0). Its rank partners A♣/A♦/A♥ = 1/2/3, its only run window 2♠+3♠ = 4/8. Next player: a stranger.
+  const players = (p2, p3) => ({ me: P('me', 0, [0], true), x: P('x', 1), p2: P('p2', 2, p2, true), p3: P('p3', 3, p3, true) });
+  const held = (uid, codes) => codes.map((code) => ({ code, status: 'CURRENT', ownerUid: uid }));
+  // without the other accounts' cards: A♠ could be eaten by the stranger
+  const alone = createSafeCardAnalyzer().analyze({ snapshot: snapOf(players([], []), { ledger: held('me', [0]) }), targetPlayerUid: 'me' });
+  assert.notEqual(alone.targetCards[0].classification, CLASS.SAFE);
+  // P2 holds A♣ A♦, P3 holds 2♠ → no pair is left for the stranger: SAFE, proven from the three accounts together
+  const ledger = [...held('me', [0]), ...held('p2', [1, 2]), ...held('p3', [4])];
+  const all = createSafeCardAnalyzer().analyze({ snapshot: snapOf(players([1, 2], [4]), { ledger, slotBinding: { B1: 'me', B2: 'p2', B3: 'p3' } }), targetPlayerUid: 'me' });
+  assert.equal(all.targetCards[0].classification, CLASS.SAFE);
+  assert.deepEqual(all.safeCards.map((c) => c.code), [0]);
+});

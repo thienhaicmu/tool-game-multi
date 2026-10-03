@@ -27,7 +27,7 @@ test('renderControl renders the compact UI (header + compact browser row + card 
   assert.match(body, /renderCardWorkspace\(\)/);
   const ws = fn(js, 'renderCardWorkspace');
   assert.match(ws, /renderSafeCards\(\)/);
-  assert.match(ws, /renderRemainingCards\(\)/);
+  assert.equal(/renderRemainingCards/.test(ws), false, 'Lọc Bài only — no remaining-card panel');
   assert.match(ws, /card-workspace/);
   // legacy host-first/entry toolbars + monitor are NOT called from the main screen
   assert.equal(/statusToolbar\(|commandToolbar\(|entryStatusBar\(|liveMonitor\(/.test(body), false, 'no legacy toolbars/monitor on the main screen');
@@ -68,11 +68,11 @@ test('the Tool is the 4th window of the deterministic cluster arrangement', () =
   assert.match(main, /clusterFourWindowArrangement\(\);\s*control = arr && arr\.tool/);
 });
 
-test('remaining cards on the main screen are backend-provided and not "player 4"', () => {
-  const body = fn(js, 'renderRemainingCards');
-  assert.match(body, /CARDS REMAINING/);
-  assert.match(body, /remaining\.cards/);
-  assert.equal(/Player 4|Opponent|Người thứ 4/.test(body), false);
+test('the remaining-card COUNT (backend-provided) is in the Lọc Bài title; the card list is not shown', () => {
+  const body = fn(js, 'remainingCount');
+  assert.match(body, /remaining\.count/);
+  assert.match(fn(js, 'renderSafeCards'), /' · Còn lại ' \+ remainingCount\(\) \+ ' lá'/);
+  assert.equal(/function renderRemainingCards/.test(js), false);
 });
 
 test('renderer never writes document.title or injects game DOM (tool-side only)', () => {

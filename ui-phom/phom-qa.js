@@ -661,8 +661,7 @@
   }
   function renderCardWorkspace() {
     const ws = el('div', { class: 'card-workspace' });
-    ws.appendChild(renderSafeCards());
-    ws.appendChild(renderRemainingCards());
+    ws.appendChild(renderSafeCards()); // Lọc Bài only — the remaining-card list is not shown (its count is in the title)
     return ws;
   }
   const BUSY_LABEL = { FIND: '⏳ ĐANG TÌM BÀN…', JOIN: '⏳ ĐANG VÀO BÀN…', REJOIN: '⏳ ĐANG VÀO LẠI…', LEAVE: '⏳ ĐANG RỜI BÀN…', LEAVE_ALL: '⏳ ĐANG RỜI HẾT…', AUTO_ON: '⏳ ĐANG BẬT TỰ ĐỘNG…', REGROUP: '⏳ ĐANG GOM LẠI BÀN MỚI…' };
@@ -807,7 +806,7 @@
   // a discard). When the next player is one of our accounts the verdict is exact; a stranger → public evidence.
   function renderSafeCards() {
     const box = el('div', { class: 'safe-cards', id: 'phq-safe' },
-      el('div', { class: 'safe-head' }, el('div', { class: 'sc-title' }, el('span', { class: 'section-t' }, '🛡 LỌC BÀI'), el('span', { class: 'faint xs sc-sub' }, 'Lá người đánh sau KHÔNG ăn được'))));
+      el('div', { class: 'safe-head' }, el('div', { class: 'sc-title' }, el('span', { class: 'section-t' }, '🛡 LỌC BÀI'), el('span', { class: 'faint xs sc-sub' }, 'Lá người đánh sau KHÔNG ăn được' + (remainingCount() != null ? ' · Còn lại ' + remainingCount() + ' lá' : '')))));
     const cols = el('div', { class: 'safe-cols' });
     ['B1', 'B2', 'B3'].forEach((slot, i) => cols.appendChild(safeColumn(slot, i + 1)));
     box.appendChild(cols);
@@ -826,15 +825,17 @@
     if (safe.length) { col.appendChild(el('div', { class: 'faint xs' }, 'NÊN ĐÁNH (điểm cao trước)')); col.appendChild(safeCardRow(safe, 'meld', a.recommendedCode)); }
     if (likely.length) { col.appendChild(el('div', { class: 'faint xs' }, 'CÓ THỂ AN TOÀN')); col.appendChild(safeCardRow(likely, '')); }
     if (risky.length) { col.appendChild(el('div', { class: 'faint xs' }, 'ĐỪNG ĐÁNH — người sau ăn được')); col.appendChild(safeCardRow(risky, 'risky')); }
+    const unknown = a.unknownCards || [];
+    if (unknown.length) { col.appendChild(el('div', { class: 'faint xs' }, 'CHƯA RÕ — ít rủi ro trước')); col.appendChild(safeCardRow(unknown, 'unknown')); }
     if (own.length) { col.appendChild(el('div', { class: 'faint xs' }, 'TRONG PHỎM — giữ lại')); col.appendChild(safeCardRow(own, 'own-meld')); }
-    if (!safe.length && !likely.length && !risky.length) col.appendChild(el('div', { class: 'faint sm' }, 'Chưa đủ dữ liệu'));
+    if (!safe.length && !likely.length && !risky.length && !unknown.length && !own.length) col.appendChild(el('div', { class: 'faint sm' }, 'Chưa đủ dữ liệu'));
     return col;
   }
   function safeCardRow(cards, extra, recommendedCode) {
     const row = el('div', { class: 'cards' });
     for (const c of cards) {
       const rec = recommendedCode != null && c.code === recommendedCode;
-      const tip = (rec ? 'NÊN ĐÁNH — ' : '') + (c.points != null ? c.points + ' điểm · ' : '') + (c.reasonCodes || []).join(', ');
+      const tip = (rec ? 'NÊN ĐÁNH — ' : '') + (c.points != null ? c.points + ' điểm · ' : '') + (c.openWays ? c.openWays + ' cách bị ăn · ' : '') + (c.reasonCodes || []).join(', ');
       row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') + (extra ? ' ' + extra : '') + (rec ? ' recommended' : ''), title: tip }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
     }
     return row;
@@ -1455,24 +1456,11 @@
     reconcileEnterStates(); // clear ĐANG VÀO GAME once the browser is authoritatively in game
   }
   function manualBrowserById(id) { return manualBrowsers.find((b) => String(b.profileId) === String(id)) || null; }
-  function renderRemainingCards() {
-    // CARDS REMAINING (= LÁ BÀI CÒN LẠI): observer remaining preferred, else the backend 3-hands view.
-    const box = el('div', { class: 'remaining-cards', id: 'phq-remaining' });
+  // How many cards are still unseen (observer view preferred, else the backend 3-hands view) — shown in the Lọc Bài title.
+  function remainingCount() {
     const obs = cardsSnap && cardsSnap.remaining ? cardsSnap.remaining : null;
-    const observing = !!(obs && obs.knownOutCount === 0);
-    const view = obs && !observing ? obs : (remaining && remaining.cards ? { cards: remaining.cards, count: remaining.count } : null);
-    // PHASE 6.3.9 — title + subtitle ("Chưa an toàn") + count · a NEUTRAL panel (never a negative label, §9.2).
-    box.appendChild(el('div', { class: 'safe-head' },
-      el('div', { class: 'sc-title' },
-        el('span', { class: 'section-t' }, '🂠 CÁC LÁ BÀI CÒN LẠI'),
-        el('span', { class: 'faint xs sc-sub' }, 'Chưa an toàn' + (view ? (' · ' + view.count + ' lá') : '')))));
-    if (!view) { box.appendChild(el('div', { class: 'cards' }, el('span', { class: 'faint sm' }, 'Đang quan sát…'))); return box; }
-    const cards = Array.isArray(view.cards) ? view.cards : [];
-    const row = el('div', { class: 'cards' });
-    if (!cards.length) row.appendChild(el('span', { class: 'faint' }, '—'));
-    for (const c of cards) row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
-    box.appendChild(row);
-    return box;
+    if (obs && obs.knownOutCount !== 0 && obs.count != null) return obs.count;
+    return remaining && remaining.count != null ? remaining.count : null;
   }
 
   // ---------- helpers ----------

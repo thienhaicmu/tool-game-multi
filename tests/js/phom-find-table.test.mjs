@@ -490,7 +490,7 @@ test('LỌC BÀI lives in the Phỏm QA tool (one column per account, named like
   const main = readMain();
   assert.equal(/headerFilterFor|headerCardsContext/.test(main), false);
   // the tool window: the same analyzer, one analysis per browser slot B1..B3
-  assert.match(main, /analyses\[slot\] = safeCardAnalyzer\.analyze\(\{ snapshot: cards, targetPlayerUid: uid \}\)/);
+  assert.match(main, /analyses\[slot\] = slotAnalyzers\[slot\]\.analyze\(\{ snapshot: cards, targetPlayerUid: uid \}\)/);
   const ui = require('fs').readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
   assert.match(ui, /\['B1', 'B2', 'B3'\]\.forEach\(\(slot, i\) => cols\.appendChild\(safeColumn\(slot, i \+ 1\)\)\)/);
   assert.match(ui, /const acc = \(manualBrowsers \|\| \[\]\)\.find\(\(b\) => b && Number\(b\.browserIndex\) === index\);/);

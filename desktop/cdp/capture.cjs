@@ -44,6 +44,11 @@ class CaptureCorrelator extends EventEmitter {
     this._resolveClient = options.resolveClient || (() => null); // (targetId) -> CDP client | null
     this._maxBodyBytes = Number(options.maxBodyBytes || DEFAULT_MAX_BODY_BYTES);
     this._store = new Map();          // capturedId -> CapturedRequest
+    // A product that never reads a WS frame back (Phỏm) passes keepWsFrames:false — the store has no eviction, so
+    // keeping every frame of three busy game sockets grew the main process without bound. wsFilter(raw, dir, url)
+    // returning false drops a frame before anything is built for it.
+    this._keepWsFrames = options.keepWsFrames !== false;
+    this._wsFilter = typeof options.wsFilter === 'function' ? options.wsFilter : null;
     this._current = new Map();        // cdpKey -> capturedId (in-flight hop)
     this._pendingReqExtra = new Map();// cdpKey -> requestWillBeSentExtraInfo params
     this._pendingRespExtra = new Map();// cdpKey -> responseReceivedExtraInfo params
@@ -233,6 +238,7 @@ class CaptureCorrelator extends EventEmitter {
     const req = conn && this._store.get(conn.id);
     if (req) { req.state = 'FINISHED'; this.emit('update', req); }
     this._ws.delete(cdpKey);
+    if (conn && !this._keepWsFrames) this._store.delete(conn.id); // only OPEN sockets are kept
     // Additive lifecycle signal (non-breaking; non-listeners ignore it). A bare WebSocket
     // close previously surfaced ONLY as an 'update' on the row, so a consumer that binds a
     // game socket per target (Phỏm) never learned the socket dropped. Emit the closed URL so
@@ -250,6 +256,7 @@ class CaptureCorrelator extends EventEmitter {
     const cdpKey = this._key(targetId, p.requestId, sessionId);
     const conn = this._ws.get(cdpKey);
     const url = conn ? conn.url : '';
+    if (this._wsFilter && !this._wsFilter(r.opcode === 1 ? String(r.payloadData || '') : null, dir, url)) return;
     const seq = conn ? conn.frameSeq++ : this._seq;
     const id = `${cdpKey}#${dir}${seq}`;
     // §co-seat — a binary frame's payload (base64) IS available here; keep it behind a marker instead of
@@ -267,7 +274,7 @@ class CaptureCorrelator extends EventEmitter {
       response: { status: 101, statusText: dir === 'send' ? 'Frame Sent' : 'Frame Received', headers: {}, setCookies: [], mimeType: null, body: { state: 'UNAVAILABLE', reason: 'websocket frame' } },
       failure: null, state: 'BODY_AVAILABLE', isWebSocket: true, wsDirection: dir, seq: this._seq++,
     };
-    this._store.set(id, req);
+    if (this._keepWsFrames) this._store.set(id, req);
     this.emit('request', req);
     this.emit('response', req);
   }

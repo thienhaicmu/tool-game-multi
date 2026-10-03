@@ -3,6 +3,7 @@
 const EventEmitter = require('node:events');
 const { createTableGroup } = require('./table-group.cjs');
 const { HostTableCoordinator } = require('./host-table-coordinator.cjs');
+const { armExpression } = require('./phom-probe-guard.cjs');
 
 // ---------------------------------------------------------------------------
 // HostSessionManager — main-process owner of one Phỏm session: binds a table coordinator (per-browser primitives) and
@@ -42,6 +43,10 @@ class HostSessionManager extends EventEmitter {
           if (!this._wsReplay) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no send seam' } };
           if (!ctx || !ctx.targetId) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no game socket observed yet for this profile' } };
           return this._wsReplay.sendProtocol(ctx, payload);
+        },
+        armProbe: async (ctx) => {
+          if (!this._wsReplay || !this._wsReplay.evaluateIn || !ctx || !ctx.targetId) return { ok: false };
+          return this._wsReplay.evaluateIn(ctx, armExpression());
         },
       };
     });

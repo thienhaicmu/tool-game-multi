@@ -70,6 +70,10 @@ class PhomContext extends EventEmitter {
     if (!cls.op && cls.type === 'UNKNOWN' && !cls.json) return cls; // non-JSON noise
     const now = meta.now != null ? meta.now : Date.now();
     let changed = false;
+    // Liveness: ANY frame the bound game socket receives (the ~5s heartbeat acks [6,1,n] included) proves the hook
+    // still sees it. Counting only table/card pushes made a quiet table read "MẤT DỮ LIỆU" after 20s — the bar
+    // locked its buttons and the capture was re-hooked over and over.
+    if (meta.direction === 'recv' && this._socket && this._socket.targetId === meta.targetId) this._lastFrameAt = now;
 
     // Bind the owning game socket from an authoritative SERVER push (recv).
     if (cls.isServerEvidence && meta.direction === 'recv') {

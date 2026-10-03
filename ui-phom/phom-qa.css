@@ -484,7 +484,6 @@ details.adv pre { color: var(--text-2); background: var(--panel-2); border: 1px 
 
 /* cards get the space: LỌC BÀI wider than the remaining-cards panel */
 .card-workspace .safe-cards { flex: 3 1 0; }
-.card-workspace .remaining-cards { flex: 2 1 0; }
 .safe-cols { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 6px; flex: 1 1 auto; min-height: 0; overflow-y: auto; align-content: start; }
 .safe-col { border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; background: var(--panel-2); min-width: 0; }
 .safe-col-head { margin-bottom: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

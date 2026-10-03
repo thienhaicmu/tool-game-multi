@@ -22,7 +22,15 @@ const WS_HOOK = `(() => {
     const socks = g.__wsoSocks = g.__wsoSocks || [];
     const track = function(ws){ try { if (ws && socks.indexOf(ws) === -1) socks.push(ws); } catch(e){} return ws; };
     const nativeSend = WS.prototype.send;
-    const wrapped = function(data){ track(this); return nativeSend.apply(this, arguments); };
+    // g.__wsoOutFilter (unset = nothing changes): a product may rewrite one of the page's OWN outgoing frames —
+    // Phỏm's TẠO turns the game's automatic table join into a refused probe (see phom-probe-guard.cjs).
+    const wrapped = function(data){
+      track(this);
+      if (typeof g.__wsoOutFilter === 'function' && typeof data === 'string') {
+        try { const d2 = g.__wsoOutFilter(data); if (typeof d2 === 'string' && d2 !== data) return nativeSend.call(this, d2); } catch(e){}
+      }
+      return nativeSend.apply(this, arguments);
+    };
     // Stay invisible to games that sanity-check send(): keep name/length and make
     // toString report the native source. If anything about the swap fails, restore
     // the original so we can never break the page (which would hide the buttons).
@@ -142,6 +150,19 @@ class WsReplay {
     if (!ctx || !ctx.targetId) return { error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound for probe' } };
     const client = this._resolveClient(ctx.targetId);
     return runProbeAviatorSceneViaSite(client, ctx.cdpSessionId || undefined, descriptor, onDiag);
+  }
+
+  // Run a small expression in the target/session that holds the game socket (the same one sendProtocol uses).
+  async evaluateIn(ctx, expression) {
+    if (!ctx || !ctx.targetId) return { ok: false, error: { code: 'TEST_SESSION_UNAVAILABLE', message: 'No target bound' } };
+    const client = this._resolveClient(ctx.targetId);
+    if (!client) return { ok: false, error: { code: 'TARGET_CONTEXT_UNAVAILABLE', message: 'Target connection is gone' } };
+    const sessionId = ctx.cdpSessionId || undefined;
+    await this.injectSession(client, sessionId);
+    try {
+      const res = await client.Runtime.evaluate({ expression: String(expression), returnByValue: true }, sessionId);
+      return { ok: true, value: res && res.result ? res.result.value : undefined };
+    } catch (e) { return { ok: false, error: { code: 'EVALUATE_FAILED', message: String(e && e.message || e) } }; }
   }
 
   async sendProtocol(ctx, payload) {

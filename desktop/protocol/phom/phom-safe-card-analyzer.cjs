@@ -127,7 +127,7 @@ function compute(snap, targetUid) {
   const cards = hand.map((code) => {
     const c = classifyCard(code, { possiblyHidden, statusOf, controlledOpps, threats });
     const inOwnMeld = ownMeld.has(code);
-    return { ...c, inOwnMeld, points: cardPoints(code), reasonCodes: inOwnMeld ? [...c.reasonCodes, 'IN_OWN_MELD'] : c.reasonCodes };
+    return { ...c, inOwnMeld, openWays: c.openWays != null ? c.openWays : 0, points: cardPoints(code), reasonCodes: inOwnMeld ? [...c.reasonCodes, 'IN_OWN_MELD'] : c.reasonCodes };
   });
   // Deterministic ordering by code.
   cards.sort((a, b) => a.code - b.code);
@@ -138,6 +138,10 @@ function compute(snap, targetUid) {
   const view = (c) => ({ code: c.code, label: c.label, rank: c.rank, suit: c.suit, color: c.color, points: c.points, reasonCodes: c.reasonCodes });
   const byValue = (a, b) => (b.points - a.points) || (a.code - b.code);
   const pick = (cls) => cards.filter((c) => c.classification === cls && !c.inOwnMeld).sort(byValue).map(view);
+  // CHƯA RÕ: not provable either way (a stranger plays next, little has been discarded yet). Still the user's best
+  // information: fewer open ways to eat = less risk, so they come first; equal risk → the costlier card first.
+  const byRisk = (a, b) => (a.openWays - b.openWays) || byValue(a, b);
+  const unknown = cards.filter((c) => c.classification === CLASS.UNKNOWN && !c.inOwnMeld).sort(byRisk).map((c) => ({ ...view(c), openWays: c.openWays }));
   const safe = pick(CLASS.SAFE);
   const next = nextSet.length === 1 ? nextSet[0] : null;
   const reasons = [...new Set(cards.flatMap((c) => c.reasonCodes))].sort();
@@ -157,7 +161,7 @@ function compute(snap, targetUid) {
     nextPlayerLabel: next ? playerLabel(snap, next) : (nextSet.length ? nextSet.map((u) => playerLabel(snap, u)).join(' / ') + ' (chưa rõ chiều)' : null),
     nextCandidates: nextSet.slice(),
     likelySafeCards: pick(CLASS.LIKELY_SAFE),
-    unknownCards: pick(CLASS.UNKNOWN),
+    unknownCards: unknown,
     riskyCards: pick(CLASS.RISKY),
     reasons,
   });
@@ -216,7 +220,9 @@ function classifyCard(code, ctx) {
     return decorate(code, CLASS.LIKELY_SAFE, reasonCodes);
   }
   reasonCodes.push('HIDDEN_PARTNERS_OPEN');
-  return decorate(code, CLASS.UNKNOWN, reasonCodes);
+  // the ways a hidden hand could still eat X: each pair of unseen same-rank partners + each open run window
+  const openWays = (rankHiddenAvail * (rankHiddenAvail - 1)) / 2 + runsOpen;
+  return { ...decorate(code, CLASS.UNKNOWN, reasonCodes), openWays };
 }
 
 function decorate(code, classification, reasonCodes) {
@@ -259,7 +265,9 @@ function nextCandidates(snap, targetUid) {
     if (seated[(j + 1) % seated.length] === String(b)) return [up];
     if (seated[(j - 1 + seated.length) % seated.length] === String(b)) return [down];
   }
-  return up === down ? [up] : [up, down];
+  // No play seen yet: the table order. Play moves UP the seat numbers (live capture 2026-09-19: sit0 played, the turn
+  // went to sit1 at a sit0/sit1/sit2 table), wrapping to the lowest seat — so the next player is the next seat up.
+  return [up];
 }
 
 // Content fingerprint for memoisation: target + round + the exact observation that affects the result.

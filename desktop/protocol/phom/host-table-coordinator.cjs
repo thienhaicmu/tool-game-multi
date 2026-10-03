@@ -74,6 +74,7 @@ class HostTableCoordinator extends EventEmitter {
     this._profiles.set(id, {
       id, displayName: p.displayName != null ? String(p.displayName) : id,
       send: typeof p.send === 'function' ? p.send : async () => ({ ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND', message: 'no send seam' } }),
+      armProbe: typeof p.armProbe === 'function' ? p.armProbe : null, // TẠO: the game's own join → refused probe (phom-probe-guard)
       ctx: new PhomContext({ profileId: id, uid: p.uid }), hand: emptyHand(id, p.uid),
       manualState: null, lastError: null,
       _joinedRid: null, _lastRid: null, _joinedViaChannel: false, _hostUid: null,
@@ -367,6 +368,10 @@ class HostTableCoordinator extends EventEmitter {
       const assignBefore = rec.ctx.roomAssignSeq();
       const tableBefore = rec.ctx.tableSeq(); // before the ask: the game client may sit down the instant the answer lands
       this._log('SCAN_SENT', rec, { stake, attempt });
+      // The game client answers a 313 by joining the named table ITSELF ([3,"Simms",rid,""]) — at a stranger's table,
+      // where it auto-readies and the round starts. Armed, that join leaves the page with the U+200B password and is
+      // refused, exactly like the reference tool's.
+      if (rec.armProbe) { try { await rec.armProbe(rec.ctx.sendContext()); } catch { /* the probe + leave below still guard */ } }
       if (!await this._searchSend(rec, buildQuickPlayFrame({ stake }))) return this._searchFail(rec, 'PHOM_FIND_FAILED', 'Không gửi được lệnh tìm bàn');
       const reply = () => { const r = rec.ctx.lastRoomAssign(); return r && r.seq > assignBefore ? r : null; };
       await this._waitManual(() => !!reply(), rec, myGen, timeoutMs);

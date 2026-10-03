@@ -17,21 +17,18 @@ test('3. shared RID appears ONCE (tool header), never repeated in the three chip
   assert.equal(/ridText|'RID:'|infoRow\('RID'/.test(cell), false, 'no per-chip RID value displayed');
 });
 
-test('4. the card workspace is flex-growing and holds both card sections', () => {
+test('4. the card workspace is flex-growing and holds Lọc Bài only', () => {
   const ws = fn('renderCardWorkspace');
   assert.match(ws, /card-workspace/);
   assert.match(ws, /renderSafeCards\(\)/);
-  assert.match(ws, /renderRemainingCards\(\)/);
+  assert.equal(/renderRemainingCards/.test(ws), false);
   // PHASE 6.3.9 — the two card panels are SIDE-BY-SIDE (row); each panel scrolls its own cards.
   assert.match(css, /\.card-workspace \{[^}]*flex: 1 1 auto[^}]*flex-direction: row/);
   // control mode is a flex column so the workspace can grow; root doesn't double-scroll
   assert.match(css, /#phq-root\.mode-control \{[^}]*overflow: hidden/);
 });
 
-test('6. LÁ BÀI CÒN LẠI (CARDS REMAINING) remains, rendering the backend result unchanged', () => {
-  const rem = fn('renderRemainingCards');
-  assert.match(rem, /CARDS REMAINING/);
-  assert.match(rem, /remaining\.cards/);
-  assert.match(rem, /remaining\.count/);
+test('6. LÁ BÀI CÒN LẠI is only a count in the Lọc Bài title', () => {
+  assert.match(fn('remainingCount'), /remaining\.count/);
 });
 

@@ -34,6 +34,7 @@ const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
 const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs');
 const { createSafeCardAnalyzer } = require('./protocol/phom/phom-safe-card-analyzer.cjs'); // PHASE 6.3.3.3 — read-only analyzer
+const { isPhomRelevant } = require('./protocol/phom/phom-ws-filter.cjs');
 const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-manager.cjs');
 const { projectRuntimeToManagerConfig } = require('./protocol/phom/cluster-runtime-projection.cjs');
 const { parseQuickProxies, parseQuickProxyRows } = require('./browser-run/phom-quick-proxy.cjs');
@@ -108,6 +109,9 @@ else {
   // PHASE 6.3.3.3 — one read-only safe-card analyzer (deterministic, no state beyond a memo cache). The
   // selected target uid is owned by the renderer and passed per analyze() call — no duplicate target state.
   const safeCardAnalyzer = createSafeCardAnalyzer();
+  // Lọc Bài: one analyzer PER account, so each P1/P2/P3 column is computed (and memoised) on its own — every one of
+  // them from the SAME shared observation, i.e. with the cards of all three accounts known.
+  const slotAnalyzers = { B1: createSafeCardAnalyzer(), B2: createSafeCardAnalyzer(), B3: createSafeCardAnalyzer() };
   // Records which saved cluster profile id (if any) backs the live ClusterSession, so
   // the store can block deleting a profile that is in use. Set on a profile-driven
   // create, cleared on stop/leave. This is provenance only — it never alters the Host
@@ -121,7 +125,8 @@ else {
   const ensureDir = (d) => { try { fs.mkdirSync(d, { recursive: true }); } catch { /* best effort */ } };
 
   // ---- capture + send seam (shared, target-keyed) ----
-  const capture = new CaptureCorrelator({ resolveClient: (tid) => resolveTargetClient(tid) });
+  // Only Phỏm frames get past the capture (phom-ws-filter), and none is retained: the tool never reads one back.
+  const capture = new CaptureCorrelator({ resolveClient: (tid) => resolveTargetClient(tid), keepWsFrames: false, wsFilter: isPhomRelevant });
   const wsReplay = new WsReplay({ resolveClient: (tid) => resolveTargetClient(tid), getCaptured: (id) => capture.get(id) });
   // TEST D — passive recorder of the game's own frames between a user START/STOP (see frame-recorder.cjs).
   const frameRecorder = createFrameRecorder();
@@ -1167,12 +1172,16 @@ else {
   // reads a response body, so Chromium must not retain them.
   function attachCapture(client, target) {
     const { Network } = client;
-    const tid = target.cdpTargetId;
+    client.__phomCaptureTid = target.cdpTargetId; // the listeners read the CURRENT target of this client
     Network.enable({ maxTotalBufferSize: 1048576, maxResourceBufferSize: 262144, maxPostDataSize: 0 }).catch(() => { Network.enable().catch(() => {}); });
-    Network.webSocketCreated((p, sid) => capture.onWebSocketCreated(tid, p, sid));
-    Network.webSocketFrameSent((p, sid) => capture.onWebSocketFrameSent(tid, p, sid));
-    Network.webSocketFrameReceived((p, sid) => capture.onWebSocketFrameReceived(tid, p, sid));
-    Network.webSocketClosed((p, sid) => capture.onWebSocketClosed(tid, p, sid));
+    // Listeners once per client: a re-hook only re-enables Network. Registering them again on every re-hook made each
+    // WS frame be handled N times (N growing every 30s while a browser read as stale) — the game lagged more and more.
+    if (client.__phomCaptureAttached) return;
+    client.__phomCaptureAttached = true;
+    Network.webSocketCreated((p, sid) => capture.onWebSocketCreated(client.__phomCaptureTid, p, sid));
+    Network.webSocketFrameSent((p, sid) => capture.onWebSocketFrameSent(client.__phomCaptureTid, p, sid));
+    Network.webSocketFrameReceived((p, sid) => capture.onWebSocketFrameReceived(client.__phomCaptureTid, p, sid));
+    Network.webSocketClosed((p, sid) => capture.onWebSocketClosed(client.__phomCaptureTid, p, sid));
   }
 
   // §4/§6 — open ONE profile's browser with its resolved proxy (no direct fallback)
@@ -1470,7 +1479,7 @@ else {
       const binding = (cards && cards.slotBinding) || {};
       for (const slot of ['B1', 'B2', 'B3']) {
         const uid = binding[slot];
-        if (uid) analyses[slot] = safeCardAnalyzer.analyze({ snapshot: cards, targetPlayerUid: uid });
+        if (uid) analyses[slot] = slotAnalyzers[slot].analyze({ snapshot: cards, targetPlayerUid: uid });
       }
       return {
         ok: true, browsers, cards, analyses,

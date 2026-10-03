@@ -38,7 +38,7 @@ test('cards reach the screen inside ONE coalesced ui snapshot (pull + push), not
   assert.match(main, /ipcMain\.handle\('phom:ui-snapshot'/);
   assert.match(main, /function scheduleCardsBroadcast\(/);
   assert.match(main, /send\('phom:ui', phomUiSnapshot\(\)\)/);
-  assert.match(main, /analyses\[slot\] = safeCardAnalyzer\.analyze\(/); // the analyzer runs in MAIN, memoised
+  assert.match(main, /analyses\[slot\] = slotAnalyzers\[slot\]\.analyze\(/); // the analyzer runs in MAIN, memoised
   assert.match(preload, /uiSnapshot: \(\) => ipcRenderer\.invoke\('phom:ui-snapshot'\)/);
   assert.match(preload, /onUi: \(cb\) => ipcRenderer\.on\('phom:ui'/);
 });
