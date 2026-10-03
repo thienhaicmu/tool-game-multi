@@ -100,7 +100,7 @@ function bootScript(opts = {}) {
   var __ssValue = '';
   var __ssAuto = null; // the last số bàn the bar filled in by itself (a user edit is never overwritten)
   var ssInput = document.createElement('input');
-  ssInput.setAttribute('style','width:58px;height:18px;padding:0 3px;box-sizing:border-box;border-radius:2px;border:1px solid #9ca3af;background:#fff;color:#111827;font:600 11px Inter,Segoe UI,sans-serif;');
+  ssInput.setAttribute('style','width:56px;height:19px;padding:0 3px;box-sizing:border-box;border-radius:3px;border:1px solid #111827;box-shadow:0 1px 3px rgba(0,0,0,.95);background:#fff;color:#111827;font:800 12px Inter,Segoe UI,sans-serif;');
   ssInput.placeholder = 'Số bàn'; ssInput.inputMode = 'numeric'; ssInput.setAttribute('aria-label', 'Số bàn muốn vào');
   ssInput.addEventListener('input', function(){ __ssValue = ssInput.value; });
   ssInput.addEventListener('mousedown', function(ev){ ev.stopPropagation(); });
@@ -113,14 +113,14 @@ function bootScript(opts = {}) {
   var SHADOW = 'text-shadow:0 1px 2px #000,0 0 3px #000;';
   // The strip: fixed across the top, NO background (it sits over the game), clicks pass through between controls.
   const bar = document.createElement('div'); bar.id = '__phom_header';
-  bar.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;align-items:center;gap:3px;flex-wrap:nowrap;box-sizing:border-box;height:22px;width:100%;padding:0 4px;background:transparent;color:#fff;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;user-select:none;pointer-events:none;');
+  bar.setAttribute('style','position:fixed;top:0;left:0;right:0;z-index:2147483647;display:flex;align-items:center;gap:2px;flex-wrap:nowrap;box-sizing:border-box;height:22px;width:100%;padding:0 2px;background:transparent;color:#fff;font:600 11px/1 Inter,Segoe UI,system-ui,sans-serif;user-select:none;pointer-events:none;');
   bar.setAttribute('role', 'region'); bar.setAttribute('aria-label', 'Điều khiển Phỏm');
   const handle = mk('div','display:flex;align-items:center;gap:4px;min-width:0;flex-shrink:0;pointer-events:auto;');
-  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:18px;height:18px;padding:0 4px;border-radius:4px;background:'+ACCENT+';color:#fff;font-weight:800;font-size:10px;'); badge.textContent = SLOTN ? String(SLOTN) : '?';
-  const nameEl = mk('span','font-weight:700;color:#fff;white-space:nowrap;'+SHADOW); nameEl.style.display='none';
+  const badge = mk('span','display:inline-flex;align-items:center;justify-content:center;min-width:19px;height:19px;padding:0 4px;box-sizing:border-box;border-radius:4px;border:1px solid #fff;box-shadow:0 1px 3px rgba(0,0,0,.95);background:'+ACCENT+';color:#fff;font-weight:800;font-size:12px;'); badge.textContent = SLOTN ? String(SLOTN) : '?';
+  const nameEl = mk('span','font-weight:800;font-size:12px;color:#fff;white-space:nowrap;'+SHADOW); nameEl.style.display='none';
   handle.appendChild(badge); handle.appendChild(nameEl);
-  const act = mk('div','display:flex;align-items:center;gap:3px;flex-wrap:nowrap;min-width:0;pointer-events:auto;'); act.id='__ph_act';
-  const hideBtn = mk('button','margin-left:auto;flex-shrink:0;height:18px;padding:0 5px;border-radius:3px;border:0;background:rgba(17,24,39,.7);color:#fff;font:700 11px Inter,Segoe UI,sans-serif;cursor:pointer;pointer-events:auto;');
+  const act = mk('div','display:flex;align-items:center;gap:2px;flex-wrap:nowrap;min-width:0;pointer-events:auto;'); act.id='__ph_act';
+  const hideBtn = mk('button','margin-left:auto;flex-shrink:0;height:19px;padding:0 3px;border-radius:3px;border:0;background:#111827;color:#fff;font:800 12px Inter,Segoe UI,sans-serif;cursor:pointer;pointer-events:auto;');
   hideBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'' }); };
   bar.appendChild(handle); bar.appendChild(act); bar.appendChild(hideBtn);
   // Under the strip, centred in yellow: everyone at the table as name-money (👑 host, ✓ ready), or what is happening.
@@ -132,7 +132,7 @@ function bootScript(opts = {}) {
   var feedbackTimer = null;
   function showFeedback(message){ clearTimeout(feedbackTimer); feedback.textContent=message; feedback.style.display='block'; feedbackTimer=setTimeout(function(){ feedback.style.display='none'; },6000); }
   const uiStyle = document.createElement('style');
-  uiStyle.textContent = '#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:1px}#__phom_header button:hover:not(:disabled){filter:brightness(1.15)}#__phom_header button:disabled{opacity:.55}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header #__ph_act>*{flex-shrink:0}';
+  uiStyle.textContent = '#__phom_header button:focus-visible,#__phom_header input:focus-visible{outline:2px solid #93c5fd;outline-offset:1px}#__phom_header button,#__phom_header .__ph_chip{opacity:1!important;border:1px solid #fff!important;box-shadow:0 1px 3px rgba(0,0,0,.95),0 0 0 1px rgba(0,0,0,.6);text-shadow:0 1px 1px rgba(0,0,0,.7)}#__phom_header button:hover:not(:disabled){filter:brightness(1.2)}#__phom_header button:disabled{background:#374151!important;color:#d1d5db!important;border-color:#9ca3af!important}#__phom_header #__ph_act{overflow-x:auto;scrollbar-width:none}#__phom_header #__ph_act>*{flex-shrink:0}';
   bar.appendChild(uiStyle);
   // Mount idempotently (an overlay — never pushes the game view). On a real (re)mount, tell main.
   function ready(){ if(document.body){ if(!document.getElementById('__phom_header')){ document.body.appendChild(bar); emitStatus(); } } else { requestAnimationFrame(ready); } }
@@ -167,12 +167,12 @@ function bootScript(opts = {}) {
     }
   } catch(e){}
   function txtBtn(label, bg, onClick, tip, dis){
-    var b = mk('button','height:18px;padding:0 4px;border-radius:3px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';');
+    var b = mk('button','height:19px;padding:0 3px;border-radius:3px;border:0;background:'+bg+';color:#fff;font:800 12px/1 Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';');
     b.textContent = label; b.title = tip || label;
     if(dis) b.disabled = true; else b.onclick = onClick;
     return b;
   }
-  function chip(label, bg){ var c = mk('span','height:18px;padding:0 5px;border-radius:3px;background:'+bg+';color:#fff;font:800 10px/18px Inter,Segoe UI,sans-serif;white-space:nowrap;'); c.textContent = label; return c; }
+  function chip(label, bg){ var c = mk('span','box-sizing:border-box;height:19px;padding:0 5px;border-radius:3px;background:'+bg+';color:#fff;font:800 11px/17px Inter,Segoe UI,sans-serif;white-space:nowrap;'); c.className = '__ph_chip'; c.textContent = label; return c; }
   function ssRid(){ var v = String(ssInput.value||'').trim(); var n = Number(v); return v !== '' && isFinite(n) && n > 0 ? n : null; }
   // The yellow line: name-money of everyone at the table (ours bright, strangers dimmer) — else what is happening.
   function paintInfo(state){
