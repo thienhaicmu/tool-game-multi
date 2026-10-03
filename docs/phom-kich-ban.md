@@ -13,7 +13,11 @@ Tài liệu này là **đặc tả**. Module `desktop/protocol/phom/table-group.
 | Mức cược | Luôn là mức **Tiền chọn ở tool Phỏm** (Dò Key dùng mức đó; Tạo dùng đúng mức acc KEY đang ngồi). Thanh trong trình duyệt không có ô chọn cược. |
 | Số bàn | Máy chủ **không bao giờ** báo số bàn cho acc KEY (gói 202 không có số bàn). Số bàn (SS) chỉ có khi một acc khác **Tạo** dò ra bàn của KEY; từ đó SS tự điền vào mọi trình duyệt. |
 | Nhịp | Trước **mỗi** lệnh gửi lên server: chờ **ngẫu nhiên 0,8–2,5 giây**. |
-| Không dồn dập | Mọi thao tác nhóm chạy trong **một hàng đợi tuần tự**: không thao tác nào chen vào thao tác đang chạy. **Ngoại lệ: Tạo** — giống tool đối thủ, nhiều acc được bấm Tạo **cùng lúc** (dò song song); acc nào tìm ra bàn KEY trước thì ngồi trước, các acc còn đang dò dừng lại và Vào số bàn đó. |
+| Mỗi acc một việc | Mỗi acc chỉ chạy **một thao tác tại một thời điểm**, dù yêu cầu đến từ thanh trong trình duyệt, từ tool hay từ timer. Yêu cầu thứ hai cho acc đang bận bị từ chối kèm lý do ("Acc này đang Tạo — đợi xong hoặc bấm Dừng"). **Thoát** thì luôn được nhận. |
+| Tay = độc lập | Chế độ TAY: các acc chạy **độc lập** — Dò Key lâu ở acc này không bắt Vào ở acc khác phải chờ. Nhiều acc được bấm Tạo **cùng lúc**; acc nào tìm ra bàn KEY trước thì ngồi trước, các acc còn đang dò dừng lại và Vào số bàn đó. |
+| Tự động = đồng bộ | Chế độ TỰ ĐỘNG: mọi thao tác chạy trong **một hàng đợi tuần tự**, không thao tác nào chen vào thao tác đang chạy. Trong lúc đó **các nút bàn trên thanh bị khoá**, thanh hiện chip **TỰ ĐỘNG · đang …**; muốn bấm tay thì bỏ tích ô Tự động (luật D1). Bấm muộn (thanh chưa kịp vẽ lại) cũng bị từ chối. |
+| Dò Key khi đã có nhóm | Nhóm còn thành viên thì **không bị thay âm thầm**: lần bấm đầu báo "Đang có nhóm… bấm Dò Key lần nữa trong 5 giây để huỷ nhóm cũ"; bấm lần hai trong 5 giây mới lập nhóm mới (luật D2). KEY đang ngồi thì acc khác **không** được Dò Key (tránh tách 2 bàn). |
+| Trạng thái | Mỗi acc có **một trạng thái duy nhất** (`browser-state.cjs`); thanh trong trình duyệt và thẻ P1/P2/P3 của tool hiện **cùng một chữ**. Lỗi hiện trên thanh tự xoá khi trạng thái acc đổi. |
 | Sẵn sàng | Như tool đối thủ: "tự sẵn sàng" (lệnh 363) **luôn tắt** cho cả 3 acc. Acc SẴN SÀNG bấm sẵn sàng bằng `[5,"Simms",-1,{cmd:5}]` **khi acc CHƯA SẴN SÀNG đã ngồi** (log 2026-10-03: bàn chỉ có KEY + 1 acc sẵn sàng thì ~16 giây sau server đá chủ bàn vì không bấm Bắt đầu), và **tự sẵn sàng lại sau mỗi ván**. |
 | Cùng bàn | Một acc chỉ được tính "đã vào bàn nhóm" khi chính bàn của nó có acc KEY. |
 

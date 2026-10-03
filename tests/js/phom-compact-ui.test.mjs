@@ -50,7 +50,7 @@ test('the header action router acts on ONE browser via the run-scoped coordinato
   assert.match(enter, /phomEnterGame\(rid\)/, 'one browser, the one the click came from');
   assert.match(r, /rejoinTable\(rid\)/);
   assert.match(r, /leaveTable\(rid\)/);
-  assert.match(r, /findTable\(rid, \{ stake \}\)/);
+  assert.match(r, /findTable\(rid, \{ stake, force \}\)/); // force = the 2nd Dò Key within 5s (rule D2)
   assert.equal(/findAndJoinGroup|createTable/.test(r), false);
   assert.match(r, /joinTable\(rid, joinRid\)/);
 });

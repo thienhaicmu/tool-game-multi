@@ -63,3 +63,17 @@ test('wiring: main derives the state once per browser for the bar AND the tool c
   assert.match(main, /function settleHeaderError[\s\S]*?if \(headerErrorState\[rid\] !== code\) \{ delete headerError\[rid\]/);
   assert.match(read('ui-phom/phom-qa.js'), /b\.state && b\.state\.label \? \[b\.state\.label/);
 });
+
+test('rule D1: with TỰ ĐỘNG on the bar locks its table buttons, shows TỰ ĐỘNG + what it does; main refuses a late click', () => {
+  const st = gh.deriveHeaderState({ ...lobby, auto: true, autoBusy: 'đang vào bàn' });
+  assert.equal(st.auto, true); assert.equal(st.autoBusy, 'đang vào bàn');
+  const boot = gh.bootScript({ slotId: 'B1', profileId: 'p', runId: 'r' });
+  assert.match(boot, /var LOCK = !!state\.auto/);
+  assert.match(boot, /chip\('TỰ ĐỘNG'/);
+  for (const a of ['JOIN_CODE', 'REJOIN', 'SCAN_TABLE', 'FIND_TABLE', 'LEAVE']) assert.ok(boot.includes("emit('" + a + "'"), a);
+  assert.equal((boot.match(/LOCK \|\|/g) || []).length >= 4, true, 'Vào, ReJoin, Tạo, Thoát disabled while locked');
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /HEADER_TABLE_ACTIONS\.has\(action\) && phomSessions && phomSessions\.active\(\) && phomSessions\.autoActive\(\)/);
+  assert.match(main, /code: 'PHOM_AUTO_ACTIVE'/);
+  assert.match(main, /const force = headerFindConfirm\[rid\] != null && nowMs\(\) <= headerFindConfirm\[rid\]/);
+});

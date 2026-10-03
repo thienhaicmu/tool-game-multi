@@ -46,6 +46,8 @@ function deriveHeaderState(view = {}) {
   else if (st.code === 'NOT_IN_GAME') primary = { action: 'ENTER_GAME', label: 'VÀO GAME' };
   return {
     stateCode: st.code, tone: st.tone, reserve: st.reserve,
+    // TỰ ĐỘNG on (rule D1): the bar locks its table buttons and shows what the tool is doing
+    auto: !!view.auto, autoBusy: view.autoBusy ? String(view.autoBusy) : null,
     account: view.account && String(view.account).trim() ? String(view.account) : '—',
     accountId: view.accountId != null ? String(view.accountId) : null,
     money: view.money != null ? Number(view.money) : null,
@@ -209,21 +211,24 @@ function bootScript(opts = {}) {
         act.appendChild(chip('SS', '#e3170a'));
         act.appendChild(ssInput);
         act.appendChild(txtBtn('Copy','#ff9800',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v); }catch(e){} },'Copy số bàn'));
+        // TỰ ĐỘNG (rule D1): the tool drives the table — the table buttons are locked, the chip says what it is doing
+        var LOCK = !!state.auto, LT = 'Đang TỰ ĐỘNG — bỏ tích ô Tự động ở tool Phỏm để bấm tay';
+        if(LOCK) act.appendChild(chip('TỰ ĐỘNG' + (state.autoBusy ? ' · ' + state.autoBusy : ''), '#0e7490'));
         function needStake(){ if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm lại.'); return true; } feedback.style.display='none'; return false; }
         // VÀO — sit at the số bàn in the SS box (op 8).
-        act.appendChild(txtBtn(state.joining ? 'Vào.' : 'Vào','#2e9e3e',function(){ var r=ssRid(); if(r==null){ showFeedback('Ô SS chưa có số bàn — bấm Tạo ở acc này để dò ra bàn của KEY.'); return; } emit('JOIN_CODE',{ rid:r }); },'VÀO: vào đúng số bàn trong ô SS', state.joining));
+        act.appendChild(txtBtn(state.joining ? 'Vào.' : 'Vào','#2e9e3e',function(){ var r=ssRid(); if(r==null){ showFeedback('Ô SS chưa có số bàn — bấm Tạo ở acc này để dò ra bàn của KEY.'); return; } emit('JOIN_CODE',{ rid:r }); }, LOCK ? LT : 'VÀO: vào đúng số bàn trong ô SS', LOCK || state.joining));
         // REJOIN — a toggle: on = come back by itself after every kick.
-        act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin.' : 'ReJoin', state.rejoinOn ? '#ffc400' : '#ffe600',function(){ emit('REJOIN'); }, state.rejoinOn ? 'REJOIN đang BẬT — bị đá sẽ tự vào lại ngay. Bấm để tắt' : 'REJOIN: vào bàn chung và tự vào lại mỗi lần bị đá', !state.canRejoin, '#111'));
+        act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin.' : 'ReJoin', state.rejoinOn ? '#ffc400' : '#ffe600',function(){ emit('REJOIN'); }, LOCK ? LT : state.rejoinOn ? 'REJOIN đang BẬT — bị đá sẽ tự vào lại ngay. Bấm để tắt' : 'REJOIN: vào bàn chung và tự vào lại mỗi lần bị đá', LOCK || !state.canRejoin, '#111'));
         // TẠO — the OTHER accounts: find the KEY's table and sit there (fills every SS box). Second click stops it.
         var scanning = state.searchKind === 'SCAN';
         act.appendChild(txtBtn(scanning ? 'Tạo.' : 'Tạo', scanning ? '#6a1b9a' : '#8e24aa', function(){ if(scanning){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('SCAN_TABLE'); },
-          scanning ? 'Đang dò bàn của acc KEY — bấm để dừng' : state.isKey ? 'Đây là acc KEY — bấm Tạo ở acc khác' : 'TẠO: dò ra bàn của acc KEY rồi ngồi vào — số bàn tự điền vào ô SS của mọi trình duyệt',
-          !scanning && (state.isKey || !(state.keySeated || state.ssDefault != null))));
+          LOCK ? LT : scanning ? 'Đang dò bàn của acc KEY — bấm để dừng' : state.isKey ? 'Đây là acc KEY — bấm Tạo ở acc khác' : 'TẠO: dò ra bàn của acc KEY rồi ngồi vào — số bàn tự điền vào ô SS của mọi trình duyệt',
+          LOCK || (!scanning && (state.isKey || !(state.keySeated || state.ssDefault != null)))));
         // DÒ KEY — ONE account only: sit ALONE at an empty table and become the KEY (chủ bàn). Second click stops it.
         var keying = state.searchKind === 'KEY';
         act.appendChild(txtBtn(keying ? 'Dò Key.' : 'Dò Key', keying ? '#b71c1c' : '#e53935', function(){ if(keying){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('FIND_TABLE'); },
-          keying ? 'Đang tìm bàn trống — bấm để dừng' : state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước' : 'DÒ KEY: chỉ bấm ở MỘT acc — ngồi một mình ở bàn trống cược ' + state.stake + ', acc này thành KEY (chủ bàn)'));
-        act.appendChild(txtBtn('Thoát','#1e6fe0',function(){ emit('LEAVE'); },'THOÁT: rời bàn (không tắt trình duyệt)', !state.inTable));
+          LOCK ? LT : keying ? 'Đang tìm bàn trống — bấm để dừng' : state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước' : 'DÒ KEY: chỉ bấm ở MỘT acc — ngồi một mình ở bàn trống cược ' + state.stake + ', acc này thành KEY (chủ bàn)', LOCK));
+        act.appendChild(txtBtn('Thoát','#1e6fe0',function(){ emit('LEAVE'); }, LOCK ? LT : 'THOÁT: rời bàn (không tắt trình duyệt)', LOCK || !state.inTable));
       } else if(state.primary){
         var p = state.primary;
         act.appendChild(txtBtn(p.label || p.action, '#2563eb', function(){ emit(p.action); }, p.label, !!p.disabled));

@@ -184,6 +184,7 @@ class HostSessionManager extends EventEmitter {
   setStake(stake) { const g = this._g(); return g ? g.setStake(stake) : { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no active session' } }; }
   selectedStake() { const g = this._g(); return g ? g.stake() : null; }
   autoActive() { const g = this._g(); return !!(g && g.autoActive()); }
+  actingOf(id) { const g = this._g(); return g ? g.actingOf(String(id)) : null; }
   groupBusy() { const g = this._g(); return g ? g.busy() : null; }
   groupSnapshot() { const g = this._g(); return g ? g.snapshot() : null; }
   groupRoleOf(id) { const g = this._g(); return g ? g.roleOf(id) : null; }

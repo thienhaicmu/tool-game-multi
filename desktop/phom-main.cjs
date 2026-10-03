@@ -671,9 +671,15 @@ else {
       staleSec: b.lastFrameAt != null ? Math.round((nowMs() - Number(b.lastFrameAt)) / 1000) : null,
       // TỰ ĐỘNG on: the bar says so (and, GĐ3, locks its table buttons)
       auto: !!(phomSessions && phomSessions.active() && phomSessions.autoActive && phomSessions.autoActive()),
+      autoBusy: phomSessions && phomSessions.active() && phomSessions.groupBusy ? (GROUP_BUSY_WORD[phomSessions.groupBusy()] || null) : null,
       error: headerError[String(runId)] || null,
     };
   }
+  // The bar's table buttons (locked while TỰ ĐỘNG runs, rule D1). VÀO GAME / TẢI LẠI stay usable.
+  const headerFindConfirm = Object.create(null); // runId -> until (ms): a Dò Key asked to confirm replacing the group
+  const HEADER_TABLE_ACTIONS = new Set(['FIND_TABLE', 'SCAN_TABLE', 'JOIN_CODE', 'REJOIN', 'LEAVE', 'CANCEL_FIND']);
+  // What the group is doing right now, in the words the TỰ ĐỘNG chip on every bar shows.
+  const GROUP_BUSY_WORD = Object.freeze({ AUTO_ON: 'đang lập bàn', REGROUP: 'đang lập lại bàn', FIND: 'đang Dò Key', JOIN: 'đang vào bàn', REPLACE_JOIN: 'acc thay đang vào bàn', READY: 'sẵn sàng', TABLE_LOST: 'mất bàn — lập lại', LEAVE: 'đang rời bàn', LEAVE_ALL: 'đang thoát tất cả' });
   // GĐ2 — an error shown on a bar belongs to the state it happened in: once that browser's state changes (it got in,
   // left, was kicked…) the old error is cleared instead of sticking until the next click.
   const headerErrorState = Object.create(null); // runId -> state code when the error was set
@@ -900,6 +906,12 @@ else {
     const runRec = runManager && runManager.get(rid);
     const guard = evaluateHeaderAction({ payload: payload || {}, boundRunId: rid, runProfileId: runRec && runRec.profileId, busy: !!headerActionBusy[rid], lastActionId: headerLastActionId[rid] || null });
     if (!guard.ok) { headerLog('action-rejected', { runId: rid, action, actionId, reason: guard.reason }); return { ok: false, busy: guard.reason === 'DUPLICATE_ACTION', error: { code: guard.code, message: guard.message } }; }
+    // Rule D1 — while TỰ ĐỘNG drives the table the bar's table buttons are locked; a click that still arrives (an old bar
+    // not repainted yet) is refused here too, so a manual press never runs alongside the automation.
+    if (HEADER_TABLE_ACTIONS.has(action) && phomSessions && phomSessions.active() && phomSessions.autoActive()) {
+      headerLog('action-rejected', { runId: rid, action, actionId, reason: 'AUTO_ACTIVE' });
+      return { ok: false, error: { code: 'PHOM_AUTO_ACTIVE', message: 'Đang TỰ ĐỘNG — bỏ tích ô Tự động ở tool Phỏm để bấm tay.' } };
+    }
     // §12 — never route into a dead CDP session (page crashed / target closed).
     if (!runClientFor(rid)) { headerLog('action-no-client', { runId: rid, action, actionId }); headerError[rid] = 'Chromium mất kết nối — MỞ lại trình duyệt.'; pushHeaderStates(); return { ok: false, error: { code: 'PHOM_HEADER_NO_CLIENT', message: 'no live CDP client' } }; }
     // §34 — a busy-exempt action (HỦY / ⟳ / ⏻ / ↑) runs ALONGSIDE the long operation it is meant to escape, so
@@ -919,7 +931,11 @@ else {
         // browser sits alone at an empty public table and becomes KEY.
         ensurePhomSessions();
         const stake = phomSessions.selectedStake();
-        res = await phomSessions.findTable(rid, { stake });
+        // Rule D2 — a second Dò Key on this bar within 5s confirms "huỷ nhóm cũ"
+        const force = headerFindConfirm[rid] != null && nowMs() <= headerFindConfirm[rid];
+        delete headerFindConfirm[rid];
+        res = await phomSessions.findTable(rid, { stake, force });
+        if (res && res.needsConfirm) headerFindConfirm[rid] = nowMs() + 5000;
       } else if (action === 'SCAN_TABLE') {
         // T2a — TẠO: find the KEY's table (its số bàn) and sit there; the số bàn then fills every bar's SS.
         ensurePhomSessions();

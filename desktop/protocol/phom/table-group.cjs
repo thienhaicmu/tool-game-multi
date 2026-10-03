@@ -37,6 +37,8 @@ const REJOIN_DELAY_MS = 500;
 // THAY ACC — how often (and how long) the group checks whether the replacement browser is in the game yet.
 const REPLACE_POLL_MS = 1000;
 const REPLACE_WAIT_MS = 120000;
+// what an account is busy with, in the words of a "đợi xong" refusal
+const ACT_WORD = Object.freeze({ FIND: 'Dò Key', SCAN: 'Tạo (dò bàn KEY)', JOIN: 'vào bàn', REJOIN: 'vào lại bàn', LEAVE: 'rời bàn' });
 
 class TableGroup extends EventEmitter {
   constructor(deps = {}) {
@@ -52,6 +54,9 @@ class TableGroup extends EventEmitter {
     this._replacePollMs = deps.replacePollMs != null ? Number(deps.replacePollMs) : REPLACE_POLL_MS;
     this._replaceWaitMs = deps.replaceWaitMs != null ? Number(deps.replaceWaitMs) : REPLACE_WAIT_MS;
     this._timers = new Set(); // rejoin + replacement timers — all cleared by reset / leaveAll / auto off
+    // ONE operation per account at a time (GĐ3): whatever asks — the bar, the tool window, a timer — a second request
+    // for an account that is already doing something is refused with what it is doing.
+    this._acting = new Map(); // id -> label
     // { rid, key, stake, creatorId, keyUid, roles: Map, kicks: Map, rejoinOn: Set, recreating } — rid stays null from
     // DÒ KEY until a TẠO finds the KEY's table.
     this._group = null;
@@ -124,17 +129,34 @@ class TableGroup extends EventEmitter {
     this._queue = run.then(() => {}, () => {});
     return run;
   }
+  // A request from the USER (bar / tool button) — rule GĐ3: MANUAL clicks are independent per account (one account's
+  // Dò Key never makes another account's Vào wait; each still waits its own pace and runs one thing at a time, see
+  // _own). With TỰ ĐỘNG on everything is synchronised through the one serial queue.
+  _run(label, op) {
+    if (this._auto) return this._enqueue(label, op);
+    const gen = this._gen;
+    return Promise.resolve().then(() => op(gen)).catch((e) => ({ ok: false, error: { code: 'PHOM_GROUP_FAILED', message: String(e && e.message || e) } }));
+  }
   _emit() { this.emit('update', this.snapshot()); }
   _event(name, data = {}) { this._log(name, data); this.emit('notice', { event: name, ...data }); }
 
   // ---- T1 / A1 building blocks ------------------------------------------------
   // T1 — DÒ KEY: this browser sits ALONE at an empty public table of the stake and becomes KEY. The table's số bàn
   // is not known yet (the server never says it to the KEY); T2a finds it.
-  findTable(profileId, { stake } = {}) {
+  findTable(profileId, { stake, force = false } = {}) {
     const s = Number(stake) > 0 ? Number(stake) : this._stake; // the bar sends none: it uses the tool's Tiền
-    return this._enqueue('FIND', (gen) => this._find(profileId, s, gen));
+    return this._own(profileId, 'FIND', () => this._run('FIND', (gen) => this._find(profileId, s, gen, { force })));
   }
-  async _find(profileId, stake, gen) {
+  // Run a request for ONE account unless that account is already busy (GĐ3 — no overlapping operations per account).
+  _own(profileId, label, run) {
+    const id = String(profileId);
+    const cur = this._acting.get(id);
+    if (cur) return Promise.resolve({ ok: false, busy: true, error: { code: 'PHOM_ACC_BUSY', message: `Acc này đang ${ACT_WORD[cur] || cur} — đợi xong hoặc bấm Dừng` } });
+    this._acting.set(id, label); this._emit();
+    return Promise.resolve().then(run).finally(() => { if (this._acting.get(id) === label) this._acting.delete(id); this._emit(); });
+  }
+  actingOf(id) { return this._acting.get(String(id)) || null; }
+  async _find(profileId, stake, gen, { force = false } = {}) {
     const id = String(profileId);
     if (!this._coord.browserReady(id)) return { ok: false, error: { code: 'PHOM_NOT_IN_GAME', message: 'Acc chưa vào game' } };
     if (!(Number(stake) > 0)) return { ok: false, error: { code: 'PHOM_INVALID_STAKE', message: 'Chưa chọn Tiền — chọn mức cược ở tool Phỏm' } };
@@ -143,6 +165,10 @@ class TableGroup extends EventEmitter {
     const cur = this._group;
     if (cur && cur.creatorId !== id && this._atGroupTable(cur.creatorId)) {
       return { ok: false, error: { code: 'PHOM_KEY_EXISTS', message: `Đã có acc KEY (P${this._orderedIds().indexOf(cur.creatorId) + 1}) đang ngồi — ở acc này bấm Tạo${cur.rid != null ? ' hoặc Vào' : ''}, không bấm Dò Key` } };
+    }
+    // Rule D2 — a group that still has members is never replaced silently: the user confirms (Dò Key again within 5s).
+    if (cur && !force && (cur.roles.size > 1 || cur.creatorId !== id)) {
+      return { ok: false, needsConfirm: true, error: { code: 'PHOM_GROUP_EXISTS', message: `Đang có nhóm${cur.rid != null ? ' (SS ' + cur.rid + ')' : ''} với ${cur.roles.size} acc — bấm Dò Key lần nữa trong 5 giây để huỷ nhóm cũ và lập nhóm mới` } };
     }
     const left = await this._leaveIfSeated(id, gen);
     if (!left.ok) return left;
@@ -167,8 +193,10 @@ class TableGroup extends EventEmitter {
     const g = this._group;
     if (g && g.rid != null) return this.joinTable(id, g.rid);
     if (this._scanning.has(id)) return Promise.resolve({ ok: false, busy: true, error: { code: 'PHOM_SCAN_RUNNING', message: 'Acc này đang dò bàn KEY' } });
-    this._scanning.add(id); this._emit();
-    return this._scan(id, this._gen).finally(() => { this._scanning.delete(id); this._emit(); });
+    return this._own(id, 'SCAN', () => {
+      this._scanning.add(id); this._emit();
+      return this._scan(id, this._gen).finally(() => { this._scanning.delete(id); this._emit(); });
+    });
   }
   async _scan(profileId, gen) {
     const id = String(profileId);
@@ -198,7 +226,7 @@ class TableGroup extends EventEmitter {
       for (const other of [...this._scanning]) {
         if (other === id) continue;
         this._coord.cancelSearch(other);
-        this.joinTable(other, g.rid);
+        this._enqueue('JOIN', (gen2) => this._join(other, g.rid, gen2)); // its own TẠO turns into VÀO (not a 2nd request)
       }
     }
     this._seated(id, claim.role);
@@ -212,7 +240,7 @@ class TableGroup extends EventEmitter {
 
   // T2 / T3 — join the group's table (role by join order), or any other số bàn with an empty code.
   joinTable(profileId, rid) {
-    return this._enqueue('JOIN', (gen) => this._join(profileId, rid, gen));
+    return this._own(profileId, 'JOIN', () => this._run('JOIN', (gen) => this._join(profileId, rid, gen)));
   }
   async _join(profileId, rid, gen) {
     const id = String(profileId);
@@ -254,7 +282,8 @@ class TableGroup extends EventEmitter {
     }
     const rid = g ? g.rid : this._coord.lastRidOf(id);
     if (rid == null) return Promise.resolve({ ok: false, error: { code: 'PHOM_REJOIN_NO_RID', message: 'Chưa có số bàn để vào lại' } });
-    return this.joinTable(id, rid).then((res) => {
+    return this._own(id, 'REJOIN', () => this._run('JOIN', (gen) => this._join(id, rid, gen))).then((res) => {
+      if (res && res.busy) return res;
       if (g && this._group === g) {
         if (res.ok) { g.rejoinOn.add(id); this._event('REJOIN_ON', { id, rid }); } else if (!res.cancelled) g.rejoinOn.delete(id);
         this._emit();
@@ -267,7 +296,8 @@ class TableGroup extends EventEmitter {
   leave(profileId) {
     const id = String(profileId);
     if (this._group) this._group.rejoinOn.delete(id);
-    return this._enqueue('LEAVE', async (gen) => {
+    // THOÁT is never refused for a busy account: it is also the way out of a long Dò Key / Tạo
+    return this._run('LEAVE', async (gen) => {
       if (!await this.pace(gen)) return CANCELLED;
       const res = await this._coord.leaveTable(id);
       const g = this._group;
@@ -282,7 +312,7 @@ class TableGroup extends EventEmitter {
     const g = this._group;
     if (!g) return Promise.resolve({ ok: false, error: { code: 'PHOM_NO_GROUP', message: 'Chưa có bàn nào của nhóm' } });
     const { creatorId, stake } = g;
-    return this._auto ? this._enqueue('REGROUP', (gen) => this._form(creatorId, stake, gen)) : this.findTable(creatorId, { stake });
+    return this._auto ? this._enqueue('REGROUP', (gen) => this._form(creatorId, stake, gen)) : this.findTable(creatorId, { stake, force: true }); // BÀN KHÁC = the user's own choice to move the group
   }
 
   // ---- A — the TỰ ĐỘNG checkbox ------------------------------------------------
@@ -332,7 +362,7 @@ class TableGroup extends EventEmitter {
       if (!left.ok) return left;
       if (this._cancelled(gen)) return CANCELLED;
     }
-    const found = await this._find(creator, stake, gen);
+    const found = await this._find(creator, stake, gen, { force: true }); // TỰ ĐỘNG re-forms its own group
     if (!found.ok) return found;
     for (const id of others) {
       if (this._cancelled(gen)) return CANCELLED;
@@ -368,6 +398,7 @@ class TableGroup extends EventEmitter {
       if (this._group !== g || this._atGroupTable(id)) return;
       if (!this._auto && !g.rejoinOn.has(id)) return; // switched off while it waited
       if (!this._coord.browserReady(id)) return;
+      if (this._acting.has(id)) return; // the user is doing something with this account right now — never overlap
       const res = await this._coord.joinTable(id, g.rid, { expectUid: g.keyUid });
       if (this._group !== g) return;
       if (!res.ok) {

@@ -81,14 +81,25 @@ test('PACE: every command waits a random 0.8–2.5s first; nothing is ever sent 
   for (const e of c2.sent) { assert.ok(e.at - p2 <= PACE_MAX_MS, `${e.cmd} waited ${e.at - p2}ms`); p2 = e.at; }
 });
 
-test('QUEUE: two operations asked for at once run one after another, never interleaved', async () => {
+test('QUEUE (TỰ ĐỘNG): two operations asked for at once run one after another, never interleaved', async () => {
   const { coord, group } = mk();
+  group._auto = true;
   const a = group.findTable('B1', { stake: 100 });
   const b = group.joinTable('B2', 3700000);
   await Promise.all([a, b]);
   const order = coord.sent.map((e) => e.id + ':' + e.cmd);
   assert.deepEqual(order.slice(0, 2), ['B1:PREF', 'B1:FIND'], 'the search finishes before the join starts');
   assert.ok(order.indexOf('B2:JOIN') > order.indexOf('B1:FIND'));
+});
+
+test('MANUAL clicks are independent per account: one account\'s long Dò Key never makes another account\'s Vào wait', async () => {
+  const { coord, group } = mk({ scanHangs: ['B3'] });
+  await group.findTable('B2', { stake: 100 });
+  const slow = group.scanTable('B3');            // B3 busy for a long time…
+  const r = await group.joinTable('B1', 3700000); // …B1's Vào still goes now
+  assert.equal(r.ok, true);
+  assert.ok(cmds(coord, 'JOIN').some((e) => e.id === 'B1'));
+  group.cancelSearch('B3'); await slow;
 });
 
 test('SCENARIO (manual): Dò Key → KEY; the 1st to sit = SẴN SÀNG, the 2nd = CHƯA SS + ReJoin; SẴN SÀNG readies once CHƯA SS sits', async () => {
@@ -427,4 +438,55 @@ test('THAY ACC: gives up (notice) when the new browser never gets into the game'
   coord.clock += 10;
   await tick();
   assert.ok(notices.includes('REPLACE_TIMEOUT'));
+});
+
+// ---- GĐ3 — control rules ---------------------------------------------------------------------------------------
+test('ONE operation per account: a second request for a busy account is refused with what it is doing; Thoát never is', async () => {
+  const { coord, group } = mk({ scanHangs: ['B3'] });
+  await group.findTable('B2', { stake: 100 });
+  const scanning = group.scanTable('B3');
+  await tick();
+  assert.equal(group.actingOf('B3'), 'SCAN');
+  const again = await group.joinTable('B3', 123);
+  assert.equal(again.busy, true); assert.equal(again.error.code, 'PHOM_ACC_BUSY');
+  assert.match(again.error.message, /Tạo/);
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, 0, 'nothing sent for the refused request');
+  group.cancelSearch('B3');
+  await scanning;
+  assert.equal(group.actingOf('B3'), null, 'free again once it ended');
+  assert.equal((await group.leave('B3')).ok !== undefined, true, 'Thoát is always accepted');
+});
+
+test('rule D2: Dò Key never replaces a group with members silently — the 2nd press (force) does', async () => {
+  const { coord, group } = mk();
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');
+  coord.seats.delete('B2');                          // the KEY is not seated any more
+  const first = await group.findTable('B3', { stake: 100 });
+  assert.equal(first.ok, false); assert.equal(first.needsConfirm, true); assert.equal(first.error.code, 'PHOM_GROUP_EXISTS');
+  assert.equal(group.roleOf('B1'), ROLE.READY, 'the old group is untouched');
+  const second = await group.findTable('B3', { stake: 100, force: true });
+  assert.equal(second.ok, true);
+  assert.equal(group.roleOf('B3'), ROLE.KEY);
+  assert.equal(group.roleOf('B1'), null, 'a new group');
+});
+
+test('rule D2: while the KEY is seated, Dò Key on another account is refused even with force (no split over 2 tables)', async () => {
+  const { group } = mk();
+  await group.findTable('B2', { stake: 100 });
+  const r = await group.findTable('B3', { stake: 100, force: true });
+  assert.equal(r.error.code, 'PHOM_KEY_EXISTS');
+});
+
+test('a fast rejoin never overlaps a request the user is running on that account', async () => {
+  const { coord, group } = mk({ scanHangs: [] });
+  await group.findTable('B2', { stake: 100 });
+  await group.scanTable('B1');
+  await group.joinTable('B3', group.rid());
+  await group.rejoin('B3');
+  group._acting.set('B3', 'JOIN');                   // the user's own Vào is in flight
+  const n = cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length;
+  coord.seats.delete('B3'); coord.fire('kicked', { id: 'B3', message: 'x' });
+  await tick();
+  assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, n, 'no second join on top of it');
 });
