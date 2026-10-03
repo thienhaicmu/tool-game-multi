@@ -9,26 +9,20 @@ const js = read('ui-phom/phom-qa.js');
 const css = read('ui-phom/phom-qa.css');
 function fn(name) { const s = js.indexOf('function ' + name + '('); if (s < 0) return ''; const rest = js.slice(s + 1); const m = rest.indexOf('\n  function '); return rest.slice(0, m > 0 ? m : 4000); }
 
-test('3. shared RID appears ONCE (tool header), never repeated in the three chips', () => {
-  const header = fn('compactHeader');
-  assert.match(header, /manualCluster\.sharedRid/);      // RID shown once, in the header
-  const cell = fn('compactBrowserCell');
-  // the chip does not DISPLAY a RID value (no ridText / no 'RID:' label / no infoRow('RID'))
-  assert.equal(/ridText|'RID:'|infoRow\('RID'/.test(cell), false, 'no per-chip RID value displayed');
+test('3. the số bàn appears ONCE (status line), never repeated in the three player cards', () => {
+  assert.match(fn('statusLine'), /const rid = g && g\.rid != null \? g\.rid : sharedRid;/);
+  const card = fn('playerCard');
+  assert.equal(/\brid\b|'RID|Số bàn/.test(card), false, 'no per-card table number');
 });
 
-test('4. the card workspace is flex-growing and holds Lọc Bài only', () => {
-  const ws = fn('renderCardWorkspace');
-  assert.match(ws, /card-workspace/);
-  assert.match(ws, /renderSafeCards\(\)/);
-  assert.equal(/renderRemainingCards/.test(ws), false);
-  // PHASE 6.3.9 — the two card panels are SIDE-BY-SIDE (row); each panel scrolls its own cards.
-  assert.match(css, /\.card-workspace \{[^}]*flex: 1 1 auto[^}]*flex-direction: row/);
-  // control mode is a flex column so the workspace can grow; root doesn't double-scroll
-  assert.match(css, /#phq-root\.mode-control \{[^}]*overflow: hidden/);
+test('4. the three player cards take the free height; each scrolls its own Lọc Bài', () => {
+  assert.match(css, /\.players \{[^}]*flex: 1 1 auto[^}]*min-height: 0/);
+  assert.match(css, /\.safe \{[^}]*flex: 1 1 auto[^}]*overflow-y: auto/);
+  assert.match(css, /#phq-root \{[^}]*flex-direction: column[^}]*overflow: hidden/);
 });
 
-test('6. LÁ BÀI CÒN LẠI is only a count in the Lọc Bài title', () => {
+test('6. LÁ BÀI CÒN LẠI is only a count in the status line', () => {
   assert.match(fn('remainingCount'), /remaining\.count/);
+  assert.match(fn('statusLine'), /remainingCount\(\)/);
 });
 

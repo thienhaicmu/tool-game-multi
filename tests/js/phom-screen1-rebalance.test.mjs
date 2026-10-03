@@ -23,37 +23,31 @@ test('a display-only playerLabel maps internal B1/B2/B3 → "Player 1/2/3" (brow
   assert.equal(/'b-badge' \}, bLabel\)/.test(rowFn), false, 'raw B# badge must go through playerLabel');
 });
 
-test('Screen 1 profile table exposes a PLAYER column (not a bare "#") and keeps browserOf as the source', () => {
-  const panel = fn('profileTablePanel');
-  assert.match(panel, /'PLAYER'/);
+test('the profile table shows the P1/P2/P3 badge of each ticked profile, from browserOf', () => {
   const rowFn = fn('profileRow');
   assert.match(rowFn, /PS\.browserOf\(selectedProfileIds, p\.id\)/); // selection order is still the source
+  assert.match(rowFn, /el\('span', \{ class: 'p-badge'[\s\S]*?\}, playerLabel\(bLabel\)\)/);
 });
 
 // ---- OBJECTIVE A — layout rebalance: table is the flexible primary area, no page-scroll dependency ----
 test('the profile table panel is the FLEXIBLE primary area (flex-grows + scrolls internally)', () => {
   const panel = fn('profileTablePanel');
-  assert.match(panel, /class: 'setup-panel profile-panel'/);
-  assert.match(css, /\.profile-panel \{[^}]*flex: 1 1 auto[^}]*min-height/);
-  assert.match(css, /\.profile-panel \.table-scroll \{[^}]*flex: 1 1 auto[^}]*overflow-y: auto/);
+  assert.match(panel, /class: 'panel profile-panel'/);
+  assert.match(css, /\.profile-panel \{[^}]*flex: 1 1 auto[^}]*min-height: 0/);
+  assert.match(css, /\.table-scroll \{[^}]*flex: 1 1 auto[^}]*overflow: auto/);
+  assert.match(css, /\.setup-table th \{[^}]*position: sticky/, 'the column header stays visible while scrolling');
 });
 
-test('secondary config (proxy/runtime) stays compact so it never eats the workspace (§5)', () => {
-  assert.match(css, /\.setup-page > \.setup-panel:not\(\.profile-panel\) \{[^}]*flex: 0 0 auto/);
-});
-
-test('the footer is a sibling of the scroll page (always accessible, never scrolled out) (§19)', () => {
+test('the footer is a sibling of the table panel (always visible, never scrolled out)', () => {
   const setup = fn('renderSetup');
-  // footer is appended to the tab-content root (r), NOT inside setup-page → it stays pinned
-  assert.match(setup, /r\.appendChild\(runGameFooter\(\)\)/);
-  assert.match(css, /\.setup-footer \{[^}]*flex: 0 0 auto/);
+  assert.match(setup, /r\.appendChild\(profileTablePanel\(\)\);\s*r\.appendChild\(runGameFooter\(\)\);/);
+  assert.match(css, /\.bar \{[^}]*flex: 0 0 auto/);
 });
 
-test('no separate selected-profile panel / cluster (CỤM) section in the SETUP render (§10)', () => {
+test('no separate selected-profile panel / cluster (CỤM) section in the SETUP render', () => {
   const setup = fn('renderSetup');
   assert.equal(/panelGeneral\(\)|panelAssigned\(\)|CỤM|selected-profiles-panel/.test(setup), false);
-  // the toolbar (ADD PROFILE + count) lives in the table panel section-header
   const panel = fn('profileTablePanel');
-  assert.match(panel, /THÊM PROFILE/);
-  assert.match(panel, /ĐÃ CHỌN/);
+  assert.match(panel, /'Thêm profile'/);
+  assert.match(panel, /tick 3 profile → P1 · P2 · P3/);
 });

@@ -12,16 +12,15 @@ const preload = read('desktop/phom-preload.cjs');
 const js = read('ui-phom/phom-qa.js');
 function rfn(name) { const s = js.indexOf('function ' + name + '('); if (s < 0) return ''; const rest = js.slice(s + 1); const m = rest.indexOf('\n  function '); return rest.slice(0, m > 0 ? m : 4000); }
 
-test('main runs the analyzer READ-ONLY over the observer snapshot for one target uid', () => {
+test('main runs one analyzer PER ACCOUNT, read-only, over the shared observer snapshot (inside the ui snapshot)', () => {
   assert.match(main, /require\('\.\/protocol\/phom\/phom-safe-card-analyzer\.cjs'\)/);
-  assert.match(main, /const safeCardAnalyzer = createSafeCardAnalyzer\(\)/);
-  assert.match(main, /ipcMain\.handle\('phom:analyze-safe-cards', \(_e, targetPlayerUid\) =>/);
-  assert.match(main, /safeCardAnalyzer\.analyze\(\{ snapshot, targetPlayerUid \}\)/);
-  // the snapshot comes from the EXISTING observer accessor (no second observation)
-  assert.match(main, /phomSessions\.cardObserverSnapshot\(\)/);
+  assert.match(main, /const slotAnalyzers = \{ B1: createSafeCardAnalyzer\(\), B2: createSafeCardAnalyzer\(\), B3: createSafeCardAnalyzer\(\) \};/);
+  const snap = main.slice(main.indexOf('function phomUiSnapshot('), main.indexOf("ipcMain.handle('phom:ui-snapshot'"));
+  assert.match(snap, /const cards = phomSessions\.cardObserverSnapshot\(\);/); // the EXISTING observer (no second observation)
+  assert.match(snap, /analyses\[slot\] = slotAnalyzers\[slot\]\.analyze\(\{ snapshot: cards, targetPlayerUid: uid \}\)/);
 });
 
-test('preload bridges analyzeSafeCards(targetUid) → phom:analyze-safe-cards', () => {
-  assert.match(preload, /analyzeSafeCards: \(targetPlayerUid\) => ipcRenderer\.invoke\('phom:analyze-safe-cards', targetPlayerUid\)/);
+test('no separate analyze IPC: the window gets the analyses with the ui snapshot', () => {
+  assert.equal(/analyzeSafeCards|phom:analyze-safe-cards/.test(main + preload), false);
 });
 

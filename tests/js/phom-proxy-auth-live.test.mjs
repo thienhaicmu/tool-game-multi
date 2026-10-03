@@ -193,9 +193,9 @@ test('§52 wiring: auth-first launch, navigate after binding, page target only, 
 test('profile editor shows the saved proxy (never the password) and an empty box keeps it', () => {
   const fs = require('fs');
   const ui = fs.readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
-  assert.match(ui, /const curProxy = existing && existing\.proxyRef \? \(proxies \|\| \[\]\)\.find\(\(x\) => x\.id === existing\.proxyRef\)/);
-  assert.match(ui, /el\('span', null, 'Đang dùng'\), el\('span', \{ class: 'chip green sm mono' \}, proxyLabel\(curProxy\)\)/);
-  assert.match(ui, /'để trống = giữ proxy hiện tại · nhập mới để đổi'/);
+  assert.match(ui, /const curProxy = existing && existing\.proxyRef \? proxies\.find\(\(x\) => x\.id === existing\.proxyRef\)/);
+  assert.match(ui, /curProxy \? field\('Đang dùng', el\('span', \{ class: 'tag good mono' \}, proxyLabel\(curProxy\)\)\)/);
+  assert.match(ui, /'để trống = giữ proxy hiện tại'/);
   assert.match(ui, /close\(\); await refreshProxies\(\); await refreshProfilesX\(\);/);
   // the label is built only from the public snapshot — there is no password field to leak
   const fmt = ui.slice(ui.indexOf('function proxyLabel('), ui.indexOf('function openProfileModal('));

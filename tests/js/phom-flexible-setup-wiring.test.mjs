@@ -64,7 +64,7 @@ test('renderer: Game URL is edited in Edit Profile (pf-url) + shown as a table c
   assert.match(js, /profileUpdateX\(id, \{ name, agent, gameUrl \}\)/);
   assert.match(js, /profileCreate\(\{ name, agent, gameUrl \}\)/);
   // the table shows a GAME URL column (ellipsised) and there is no global URL input any more
-  assert.match(js, /'GAME URL'/);
+  assert.match(js, /'Game URL'/);
   assert.match(js, /col-url/);
   assert.equal(/id: 'phq-gameurl'[\s\S]*oninput[\s\S]*gameUrlX/.test(js), false, 'no global Game URL input in SETUP');
 });

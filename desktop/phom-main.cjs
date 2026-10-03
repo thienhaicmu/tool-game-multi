@@ -18,11 +18,10 @@
 // Aviator UI/coordinator, or any Control/Analytics singleton.
 // ===========================================================================
 
-const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session, dialog, shell: electronShell } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session, shell: electronShell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { redactDiagnostic } = require('./protocol/phom/diagnostic-redaction.cjs');
-const { TokenKeyStore } = require('./protocol/phom/token-key-store.cjs');
 
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
 const { lifecycleLog } = require('./browser/chrome-launcher.cjs');
@@ -36,17 +35,13 @@ const { HostSessionManager } = require('./protocol/phom/host-session-manager.cjs
 const { createSafeCardAnalyzer } = require('./protocol/phom/phom-safe-card-analyzer.cjs'); // PHASE 6.3.3.3 — read-only analyzer
 const { isPhomRelevant } = require('./protocol/phom/phom-ws-filter.cjs');
 const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-manager.cjs');
-const { projectRuntimeToManagerConfig } = require('./protocol/phom/cluster-runtime-projection.cjs');
-const { parseQuickProxies, parseQuickProxyRows } = require('./browser-run/phom-quick-proxy.cjs');
-const { applyQuickProxies } = require('./protocol/phom/quick-proxy-apply.cjs');
 const { createFrameRecorder } = require('./protocol/phom/frame-recorder.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
-const { ProxyTester, testAll } = require('./browser-run/proxy-tester.cjs');
+const { ProxyTester } = require('./browser-run/proxy-tester.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
 const { PhomProfileStore } = require('./browser-run/phom-profile-store.cjs');
 const { PhomDeviceProfilesStore } = require('./browser-run/phom-device-profiles-store.cjs');
-const { PhomClusterProfileStore } = require('./browser-run/phom-cluster-profile-store.cjs');
 const { runEnterGameViaSite } = require('./protocol/cocos-lobby-entry.cjs');
 const { GAME_ID: PHOM_GAME_ID } = require('./protocol/phom/phom-frame-classify.cjs');
 const browserAgent = require('./browser-run/browser-agent.cjs');
@@ -59,9 +54,6 @@ const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
 const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
 const { evaluateHeaderAction } = headerActionGuard;
-const offlineAnalyzer = require('./protocol/phom/offline-analyzer.cjs');
-const { PhomOfflineSimulator } = require('./protocol/phom/offline-simulator.cjs');
-const sampleDatasets = require('./protocol/phom/offline-sample-datasets.cjs');
 const { normalizeWindowBounds } = require('./window-bounds.cjs');
 
 const PRODUCT_NAME = 'Phom QA';
@@ -104,24 +96,13 @@ else {
   var proxyTester = null;
   var profileStore = null;
   var deviceProfilesStore = null; // PHASE-6.3.1 flexible N-profile store
-  var clusterProfileStore = null;
   var phomSessions = null;
-  // PHASE 6.3.3.3 — one read-only safe-card analyzer (deterministic, no state beyond a memo cache). The
-  // selected target uid is owned by the renderer and passed per analyze() call — no duplicate target state.
-  const safeCardAnalyzer = createSafeCardAnalyzer();
   // Lọc Bài: one analyzer PER account, so each P1/P2/P3 column is computed (and memoised) on its own — every one of
   // them from the SAME shared observation, i.e. with the cards of all three accounts known.
   const slotAnalyzers = { B1: createSafeCardAnalyzer(), B2: createSafeCardAnalyzer(), B3: createSafeCardAnalyzer() };
-  // Records which saved cluster profile id (if any) backs the live ClusterSession, so
-  // the store can block deleting a profile that is in use. Set on a profile-driven
-  // create, cleared on stop/leave. This is provenance only — it never alters the Host
-  // coordinator runtime (that integration is a later phase).
-  var activeClusterProfileId = null;
   const SLOTS_ABC = ['A', 'B', 'C'];
 
   const phomRoot = () => path.join(PHOM_USERDATA, 'phom');
-  const tokenKeyStore = new TokenKeyStore({ file: path.join(phomRoot(), 'token-keys.enc'),
-    available: () => safeStorage.isEncryptionAvailable(), encrypt: (s) => safeStorage.encryptString(s), decrypt: (b) => safeStorage.decryptString(b) });
   const ensureDir = (d) => { try { fs.mkdirSync(d, { recursive: true }); } catch { /* best effort */ } };
 
   // ---- capture + send seam (shared, target-keyed) ----
@@ -191,34 +172,6 @@ else {
     if (_coseatQueue.length >= COSEAT_MAX_QUEUE) _coseatFlush();
     else if (!_coseatFlushTimer) _coseatFlushTimer = setTimeout(_coseatFlush, COSEAT_FLUSH_MS);
   }
-  // §ws-inspect — export ALL captured WebSocket request/response to a readable .txt (one line per frame: time,
-  // Player, → GỬI / ← NHẬN, and the raw frame) so the user can inspect exactly what the game sends/receives.
-  function exportWsLog() {
-    try {
-      _coseatFlush(); // §ws-log — the newest frames may still be queued; the export must include them
-      const src = coseatLogPath();
-      if (!fs.existsSync(src)) return { ok: false, error: { code: 'PHOM_NO_WS_LOG', message: 'Chưa có log — hãy thao tác trong game trước.' } };
-      const lines = fs.readFileSync(src, 'utf8').split('\n');
-      const slotName = (r) => ({ B1: 'P1', B2: 'P2', B3: 'P3' })[r] || r || '?';
-      const out = ['# WEBSOCKET LOG — toàn bộ request/response game gửi/nhận', ''];
-      let base = null;
-      for (const ln of lines) {
-        if (!ln || ln.startsWith('#')) continue; let e; try { e = JSON.parse(ln); } catch { continue; }
-        if (e.event !== 'WIRE') continue;
-        if (base == null) base = e.at;
-        const t = ((e.at - base) / 1000).toFixed(1) + 's';
-        const dir = e.dir === 'req' ? '→ GỬI' : '← NHẬN';
-        const body = e.bin ? `[nhị phân ${e.len}b] ${e.ascii || ''}` : (e.raw || '');
-        out.push(`${String(t).padStart(8)}  ${slotName(e.slot).padEnd(3)} ${dir}  ${body}`);
-      }
-      const dir = path.join(app.getPath('userData'), 'phom-captures');
-      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-      const dest = path.join(dir, 'ws-log-' + stamp + '.txt');
-      fs.writeFileSync(dest, out.join('\n'), 'utf8');
-      try { electronShell.showItemInFolder(dest); } catch { /* best effort */ }
-      return { ok: true, path: dest, frames: out.length - 2 };
-    } catch (e) { return { ok: false, error: { code: 'PHOM_WS_EXPORT_FAILED', message: String(e && e.message || e) } }; }
-  }
   // Resolve + validate the pinned custom Chromium runtime once (dev vs packaged). No
   // system-Chrome fallback: an invalid runtime blocks browser launches with a typed error.
   var _chromiumRuntime = null;
@@ -268,38 +221,11 @@ else {
     profileStore = new PhomProfileStore({ filePath: path.join(phomRoot(), 'phom-profiles.json') });
     // PHASE-6.3.1 — the canonical flexible profile LIST store (N profiles; add/edit/delete + selection).
     deviceProfilesStore = new PhomDeviceProfilesStore({ filePath: path.join(phomRoot(), 'phom-device-profiles.json') });
-    // Cluster profile store: MANY saved cluster configs (one shared game URL + three
-    // browser/device/proxy slots). References are resolved against the existing per-slot
-    // Phom profile store + proxy store (no second store stack); the active-session guard
-    // is the live cluster provenance recorded in activeClusterProfileId.
-    clusterProfileStore = new PhomClusterProfileStore({
-      filePath: path.join(phomRoot(), 'phom-cluster-profiles.json'),
-      resolveBrowserProfile: (bpid) => profileStore.getPublic(bpid),
-      resolveProxy: (ref) => proxyConfigStore.getPublic(ref),
-      isActive: (id) => !!(phomCluster && phomCluster.active() && activeClusterProfileId && String(activeClusterProfileId) === String(id)),
-      migrationSource: () => clusterMigrationSource(),
-    });
-    clusterProfileStore.load();
-    try { clusterProfileStore.migrate(); } catch { /* migration is best-effort + additive */ }
     proxyTester = new ProxyTester({
       allowlist: IP_CHECK_ALLOWLIST,
       ipCheckUrl: IP_CHECK_URL,
       transport: netProxyTransport,     // RUNTIME-UNVERIFIED without a real proxy
     });
-  }
-
-  // Build the additive migration source from the EXISTING per-slot Phom selections:
-  // only when all three slots A/B/C are actually configured do we offer a default
-  // cluster profile (references preserved). Never fabricates a game URL/proxy.
-  function clusterMigrationSource() {
-    if (!profileStore) return null;
-    const slots = {};
-    for (const s of SLOTS_ABC) {
-      const saved = profileStore.get(s);
-      if (!saved) return null; // incomplete — skip migration (no fake data)
-      slots[s] = { browserProfileId: s, proxyRef: saved.proxyRef || null };
-    }
-    return { name: 'Cụm mặc định', gameUrl: null, defaultHostSlot: 'A', slots };
   }
 
   // Proxy observed-IP transport (§6): a dedicated, throwaway Electron session with the
@@ -369,7 +295,6 @@ else {
     // §9 lag fix — coalesce the per-frame 'update'/'hands' storm (leading+trailing throttle). pushHeaderStates
     // dedupes unchanged states so steady-state WS traffic costs ~0 CDP evaluates.
     phomSessions.on('update', (snap) => { scheduleSessionBroadcast(snap); });
-    phomSessions.on('hands', (hands) => { scheduleHandsBroadcast(hands); });
     phomSessions.on('cards', (cards) => { scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
 
     phomSessions.on('kick', (k) => send('phom:kick', k));
@@ -431,56 +356,6 @@ else {
     const { toRunProxy } = require('./browser-run/proxy-config.cjs');
     return proxyTester.test(toRunProxy(cfg), { resolveAuth: () => ({ username: cfg.username, password: proxyConfigStore.resolvePassword(cfg.id) }) });
   }
-  // §3 — the SAVED cluster profile is the ONLY authoritative source for opening the
-  // cluster. The renderer sends at most a clusterProfileId (+ non-persisted runtime
-  // options like localTest); it can NOT inject executablePath/userDataDir/cdpPort/pid/
-  // token/proxy password/raw BrowserRun/device to bypass the saved profile. We resolve
-  // the id (explicit, else the persisted selection), project the store's READY runtime
-  // config, and map it to the manager's createCluster shape. A non-ready profile fails
-  // TYPED here — before a single browser is opened.
-  function resolveClusterRuntime(config = {}) {
-    ensureStores();
-    const c = config && typeof config === 'object' ? config : {};
-    const rawId = c.clusterProfileId != null ? String(c.clusterProfileId).trim() : '';
-    const id = rawId || clusterProfileStore.selectedId();
-    if (!id) return { ok: false, error: { code: 'PHOM_CLUSTER_PROFILE_REQUIRED', message: 'Chưa chọn hồ sơ cụm. Hãy chọn hoặc tạo một Cluster Profile trước.' } };
-    const rt = clusterProfileStore.toRuntimeConfig(id); // typed NOT_FOUND / NOT_READY
-    if (!rt.ok) return rt;
-    const proj = projectRuntimeToManagerConfig(rt.config, {
-      resolveAgent: (bpid) => profileStore.agentFor(bpid),
-    });
-    if (!proj.ok) return proj;
-    return { ok: true, id, ...proj.config };
-  }
-
-  // §4–§7 — quick-3-proxy apply. Parse the textarea + selector into three descriptors
-  // (authoritative in the domain, never the renderer), then atomically create the three
-  // proxy configs (metadata + secret owner), bind each slot's browser profile proxyRef,
-  // and update+revalidate the selected Cluster Profile. Rolls back on any failure. No
-  // secret is ever returned; a running cluster's mapping is refused (IN_USE).
-  function quickProxyApply(payload) {
-    ensureStores();
-    const p = payload && typeof payload === 'object' ? payload : {};
-    // New UI sends slot-labeled rows [{slot,protocol,value}]; legacy path sends {text,protocol}.
-    // Proxy is OPTIONAL (§10): the UI applies only non-empty rows (partial), leaving blank
-    // slots on their existing binding (DIRECT or a previously-bound proxy).
-    const parsed = Array.isArray(p.rows) ? parseQuickProxyRows(p.rows, { partial: p.partial !== false }) : parseQuickProxies(p.text, { protocol: p.protocol });
-    if (!parsed.ok) return parsed; // typed parse error (never contains a credential)
-    const clusterProfileId = p.clusterProfileId != null && String(p.clusterProfileId).trim() ? String(p.clusterProfileId).trim() : null;
-    return applyQuickProxies({ slots: parsed.slots, clusterProfileId }, {
-      isClusterActive: (id) => !!(phomCluster && phomCluster.active() && activeClusterProfileId && String(activeClusterProfileId) === String(id)),
-      createProxy: ({ protocol, host, port, username, password }) => {
-        const res = proxyConfigStore.upsert({ protocol, host, port, username: username || null, password: password != null ? password : null, label: `${protocol}://${host}:${port}` });
-        return res && res.ok ? { ok: true, id: res.id } : res;
-      },
-      removeProxy: (id) => proxyConfigStore.remove(id),
-      setProfileProxyRef: (bpid, proxyRef) => profileStore.upsert(String(bpid), { proxyRef }),
-      getClusterProfile: (id) => clusterProfileStore.get(id),
-      updateClusterProfile: (id, patch) => clusterProfileStore.update(id, patch),
-      validateCluster: (id) => clusterProfileStore.validateReady(id),
-    });
-  }
-
   // PHASE-6.3.1 — is a flexible profile currently backing a LIVE Chromium? (guards delete/proxy-change §30)
   function profileInUse(profileId) {
     try { return runManager && runManager.list().some((r) => { if (r.status === RUN_STATUS.CLOSED) return false; const run = runManager.get(r.id); return run && String(run.profileId) === String(profileId); }); }
@@ -511,7 +386,6 @@ else {
     const clusterUrl = localTestActive() ? 'about:blank' : (profiles[0] ? profiles[0].gameUrl : typedUrl);
     const res = ensureCluster().createCluster({ clusterProfileId: null, hostSlot: 'A', selectedStake: null, gameUrl: clusterUrl, profiles });
     if (res && res.ok === false) return res;
-    activeClusterProfileId = null;
     return res && res.ok ? { ...res, localTest: localTestActive(), gameUrl: clusterUrl, mapping: ids.map((id, i) => ({ browser: 'B' + (i + 1), profileId: id })) } : res;
   }
 
@@ -587,9 +461,6 @@ else {
       // a reopen; we never move a window that is not one of our runs.
     } catch { /* best effort */ }
     return { ok: true };
-  }
-  function focusBrowser(runId) {
-    try { const wc = chromeRuntime.webContents(runId); if (wc && !wc.isDestroyed() && typeof wc.focus === 'function') wc.focus(); return { ok: true }; } catch { return { ok: false }; }
   }
 
   // ---- VÀO GAME PHỎM — trigger the VERIFIED entry action id `vgcg_8` (§1-§5) ---------------
@@ -818,13 +689,6 @@ else {
     const s = _sessPending; _sessPending = null; if (s) send('phom:session', s); pushHeaderStates(); // leading edge
     _sessTimer = setTimeout(() => { _sessTimer = null; if (_sessPending) { const t = _sessPending; _sessPending = null; send('phom:session', t); pushHeaderStates(); } }, BROADCAST_MS);
   }
-  let _handsTimer = null; let _handsPending = null;
-  function scheduleHandsBroadcast(hands) {
-    _handsPending = hands;
-    if (_handsTimer) return;
-    const h = _handsPending; _handsPending = null; if (h) send('phom:hands', h); // leading edge
-    _handsTimer = setTimeout(() => { _handsTimer = null; if (_handsPending) { const t = _handsPending; _handsPending = null; send('phom:hands', t); } }, BROADCAST_MS);
-  }
   // PHASE 6.3.3.2 — coalesce the per-frame card-observation snapshot the same way (leading + trailing).
   let _cardsTimer = null; let _cardsPending = null;
   function scheduleCardsBroadcast(cards) {
@@ -946,104 +810,6 @@ else {
     headerLog('action-done', { runId: rid, action, actionId, ok: !!(res && res.ok), error: res && res.error && res.error.code, elapsedMs: Math.round(nowMs() - _t0) });
     pushHeaderStates();
     return res;
-  }
-
-  // Count non-terminal BrowserRuns — the analyzer is refused whenever ANY exist.
-  function liveRunCount() { try { return runManager ? runManager.list().filter((r) => r.status !== RUN_STATUS.CLOSED).length : 0; } catch { return 0; } }
-
-  // The live-context snapshot fed to EVERY offline entry point (analyzer + simulator).
-  // Rebuilt on each call so a browser/session/cluster that appears AFTER load still
-  // refuses the offline engine (guard lives in the domain, not the UI — §7).
-  function offlineContext(sourceKind) {
-    return {
-      sourceKind: sourceKind || 'TEST_FIXTURE',
-      networkEnabled: false,
-      liveRunCount: liveRunCount(),
-      liveSessionId: (phomSessions && phomSessions.active()) ? 'ACTIVE' : null,
-      clusterActive: !!(phomCluster && phomCluster.active()),
-      endpoint: null,
-    };
-  }
-
-  // The offline REALTIME simulator (event-by-event replay). One instance at a time;
-  // it is PURE domain and cannot open a socket. Loaded via IPC, driven by transport
-  // controls. The guard is re-checked inside the engine on every step.
-  var offlineSim = null;
-  function simResult(snapOrBlocked) { return snapOrBlocked; }
-  function loadOfflineSimulator(input = {}) {
-    const ds = input.datasetId ? sampleDatasets.getDataset(input.datasetId) : null;
-    const events = ds ? ds.events : (Array.isArray(input.events) ? input.events : []);
-    const sourceKind = ds ? ds.sourceKind : (input.sourceKind || 'TEST_FIXTURE');
-    const owner = ds ? ds.simulatedOwnerUid : (input.simulatedOwnerUid != null ? input.simulatedOwnerUid : null);
-    offlineSim = new PhomOfflineSimulator({ events, simulatedOwnerUid: owner, sourceKind, context: offlineContext(sourceKind) });
-    if (!offlineSim.ok()) { const b = offlineSim.blockedResult(); offlineSim = null; return b; }
-    return offlineSim.snapshot();
-  }
-  function controlOfflineSimulator(action, arg) {
-    if (!offlineSim) return { ok: false, error: { code: 'PHOM_SIM_NOT_LOADED', message: 'No offline dataset is loaded.' } };
-    // Re-check the live boundary before every transport action (§7).
-    const blocked = offlineAnalyzer.assertOffline(offlineContext(offlineSim.snapshot().sourceKind));
-    if (blocked) { offlineSim = null; return { ok: false, error: { code: 'PHOM_ANALYZER_OFFLINE_ONLY', message: 'A live browser/session/cluster is active — offline simulator refused.' } }; }
-    switch (String(action)) {
-      case 'next': return offlineSim.next();
-      case 'previous': return offlineSim.previous();
-      case 'step': return offlineSim.stepTo(Number(arg));
-      case 'reset': return offlineSim.reset();
-      case 'end': return offlineSim.end();
-      case 'snapshot': return offlineSim.snapshot();
-      default: return { ok: false, error: { code: 'PHOM_SIM_BAD_ACTION', message: `Unknown control: ${action}` } };
-    }
-  }
-
-  // ---- QA RULE MONITOR · D MÔ PHỎNG (§19-§21) ----
-  // The Screen-2 main monitor analyses a SIMULATED player D on FIXTURE/REPLAY data only
-  // (never live hidden hands — §20). It reuses the SAME offline simulator engine + pure
-  // findMelds (no second stack). Unlike the standalone simulator IPC, this fixture-display
-  // instance is constructed with a CLEAN offline context: it is offline by construction
-  // (it only ever consumes an allowed fixture/replay/simulator dataset and never touches a
-  // live socket/CDP/hand), so it can coexist with the live cluster shown in the toolbar.
-  var qaMonitorSim = null;
-  function qaMonitorLoad(input = {}) {
-    const ds = input.datasetId ? sampleDatasets.getDataset(input.datasetId) : null;
-    const events = ds ? ds.events : (Array.isArray(input.events) ? input.events : []);
-    const sourceKind = ds ? ds.sourceKind : (input.sourceKind || 'TEST_FIXTURE');
-    const owner = ds ? ds.simulatedOwnerUid : (input.simulatedOwnerUid != null ? input.simulatedOwnerUid : null);
-    // Clean offline context — fixture-only display path (§20/§21). No live flags.
-    qaMonitorSim = new PhomOfflineSimulator({ events, simulatedOwnerUid: owner, sourceKind, context: { sourceKind, networkEnabled: false, liveRunCount: 0 } });
-    if (!qaMonitorSim.ok()) { const b = qaMonitorSim.blockedResult(); qaMonitorSim = null; return b; }
-    return qaMonitorSim.snapshot();
-  }
-  function qaMonitorControl(action, arg) {
-    if (!qaMonitorSim) return qaMonitorLoad({ datasetId: 'basic-round' });
-    switch (String(action)) {
-      case 'next': return qaMonitorSim.next();
-      case 'previous': return qaMonitorSim.previous();
-      case 'step': return qaMonitorSim.stepTo(Number(arg));
-      case 'reset': return qaMonitorSim.reset();
-      case 'end': return qaMonitorSim.end();
-      case 'snapshot': return qaMonitorSim.snapshot();
-      default: return { ok: false, error: { code: 'PHOM_SIM_BAD_ACTION', message: `Unknown control: ${action}` } };
-    }
-  }
-
-  // Run the offline analyzer with a hard offline context (§16/§23). It never touches
-  // the network and refuses if a live run/session is present.
-  function runOfflineAnalyzer(input) {
-    const ctx = { sourceKind: input.sourceKind || 'TEST_FIXTURE', networkEnabled: false, liveRunCount: liveRunCount(), liveSessionId: (phomSessions && phomSessions.active()) ? 'ACTIVE' : null, endpoint: null };
-    const consistency = offlineAnalyzer.analyzeConsistency({ knownHands: input.knownHands || [], publicCards: input.publicCards || [] }, ctx);
-    if (consistency && consistency.ok === false) return consistency; // PHOM_ANALYZER_OFFLINE_ONLY
-    const out = { ok: true, consistency, hands: [] };
-    for (const hand of (input.knownHands || [])) out.hands.push({ cards: hand, melds: offlineAnalyzer.findMelds(hand) });
-    if (input.serverMelds) out.serverMeldsValidation = offlineAnalyzer.validateServerMelds(input.serverMelds, ctx);
-    // safe-discard: for a chosen player hand, which discards form a phom for others.
-    if (Array.isArray(input.currentHand) && Array.isArray(input.otherHands)) {
-      out.safeDiscard = input.currentHand.map((card) => {
-        let eatable = false;
-        for (const other of input.otherHands) { const r = offlineAnalyzer.discardFormsPhom(other, card, ctx); if (r && r.forms) { eatable = true; break; } }
-        return { card, status: eatable ? 'EATABLE_BY_SIMULATED_PLAYER' : 'NOT_EATABLE_BY_SIMULATED_OTHERS' };
-      });
-    }
-    return out;
   }
 
   // ---- per-run capture attach + phom frame routing (mirrors Control's seam) ----
@@ -1341,31 +1107,13 @@ else {
     ipcMain.handle('phom:license-status', () => licenseStatus());
     ipcMain.handle('phom:license-activate', async (_e, key) => { if (!licenseGuard) return licenseStatus(); const s = await licenseGuard.activateAsync(String(key || '')); return { ...s, gameProduct: GAME_PRODUCT }; });
     ipcMain.handle('phom:machine-id', () => ({ machineId: licenseGuard ? licenseGuard.machineId() : null }));
-    ipcMain.handle('phom:instance-info', () => ({ productName: PRODUCT_NAME, gameProduct: GAME_PRODUCT, userData: PHOM_USERDATA, ipcPrefix: 'phom:' }));
     ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), devBypass: devBypass.allowed === true, licenseMode: devBypass.allowed ? 'DEVELOPMENT_BYPASS' : 'LICENSED', proxySecret: (ensureStores(), proxySecretStore.capability()), chromiumSandbox: { mode: lastSandboxPolicy.mode, disabled: !!lastSandboxPolicy.sandboxDisabled, banner: lastSandboxPolicy.banner || null } }));
 
     // Proxy config (metadata only; passwords never returned to the renderer).
     ipcMain.handle('phom:proxy-list', guarded(() => { ensureStores(); return { ok: true, proxies: proxyConfigStore.list() }; }));
-    ipcMain.handle('phom:proxy-upsert', guarded((_e, input) => { ensureStores(); return proxyConfigStore.upsert(input || {}); }));
-    // §2 — delete guarded: refuse while a BrowserRun uses this proxy (stop first). A
-    // saved profile reference alone doesn't block; it's cleared on delete.
-    ipcMain.handle('phom:proxy-remove', guarded((_e, id) => {
-      ensureStores();
-      const pid = String(id);
-      const inUse = runManager && runManager.list().some((r) => r.status !== RUN_STATUS.CLOSED && (() => { const run = runManager.get(r.id); return run && run.proxy && run.proxy.id === pid; })());
-      if (inUse) return { ok: false, error: { code: 'PHOM_PROXY_IN_USE', message: 'Proxy đang được một browser sử dụng. Hãy Dừng/đóng browser đó trước.' } };
-      // clear any saved profile references to this proxy
-      for (const slot of profileStore.slotsUsingProxy(pid)) { const p = profileStore.get(slot); profileStore.upsert(slot, { proxyRef: null }); void p; }
-      return proxyConfigStore.remove(pid);
-    }));
-    // Device presets + per-slot profile persistence (device belongs to the browser profile).
-    ipcMain.handle('phom:chromium-status', () => { const r = chromiumRuntime(); return r.ok ? { ok: true, version: r.version, architecture: r.architecture, root: r.root, checksumVerified: r.checksumVerified } : r; });
     // §3/§4 — expose the FULL catalog (mobile + desktop + laptop + laptop-small +
     // laptop-small + mobile-landscape). The UI groups them by profileType.
     ipcMain.handle('phom:agents', () => ({ ok: true, agents: browserAgent.AGENTS.map((a) => ({ agent: a, ...browserAgent.publicSnapshot(a) })), defaultAgent: browserAgent.DEFAULT_AGENT }));
-    ipcMain.handle('phom:profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: profileStore.list() }; }));
-    ipcMain.handle('phom:profile-upsert', guarded((_e, slot, input) => { ensureStores(); return profileStore.upsert(String(slot), input || {}); }));
-    ipcMain.handle('phom:profile-delete', guarded((_e, slot) => { ensureStores(); return profileStore.remove(String(slot)); }));
     // ---- PHASE-6.3.1 — flexible N-profile CRUD + open-from-selection ----
     ipcMain.handle('phom:profiles-list', guarded(() => { ensureStores(); return { ok: true, profiles: deviceProfilesStore.list() }; }));
     ipcMain.handle('phom:profile-create', guarded((_e, input) => { ensureStores(); return deviceProfilesStore.create(input && typeof input === 'object' ? input : {}); }));
@@ -1390,37 +1138,14 @@ else {
     // Open 3 browsers from the SELECTED profiles (selection order → B1/B2/B3). Builds the cluster config
     // from each profile's own device + proxy; reuses the existing cluster manager (internal slots A/B/C).
     ipcMain.handle('phom:open-selected', guarded((_e, cfg) => openSelectedProfiles(cfg || {})));
-    ipcMain.handle('phom:proxy-test', guarded(async (_e, id) => {
-      ensureStores();
-      const cfg = proxyConfigStore.get(String(id));
-      if (!cfg) return { ok: false, error: { code: 'PROXY_CONFIG_NOT_FOUND', message: 'No such proxy' } };
-      const { toRunProxy } = require('./browser-run/proxy-config.cjs');
-      const res = await proxyTester.test(toRunProxy(cfg), { resolveAuth: () => ({ username: cfg.username, password: proxyConfigStore.resolvePassword(cfg.id) }) });
-      return { ok: res.state === 'PASS', result: res };
-    }));
-    // §4–§7 — atomic quick-3-proxy apply (parse + create + bind + cluster update).
-    ipcMain.handle('phom:proxy-quick-apply', guarded((_e, payload) => quickProxyApply(payload || {})));
-    ipcMain.handle('phom:proxy-test-all', guarded(async (_e, ids) => {
-      ensureStores();
-      const { toRunProxy } = require('./browser-run/proxy-config.cjs');
-      const out = await testAll((Array.isArray(ids) ? ids : []).map(String), async (id) => {
-        const cfg = proxyConfigStore.get(id); if (!cfg) return { state: 'NOT_CONFIGURED' };
-        return proxyTester.test(toRunProxy(cfg), { resolveAuth: () => ({ username: cfg.username, password: proxyConfigStore.resolvePassword(cfg.id) }) });
-      }, 2);
-      return { ok: true, results: Object.fromEntries(out) };
-    }));
 
-    // Browser + session lifecycle.
-    ipcMain.handle('phom:open-profile', guarded((_e, cfg) => openProfile(cfg || {})));
     // The Phỏm session (3 runs): the table group + coordinator. Table actions themselves come from the in-page bars.
     ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
     // §13 — Find-Table stake source: request the server channel list + read the
     // AUTHORITATIVE distinct stakes it reports (never a hard-coded fallback).
     // §35 — optionally scoped to ONE browser; seated browsers are always skipped (coordinator).
     ipcMain.handle('phom:request-channels', guarded(async (_e, cfg) => { ensurePhomSessions(); return phomSessions.requestChannels({ profileId: cfg && cfg.browserId != null ? cfg.browserId : null }); }));
-    ipcMain.handle('phom:stake-channels', guarded(() => { ensurePhomSessions(); return { ok: true, stakes: phomSessions.availableStakes(), sessionActive: !!(phomSessions && phomSessions.active()) }; }));
     ipcMain.handle('phom:leave-all', guarded(() => { ensurePhomSessions(); return phomSessions.leaveAllTables(); }));
-    ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
     // PHASE-2 — read the monotonic discovery/sync milestone timeline (telemetry for latency inspection).
     // TEST D — record the game client's own frames while the player acts by hand (e.g. clicks a table), then
@@ -1429,8 +1154,6 @@ else {
       const runIds = cfg && Array.isArray(cfg.runIds) ? cfg.runIds.filter((x) => x != null).map(String) : null;
       return { ok: true, ...frameRecorder.start({ runIds, label: cfg && cfg.label != null ? String(cfg.label) : null, keepRoomCodes: false }) };
     });
-    // §ws-inspect — export ALL captured WebSocket request/response to a readable .txt and reveal it.
-    ipcMain.handle('phom:export-ws-log', () => exportWsLog());
     ipcMain.handle('phom:frames-record-status', () => ({ ok: true, ...frameRecorder.status() }));
     ipcMain.handle('phom:frames-record-stop', () => stopAndSaveCapture());
     ipcMain.handle('phom:frames-open-folder', (_e, p) => { try { if (p) electronShell.showItemInFolder(String(p)); return { ok: true }; } catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: String(e && e.message || e) } }; } });
@@ -1445,27 +1168,6 @@ else {
     // THE mức cược lives in the Phỏm tool; the in-page bars search at this stake (they have no picker of their own).
     ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setStake(cfg && cfg.stake); }));
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
-    ipcMain.handle('phom:token-keys', guarded(async () => {
-      try { return { ok: true, ...await tokenKeyStore.snapshot() }; }
-      catch { return { ok: false, error: { code: 'TOKEN_STORE_UNAVAILABLE', message: 'Không đọc được kho key đã mã hóa' } }; }
-    }));
-    ipcMain.handle('phom:token-import', guarded(async () => {
-      const picked = await dialog.showOpenDialog({ title: 'Import Token Key', properties: ['openFile'], filters: [{ name: 'Danh sách key', extensions: ['txt', 'json'] }] });
-      if (picked.canceled || !picked.filePaths[0]) return { ok: true, cancelled: true };
-      try {
-        const file = picked.filePaths[0];
-        if ((await fs.promises.stat(file)).size > 1024 * 1024) throw new Error('TOO_LARGE');
-        const text = (await fs.promises.readFile(file, 'utf8')).replace(/^\uFEFF/, '');
-        const values = text.trimStart().startsWith('[') ? JSON.parse(text) : text.split(/\r?\n/);
-        if (!Array.isArray(values) || values.length > 10000 || values.some((v) => typeof v !== 'string' || v.length > 4096)) throw new Error('INVALID_KEYS');
-        return { ok: true, ...await tokenKeyStore.import(values) };
-      } catch { return { ok: false, error: { code: 'TOKEN_IMPORT_FAILED', message: 'Không import được key. Dùng file TXT mỗi dòng một key hoặc JSON gồm danh sách chuỗi, tối đa 1 MB.' } }; }
-    }));
-    ipcMain.handle('phom:token-enabled', guarded(async (_e, cfg) => {
-      if (typeof cfg?.id !== 'string' || typeof cfg?.enabled !== 'boolean') return { ok: false, error: { code: 'INVALID_TOKEN_CONFIG' } };
-      try { return { ok: true, ...await tokenKeyStore.setEnabled(cfg.id, cfg.enabled) }; }
-      catch { return { ok: false, error: { code: 'TOKEN_UPDATE_FAILED', message: 'Không lưu được trạng thái key' } }; }
-    }));
     // ONE snapshot for the whole Phỏm screen. The renderer used to make six IPC round-trips per refresh
     // (browsers + remaining + cards + one analyze per account) and repeat them on every push; now main builds the
     // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
@@ -1505,84 +1207,19 @@ else {
     ipcMain.handle('phom:reload-web', guarded(async (_e, cfg) => reloadWebRun(cfg && cfg.browserId)));
     // ⏻ TẮT CHROMIUM: close ONLY this run's Chromium window/process (Tool + other browsers untouched).
     ipcMain.handle('phom:close-browser', guarded(async (_e, cfg) => closeBrowserRun(cfg && cfg.browserId)));
-    // Screen 2 — cards REMAINING after removing all cards held by the 3 browsers (never "player 4").
-    ipcMain.handle('phom:remaining-cards', () => (phomSessions ? { ok: true, ...phomSessions.remainingCards() } : { ok: true, count: 0, codes: [], cards: [] }));
-    // PHASE 6.3.3.2 — the full card-observation snapshot (players/discards/melds/remaining/capabilities).
-    // Empty/unknown shape when no session is active — never fabricated.
-    ipcMain.handle('phom:cards', () => (phomSessions ? { ok: true, ...phomSessions.cardObserverSnapshot() } : { ok: true, players: {}, remaining: { count: 0, codes: [], cards: [] }, discardPile: [], capabilities: {} }));
-    // PHASE 6.3.3.3 — MONITOR / SAFE CARD ANALYZER (read-only). Runs the DETERMINISTIC analyzer over the
-    // CURRENT observer snapshot for ONE selected target uid (the renderer owns the selection). It never
-    // sends a game command / clicks / plays — it only classifies the target's cards for display.
-    ipcMain.handle('phom:analyze-safe-cards', (_e, targetPlayerUid) => {
-      const snapshot = phomSessions ? phomSessions.cardObserverSnapshot() : null;
-      return { ok: true, ...safeCardAnalyzer.analyze({ snapshot, targetPlayerUid }) };
-    });
-    // PhomClusterCdpManager — control-plane over the three independent CDP clients.
-    ipcMain.handle('phom:cluster-create', guarded((_e, config) => {
-      ensureStores();
-      const c = config && typeof config === 'object' ? config : {};
-      clusterLocalTest = !!(c.localTest && devBypass.allowed);
-      // §3 — authoritative projection from the SAVED profile. Loose renderer fields
-      // (hostSlot/selectedStake/proxyRefs/device) are IGNORED; only clusterProfileId +
-      // localTest are honored. A non-ready/missing profile returns a typed error and no
-      // browser is opened.
-      const resolved = resolveClusterRuntime(c);
-      if (!resolved.ok) return resolved;
-      const res = ensureCluster().createCluster({
-        clusterProfileId: resolved.id,
-        hostSlot: resolved.hostSlot,
-        selectedStake: resolved.selectedStake,
-        gameUrl: resolved.gameUrl,
-        profiles: resolved.profiles,
-      });
-      if (res && res.ok) activeClusterProfileId = resolved.id;
-      return res && res.ok ? { ...res, localTest: localTestActive(), clusterProfileId: resolved.id, gameUrl: resolved.gameUrl } : res;
-    }));
     ipcMain.handle('phom:cluster-open', guarded(() => ensureCluster().openCluster()));
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
     ipcMain.handle('phom:cluster-apply-agents', guarded(() => ensureCluster().applyClusterAgents()));
-    ipcMain.handle('phom:cluster-test-proxies', guarded(() => ensureCluster().testClusterProxies()));
-    ipcMain.handle('phom:cluster-leave', guarded(async () => { const r = await ensureCluster().leaveCluster(); return r; }));
-    // DỪNG = orchestration-only stop: cancels find-table/join/ready/rejoin automation and
-    // subscriptions but NEVER closes the browsers (browser lifetime is independent). The
-    // cluster stays open + activeClusterProfileId is preserved.
-    ipcMain.handle('phom:orchestration-stop', guarded(() => { lifecycleLog('IPC_ORCHESTRATION_STOP', {}); return phomCluster ? phomCluster.stopOrchestration() : { ok: true, orchestrationStopped: true, browsersClosed: false }; }));
     // ĐÓNG 3 TRÌNH DUYỆT = EXPLICIT browser close (the ONLY app path that closes the runs).
-    ipcMain.handle('phom:cluster-stop', guarded(async () => { lifecycleLog('IPC_CLUSTER_STOP', {}); const r = await ensureCluster().stopCluster(); activeClusterProfileId = null; return r; }));
+    ipcMain.handle('phom:cluster-stop', guarded(async () => { lifecycleLog('IPC_CLUSTER_STOP', {}); return ensureCluster().stopCluster(); }));
     ipcMain.handle('phom:cluster-snapshot', () => (phomCluster ? phomCluster.getClusterSnapshot() : null));
 
-    // Cluster PROFILE persistence (saved configs: shared game URL + 3 browser/device/
-    // proxy slots). Metadata/references only — no secret, no live runtime state ever
-    // crosses this seam, and the renderer can never set a runtime field (the model
-    // whitelists its fields). Payloads are coerced; no filesystem path is accepted.
-    ipcMain.handle('phom:cluster-profile-list', guarded(() => { ensureStores(); return { ok: true, profiles: clusterProfileStore.list(), selectedId: clusterProfileStore.selectedId() }; }));
-    ipcMain.handle('phom:cluster-profile-get', guarded((_e, id) => { ensureStores(); const p = clusterProfileStore.getPublic(String(id == null ? '' : id)); return p ? { ok: true, profile: p } : { ok: false, error: { code: 'PHOM_CLUSTER_PROFILE_NOT_FOUND', message: `No cluster profile: ${id}` } }; }));
-    ipcMain.handle('phom:cluster-profile-create', guarded((_e, input) => { ensureStores(); return clusterProfileStore.create(input && typeof input === 'object' ? input : {}); }));
-    ipcMain.handle('phom:cluster-profile-update', guarded((_e, id, patch) => { ensureStores(); return clusterProfileStore.update(String(id == null ? '' : id), patch && typeof patch === 'object' ? patch : {}); }));
-    ipcMain.handle('phom:cluster-profile-delete', guarded((_e, id) => { ensureStores(); return clusterProfileStore.delete(String(id == null ? '' : id)); }));
-    ipcMain.handle('phom:cluster-profile-duplicate', guarded((_e, id, newName) => { ensureStores(); return clusterProfileStore.duplicate(String(id == null ? '' : id), String(newName == null ? '' : newName)); }));
-    ipcMain.handle('phom:cluster-profile-select', guarded((_e, id) => { ensureStores(); if (id == null || String(id) === '') return clusterProfileStore.clearSelection(); return clusterProfileStore.select(String(id)); }));
-    ipcMain.handle('phom:cluster-profile-validate', guarded((_e, id) => { ensureStores(); return clusterProfileStore.validateReady(String(id == null ? '' : id)); }));
     // 2×2 workspace layout controls (§9/§21).
     ipcMain.handle('phom:restore-layout', guarded(() => restoreLayout()));
-    ipcMain.handle('phom:focus-browser', guarded((_e, runId) => focusBrowser(runId)));
     // VÀO GAME PHỎM — trigger the verified `vgcg_8` entry action via the site's own Cocos node.
     ipcMain.handle('phom:enter-game', guarded((_e, runId) => phomEnterGame(String(runId == null ? '' : runId))));
 
-    // Offline rule analyzer (§16/§23). The domain enforces the boundary again, but we
-    // also refuse at the IPC edge whenever ANY live BrowserRun / session exists.
-    ipcMain.handle('phom:analyzer-status', () => ({ available: liveRunCount() === 0 && !(phomSessions && phomSessions.active()), liveRunCount: liveRunCount() }));
-    ipcMain.handle('phom:analyzer-analyze', (_e, input = {}) => runOfflineAnalyzer(input || {}));
 
-    // Offline REALTIME simulator (§7-§11). Event-by-event replay of a redacted /
-    // fixture / local dataset. Same hard offline boundary as the analyzer.
-    ipcMain.handle('phom:sim-datasets', () => ({ ok: true, datasets: sampleDatasets.listDatasets(), available: liveRunCount() === 0 && !(phomSessions && phomSessions.active()) && !(phomCluster && phomCluster.active()) }));
-    ipcMain.handle('phom:sim-load', (_e, input = {}) => loadOfflineSimulator(input || {}));
-    ipcMain.handle('phom:sim-control', (_e, action, arg) => controlOfflineSimulator(action, arg));
-    // QA RULE MONITOR (D simulated, fixture/replay only) — §19-§21.
-    ipcMain.handle('phom:qa-monitor-datasets', () => ({ ok: true, datasets: sampleDatasets.listDatasets() }));
-    ipcMain.handle('phom:qa-monitor-load', (_e, input = {}) => qaMonitorLoad(input || {}));
-    ipcMain.handle('phom:qa-monitor-control', (_e, action, arg) => qaMonitorControl(action, arg));
   }
 
   app.whenReady().then(() => {

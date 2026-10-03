@@ -31,9 +31,9 @@ test("the coordinator emits a 'cards' snapshot which the session manager re-emit
 });
 
 test('cards reach the screen inside ONE coalesced ui snapshot (pull + push), not four separate IPCs', () => {
-  // main still exposes the raw card snapshot for diagnostics, but the SCREEN is served by phom:ui-snapshot /
-  // 'phom:ui', which carries browsers + group + cards + remaining + the three analyses in a single message.
-  assert.match(main, /ipcMain\.handle\('phom:cards'/);
+  // the SCREEN is served by phom:ui-snapshot / 'phom:ui' only: browsers + group + cards + remaining + the three
+  // analyses in a single message (the separate raw-cards / remaining / analyze IPCs are gone).
+  assert.equal(/ipcMain\.handle\('phom:(cards|remaining-cards|analyze-safe-cards)'/.test(main), false);
   assert.match(main, /function phomUiSnapshot\(\)/);
   assert.match(main, /ipcMain\.handle\('phom:ui-snapshot'/);
   assert.match(main, /function scheduleCardsBroadcast\(/);

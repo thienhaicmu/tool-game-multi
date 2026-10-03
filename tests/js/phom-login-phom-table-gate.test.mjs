@@ -11,12 +11,12 @@ const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 const js = read('ui-phom/phom-qa.js');
 const between = (from, to) => { const a = js.indexOf(from); const b = to ? js.indexOf(to, a + 1) : js.length; return js.slice(a, b > a ? b : js.length); };
 
-test('RUN GAME lands in LOGIN phase (no auto channel/acquire/join/ready)', () => {
-  const open = between('async function openCluster()', 'async function stopOrchestration()');
-  assert.match(open, /entryPhase = ENTRY\.LOGIN; phomSessionStarted = false/);
-  // openCluster must not request channels / acquire / join / ready.
-  assert.equal(/requestChannels|acquireHost|joinFollowers|applyReady|selectStake/.test(open), false,
-    'RUN GAME must not trigger any find-table action');
+test('MỞ TRÌNH DUYỆT only opens + observes (no auto channel/acquire/join/ready)', () => {
+  const open = between('async function openCluster()', 'async function closeBrowsers()');
+  assert.match(open, /phomSessionStarted = false;/);
+  assert.match(open, /await ensurePassiveSession\(\); startEntryPolling\(\);/);
+  assert.equal(/requestChannels|acquireHost|joinFollowers|applyReady|selectStake|setAuto|findTable|joinTable/.test(open), false,
+    'opening must not trigger any table action');
 });
 
 test('VÀO GAME fires the verified `vgcg_8` entry action per browser (no guessed navigation/selector)', () => {
@@ -54,31 +54,18 @@ test('the Phỏm game id `vgcg_8` is the verified entry action id (not vgmn_221,
   assert.equal(/vgmn_221/.test(main), false, 'never the Aviator id for Phỏm');
 });
 
-test('READY is set ONLY by the authoritative in-Phỏm signal (never by the entry action firing)', () => {
-  const rec = between('function reconcileEntryPhase(', 'async function openCluster(');
-  assert.match(rec, /allInPhom\(\)/); // READY is gated on the authoritative in-Phỏm signal
-  assert.match(rec, /entryPhase = ENTRY\.READY/);
-  const inPhom = between('function slotInPhom(', 'function allInPhom(');
-  // Authoritative in-Phỏm signal = a bound game socket (server-evidence frame) + connected. uid is
-  // NOT required for the entry gate (it only arrives on a table JOIN; requiring it hung the gate at
-  // the lobby). socketReady is not fakeable, so readiness is still authoritative.
-  assert.match(inPhom, /p\.socketReady && p\.connected/);
+test('"in Phỏm" is ONLY the authoritative signal (socket + connected + the stake channel list), never the click', () => {
+  const inPhom = between('function slotInPhom(', '// GHI WEBSOCKET');
+  assert.match(inPhom, /p\.socketReady && p\.connected && \(p\.channelCount \|\| 0\) > 0/);
+  // the transient "Đang vào game…" is cleared only by that signal (or a bounded timeout)
+  assert.match(between('function reconcileEnterStates(', 'function slotProfile('), /slotInPhom\(runId\)\) clearEnter\(runId\)/);
 });
 
-test('PHOM_READY requires the authoritative 3/3 in-Phỏm signal (socketReady+connected), never faked', () => {
-  const inPhom = between('function slotInPhom(', 'function reconcileEntryPhase(');
-  assert.match(inPhom, /p\.socketReady && p\.connected/);
-  const rec = between('function reconcileEntryPhase(', 'async function openCluster()');
-  assert.match(rec, /allInPhom\(\)/); // READY is gated on the authoritative in-Phỏm signal
-  assert.match(rec, /entryPhase = ENTRY\.READY/);
-});
-
-test('DỪNG and RUN-GAME reset touch entryPhase but never close browsers', () => {
-  const stop = between('async function stopOrchestration()', 'async function closeBrowsers()');
-  assert.equal(/api\.closeBrowsers|api\.clusterStop|closeRun/.test(stop), false, 'DỪNG never closes browsers');
-  // closeBrowsers (the explicit close) resets the gate.
-  const close = between('async function closeBrowsers()', 'async function reopenSlot(');
-  assert.match(close, /entryPhase = ENTRY\.LOGIN; phomSessionStarted = false/);
+test('only the explicit ĐÓNG TẤT CẢ closes the browsers (confirmed) and resets the session flag', () => {
+  const close = between('async function closeBrowsers()', '// ONE IPC for the whole Phỏm screen');
+  assert.match(close, /window\.confirm\(/);
+  assert.match(close, /phomSessionStarted = false;/);
+  assert.match(close, /api\.closeBrowsers\(\)/);
 });
 
 test('entry gate never closes a browser on any failure path', () => {

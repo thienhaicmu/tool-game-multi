@@ -19,35 +19,27 @@ function fn(src, name) {
   return rest.slice(0, nextIdx > 0 ? nextIdx : 4000);
 }
 
-test('SETUP renders a scrollable page + sticky footer (no clipped content)', () => {
+test('SETUP renders the table panel + the footer (nothing clipped)', () => {
   const s = fn(js, 'renderSetup');
-  assert.match(s, /class: 'setup-page'/);        // the single vertical scroll container
   assert.match(s, /profileTablePanel\(\)/);
-  // PHASE 6.3.9 — the bulk-proxy panel is gone; proxy is configured per-profile in the Edit modal (pf-proxy).
-  assert.equal(/bulkProxyPanel\(\)/.test(s), false, 'no bulk-proxy panel in the Profile render');
-  assert.match(js, /id: 'pf-proxy'/);            // per-profile proxy lives in Edit Profile now
-  assert.match(s, /runGameFooter\(\)/);           // footer OUTSIDE the scroll page (sticky)
-  // the global Game URL panel is gone
+  assert.equal(/bulkProxyPanel\(\)/.test(s), false);
+  assert.match(js, /id: 'pf-proxy'/);
+  assert.match(s, /runGameFooter\(\)/);
   assert.equal(/gamePanel\(\)/.test(js), false, 'no global Game URL panel');
 });
 
-test('CSS: the setup page scrolls and its scrollbar is visible; content area is not clipped', () => {
-  assert.match(css, /\.setup-page\s*\{[^}]*overflow-y:\s*auto/);
-  assert.match(css, /\.mode-setup \.tab-content\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0/);
-  assert.match(css, /\.setup-footer\s*\{[^}]*flex:\s*0 0 auto/);
-  // a real, visible scrollbar (never hidden away)
-  assert.match(css, /\.setup-page::-webkit-scrollbar\s*\{/);
-  // the table only scrolls horizontally now (no competing inner vertical scrollbar / fixed max-height cap)
-  assert.match(css, /\.table-scroll\s*\{[^}]*overflow-x:\s*auto/);
+test('CSS: the table scrolls inside its panel; the content area is a bounded column', () => {
+  assert.match(css, /\.tab-content \{[^}]*flex: 1 1 auto[^}]*min-height: 0/);
+  assert.match(css, /\.table-scroll \{[^}]*overflow: auto/);
   assert.equal(/\.table-scroll\s*\{[^}]*max-height/.test(css), false, 'no fixed max-height cap on the table');
 });
 
 test('the footer is disabled + warns until every selected profile has its own Game URL', () => {
   const f = fn(js, 'runGameFooter');
-  assert.match(f, /class: 'setup-footer'/);
+  assert.match(f, /el\('footer', \{ class: 'bar' \}/);
   assert.match(f, /missingUrl/);
-  assert.match(f, /n === 3 && !missingUrl/);      // ready needs 3 selected AND all have URLs
-  assert.match(f, /THIẾU GAME URL/);              // visible reason when a URL is missing
+  assert.match(f, /n === 3 && !missingUrl/);
+  assert.match(f, /'Có profile thiếu Game URL'/);
 });
 
 test('openCluster validates per-profile Game URL and never prompts at RUN', () => {

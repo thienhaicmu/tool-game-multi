@@ -1,175 +1,145 @@
-// PHASE 6.2 — the compact final Tool UI (source-level assertions; no DOM runtime in CI). The main
-// CONTROL screen is a low header (BÀN/CÒN LẠI) + a single row of Browser 1/2/3 controls with a VÀO GAME
-// gate; no username, no Host/Follower, no legacy entry toolbars/monitor rendered on the main screen; the
-// Tool is the 4th window of the deterministic layout. Backend/protocol untouched.
+// The Phỏm QA tool window (source-level assertions; no DOM runtime in CI). Redesign 2026-10-03: a top bar (brand ·
+// Profile/Phỏm tabs · license), the PROFILE table, and the PHỎM tab = one status line + ONE CARD PER ACCOUNT that
+// carries the account and its own Lọc Bài + a bottom bar. The offline QA tools (simulator, rule analyzer, replay
+// monitor, debug dump) are gone from the window. Backend/protocol untouched.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 const js = read('ui-phom/phom-qa.js');
+const css = read('ui-phom/phom-qa.css');
 const main = read('desktop/phom-main.cjs');
 
 function fn(src, name) {
   const start = src.indexOf('function ' + name + '(');
   if (start < 0) return '';
-  // next top-level "  function " at the same indent
   const rest = src.slice(start + 1);
   const nextIdx = rest.indexOf('\n  function ');
   return rest.slice(0, nextIdx > 0 ? nextIdx : 4000);
 }
 
-test('renderControl renders the compact UI (header + compact browser row + card workspace), not legacy toolbars', () => {
+test('PHỎM tab: status line · note · one card per account · bottom bar — nothing else', () => {
   const body = fn(js, 'renderControl');
-  assert.match(body, /compactHeader\(\)/);
-  assert.match(body, /compactBrowserRow\(\)/);
-  // PHASE 6.3.3 — cards live in a flex-growing workspace (LÁ BÀI AN TOÀN + CÒN LẠI), not a bare remaining list
-  assert.match(body, /renderCardWorkspace\(\)/);
-  const ws = fn(js, 'renderCardWorkspace');
-  assert.match(ws, /renderSafeCards\(\)/);
-  assert.equal(/renderRemainingCards/.test(ws), false, 'Lọc Bài only — no remaining-card panel');
-  assert.match(ws, /card-workspace/);
-  // legacy host-first/entry toolbars + monitor are NOT called from the main screen
-  assert.equal(/statusToolbar\(|commandToolbar\(|entryStatusBar\(|liveMonitor\(/.test(body), false, 'no legacy toolbars/monitor on the main screen');
+  const order = ['statusLine()', "id: 'phq-note'", 'playerGrid()', 'controlFooter()'].map((x) => body.indexOf(x));
+  assert.ok(order.every((i) => i >= 0), 'all four regions');
+  assert.deepEqual([...order].sort((a, b) => a - b), order, 'in this order');
+  assert.match(fn(js, 'playerGrid'), /SLOTS\.forEach\(\(slot, i\) => grid\.appendChild\(playerCard\(i \+ 1, slot, assign\[slot\]\.runId\)\)\)/);
 });
 
-// PHASE 6.3.2 — Screen 2 is READ-ONLY. The game action (VÀO GAME) + its ENTERING/failure states now live
-// in the in-Chromium header (game-header.cjs); the Tool cell only mirrors ACCOUNT/RID/STATE/WS.
+test('the offline QA tools are gone from the window (simulator, rule analyzer, replay monitor, debug dump, ⋯ menu)', () => {
+  for (const gone of ['openSimulator', 'openAnalyzer', 'renderLiveMonitorInto', 'renderReplayMonitorInto', 'qaMonitorPlay', 'toggleAdvancedDebug', 'moreMenuButton', 'clusterProfileCreate', 'entryPhase']) {
+    assert.equal(js.includes(gone), false, gone);
+  }
+  for (const gone of ['.sim-', '.qa-mon-', '.mon-', '.adv-debug', '.qa-more']) assert.equal(css.includes(gone), false, gone);
+});
+
 test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state (deriveHeaderState)', () => {
   const gh = read('desktop/protocol/phom/game-header.cjs');
   assert.match(gh, /ENTER_GAME/);
-  assert.match(gh, /entering[\s\S]*?ĐANG VÀO GAME/); // busy ENTERING label
-  assert.match(gh, /error:/); // failure surfaced back into the header
-  // the main process tracks the transient entering flag + bounded evidence via slotInPhom-equivalent
+  assert.match(gh, /entering[\s\S]*?ĐANG VÀO GAME/);
+  assert.match(gh, /error:/);
   assert.match(main, /headerEntering/);
-  assert.match(main, /if \(view\.inGame\) \{[\s\S]*?delete headerEntering\[rid\]/); // real in-game evidence clears ENTERING
+  assert.match(main, /if \(view\.inGame\) \{[\s\S]*?delete headerEntering\[rid\]/);
 });
 
 test('the header action router acts on ONE browser via the run-scoped coordinator API (no cross-browser)', () => {
-  // ENTER_GAME -> phomEnterGame(runId); FIND_TABLE/JOIN/REJOIN/LEAVE -> the run-scoped group API, all keyed by
-  // the single runId the click came from (never a leave-all / cross-browser action).
   const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
   assert.match(r, /ENTER_GAME'[\s\S]*?startEnterGame\(rid,/);
   const enter = main.slice(main.indexOf('async function startEnterGame('), main.indexOf('function maybeAutoEnter('));
   assert.match(enter, /phomEnterGame\(rid\)/, 'one browser, the one the click came from');
-  // docs/phom-kich-ban.md — the table actions go through the session manager's group API, still run-scoped.
   assert.match(r, /rejoinTable\(rid\)/);
   assert.match(r, /leaveTable\(rid\)/);
-  assert.match(r, /findTable\(rid, \{ stake \}\)/); // §find — TÌM BÀN (cmd 307) on THIS browser only
-  assert.equal(/findAndJoinGroup|createTable/.test(r), false, 'the removed lobby-list FIND / create flows are gone'); 
+  assert.match(r, /findTable\(rid, \{ stake \}\)/);
+  assert.equal(/findAndJoinGroup|createTable/.test(r), false);
   assert.match(r, /joinTable\(rid, joinRid\)/);
 });
 
 test('the Tool is the 4th window of the deterministic cluster arrangement', () => {
   assert.match(main, /arrangeClusterWindows/);
-  assert.match(main, /clusterFourWindowArrangement/);
-  // browsers use .slots; the Tool window (restoreLayout) uses .tool
   assert.match(main, /clusterFourWindowArrangement\(\)[\s\S]*?arr\.slots\[slotIndex\]/);
   assert.match(main, /clusterFourWindowArrangement\(\);\s*control = arr && arr\.tool/);
 });
 
-test('the remaining-card COUNT (backend-provided) is in the Lọc Bài title; the card list is not shown', () => {
-  const body = fn(js, 'remainingCount');
-  assert.match(body, /remaining\.count/);
-  assert.match(fn(js, 'renderSafeCards'), /' · Còn lại ' \+ remainingCount\(\) \+ ' lá'/);
-  assert.equal(/function renderRemainingCards/.test(js), false);
+test('status line: số bàn (click = copy) · cược · cùng bàn · còn lại N lá — the remaining-card list itself is not shown', () => {
+  const s = fn(js, 'statusLine');
+  assert.match(s, /'Số bàn'/);
+  assert.match(s, /navigator\.clipboard\.writeText\(String\(rid\)\)/);
+  assert.match(s, /'Cược'/);
+  assert.match(s, /coSeatStat\(\)/);
+  assert.match(s, /const rem = remainingCount\(\);/);
+  assert.match(s, /'Còn lại'\), el\('b', null, rem \+ ' lá'\)/);
+  assert.match(fn(js, 'remainingCount'), /remaining\.count/);
+  assert.equal(/renderRemainingCards/.test(js), false);
 });
 
 test('renderer never writes document.title or injects game DOM (tool-side only)', () => {
   assert.equal(/document\.title\s*=/.test(js), false);
 });
 
-// ================= PHASE 6.3.9 — TWO-WORKSPACE REDESIGN (Profile + Phỏm), source-level =================
-const css = read('ui-phom/phom-qa.css');
-
-test('header is one unified bar: brand + [PROFILE][PHỎM] tabs + a compact license chip (no License page)', () => {
+test('top bar: brand + [Profile][Phỏm] tabs + the license chip (days left + expiry from the signed status)', () => {
   const bar = fn(js, 'renderTabBar');
-  assert.match(bar, /tb-brand/);
-  assert.match(bar, /♠ PHỎM QA/);
-  assert.match(bar, /tab\('SETUP', 'PROFILE'\)/);
-  assert.match(bar, /tab\('PHOM', 'PHỎM'\)/);
+  assert.match(bar, /'Phỏm QA'/);
+  assert.match(bar, /tab\('SETUP', 'Profile'\), tab\('PHOM', 'Phỏm'\)/);
   assert.match(bar, /licenseChip\(\)/);
   const chip = fn(js, 'licenseChip');
-  assert.match(chip, /Đã kích hoạt/);
-  assert.match(chip, /Còn .* ngày · HSD:/);
-  assert.match(chip, /expiresAt/); // derived from the real license status, not fabricated
+  assert.match(chip, /Còn \$\{days\} ngày · HSD/);
+  assert.match(chip, /payload\.expiresAt/);
 });
 
-test('Profile: table has a TRẠNG THÁI column + Edit/Duplicate/Delete; proxy is per-profile; CTA renamed', () => {
+test('Profile table: P badge · name · agent · proxy · Game URL · Edit/Duplicate/Delete (no redundant status column)', () => {
   const table = fn(js, 'profileTablePanel');
-  assert.match(table, /'TRẠNG THÁI'/);
+  for (const h of ["'Profile'", "'Agent'", "'Proxy'", "'Game URL'"]) assert.ok(table.includes(h), h);
+  assert.equal(/TRẠNG THÁI|'Chọn tất cả'|'Bỏ chọn tất cả'/.test(table), false, 'the tick boxes say it already');
+  assert.match(table, /selectedProfileIds = allSel \? \[\] : profilesX\.slice\(0, 3\)\.map\(\(p\) => p\.id\)/, 'header box = all/none');
   const row = fn(js, 'profileRow');
-  assert.match(row, /Sẵn sàng/);
-  assert.match(row, /Chưa chọn/);
-  assert.match(row, /iconButton\('edit'/);
-  assert.match(row, /iconButton\('copy', 'Nhân bản profile', \(\) => duplicateProfileX/);
-  assert.match(row, /iconButton\('trash'/);
-  // Duplicate composes the existing create IPC (no new business logic / no new IPC)
-  const dup = fn(js, 'duplicateProfileX');
-  assert.match(dup, /api\.profileCreate\(/);
-  // proxy moved into the Edit modal (reuses api.profileSetProxy) — the bulk panel is gone from the render
+  assert.match(row, /iconButton\('edit', 'Sửa profile'/);
+  assert.match(row, /iconButton\('copy', 'Nhân bản profile', \(\) => duplicateProfileX\(p\.id\)\)/);
+  assert.match(row, /iconButton\('trash', 'Xóa profile'/);
+  assert.match(row, /'Thiếu Game URL'/);
+  assert.match(fn(js, 'duplicateProfileX'), /api\.profileCreate\(/);
   assert.match(js, /id: 'pf-proxy'/);
   assert.match(js, /api\.profileSetProxy\(pid/);
-  // the primary CTA is the mockup label
-  assert.match(js, /MỞ TRÌNH DUYỆT ĐÃ CHỌN/);
 });
 
-test('Phỏm: the command toolbar + LIVE QA MONITOR are NOT in the workspace render (renderControl)', () => {
-  const ctrl = fn(js, 'renderControl');
-  assert.equal(/commandToolbar\(|liveMonitor\(|qaMonitor/.test(ctrl), false, 'no command toolbar / monitor in the Phỏm workspace');
-  // renderControl is exactly: top line + status row + analysis(finder) selector + card workspace
-  assert.match(ctrl, /compactHeader\(\)/);
-  assert.match(ctrl, /compactBrowserRow\(\)/);
-  assert.match(ctrl, /renderCardWorkspace\(\)/);
+test('Profile footer: browser engine · count · Mở trình duyệt (only 3 ticked, each with a Game URL)', () => {
+  const f = fn(js, 'runGameFooter');
+  assert.match(f, /api\.browserRuntimeSet/);
+  assert.match(f, /const ready = n === 3 && !missingUrl;/);
+  assert.match(f, /'Mở trình duyệt'/);
+  assert.match(f, /Đã chọn \$\{n\} \/ 3/);
+  assert.equal(/Môi trường|Window mode/.test(f), false, 'no decorative labels');
 });
 
-test('Profile: Select-All (header checkbox + Chọn/Bỏ chọn tất cả buttons + count) and no big runtime panel', () => {
-  const table = fn(js, 'profileTablePanel');
-  assert.match(table, /Chọn \/ bỏ chọn tất cả/);            // header checkbox toggles all
-  assert.match(table, /'Chọn tất cả'/); assert.match(table, /'Bỏ chọn tất cả'/);
-  assert.match(table, /Đã chọn: \$\{n\} \/ 3 profile/);
-  assert.match(js, /function selectAllProfiles\(\) \{ selectedProfileIds = profilesX\.slice\(0, 3\)/);
-  assert.match(js, /function clearAllProfiles\(\) \{ selectedProfileIds = \[\]/);
-  // the big BROWSER RUNTIME panel is no longer rendered in the Profile page; the engine moved to the footer.
-  const setup = fn(js, 'renderSetup');
-  assert.equal(/browserRuntimePanel\(\)/.test(setup), false, 'no big runtime panel in the Profile render');
-  const footer = fn(js, 'runGameFooter');
-  assert.match(footer, /Môi trường:/); assert.match(footer, /Window mode:/);
-  assert.match(footer, /api\.browserRuntimeSet/);           // the REAL runtime selector, now compact in the footer
+test('player card: P badge in its accent, account + ID + money, role, state IN WORDS, Vào game / ↻ / ⏻', () => {
+  assert.match(js, /const ACCENT = \['#2563eb', '#16a34a', '#ea580c'\];/);
+  const card = fn(js, 'playerCard');
+  assert.match(card, /'--accent:' \+ ACCENT\[index - 1\]/);
+  assert.match(card, /'P' \+ index/);
+  assert.match(card, /'ID ' \+ b\.accountId/);
+  assert.match(card, /money\(b\.money\)/);
+  assert.match(card, /ROLE_VIEW\[b\.groupRole\]/);
+  assert.match(card, /el\('span', null, s\.label\)/, 'the state is written, not only a dot');
+  assert.match(card, /manualEnterGame\(runId\)/);
+  assert.match(card, /onReloadWeb\(runId\)/);
+  assert.match(card, /onCloseBrowser\(runId\)/);
+  assert.match(card, /safeCardsFor\('B' \+ index\)/, 'its own Lọc Bài inside the card');
+  for (const st of ['Bị đá → ReJoin', "'Bị đá'", 'Đang Tạo (dò bàn KEY)…', 'Đang Dò Key…', 'Trong bàn', 'Ở sảnh Phỏm']) assert.ok(fn(js, 'slotState').includes(st), st);
 });
 
-test('Phỏm: player cards retain identity and lifecycle controls without a redundant disabled checkbox', () => {
-  const cell = fn(js, 'compactBrowserCell');
-  assert.doesNotMatch(cell, /class: 'bc-cb'/);
-  assert.match(cell, /index === 1 \? '#2563eb' : index === 2 \? '#16a34a' : index === 3 \? '#ea580c'/); // B1/B2/B3 accents by index
-  assert.match(cell, /'b-badge'[\s\S]*?'P' \+ index/); // badge shows P1/P2/P3
-  assert.match(cell, /onReloadWeb\(runId\)/); assert.match(cell, /onCloseBrowser\(slot, runId\)/); // ↻ / ⏻ per cell
-});
-
-// ================= PHASE 6.3.10 — QUICK BULK PROXY IMPORT (by profile order) =================
+// ================= quick bulk proxy import (by profile order) =================
 test('index.html loads the bulk-proxy parser before the renderer', () => {
   const html = read('ui-phom/index.html');
   assert.match(html, /bulk-proxy\.js/);
   assert.ok(html.indexOf('bulk-proxy.js') < html.indexOf('phom-qa.js'));
 });
 
-test('SETUP omits quick proxy import while retaining the profile table', () => {
-  const setup = fn(js, 'renderSetup');
-  assert.doesNotMatch(setup, /bulkProxyQuickPanel\(\)|bulkProxyPanel\(\)/);
-  assert.match(setup, /profileTablePanel\(\)/);
-});
-
-test('the per-row ⚡ Quick Proxy (Edit Profile) remains available alongside the bulk importer', () => {
-  assert.match(js, /id: 'pf-proxy'/);            // per-profile proxy in the Edit modal
-  assert.match(js, /api\.profileSetProxy\(pid/); // still wired
-});
-
 test('the profile table shows a COMPACT proxy (TYPE host:port · auth) — never the password', () => {
-  assert.match(js, /px\.protocol \? px\.protocol\.toUpperCase\(\)/);
-  assert.match(js, /px\.endpoint/);
-  assert.match(js, /px\.hasAuth \? ' · auth' : ''/);
-  // the proxy CELL block itself never references a password/secret (scoped to the cell, not the whole file).
-  const at = js.indexOf('// PHASE 6.3.10 — compact proxy display');
-  const cellBlock = js.slice(at, at + 500);
+  const at = js.indexOf('// proxy: TYPE host:port · auth');
+  assert.ok(at > 0);
+  const cellBlock = js.slice(at, at + 400);
+  assert.match(cellBlock, /px\.protocol \? px\.protocol\.toUpperCase\(\)/);
+  assert.match(cellBlock, /px\.endpoint/);
+  assert.match(cellBlock, /px\.hasAuth \? ' · auth' : ''/);
   assert.equal(/password|passwordSecretRef/.test(cellBlock), false, 'the proxy cell never references a password');
 });

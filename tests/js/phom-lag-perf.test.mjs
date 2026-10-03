@@ -19,7 +19,7 @@ test('the storm SOURCE: ONE update per Phỏm frame, and none for another game\'
 
 test('per-frame update/hands are COALESCED (leading+trailing throttle), not sent every frame', () => {
   assert.match(main, /phomSessions\.on\('update', \(snap\) => \{ scheduleSessionBroadcast\(snap\); \}\)/);
-  assert.match(main, /phomSessions\.on\('hands', \(hands\) => \{ scheduleHandsBroadcast\(hands\); \}\)/);
+  assert.equal(/phom:hands/.test(main), false, 'no per-frame hands push: the cards reach the window inside the ui snapshot');
   const sb = main.slice(main.indexOf('function scheduleSessionBroadcast('), main.indexOf('function scheduleSessionBroadcast(') + 500);
   assert.match(sb, /if \(_sessTimer\) return;/);          // coalesce while a trailing flush is pending
   assert.match(sb, /send\('phom:session', s\); pushHeaderStates\(\);/); // leading edge immediate

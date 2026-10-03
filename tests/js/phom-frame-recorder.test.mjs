@@ -74,7 +74,7 @@ test('Test D is wired: capture hook → recorder → IPC → Tool menu', () => {
   assert.match(main, /'phom-captures'/);
   assert.match(main, /fs\.writeFileSync\(base \+ '\.json'/);
   assert.match(main, /fs\.writeFileSync\(base \+ '\.txt'/);
-  assert.match(ui, /'Ghi gói \(Test D\)'/);
+  assert.match(ui, /iconButton\('rec', 'Ghi WebSocket \(gửi log khi báo lỗi\)', \(\) => openFrameCapture\(\)\)/); // on the bottom bar
   assert.match(ui, /api\.framesRecordStart\(/);
   assert.match(ui, /api\.framesRecordStop\(\)/);
 });

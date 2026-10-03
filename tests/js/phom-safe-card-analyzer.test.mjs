@@ -357,8 +357,8 @@ test('table order: before any play the next player is the next seat UP (wrapping
 
 test('the tool window shows the CHƯA RÕ group and only says Chưa đủ dữ liệu for an empty hand', () => {
   const js = readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
-  assert.match(js, /'CHƯA RÕ — ít rủi ro trước'/);
-  assert.match(js, /if \(!safe\.length && !likely\.length && !risky\.length && !unknown\.length && !own\.length\) col\.appendChild\(el\('div', \{ class: 'faint sm' \}, 'Chưa đủ dữ liệu'\)\);/);
+  assert.match(js, /\['unknownCards', 'Chưa rõ', 'g-unknown', 'Chưa chứng minh được — ít cách bị ăn đứng trước'\]/);
+  assert.match(js, /if \(!any\) box\.appendChild\(el\('div', \{ class: 'safe-empty' \}, 'Chưa đủ dữ liệu'\)\);/);
 });
 
 test('each P is analysed on its own but with ALL THREE accounts\' cards known (a card held by P2/P3 is never "hidden")', () => {

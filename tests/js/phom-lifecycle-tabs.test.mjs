@@ -13,8 +13,8 @@ function fn(src, name) { const s = src.indexOf('function ' + name + '('); if (s 
 
 test('two tabs: SETUP and PHỎM, switchable', () => {
   assert.match(js, /function renderTabBar\(/);
-  assert.match(js, /tab\('SETUP', 'PROFILE'\)/); // PHASE 6.3.9 — tab id 'SETUP' (internal), label 'PROFILE'
-  assert.match(js, /tab\('PHOM', 'PHỎM'\)/);
+  assert.match(js, /tab\('SETUP', 'Profile'\)/); // tab id 'SETUP' (internal), label 'Profile'
+  assert.match(js, /tab\('PHOM', 'Phỏm'\)/);
   assert.match(js, /let activeTab = 'SETUP'/);
   assert.match(js, /activeTab = id; renderApp\(\)/);
 });
@@ -24,7 +24,7 @@ test('SETUP tab shows setup; PHỎM tab shows control (no table controls in SETU
   assert.match(app, /activeTab === 'PHOM'[\s\S]*?renderControl\(content\)/);
   assert.match(app, /renderSetup\(content\)/);
   // opening the cluster switches to the PHỎM tab
-  assert.match(js, /uiState = UI\.CONTROL; activeTab = "PHOM"/);
+  assert.match(js, /uiState = UI\.CONTROL; activeTab = 'PHOM'/);
 });
 
 test('↻ WEB reloads/re-opens web in the SAME Chromium (never a new window)', () => {

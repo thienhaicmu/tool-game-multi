@@ -2,110 +2,56 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 
-// Phom QA preload — minimal typed surface. No raw WS sender, no CDP client, no
-// proxy password ever crosses back to the renderer (only metadata + test results).
+// Phom QA preload — the typed surface the tool window uses, nothing more. No raw WS sender, no CDP client, no proxy
+// password ever crosses back to the renderer (only metadata).
 contextBridge.exposeInMainWorld('phomQA', {
   // license / identity
   licenseStatus: () => ipcRenderer.invoke('phom:license-status'),
   activateLicense: (key) => ipcRenderer.invoke('phom:license-activate', key),
   machineId: () => ipcRenderer.invoke('phom:machine-id'),
-  instanceInfo: () => ipcRenderer.invoke('phom:instance-info'),
   capabilities: () => ipcRenderer.invoke('phom:capabilities'),
   onLicense: (cb) => ipcRenderer.on('phom:license', (_e, s) => cb(s)),
-  // proxy (metadata only)
+  // proxies (metadata only) + a proxy that refused the saved credentials
   proxyList: () => ipcRenderer.invoke('phom:proxy-list'),
-  proxyUpsert: (input) => ipcRenderer.invoke('phom:proxy-upsert', input),
-  proxyRemove: (id) => ipcRenderer.invoke('phom:proxy-remove', id),
-  proxyTest: (id) => ipcRenderer.invoke('phom:proxy-test', id),
-  proxyTestAll: (ids) => ipcRenderer.invoke('phom:proxy-test-all', ids),
-  proxyQuickApply: (payload) => ipcRenderer.invoke('phom:proxy-quick-apply', payload),
   onProxyAuth: (cb) => ipcRenderer.on('phom:proxy-auth', (_e, p) => cb(p)),
-  // the browser agent (web / mobile) — the only rendering choice
+  // device profiles: CRUD + open the three ticked ones
   agents: () => ipcRenderer.invoke('phom:agents'),
-  profileList: () => ipcRenderer.invoke('phom:profile-list'),
-  profileUpsert: (slot, input) => ipcRenderer.invoke('phom:profile-upsert', slot, input),
-  profileDelete: (slot) => ipcRenderer.invoke('phom:profile-delete', slot),
-  // PHASE 6.3.1 — flexible N-profile store CRUD + open-from-selection
   profilesList: () => ipcRenderer.invoke('phom:profiles-list'),
   profileCreate: (input) => ipcRenderer.invoke('phom:profile-create', input),
   profileUpdateX: (id, patch) => ipcRenderer.invoke('phom:profile-update-x', id, patch),
   profileDeleteX: (id) => ipcRenderer.invoke('phom:profile-delete-x', id),
   profileSetProxy: (id, proxyInput) => ipcRenderer.invoke('phom:profile-set-proxy', id, proxyInput),
   openSelected: (cfg) => ipcRenderer.invoke('phom:open-selected', cfg),
-  onAgentApplied: (cb) => ipcRenderer.on('phom:agent-applied', (_e, p) => cb(p)),
-  // browser + HOST/FOLLOWER controlled-table session
-  openProfile: (cfg) => ipcRenderer.invoke('phom:open-profile', cfg),
-  startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
-  requestChannels: (browserId) => ipcRenderer.invoke('phom:request-channels', { browserId: browserId != null ? browserId : null }),
-  stakeChannels: () => ipcRenderer.invoke('phom:stake-channels'),
+  browserRuntimeGet: () => ipcRenderer.invoke('phom:browser-runtime-get'),
+  browserRuntimeSet: (cfg) => ipcRenderer.invoke('phom:browser-runtime-set', cfg),
+  // the three browsers
+  clusterOpen: () => ipcRenderer.invoke('phom:cluster-open'),
+  clusterConnect: () => ipcRenderer.invoke('phom:cluster-connect'),
+  clusterApplyAgents: () => ipcRenderer.invoke('phom:cluster-apply-agents'),
+  closeBrowsers: () => ipcRenderer.invoke('phom:cluster-stop'), // the only app path that closes all of them
+  clusterSnapshot: () => ipcRenderer.invoke('phom:cluster-snapshot'),
+  onCluster: (cb) => ipcRenderer.on('phom:cluster', (_e, snap) => cb(snap)),
   restoreLayout: () => ipcRenderer.invoke('phom:restore-layout'),
-  focusBrowser: (runId) => ipcRenderer.invoke('phom:focus-browser', runId),
-  // VÀO GAME PHỎM — trigger the verified `vgcg_8` entry action via the site's own Cocos node.
+  reloadWeb: (browserId) => ipcRenderer.invoke('phom:reload-web', { browserId }),
+  closeBrowser: (browserId) => ipcRenderer.invoke('phom:close-browser', { browserId }),
+  // VÀO GAME PHỎM — the verified `vgcg_8` entry action via the site's own Cocos node
   enterGame: (runId) => ipcRenderer.invoke('phom:enter-game', runId),
-  leaveAll: () => ipcRenderer.invoke('phom:leave-all'),
+  // the Phỏm session: observe the three runs, group actions, one snapshot for the whole screen
+  startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
   sessionState: () => ipcRenderer.invoke('phom:session-state'),
-  // TEST D — record the game client's own frames while the player acts by hand, then save them to a file.
+  requestChannels: (browserId) => ipcRenderer.invoke('phom:request-channels', { browserId: browserId != null ? browserId : null }),
+  setAuto: (on, browserId, stake) => ipcRenderer.invoke('phom:auto-set', { on, browserId, stake }),
+  setStake: (stake) => ipcRenderer.invoke('phom:set-stake', { stake }),
+  newTable: (browserId) => ipcRenderer.invoke('phom:new-table', { browserId }),
+  leaveAll: () => ipcRenderer.invoke('phom:leave-all'),
+  uiSnapshot: () => ipcRenderer.invoke('phom:ui-snapshot'),
+  onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
+  onUi: (cb) => ipcRenderer.on('phom:ui', (_e, snap) => cb(snap)),
+  onNotice: (cb) => ipcRenderer.on('phom:notice', (_e, n) => cb(n)),
+  onKick: (cb) => ipcRenderer.on('phom:kick', (_e, k) => cb(k)),
+  // GHI WS (Test D) — record the game's own frames while the player acts, save them for a bug report
   framesRecordStart: (cfg) => ipcRenderer.invoke('phom:frames-record-start', cfg || {}),
   framesRecordStatus: () => ipcRenderer.invoke('phom:frames-record-status'),
   framesRecordStop: () => ipcRenderer.invoke('phom:frames-record-stop'),
   framesOpenFolder: (p) => ipcRenderer.invoke('phom:frames-open-folder', p),
-  // PHASE-6 — manual per-browser control (browserId === browserRunId). No host/follower role.
-  setAuto: (on, browserId, stake) => ipcRenderer.invoke('phom:auto-set', { on, browserId, stake }),
-  setStake: (stake) => ipcRenderer.invoke('phom:set-stake', { stake }),
-  newTable: (browserId) => ipcRenderer.invoke('phom:new-table', { browserId }),
-  tokenKeys: () => ipcRenderer.invoke('phom:token-keys'),
-  importTokenKeys: () => ipcRenderer.invoke('phom:token-import'),
-  setTokenEnabled: (id, enabled) => ipcRenderer.invoke('phom:token-enabled', { id, enabled }),
-  reloadWeb: (browserId) => ipcRenderer.invoke('phom:reload-web', { browserId }),
-  closeBrowser: (browserId) => ipcRenderer.invoke('phom:close-browser', { browserId }),
-  uiSnapshot: () => ipcRenderer.invoke('phom:ui-snapshot'),
-  remainingCards: () => ipcRenderer.invoke('phom:remaining-cards'),
-  // PHASE 6.3.3.2 — card observation engine snapshot (pull + push).
-  cardsSnapshot: () => ipcRenderer.invoke('phom:cards'),
-  // PHASE 6.3.3.3 — read-only safe-card analysis for ONE selected target uid.
-  analyzeSafeCards: (targetPlayerUid) => ipcRenderer.invoke('phom:analyze-safe-cards', targetPlayerUid),
-  // PHASE 6.3.6 — USER-selected FINDER (room anchor), by Player index 1/2/3; null clears (every browser may FIND).
-  onSession: (cb) => ipcRenderer.on('phom:session', (_e, snap) => cb(snap)),
-  onHands: (cb) => ipcRenderer.on('phom:hands', (_e, hands) => cb(hands)),
-  onUi: (cb) => ipcRenderer.on('phom:ui', (_e, snap) => cb(snap)),
-  onNotice: (cb) => ipcRenderer.on('phom:notice', (_e, n) => cb(n)),
-  onKick: (cb) => ipcRenderer.on('phom:kick', (_e, k) => cb(k)),
-  // custom Chromium runtime + cluster control-plane
-  chromiumStatus: () => ipcRenderer.invoke('phom:chromium-status'),
-  // PHASE 6.3.2.2 — browser runtime preference (Custom Chromium / Google Chrome)
-  browserRuntimeGet: () => ipcRenderer.invoke('phom:browser-runtime-get'),
-  browserRuntimeSet: (cfg) => ipcRenderer.invoke('phom:browser-runtime-set', cfg),
-  clusterCreate: (config) => ipcRenderer.invoke('phom:cluster-create', config),
-  clusterOpen: () => ipcRenderer.invoke('phom:cluster-open'),
-  clusterConnect: () => ipcRenderer.invoke('phom:cluster-connect'),
-  clusterApplyAgents: () => ipcRenderer.invoke('phom:cluster-apply-agents'),
-  clusterTestProxies: () => ipcRenderer.invoke('phom:cluster-test-proxies'),
-  clusterLeave: () => ipcRenderer.invoke('phom:cluster-leave'),
-  // DỪNG — stop orchestration only (NEVER closes the browsers).
-  orchestrationStop: () => ipcRenderer.invoke('phom:orchestration-stop'),
-  // ĐÓNG 3 TRÌNH DUYỆT — explicit browser close (the only app path that closes runs).
-  closeBrowsers: () => ipcRenderer.invoke('phom:cluster-stop'),
-  clusterStop: () => ipcRenderer.invoke('phom:cluster-stop'),
-  clusterSnapshot: () => ipcRenderer.invoke('phom:cluster-snapshot'),
-  onCluster: (cb) => ipcRenderer.on('phom:cluster', (_e, snap) => cb(snap)),
-  // cluster PROFILES (saved configs: shared game URL + 3 browser/device/proxy slots)
-  clusterProfileList: () => ipcRenderer.invoke('phom:cluster-profile-list'),
-  clusterProfileGet: (id) => ipcRenderer.invoke('phom:cluster-profile-get', id),
-  clusterProfileCreate: (input) => ipcRenderer.invoke('phom:cluster-profile-create', input),
-  clusterProfileUpdate: (id, patch) => ipcRenderer.invoke('phom:cluster-profile-update', id, patch),
-  clusterProfileDelete: (id) => ipcRenderer.invoke('phom:cluster-profile-delete', id),
-  clusterProfileDuplicate: (id, newName) => ipcRenderer.invoke('phom:cluster-profile-duplicate', id, newName),
-  clusterProfileSelect: (id) => ipcRenderer.invoke('phom:cluster-profile-select', id),
-  clusterProfileValidate: (id) => ipcRenderer.invoke('phom:cluster-profile-validate', id),
-  // offline rule analyzer (QA / no live)
-  analyzerStatus: () => ipcRenderer.invoke('phom:analyzer-status'),
-  analyzerAnalyze: (input) => ipcRenderer.invoke('phom:analyzer-analyze', input),
-  // offline REALTIME simulator (event-by-event replay, QA / no live)
-  simDatasets: () => ipcRenderer.invoke('phom:sim-datasets'),
-  simLoad: (input) => ipcRenderer.invoke('phom:sim-load', input),
-  simControl: (action, arg) => ipcRenderer.invoke('phom:sim-control', action, arg),
-  // QA rule monitor (D simulated, fixture/replay) — §19-§21
-  qaMonitorDatasets: () => ipcRenderer.invoke('phom:qa-monitor-datasets'),
-  qaMonitorLoad: (input) => ipcRenderer.invoke('phom:qa-monitor-load', input),
-  qaMonitorControl: (action, arg) => ipcRenderer.invoke('phom:qa-monitor-control', action, arg),
 });

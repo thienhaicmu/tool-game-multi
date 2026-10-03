@@ -70,19 +70,14 @@ test('all Phom preload IPC channels use the phom: namespace', () => {
 
 // BROWSER LIFETIME INDEPENDENCE — DỪNG stops orchestration only; the ONLY app path that
 // closes browsers is the explicit close (ĐÓNG 3 TRÌNH DUYỆT) / app shutdown.
-test('main separates orchestration-stop (DỪNG) from browser close (explicit)', () => {
-  // DỪNG IPC delegates to stopOrchestration (no closeRun). (Diagnostic lifecycleLog may
-  // precede the call; the handler must still route to stopOrchestration and never a close.)
-  const orchHandler = mainSrc.slice(mainSrc.indexOf("ipcMain.handle('phom:orchestration-stop'"), mainSrc.indexOf("ipcMain.handle('phom:cluster-stop'"));
-  assert.match(orchHandler, /stopOrchestration\(\)/);
-  assert.equal(/stopCluster|closeRun/.test(orchHandler), false, 'DỪNG must never close browsers');
+test('the explicit close (ĐÓNG TẤT CẢ) is the only IPC that closes the browsers', () => {
+  const closers = [...mainSrc.matchAll(/ipcMain\.handle\('(phom:[a-z-]+)'[^\n]*stopCluster\(\)/g)].map((m) => m[1]);
+  assert.deepEqual(closers, ['phom:cluster-stop']);
   // The explicit close IPC is the only one that calls the manager stopCluster (closeRun).
   assert.match(mainSrc, /ipcMain\.handle\('phom:cluster-stop'[^]*?stopCluster\(\)/);
   // A run exiting on its own marks ONLY that slot closed — never cascades a close — and
   // forwards the launcher's CLASSIFIED reason (never a blanket close).
   assert.match(mainSrc, /onRunExit:[^\n]*markRunClosed\(runId,\s*record\s*&&\s*record\.reason\)/);
-  // preload exposes both the orchestration stop and the explicit browser close.
-  assert.match(preloadSrc, /orchestrationStop:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:orchestration-stop'\)/);
   assert.match(preloadSrc, /closeBrowsers:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:cluster-stop'\)/);
 });
 
@@ -167,9 +162,9 @@ test('renderer defines the SETUP/OPENING_CLUSTER/CONTROL/STOPPING/ERROR states',
 
 // The dev-only red sandbox banner is wired to caps.chromiumSandbox.disabled.
 test('renderer shows the red DEV sandbox banner from capabilities', () => {
-  assert.match(rendererSrc, /danger-banner/);
+  assert.match(rendererSrc, /class: 'banner danger'/);
   assert.match(rendererSrc, /chromiumSandbox/);
-  assert.match(cssSrc, /\.danger-banner\s*\{/);
+  assert.match(cssSrc, /\.banner\.danger\s*\{/);
 });
 
 // --- Chromium sandbox policy (SECURITY) --------------------------------------

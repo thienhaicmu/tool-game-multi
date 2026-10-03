@@ -16,19 +16,19 @@ const preload = read('desktop/phom-preload.cjs');
 const main = read('desktop/phom-main.cjs');
 function fn(name) { const s = js.indexOf('function ' + name + '('); if (s < 0) return ''; const rest = js.slice(s + 1); const m = rest.indexOf('\n  function '); return rest.slice(0, m > 0 ? m : 4000); }
 
-test('layout order: status line · account chips · cards · controls at the bottom', () => {
+test('layout order: status line · note · one card per account · controls at the bottom', () => {
   const rc = fn('renderControl');
-  const order = ['compactHeader()', 'compactBrowserRow()', 'renderCardWorkspace()', 'controlFooter()'].map((x) => rc.indexOf(x));
-  assert.ok(order.every((i) => i >= 0), 'all four regions are rendered');
+  const order = ['statusLine()', 'playerGrid()', 'controlFooter()'].map((x) => rc.indexOf(x));
+  assert.ok(order.every((i) => i >= 0), 'all regions are rendered');
   assert.deepEqual([...order].sort((a, b) => a - b), order, 'in this order');
-  for (const label of ['SỐ BÀN ', 'KEY ', 'CƯỢC ']) assert.ok(fn('compactHeader').includes(label), label);
+  for (const label of ["'Số bàn'", "'Cược'"]) assert.ok(fn('statusLine').includes(label), label);
+  assert.ok(fn('coSeatStat').includes("'Cùng bàn'"));
 });
 
-test('bottom controls: Tiền + TỰ ĐỘNG checkbox + the reference-tool action set; Tiền is the server stakes', () => {
+test('bottom controls: Mức cược + Tự động switch + Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả', () => {
   const f = fn('controlFooter');
-  for (const label of ["'Mức cược'", "type: 'checkbox'", ' TỰ ĐỘNG', 'BÀN KHÁC', 'THOÁT BÀN TẤT CẢ', 'XẾP CỬA SỔ', 'ĐÓNG TẤT CẢ']) assert.ok(f.includes(label), label);
+  for (const label of ["'Mức cược'", "type: 'checkbox'", "'Tự động'", "'Bàn khác'", "'Thoát bàn tất cả'", "'Xếp lại 3 cửa sổ game'", 'openFrameCapture()', "'Đóng tất cả'"]) assert.ok(f.includes(label), label);
   assert.match(fn('autoStakes'), /betOptions/);
-  assert.equal(fn('compactHeader').includes('GHI WS'), false, 'Ghi WS lives in ⋯, not on the main screen');
 });
 
 test('TỰ ĐỘNG checkbox → phom:auto-set (on/off); BÀN KHÁC → new-table', () => {
@@ -39,16 +39,19 @@ test('TỰ ĐỘNG checkbox → phom:auto-set (on/off); BÀN KHÁC → new-table
   assert.equal(/phom:group-auto|groupAuto/.test(main + preload + js), false, 'the old always-on auto entry is gone');
 });
 
-test('account chips: one line of three, slot A/B/C → B1/B2/B3, with role, state, ready and lifecycle', () => {
-  assert.match(fn('compactBrowserRow'), /SLOTS\.forEach\(\(slot, i\) => row\.appendChild\(compactBrowserCell\(i \+ 1, slot, assign\[slot\]\.runId\)\)\)/);
-  const cell = fn('compactBrowserCell');
-  assert.match(cell, /roleChip\(b\.groupRole, b\.isTableHost\)/);
-  assert.match(cell, /BỊ ĐÁ → REJOIN/);
-  assert.match(cell, /'BỊ ĐÁ'/);
-  assert.match(cell, /manualEnterGame\(runId\)/);
-  assert.match(cell, /iconButton\('refresh'/);
-  assert.match(cell, /iconButton\('power'/);
-  assert.match(css, /\.acc-chips \{[^}]*display: flex/);
+test('player cards: three, slot A/B/C → P1/P2/P3, with role, state in words, ready and lifecycle', () => {
+  assert.match(fn('playerGrid'), /SLOTS\.forEach\(\(slot, i\) => grid\.appendChild\(playerCard\(i \+ 1, slot, assign\[slot\]\.runId\)\)\)/);
+  const card = fn('playerCard');
+  assert.match(card, /const role = ROLE_VIEW\[b\.groupRole\];/);
+  assert.match(card, /b\.isTableHost/);
+  const st = fn('slotState');
+  assert.match(st, /'Bị đá → ReJoin'/);
+  assert.match(st, /'Bị đá'/);
+  assert.match(st, /'Trong bàn · đã sẵn sàng'/);
+  assert.match(card, /manualEnterGame\(runId\)/);
+  assert.match(card, /iconButton\('refresh'/);
+  assert.match(card, /iconButton\('power'/);
+  assert.match(css, /\.players \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
 });
 
 test('roles read like the flow: KEY · SẴN SÀNG (joined first) · CHƯA SS (joined later)', () => {
@@ -57,21 +60,21 @@ test('roles read like the flow: KEY · SẴN SÀNG (joined first) · CHƯA SS (j
   assert.match(js, /NOT_READY: \['CHƯA SS'/);
 });
 
-test('LỌC BÀI shows all three accounts at once, gets the larger share, and re-runs on every card snapshot', () => {
-  const safe = fn('renderSafeCards');
-  assert.match(safe, /LỌC BÀI/);
-  assert.match(safe, /\['B1', 'B2', 'B3'\]\.forEach/);
-  const col = fn('safeColumn');
-  for (const label of ['NÊN ĐÁNH', 'CÓ THỂ AN TOÀN', 'ĐỪNG ĐÁNH — người sau ăn được', 'TRONG PHỎM — giữ lại', 'Chưa có bài']) assert.ok(col.includes(label), label);
-  // the analyses arrive with the single ui snapshot (built in main, memoised); every push applies it as-is
+test('LỌC BÀI: each account card carries its own analysis, re-run on every card snapshot', () => {
+  const safe = fn('safeCardsFor');
+  assert.match(safe, /Lọc bài/);
+  assert.match(safe, /'Lượt sau: ' \+ playerLabel\(a\.nextPlayerLabel\)/);
+  assert.match(safe, /'Chưa có bài'/);
+  for (const label of ["'Nên đánh'", "'Có thể'", "'Chưa rõ'", "'Đừng đánh'", "'Phỏm'"]) assert.ok(js.includes(label), label);
   assert.match(fn('applyUiSnapshot'), /safeBySlot = snap\.analyses \|\| \{\};/);
   assert.match(js, /api\.onUi\(\(snap\) => \{ applyUiSnapshot\(snap\);/);
   assert.match(fn('refreshManual'), /api\.uiSnapshot\(\)/);
-  assert.match(css, /\.card-workspace \.safe-cards \{ flex: 3 1 0; \}/);
+  assert.match(css, /\.safe \{[^}]*overflow-y: auto/);
 });
 
-test('a renderer reload with the browsers still open re-binds the slots (chips never read CHƯA MỞ)', () => {
-  assert.match(fn('showWorkspace'), /if \(uiState === UI\.CONTROL\) \{[\s\S]*?assign\[s\]\.runId = p\.profileId;[\s\S]*?await refreshManual\(\);/);
+test('a renderer reload with the browsers still open re-binds the slots (cards never read Chưa mở)', () => {
+  assert.match(fn('showWorkspace'), /if \(uiState === UI\.CONTROL\) \{[\s\S]*?bindSlotsFromCluster\(\);[\s\S]*?await refreshManual\(\);/);
+  assert.match(fn('bindSlotsFromCluster'), /assign\[s\]\.runId = p\.profileId;/);
 });
 
 // Header state honesty (bug from the live bar, 2026-09-21): a browser that holds a group role but is NOT sitting at
@@ -130,7 +133,7 @@ test('a background update repaints at most once per frame, and not at all when n
 
 test('PROFILE: ⚡ DÁN PROXY is reachable again — one line per proxy, mapped by profile order, all-or-nothing', () => {
   // The bulk import existed but nothing rendered it any more; three accounts normally mean three proxies.
-  assert.match(fn('profileTablePanel'), /onclick: openBulkProxy \}, '⚡ DÁN PROXY'/);
+  assert.match(fn('profileTablePanel'), /onclick: openBulkProxy \}, '⚡ Dán proxy'/);
   const dlg = fn('openBulkProxy');
   assert.match(dlg, /BP\.parse\(bulkProxyText\)/);
   assert.match(dlg, /BP\.mapToProfiles\(parsed\.proxies, profilesX\.map\(\(p\) => p\.id\)\)/);

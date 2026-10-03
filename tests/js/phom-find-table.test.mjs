@@ -482,7 +482,7 @@ test('SS SYNC: the số bàn Tạo found is in the SS box of all three bars; the
   assert.ok(sim);
 });
 
-test('LỌC BÀI lives in the Phỏm QA tool (one column per account, named like its chip) — never on the browser bars', () => {
+test('LỌC BÀI lives in the Phỏm QA tool (inside each account card) — never on the browser bars', () => {
   const gh = require('../../desktop/protocol/phom/game-header.cjs');
   const st = gh.deriveHeaderState({ opened: true, inGame: true, filter: { status: 'OK', safe: [] } });
   assert.equal('filter' in st, false, 'the bar state carries no card filter');
@@ -492,6 +492,6 @@ test('LỌC BÀI lives in the Phỏm QA tool (one column per account, named like
   // the tool window: the same analyzer, one analysis per browser slot B1..B3
   assert.match(main, /analyses\[slot\] = slotAnalyzers\[slot\]\.analyze\(\{ snapshot: cards, targetPlayerUid: uid \}\)/);
   const ui = require('fs').readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
-  assert.match(ui, /\['B1', 'B2', 'B3'\]\.forEach\(\(slot, i\) => cols\.appendChild\(safeColumn\(slot, i \+ 1\)\)\)/);
-  assert.match(ui, /const acc = \(manualBrowsers \|\| \[\]\)\.find\(\(b\) => b && Number\(b\.browserIndex\) === index\);/);
+  assert.match(ui, /safeCardsFor\('B' \+ index\)/); // card P<n> = browser n = analysis B<n>
+  assert.match(ui, /const a = safeBySlot\[slot\];/);
 });
