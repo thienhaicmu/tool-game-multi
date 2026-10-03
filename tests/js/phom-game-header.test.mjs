@@ -333,10 +333,13 @@ test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Dò Key 
   assert.doesNotMatch(src, /stakeSel/);
   assert.match(src, /CHƯA CHỌN CƯỢC/);
   assert.match(src, /function needStake\(\)\{ if\(state\.stake == null\)\{ showFeedback\([^\n]+return true; \}/);
-  assert.match(src, /txtBtn\('Dò Key','#7c3aed',function\(\)\{ if\(needStake\(\)\) return; emit\('FIND_TABLE'\); \}/);
-  assert.match(src, /txtBtn\('Tạo','#0369a1',function\(\)\{ if\(needStake\(\)\) return; emit\('SCAN_TABLE'\); \}/);
+  // the reference tool's buttons: the running one ends with '.' and a second click stops it (DỪNG = CANCEL_FIND)
+  assert.match(src, /txtBtn\(keying \? 'Dò Key\.' : 'Dò Key', [^,]+, function\(\)\{ if\(keying\)\{ emit\('CANCEL_FIND'\); return; \} if\(needStake\(\)\) return; emit\('FIND_TABLE'\); \}/);
+  assert.match(src, /txtBtn\(scanning \? 'Tạo\.' : 'Tạo', [^,]+, function\(\)\{ if\(scanning\)\{ emit\('CANCEL_FIND'\); return; \} if\(needStake\(\)\) return; emit\('SCAN_TABLE'\); \}/);
   // Vào parses the SS box without a regex (a lost backslash once turned /^\\d+$/ into /^d+$/ and the button did nothing)
-  assert.match(src, /txtBtn\('Vào','#16a34a',function\(\)\{ var r=ssRid\(\); if\(r!=null\) emit\('JOIN_CODE',\{ rid:r \}\); \}/);
+  assert.match(src, /txtBtn\(state\.joining \? 'Vào\.' : 'Vào','#16a34a',function\(\)\{ var r=ssRid\(\); if\(r==null\)\{ showFeedback\([^)]+\); return; \} emit\('JOIN_CODE',\{ rid:r \}\); \}/);
+  assert.match(src, /txtBtn\(state\.rejoinOn \? 'ReJoin\.' : 'ReJoin'/);
+  assert.match(src, /txtBtn\('Thoát','#991b1b',function\(\)\{ emit\('LEAVE'\); \}/);
   assert.doesNotMatch(src, /\^d\+\$/);
 });
 
@@ -358,12 +361,12 @@ test('unconfirmed leave must retry leave before offering another join', () => {
   assert.equal(s.statusClass, 'warn');
 });
 
-test('DÒ KEY / TẠO on the bar: searching shows progress + DỪNG; after a KEY sits, the next step is TẠO; ReJoin shows ON', () => {
+test('DÒ KEY / TẠO on the bar: the bar stays while it searches (Tạo. / Dò Key.), progress in the line under it; ReJoin shows ON', () => {
   const base = { opened: true, inGame: true, stake: 20000 };
   const searching = gh.deriveHeaderState({ ...base, manualState: 'SEARCHING', searchKind: 'SCAN', searchElapsedSec: 12, searchAttempt: 6 });
   assert.equal(searching.statusLabel, 'ĐANG DÒ BÀN KEY 12s · lần 6');
-  assert.equal(searching.primary.action, 'CANCEL_FIND');
-  assert.equal(searching.canAct, false, 'only DỪNG while it runs');
+  assert.equal(searching.canAct, true, 'every button stays, like the reference tool');
+  assert.equal(searching.searchKind, 'SCAN');
   assert.equal(gh.deriveHeaderState({ ...base, manualState: 'SEARCHING', searchKind: 'KEY' }).statusLabel, 'ĐANG DÒ KEY');
   assert.equal(gh.deriveHeaderState({ ...base, manualState: 'READY' }).primary.action, 'FIND_TABLE');
   const next = gh.deriveHeaderState({ ...base, manualState: 'READY', keySeated: true });
@@ -371,5 +374,14 @@ test('DÒ KEY / TẠO on the bar: searching shows progress + DỪNG; after a KEY
   assert.equal(gh.deriveHeaderState({ ...base, manualState: 'JOINED', rid: 7907972, rejoinOn: true }).rejoinOn, true);
   assert.equal(gh.HEADER_ACTIONS.SCAN_TABLE.short, 'Tạo'); assert.equal(gh.HEADER_ACTIONS.FIND_TABLE.short, 'Dò Key');
   const src = gh.bootScript();
-  assert.match(src, /state\.rejoinOn \? 'ReJoin ●' : 'ReJoin'/);
+  assert.match(src, /state\.rejoinOn \? 'ReJoin\.' : 'ReJoin'/);
+  // the line under the bar: ID Bàn · Số người · name-money of everyone at the table
+  const seated = gh.deriveHeaderState({ ...base, manualState: 'JOINED', rid: 7907972, playerCount: 3, money: 453384,
+    players: [{ name: 'gdufuud', money: 453384, host: true, ours: true }, { name: 'riftraidpu454', money: 789200, ours: false }] });
+  assert.equal(seated.playerCount, 3); assert.equal(seated.money, 453384);
+  assert.deepEqual(seated.players.map((p) => [p.name, p.money, p.host, p.ours]), [['gdufuud', 453384, true, true], ['riftraidpu454', 789200, false, false]]);
+  assert.match(src, /'ID Bàn: ' \+ \(state\.joinedViaChannel \? 'chưa có \(kênh ' \+ state\.rid \+ '\)' : state\.rid\) \+ ' · Số người: '/);
+  // SS never holds a stake channel (live run 2026-10-03: 139 in the SS box → every Vào refused, code 166)
+  assert.equal(gh.deriveHeaderState({ ...base, manualState: 'JOINED', rid: 139, joinedViaChannel: true }).ssDefault, null);
+  assert.equal(gh.deriveHeaderState({ ...base, manualState: 'JOINED', rid: 139, joinedViaChannel: true, sharedRid: 8039315 }).ssDefault, 8039315);
 });

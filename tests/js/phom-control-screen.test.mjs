@@ -86,7 +86,8 @@ test('bar: a role without a seat reads NGOÀI BÀN and offers VÀO LẠI BÀN (r
   const seated = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 3803041, groupRole: 'KEY', seatedAtTable: true });
   assert.equal(seated.statusLabel, 'SS 3803041', 'a public table has no password to show');
   assert.equal(seated.seatedAtTable, true);
-  assert.match(gh.bootScript({}), /state\.seatedAtTable \? R\[1\] : '#374151'/);
+  // the role is written in the line under the bar (reference tool layout), next to ID Bàn / Số người
+  assert.match(gh.bootScript({}), /var ROLE = \{ KEY:'KEY', READY:'SẴN SÀNG', NOT_READY:'CHƯA SS' \};/);
 });
 
 test('bar: frames stopped arriving → MẤT DỮ LIỆU + TẢI LẠI (never a false CHƯA VÀO GAME), and the tool re-hooks', () => {

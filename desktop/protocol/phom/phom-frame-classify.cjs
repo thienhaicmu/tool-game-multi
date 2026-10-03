@@ -30,6 +30,7 @@ const GAME_ID = 'vgcg_8';
 // Confirmed command set. Names are stable semantic labels for UI / evidence.
 const CMD = Object.freeze({
   SELF_IDENTITY: 100,  // server push of the OWN session identity (uid + own wallet As) — live-captured
+  WALLET: 317,         // server push of the OWN wallet (As.gold + As.guaranteed_gold) — live-captured 2026-10-02
   SEAT_UPDATE: 200,    // server push: ONE player took/updated a seat at THIS table ({p:{seat}, t}) — live-captured
   CHANNEL_LIST: 300,   // client asks for stake channels; server replies with rs[]
   QUICK_PLAY: 307,     // client asks for a PUBLIC table with room ("VÀO BÀN CHỜ"); reply {ri:{rid,b,Mu,pwd}} or {mgs}
@@ -211,8 +212,12 @@ function classifyPhomFrame(raw) {
       // Live capture shows TWO cmd:100 forms: the authoritative game identity (id:0, uid "<aid>_<n>"
       // — the SAME form used in ps[]) and a session-token identity (id:1, token uid + As.time). Surface
       // `id` so the context binds only the authoritative game uid (never the token, which races ahead).
-      return finalize(out, { type: 'SELF_IDENTITY', uid: payload.uid != null ? payload.uid : payload.u, identityId: payload.id, displayName: typeof payload.dn === 'string' && payload.dn ? payload.dn : null });
+      return finalize(out, { type: 'SELF_IDENTITY', uid: payload.uid != null ? payload.uid : payload.u, identityId: payload.id, displayName: typeof payload.dn === 'string' && payload.dn ? payload.dn : null, ...walletOf(payload.As) });
     }
+    // Own wallet push [5,{As:{gold,guaranteed_gold,time},cmd:317}] (capture 2026-10-02): sent on every sit-down / leave.
+    // gold = free money, guaranteed_gold = money held at the table; their sum is the account's money (the `m` the
+    // table shows, e.g. "gdufuud-453384").
+    if (cmd === CMD.WALLET && payload && payload.As && typeof payload.As === 'object') return finalize(out, { type: 'WALLET', ...walletOf(payload.As) });
     // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / ROUND_END 853 / MELD 854).
     if (cmd != null && CMD_TYPE[cmd]) return finalize(out, { type: CMD_TYPE[cmd] });
     return finalize(out, { type: 'UNKNOWN' });
@@ -247,6 +252,8 @@ function finalize(out, extra) {
     // identity / seat-delta fields
     identityId: extra.identityId !== undefined ? extra.identityId : undefined,
     displayName: extra.displayName !== undefined ? extra.displayName : undefined, // own account name (cmd 100 dn)
+    gold: extra.gold !== undefined ? extra.gold : undefined,             // own free money (cmd 100 / 317 As.gold)
+    heldGold: extra.heldGold !== undefined ? extra.heldGold : undefined, // own money held at the table (As.guaranteed_gold)
     seat: extra.seat !== undefined ? extra.seat : undefined,     // single seat object (SEAT_UPDATE)
     present: extra.present !== undefined ? extra.present : undefined,
     t: extra.t !== undefined ? extra.t : undefined,
@@ -281,6 +288,12 @@ function finalize(out, extra) {
     m: p.m !== undefined ? p.m : undefined,
     mes_present: Array.isArray(p.mes),
   };
+}
+
+function walletOf(As) {
+  if (!As || typeof As !== 'object') return {};
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : undefined);
+  return { gold: num(As.gold), heldGold: num(As.guaranteed_gold != null ? As.guaranteed_gold : As.guaranteedGold) };
 }
 
 // The first plain (non-array) object element of a wire array, or null.

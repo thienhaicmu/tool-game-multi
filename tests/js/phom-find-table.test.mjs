@@ -235,7 +235,7 @@ test('DỪNG: cancelSearch stops a running TẠO at its next step', async () => 
 
 // ---- the group (docs/phom-kich-ban.md) on the sim ----
 
-test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (READY); Vào joins it (NOT_READY) with op 8', async () => {
+test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (CHƯA SS); Vào joins it (SẴN SÀNG) with op 8', async () => {
   const { coord, sim, group } = mkGroup({ scan: ['lone'] });
   group.setStake(20000);
   const k = await group.findTable('B3', {});             // the bar sends no stake: the tool's Tiền is used
@@ -243,13 +243,13 @@ test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (READY)
   assert.equal(op(sim, 'B3', 3)[0][2], 145, 'the channel of the stake chosen in the tool (20000)');
   assert.equal(group.rid(), null, 'no số bàn yet');
   const s = await group.scanTable('B1');
-  assert.equal(s.ok, true, JSON.stringify(s.error || s)); assert.equal(s.role, 'READY');
+  assert.equal(s.ok, true, JSON.stringify(s.error || s)); assert.equal(s.role, 'NOT_READY');
   const rid = [...sim.rooms.values()].find((r) => r.seats[0] === '1_3').rid;
   assert.equal(group.rid(), rid, 'the KEY\'s table is the group\'s số bàn');
   assert.equal(sim.special.lone.seats.includes('1_1'), false, 'the lone stranger\'s table was left');
   assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B3').rid, rid, 'the KEY now shows the số bàn');
   const v = await group.joinTable('B2', rid);
-  assert.equal(v.ok, true, JSON.stringify(v.error || v)); assert.equal(v.role, 'NOT_READY');
+  assert.equal(v.ok, true, JSON.stringify(v.error || v)); assert.equal(v.role, 'READY');
   assert.deepEqual(op(sim, 'B2', 8).at(-1), [8, 'Simms', rid, '', 8]);
   assert.deepEqual([...sim.rooms.get(rid).seats].sort(), ['1_1', '1_2', '1_3']);
   for (const id of ['B1', 'B2']) {
@@ -257,17 +257,18 @@ test('T1 + T2a + T2 (manual): Dò Key → KEY; Tạo finds the số bàn (READY)
     const seatAt = sim.order.findIndex((e) => e[0] === 'seat' && e[1] === id && e[2] === rid);
     assert.ok(prefAt >= 0 && prefAt < seatAt, `${id}: auto-ready preference set before it sits down`);
   }
-  assert.deepEqual(sim.readyFrames, ['B1'], 'only READY readies; the KEY never sends cmd 5');
+  assert.deepEqual(sim.readyFrames, ['B2'], 'only SẴN SÀNG readies; the KEY never sends cmd 5');
+  assert.equal(sim.pref.B1, false, 'CHƯA SS never auto-readies');
 });
 
-test('A1 (auto): TỰ ĐỘNG forms KEY / READY / NOT_READY at ONE table, one browser after another', async () => {
+test('A1 (auto): TỰ ĐỘNG forms KEY / CHƯA SS / SẴN SÀNG at ONE table, one browser after another', async () => {
   const { sim, group } = mkGroup({ strangersFirst: 1, scan: ['full', 'lone'] });
   const r = await group.setAuto(true, { creatorId: 'B2', stake: 20000 });
   assert.equal(r.ok, true, JSON.stringify(r.error || r));
-  assert.deepEqual(r.roles, { B2: 'KEY', B1: 'READY', B3: 'NOT_READY' });
+  assert.deepEqual(r.roles, { B2: 'KEY', B1: 'NOT_READY', B3: 'READY' });
   assert.deepEqual([...sim.rooms.get(r.rid).seats].sort(), ['1_1', '1_2', '1_3']);
   assert.equal(asks(sim, 'B3').length, 0, 'the third account joins the known số bàn — no search');
-  assert.equal(sim.pref.B2, false); assert.equal(sim.pref.B1, true); assert.equal(sim.pref.B3, false);
+  assert.equal(sim.pref.B2, false); assert.equal(sim.pref.B1, false); assert.equal(sim.pref.B3, true);
 });
 
 test('A3 (auto): the NOT_READY account is kicked again and again — it comes back EVERY time (no per-minute cap)', async () => {
@@ -275,12 +276,12 @@ test('A3 (auto): the NOT_READY account is kicked again and again — it comes ba
   const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
   assert.equal(r.ok, true, JSON.stringify(r.error || r));
   for (let i = 0; i < 7; i++) {
-    sim.kick('B3');
-    await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
-    assert.ok(sim.rooms.get(r.rid).seats.includes('1_3'), `kick ${i + 1}: back at the table`);
+    sim.kick('B2');
+    await until(() => sim.rooms.get(r.rid).seats.includes('1_2'));
+    assert.ok(sim.rooms.get(r.rid).seats.includes('1_2'), `kick ${i + 1}: back at the table`);
   }
-  assert.ok(op(sim, 'B3', 8).filter((f) => f[2] === r.rid).length >= 8);
-  assert.equal(sim.pref.B3, false, 'still NOT_READY');
+  assert.ok(op(sim, 'B2', 8).filter((f) => f[2] === r.rid).length >= 7);
+  assert.equal(sim.pref.B2, false, 'still CHƯA SS');
 });
 
 test('T6 + ReJoin toggle (manual): a kick is only reported, until ReJoin is switched on; pressing it again switches off', async () => {
@@ -391,9 +392,10 @@ test('AUTO = MANUAL: TỰ ĐỘNG presses Dò Key → Tạo → Vào and switche
   assert.ok(asks(sim, 'B2').length >= 1);
   assert.equal(asks(sim, 'B3').length, 0); assert.deepEqual(op(sim, 'B3', 8).at(-1), [8, 'Simms', r.rid, '', 8]);
   const on = Object.fromEntries(coord.manualBrowserSnapshot().map((b) => [b.profileId, group.rejoinOn(b.profileId)]));
-  assert.deepEqual(on, { B1: false, B2: true, B3: true }, 'like pressing ReJoin on READY and NOT_READY');
+  assert.deepEqual(on, { B1: false, B2: true, B3: true }, 'like pressing ReJoin on CHƯA SS and SẴN SÀNG');
   await group.setAuto(false);
-  assert.equal(group.rejoinOn('B2'), false); assert.equal(group.rejoinOn('B3'), false);
+  assert.equal(group.rejoinOn('B2'), true, 'CHƯA SS keeps its ReJoin (it is kicked every ~10s by design)');
+  assert.equal(group.rejoinOn('B3'), false, 'the ReJoin TỰ ĐỘNG switched on goes off');
   // …but a ReJoin the USER switched on stays on
   await group.rejoin('B3'); // seated + was off → it is a "switch on + join"
   sim.kick('B3'); await until(() => sim.rooms.get(r.rid).seats.includes('1_3'));
@@ -412,5 +414,39 @@ test('ACCOUNT: the login identity gives the account name + ID before it sits any
   const gh = require('../../desktop/protocol/phom/game-header.cjs');
   const st = gh.deriveHeaderState({ opened: true, inGame: true, account: 'gdufuud', accountId: '365473596' });
   assert.equal(st.account, 'gdufuud'); assert.equal(st.accountId, '365473596');
-  assert.match(gh.bootScript(), /nameEl\.textContent = hasAcc \? state\.account \+ \(state\.accountId \? ' · ID ' \+ state\.accountId : ''\)/);
+  assert.match(gh.bootScript(), /var acc = hasAcc \? state\.account \+ \(state\.money != null \? '-' \+ state\.money : ''\) : '';/, 'name-money, like the reference tool');
+  assert.match(gh.bootScript(), /nameEl\.textContent = hasAcc \? acc \+ \(state\.accountId \? ' · ID ' \+ state\.accountId : ''\) : '';/);
+});
+
+test('MONEY: the account money comes from the wallet push (cmd 317: gold + held) and, at a table, from its seat', () => {
+  const ctx = new PhomContext({ profileId: 'A', uid: '1_365473596' });
+  const meta = { direction: 'recv', targetId: 'A', url: 'wss://sim' };
+  ctx.observe({ ...meta, raw: '[5,{"uid":"1_365473596","As":{"gold":453384},"dn":"gdufuud","cmd":100,"id":0}]' });
+  assert.equal(ctx.money(), 453384);
+  // verbatim from the capture: sitting down moves the money to guaranteed_gold — the total stays the same
+  ctx.observe({ ...meta, raw: '[5,{"As":{"gold":0,"guaranteed_gold":453384,"time":1790954750990},"cmd":317}]' });
+  assert.equal(ctx.money(), 453384);
+  ctx.observe({ ...meta, raw: '[5,{"As":{"gold":428503,"guaranteed_gold":3000,"time":1790954970761},"cmd":317}]' });
+  assert.equal(ctx.money(), 431503);
+  assert.equal(classifyPhomFrame('[5,{"As":{"gold":0,"guaranteed_gold":1},"cmd":317}]').type, 'WALLET');
+  const { coord, sim } = mk();
+  sim.feed('B1', '[5,{"As":{"gold":1000,"guaranteed_gold":0},"cmd":317}]');
+  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'B1').money, 1000);
+});
+
+test('READY: SẴN SÀNG is sent to the CURRENT room, exactly the reference tool frame [5,"Simms",-1,{cmd:5}]', () => {
+  const { buildTableReadyFrame } = require('../../desktop/protocol/phom/phom-wire.cjs');
+  assert.deepEqual(JSON.parse(buildTableReadyFrame()), [5, 'Simms', -1, { cmd: 5 }]);
+});
+
+test('PLAYERS: each browser lists who sits at its table — name, money, host, ready, and whether it is one of ours', async () => {
+  const { coord, sim, group } = mkGroup();
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r.error || r));
+  sim.rooms.get(r.rid).seats.push('stranger_x'); sim.broadcast(sim.rooms.get(r.rid));
+  const b3 = coord.manualBrowserSnapshot().find((b) => b.profileId === 'B3');
+  assert.equal(b3.players.length, 4);
+  assert.deepEqual(b3.players.map((p) => p.ours), [true, true, true, false], 'our three + the stranger');
+  assert.equal(b3.players[0].host, true, 'the KEY is the host');
+  assert.equal(b3.players.filter((p) => p.self).length, 1);
 });

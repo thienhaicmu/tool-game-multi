@@ -722,7 +722,8 @@ else {
     const inGame = opened && !!b.socketReady && !!b.connected && (b.channelCount || 0) > 0;
     const account = b.username && b.username !== 'USER_UNKNOWN' ? b.username : null;
     return {
-      account, accountId: b.accountId || null, opened, inGame,
+      account, accountId: b.accountId || null, money: b.money != null ? b.money : null, opened, inGame,
+      players: Array.isArray(b.players) ? b.players : [], playerCount: b.playerCount || 0,
       // PHASE 6.3.6 — ENTERING is BOUNDED: shown only while pending + not authoritatively inGame + within the
       // timeout window since the click. A fired-but-never-entered click reverts to NOT_IN_GAME (never stuck).
       entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),

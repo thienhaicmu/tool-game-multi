@@ -49,6 +49,7 @@ class TableGroup extends EventEmitter {
     this._gen = 0;        // cancellation token: bumped by setAuto(false), leaveAll, reset
     this._queue = Promise.resolve();
     this._busy = null;    // the label of the running operation (for the UI)
+    this._scanning = new Set(); // browsers running a manual TẠO right now (they run side by side)
     if (this._coord) {
       this._coord.on('kicked', ({ id, message } = {}) => this._onKicked(id, message));
     }
@@ -122,6 +123,12 @@ class TableGroup extends EventEmitter {
     const id = String(profileId);
     if (!this._coord.browserReady(id)) return { ok: false, error: { code: 'PHOM_NOT_IN_GAME', message: 'Acc chưa vào game' } };
     if (!(Number(stake) > 0)) return { ok: false, error: { code: 'PHOM_INVALID_STAKE', message: 'Chưa chọn Tiền — chọn mức cược ở tool Phỏm' } };
+    // ONE KEY per group: a second Dò Key would split the accounts over two tables (live run 2026-10-03: B1 and B2 both
+    // pressed it and never met). The others join the KEY with Tạo / Vào.
+    const cur = this._group;
+    if (cur && cur.creatorId !== id && this._atGroupTable(cur.creatorId)) {
+      return { ok: false, error: { code: 'PHOM_KEY_EXISTS', message: `Đã có acc KEY (P${this._orderedIds().indexOf(cur.creatorId) + 1}) đang ngồi — ở acc này bấm Tạo${cur.rid != null ? ' hoặc Vào' : ''}, không bấm Dò Key` } };
+    }
     const left = await this._leaveIfSeated(id, gen);
     if (!left.ok) return left;
     if (this._cancelled(gen)) return CANCELLED;
@@ -137,33 +144,53 @@ class TableGroup extends EventEmitter {
 
   // T2a — TẠO: a non-KEY browser looks for the KEY's table (313 + the U+200B probe) and sits down there. The rid it
   // lands on becomes the group's số bàn. Once the số bàn is known, TẠO is simply VÀO.
+  // Like the reference tool, several browsers may run TẠO AT THE SAME TIME (capture 2026-10-02: B and C scanned side
+  // by side): a manual TẠO does not wait in the group queue. The first one to find the KEY sits as CHƯA SẴN SÀNG; the
+  // others stop scanning and join that số bàn (the second one = SẴN SÀNG).
   scanTable(profileId) {
-    return this._enqueue('SCAN', (gen) => this._scan(profileId, gen));
+    const id = String(profileId);
+    const g = this._group;
+    if (g && g.rid != null) return this.joinTable(id, g.rid);
+    if (this._scanning.has(id)) return Promise.resolve({ ok: false, busy: true, error: { code: 'PHOM_SCAN_RUNNING', message: 'Acc này đang dò bàn KEY' } });
+    this._scanning.add(id); this._emit();
+    return this._scan(id, this._gen).finally(() => { this._scanning.delete(id); this._emit(); });
   }
   async _scan(profileId, gen) {
     const id = String(profileId);
     const g = this._group;
-    if (!g || !g.keyUid) return { ok: false, error: { code: 'PHOM_NO_KEY', message: 'Chưa có acc KEY — bấm Dò Key ở một trình duyệt trước' } };
+    if (!g || !g.keyUid) return { ok: false, error: { code: 'PHOM_NO_KEY', message: 'Chưa có acc KEY — bấm Dò Key ở MỘT acc trước' } };
     if (g.rid != null) return this._join(id, g.rid, gen);
-    if (id === g.creatorId) return { ok: false, error: { code: 'PHOM_KEY_CANNOT_SCAN', message: 'Đây là acc KEY — bấm Tạo ở trình duyệt khác' } };
+    if (id === g.creatorId) return { ok: false, error: { code: 'PHOM_KEY_CANNOT_SCAN', message: 'Đây là acc KEY — bấm Tạo ở acc khác' } };
     if (!this._coord.browserReady(id)) return { ok: false, error: { code: 'PHOM_NOT_IN_GAME', message: 'Acc chưa vào game' } };
-    const claim = this._claimRole(id);
     const left = await this._leaveIfSeated(id, gen);
-    if (!left.ok) return this._release(claim, left);
-    if (!await this.pace(gen)) return this._release(claim, CANCELLED);
-    await this._coord.setAutoReadyPref(id, claim.role === ROLE.READY);
+    if (!left.ok) return left;
+    if (!await this.pace(gen)) return CANCELLED;
+    // Searching sits down at strangers' one-player tables now and then: never ready there (the reference tool keeps
+    // auto-ready off throughout). The role — and with it readiness — is decided once the KEY's table is found.
+    await this._coord.setAutoReadyPref(id, false);
     const res = await this._coord.scanForKeyTable(id, { stake: g.stake, keyUid: g.keyUid, pace: () => this.pace(gen) });
     if (!res.ok) {
       if (!res.cancelled) this._event('SCAN_FAILED', { id, error: res.error });
-      return this._release(claim, res);
+      return res;
     }
-    if (this._group !== g) return { ...res, role: claim.role }; // the group was dissolved meanwhile
-    g.rid = Number(res.rid);
-    this._coord.adoptTableRid(g.creatorId, g.rid);
-    this._event('TABLE_FOUND', { id: g.creatorId, rid: g.rid, by: id });
-    if (claim.role === ROLE.READY) {
-      if (await this.pace(gen)) await this._coord.sendTableReady(id, g.rid);
+    if (this._group !== g) return res; // the group was dissolved meanwhile
+    const claim = this._claimRole(id);
+    if (g.rid == null) {
+      g.rid = Number(res.rid);
+      this._coord.adoptTableRid(g.creatorId, g.rid);
+      this._event('TABLE_FOUND', { id: g.creatorId, rid: g.rid, by: id });
+      // the other browsers still scanning stop and join the số bàn that was just found
+      for (const other of [...this._scanning]) {
+        if (other === id) continue;
+        this._coord.cancelSearch(other);
+        this.joinTable(other, g.rid);
+      }
     }
+    if (claim.role === ROLE.READY && await this.pace(gen)) {
+      await this._coord.setAutoReadyPref(id, true);
+      await this._coord.sendTableReady(id, g.rid);
+    }
+    this._seated(id, claim.role);
     this._event('JOINED', { id, rid: g.rid, role: claim.role });
     this._emit();
     return { ...res, role: claim.role };
@@ -199,6 +226,7 @@ class TableGroup extends EventEmitter {
       if (!await this.pace(gen)) return { ...res, role: claim.role };
       await this._coord.sendTableReady(id, r);
     }
+    if (claim) this._seated(id, claim.role);
     this._event('JOINED', { id, rid: r, role: claim ? claim.role : null });
     this._emit();
     return { ...res, role: claim ? claim.role : null };
@@ -365,6 +393,12 @@ class TableGroup extends EventEmitter {
 
   // ---- helpers ----------------------------------------------------------------
   _orderedIds() { return this._coord ? this._coord.profileIds() : []; }
+  // The CHƯA SẴN SÀNG member is kicked every ~10s by design; its ReJoin goes on the moment it sits down so it always
+  // comes back (the user can switch it off). Without it the KEY is soon the only one left owing a start, and is kicked.
+  _seated(id, role) {
+    const g = this._group;
+    if (g && role === ROLE.NOT_READY && !g.rejoinOn.has(id)) g.rejoinOn.add(id);
+  }
   // AUTO does what the user would press by hand: after Dò Key → Tạo → Vào it switches ReJoin on for the members it
   // seated (READY / NOT_READY), so the bars show "ReJoin ●" exactly as a manual ReJoin would.
   _autoRejoinMembers() {
@@ -384,10 +418,14 @@ class TableGroup extends EventEmitter {
     return Number(this._coord.seatedRid(String(id))) === Number(g.rid);
   }
   _rolesObject() { return this._group ? Object.fromEntries(this._group.roles) : {}; }
+  // The FIRST account to join the KEY is CHƯA SẴN SÀNG, the second SẴN SÀNG — the reference tool's order, and the reason
+  // for it (live run 2026-10-03 07:13): once every non-host player is ready, the server kicks the host for not starting
+  // (~16s later). A not-ready member keeps the KEY from ever owing a start; it is kicked itself every ~10s and ReJoin
+  // brings it straight back.
   _claimRole(id) {
     const g = this._group;
     if (g.roles.has(id)) return { id, role: g.roles.get(id), claimed: false };
-    const role = [...g.roles.values()].includes(ROLE.READY) ? ROLE.NOT_READY : ROLE.READY;
+    const role = [...g.roles.values()].includes(ROLE.NOT_READY) ? ROLE.READY : ROLE.NOT_READY;
     g.roles.set(id, role);
     return { id, role, claimed: true };
   }

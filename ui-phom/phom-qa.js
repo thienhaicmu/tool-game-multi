@@ -270,7 +270,7 @@
   function renderKey() {
     if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + (manualBrowsers.length);
     const g = manualGroup;
-    const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.seat, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.header, b.lastError && b.lastError.code].join(',')).join(';');
+    const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.seat, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.money, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.header, b.lastError && b.lastError.code].join(',')).join(';');
     const cards = ['B1', 'B2', 'B3'].map((sl) => { const a = safeBySlot[sl]; return a ? a.roundSeq + ':' + (a.targetCards || []).map((c) => c.code + c.classification).join('') : '-'; }).join('|');
     const rem = remaining ? (remaining.count + ':' + (cardsSnap && cardsSnap.remaining ? cardsSnap.remaining.count : '')) : '-';
     return [uiState, activeTab, g && g.rid, g && g.key, g && g.auto, g && g.busy, g && g.recreating, autoStake, autoBusy,
@@ -769,7 +769,7 @@
     const wsOk = !!(b.connected && b.socketReady);
     const chip = el('div', { class: 'acc-chip st-' + st.cls, title: account + (accId ? ' · ID ' + accId : '') + ' · ' + st.label + (wsOk ? ' · WS kết nối' : ' · WS mất kết nối') + (b.lastError ? ' · ' + (b.lastError.message || b.lastError.code) : '') },
       el('span', { class: 'b-badge', style: 'background:' + ACC + ';color:#fff' }, 'P' + index),
-      account !== '—' ? el('span', { class: 'bc-acc', title: 'Tài khoản ' + account + (accId ? ' — ID ' + accId : '') }, account) : null,
+      account !== '—' ? el('span', { class: 'bc-acc', title: 'Tài khoản ' + account + (accId ? ' — ID ' + accId : '') }, account + (b.money != null ? '-' + b.money : '')) : null,
       accId ? el('span', { class: 'bc-id faint xs', title: 'ID tài khoản' }, 'ID ' + accId) : null,
       roleChip(b.groupRole, b.isTableHost),
       el('span', { class: 'bc-badge ' + st.cls, title: st.label, 'aria-label': st.label }, el('span', { class: 'status-dot ' + st.cls })),

@@ -52,9 +52,9 @@ function buildChannelQuickJoinFrame(channelRid) { return JSON.stringify([3, ZONE
 // table with one player (uC 1 — maybe the KEY, alone) is then really joined, with op 8.
 const PROBE_PASSWORD = '​';
 function buildProbeJoinFrame(rid) { return buildJoinFrame(Number(rid), PROBE_PASSWORD); }
-// Room-plugin cmd 5 at the current table = the game's SẴN SÀNG (INGAME_USER_READY; client shape [5,"Simms",roomID,
-// {cmd:5}] from its sendReady). For the table HOST the same cmd is BẮT ĐẦU — the tool never sends it for a host.
-function buildTableReadyFrame(rid) { return JSON.stringify([5, ZONE, Number(rid), { cmd: 5 }]); }
+// Room-plugin cmd 5 = the game's SẴN SÀNG, sent to the CURRENT room (-1) exactly as the reference tool does:
+// [5,"Simms",-1,{"cmd":5}] (capture 2026-10-02). For the table HOST the same cmd is BẮT ĐẦU — never sent for a host.
+function buildTableReadyFrame() { return JSON.stringify([5, ZONE, -1, { cmd: 5 }]); }
 // CMD 363 SET_AUTO_READY — the account's server-side "tự sẵn sàng" preference (game's sendAutoReadyPref, aRd = "true"/
 // "false"). While on, the game client readies by itself whenever it sits down or a round ends.
 function buildAutoReadyPrefFrame(on) { return JSON.stringify([6, ZONE, 'channelPlugin', { cmd: 363, aRd: on ? 'true' : 'false' }]); }

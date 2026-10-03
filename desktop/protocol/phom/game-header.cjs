@@ -91,7 +91,16 @@ function deriveHeaderState(view = {}) {
     // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
     capturing: !!view.capturing, lastCapture: view.lastCapture || null,
     // §find — the header can look for a table / join a số bàn whenever the browser is in the game (not mid-op).
-    canAct: !!view.inGame && !view.dataStale && !['SEARCHING', 'JOINING', 'RECONNECTING', 'LEAVE_UNCONFIRMED'].includes(s) && !view.joining,
+    // The reference tool's bar stays put while it works: every button is always there once the browser is in the game;
+    // the one that is running shows a trailing '.' and a second click stops it.
+    canAct: !!view.inGame && !view.dataStale,
+    searchKind: s === 'SEARCHING' ? (view.searchKind || 'KEY') : null,
+    joining: s === 'JOINING' || s === 'RECONNECTING' || !!view.joining,
+    // Under the bar: the account (name-money) and its table — ID Bàn, Số người and who sits there.
+    money: view.money != null ? Number(view.money) : null,
+    joinedViaChannel: !!view.joinedViaChannel,
+    playerCount: Number(view.playerCount) || 0,
+    players: Array.isArray(view.players) ? view.players.map((p) => ({ name: String(p.name || '?'), money: p.money != null ? Number(p.money) : null, host: !!p.host, ready: !!p.ready, self: !!p.self, ours: !!p.ours })) : [],
     // The role chip is only "live" while this browser really sits at the table; otherwise it is shown dimmed.
     seatedAtTable: !!view.seatedAtTable,
     dataStale: !!view.dataStale,
@@ -105,7 +114,9 @@ function deriveHeaderState(view = {}) {
     rejoinOn: !!view.rejoinOn,
     // A KEY sits at the group's table (TẠO has something to look for); this browser is not that KEY.
     keySeated: !!view.keySeated, isKey: view.groupRole === 'KEY',
-    ssDefault: joined ? Number(view.rid) : (view.sharedRid != null ? Number(view.sharedRid) : null),
+    // SS = the group's số bàn, else the table this browser sits at — never a stake CHANNEL (live run 2026-10-03: the
+    // KEY's channel 139 landed in the SS box and every Vào with it was refused, code 166).
+    ssDefault: view.sharedRid != null ? Number(view.sharedRid) : (joined && !view.joinedViaChannel ? Number(view.rid) : null),
     roomListAt: view.roomListAt != null ? view.roomListAt : null };
 }
 
@@ -174,7 +185,10 @@ function bootScript(opts = {}) {
   const menu = mk('div','position:absolute;top:26px;right:0;min-width:200px;background:#111827;border:1px solid #374151;border-radius:8px;box-shadow:0 6px 18px rgba(0,0,0,.4);padding:4px;display:none;z-index:2147483647;');
   menuWrap.appendChild(menuBtn); menuWrap.appendChild(collapseBtn); menuWrap.appendChild(menu);
   bar.appendChild(handle); bar.appendChild(act); bar.appendChild(menuWrap);
-  const feedback = mk('div','position:absolute;left:0;top:28px;max-width:280px;padding:8px 10px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
+  // The line UNDER the bar (reference tool): ID Bàn · Số người · who sits there (name-money, 👑 host, ✓ ready).
+  const infoLine = mk('div','position:absolute;left:0;top:26px;max-width:calc(100vw - 12px);padding:2px 6px;border-radius:5px;background:rgba(17,24,39,.82);color:#e5e7eb;font:600 11px/16px Inter,Segoe UI,sans-serif;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;pointer-events:auto;display:none;');
+  bar.appendChild(infoLine);
+  const feedback = mk('div','position:absolute;left:0;top:48px;max-width:280px;padding:8px 10px;border:1px solid #f59e0b;border-radius:6px;background:#422006;color:#fff;font:600 12px/1.4 Segoe UI,sans-serif;display:none;pointer-events:auto;');
   feedback.setAttribute('role','alert');
   bar.appendChild(feedback);
   var feedbackTimer = null;
@@ -255,9 +269,10 @@ function bootScript(opts = {}) {
   collapseBtn.onclick = function(){ __collapsed=!__collapsed; paint(__authState||{ statusLabel:'', statusClass:'off' }); };
   // Clicking outside closes the quick menu.
   window.addEventListener('mousedown', function(ev){ if(menu.style.display!=='none' && !menuWrap.contains(ev.target)) closeMenu(); }, true);
-  // Paint ONE state object (authoritative OR optimistic). Layout follows the reference tool's in-web bar:
-  //   [badge ● status] [vai trò] [Cược] [SS ____] Copy · Vào · ReJoin · Tạo · Đổi Key · Thoát  [⋮][─]
-  // Outside the lobby / while an operation runs, the row shows only the state's primary action (VÀO GAME, HỦY…).
+  // Paint ONE state object (authoritative OR optimistic). Layout = the reference tool's in-web bar:
+  //   [P1 ● name-money · ID] [SS ____] Copy · Vào · ReJoin · Tạo · Dò Key · Thoát  [⋮][─]
+  //   ID Bàn: … · Số người: … · vai trò · cược · 👑name-money ✓ …                     (the line under it)
+  // Before the browser is in the game the row shows only VÀO GAME / TẢI LẠI.
   function txtBtn(label, bg, onClick, tip, dis){
     var b = mk('button','height:22px;padding:0 7px;border-radius:6px;border:0;background:'+bg+';color:#fff;font:700 11px Inter,Segoe UI,sans-serif;white-space:nowrap;cursor:'+(dis?'not-allowed':'pointer')+';opacity:1;');
     b.textContent = label; b.title = tip || label;
@@ -265,6 +280,27 @@ function bootScript(opts = {}) {
     return b;
   }
   function chip(label, bg, fg, tip){ var c = mk('span','height:18px;padding:0 6px;border-radius:5px;background:'+bg+';color:'+(fg||'#fff')+';font:800 10px/18px Inter,Segoe UI,sans-serif;white-space:nowrap;'); c.textContent = label; if(tip) c.title = tip; return c; }
+  // ID Bàn · Số người · Vai trò · Cược, then everyone at the table as name-money (👑 host, ✓ ready; our accounts bold,
+  // strangers dimmed) — so the user sees at a glance whether the accounts really sit together.
+  function paintInfo(state){
+    infoLine.textContent = '';
+    if(__collapsed || !state.canAct){ infoLine.style.display='none'; return; }
+    var ROLE = { KEY:'KEY', READY:'SẴN SÀNG', NOT_READY:'CHƯA SS' };
+    var head = state.inTable
+      ? 'ID Bàn: ' + (state.joinedViaChannel ? 'chưa có (kênh ' + state.rid + ')' : state.rid) + ' · Số người: ' + (state.playerCount || state.players.length)
+      : (state.statusLabel || '');
+    if(state.groupRole) head += ' · ' + ROLE[state.groupRole];
+    head += ' · ' + (state.stake != null ? 'Cược ' + state.stake : 'CHƯA CHỌN CƯỢC');
+    infoLine.appendChild(document.createTextNode(head));
+    (state.inTable ? state.players : []).forEach(function(pl){
+      var sp = mk('span', 'margin-left:8px;' + (pl.ours ? 'color:#fff;font-weight:800;' : 'color:#9ca3af;font-weight:500;'));
+      sp.textContent = (pl.host ? '👑' : '') + pl.name + (pl.money != null ? '-' + pl.money : '') + (pl.ready ? ' ✓' : '');
+      sp.title = (pl.ours ? 'Acc của tool' : 'Người chơi khác') + (pl.host ? ' · chủ bàn' : '') + (pl.ready ? ' · đã sẵn sàng' : '');
+      infoLine.appendChild(sp);
+    });
+    infoLine.title = infoLine.textContent;
+    infoLine.style.display = '';
+  }
   function ssRid(){ var v = String(ssInput.value||'').trim(); var n = Number(v); return v !== '' && isFinite(n) && n > 0 ? n : null; }
   function paint(state){
     if(!document.getElementById('__phom_header')) ready();
@@ -273,7 +309,8 @@ function bootScript(opts = {}) {
     stLabel.textContent = state.statusLabel||''; stLabel.title = state.statusLabel||'';
     // The account on this browser: name + in-game ID, visible as soon as it has logged in.
     var hasAcc = state.account && state.account !== '—';
-    nameEl.textContent = hasAcc ? state.account + (state.accountId ? ' · ID ' + state.accountId : '') : '';
+    var acc = hasAcc ? state.account + (state.money != null ? '-' + state.money : '') : '';
+    nameEl.textContent = hasAcc ? acc + (state.accountId ? ' · ID ' + state.accountId : '') : '';
     nameEl.title = hasAcc ? 'Tài khoản ' + state.account + (state.accountId ? ' — ID ' + state.accountId : '') : '';
     nameEl.style.display = hasAcc ? '' : 'none';
     collapseBtn.textContent = __collapsed ? '▸' : '─';
@@ -283,25 +320,26 @@ function bootScript(opts = {}) {
     act.style.display = __collapsed ? 'none' : 'flex';
     if(!__collapsed){
       if(state.canAct){
-        if(state.groupRole){
-          var R = state.groupRole==='KEY' ? ['KEY','#b45309'] : state.groupRole==='READY' ? ['SẴN SÀNG','#15803d'] : ['CHƯA SS','#4b5563'];
-          var roleChip = chip((state.isTableHost?'👑 ':'')+R[0], state.seatedAtTable ? R[1] : '#374151', state.seatedAtTable ? '#fff' : '#9ca3af', state.seatedAtTable ? (state.isTableHost ? 'Chủ bàn' : 'Vai trò trong nhóm') : 'Vai trò ' + R[0] + ' — hiện KHÔNG ở trong bàn');
-          if(!state.seatedAtTable) roleChip.style.border = '1px dashed #6b7280';
-          act.appendChild(roleChip);
-        } else if(state.isTableHost){ act.appendChild(chip('👑 CHỦ BÀN','#b45309')); }
-        // CƯỢC is chosen in the tool. A missing stake shows guidance without sending a create command.
-        act.appendChild(chip(state.stake != null ? 'CƯỢC ' + state.stake : 'CHƯA CHỌN CƯỢC', state.stake != null ? '#1f2937' : '#7f1d1d', '#e5e7eb', state.stake != null ? 'Mức cược đang chọn ở tool Phỏm' : 'Chọn Tiền ở tool Phỏm rồi mới tìm được bàn'));
-        // Auto-fill the SS box with this browser's / the group's số bàn unless the user typed something else.
+        // Auto-fill the SS box with the group's số bàn unless the user typed something else.
         if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
         ssInput.value = __ssValue;
         act.appendChild(ssInput);
         act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v); }catch(e){} },'Copy số bàn'));
-        act.appendChild(txtBtn('Vào','#16a34a',function(){ var r=ssRid(); if(r!=null) emit('JOIN_CODE',{ rid:r }); },'Vào đúng số bàn trong ô SS (key tự điền nếu bàn do tool tạo)'));
-        act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin ●' : 'ReJoin', state.rejoinOn ? '#0f766e' : '#334155',function(){ emit('REJOIN'); }, state.rejoinOn ? 'ReJoin đang BẬT — bị đá sẽ tự vào lại. Bấm để tắt' : 'Vào bàn chung và tự vào lại mỗi lần bị đá', !state.canRejoin));
         function needStake(){ if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm lại.'); return true; } feedback.style.display='none'; return false; }
-        act.appendChild(txtBtn('Tạo','#0369a1',function(){ if(needStake()) return; emit('SCAN_TABLE'); }, state.isKey ? 'Đây là acc KEY — bấm Tạo ở trình duyệt khác' : 'Dò ra bàn của acc KEY (cược ' + (state.stake != null ? state.stake : '?') + ') rồi vào — số bàn tự điền vào ô SS', state.isKey || !(state.keySeated || state.ssDefault != null)));
-        act.appendChild(txtBtn('Dò Key','#7c3aed',function(){ if(needStake()) return; emit('FIND_TABLE'); },state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước' : 'Ngồi một mình ở một bàn trống cược ' + state.stake + ' — acc này thành KEY'));
-        act.appendChild(txtBtn('Rời bàn','#991b1b',function(){ emit('LEAVE'); },'Rời bàn (không tắt Chromium)', !state.inTable));
+        // VÀO — sit at the số bàn in the SS box (op 8).
+        act.appendChild(txtBtn(state.joining ? 'Vào.' : 'Vào','#16a34a',function(){ var r=ssRid(); if(r==null){ showFeedback('Ô SS chưa có số bàn — bấm Tạo ở acc này để dò ra bàn của KEY.'); return; } emit('JOIN_CODE',{ rid:r }); },'VÀO: vào đúng số bàn trong ô SS', state.joining));
+        // REJOIN — a toggle: on = come back by itself after every kick.
+        act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin.' : 'ReJoin', state.rejoinOn ? '#0f766e' : '#334155',function(){ emit('REJOIN'); }, state.rejoinOn ? 'REJOIN đang BẬT — bị đá sẽ tự vào lại ngay. Bấm để tắt' : 'REJOIN: vào bàn chung và tự vào lại mỗi lần bị đá', !state.canRejoin));
+        // TẠO — the OTHER accounts: find the KEY's table and sit there (fills every SS box). Second click stops it.
+        var scanning = state.searchKind === 'SCAN';
+        act.appendChild(txtBtn(scanning ? 'Tạo.' : 'Tạo', scanning ? '#075985' : '#0369a1', function(){ if(scanning){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('SCAN_TABLE'); },
+          scanning ? 'Đang dò bàn của acc KEY — bấm để dừng' : state.isKey ? 'Đây là acc KEY — bấm Tạo ở acc khác' : 'TẠO: dò ra bàn của acc KEY rồi ngồi vào — số bàn tự điền vào ô SS của mọi trình duyệt',
+          !scanning && (state.isKey || !(state.keySeated || state.ssDefault != null))));
+        // DÒ KEY — ONE account only: sit ALONE at an empty table and become the KEY (chủ bàn). Second click stops it.
+        var keying = state.searchKind === 'KEY';
+        act.appendChild(txtBtn(keying ? 'Dò Key.' : 'Dò Key', keying ? '#5b21b6' : '#7c3aed', function(){ if(keying){ emit('CANCEL_FIND'); return; } if(needStake()) return; emit('FIND_TABLE'); },
+          keying ? 'Đang tìm bàn trống — bấm để dừng' : state.stake == null ? 'Chọn Mức cược ở tab PHỎM trước' : 'DÒ KEY: chỉ bấm ở MỘT acc — ngồi một mình ở bàn trống cược ' + state.stake + ', acc này thành KEY (chủ bàn)'));
+        act.appendChild(txtBtn('Thoát','#991b1b',function(){ emit('LEAVE'); },'THOÁT: rời bàn (không tắt Chromium)', !state.inTable));
       } else {
         var p = state.primary;
         if(p) act.appendChild(iconBtn(OPT_ICON[p.action]||'•', p.label||p.action, true, !!p.disabled, !!p.danger, function(){ emit(p.action, p.rid!=null?{ rid:p.rid }:null); }, p.label));
@@ -310,6 +348,7 @@ function bootScript(opts = {}) {
       if(state.capturing) act.appendChild(iconBtn('■','Lưu WS',false,false,true,function(){ emit('CAPTURE_STOP'); },'Đang ghi WS — bấm để dừng & lưu'));
       if(state.error){ var e=mk('span','color:#f87171;font-size:13px;cursor:help;'); e.textContent='⚠'; e.title=String(state.error); act.appendChild(e); }
     }
+    paintInfo(state);
     // Quick menu (⋮): secondary + lifecycle actions and the số bàn list.
     menu.textContent='';
     var statusInfo=mk('div','padding:6px 10px;color:#e5e7eb;'); statusInfo.textContent=state.statusLabel||''; menu.appendChild(statusInfo);

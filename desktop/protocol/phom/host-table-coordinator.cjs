@@ -109,7 +109,7 @@ class HostTableCoordinator extends EventEmitter {
         break;
       }
       case 'JOIN_ACCEPTED':
-        if (meta.direction !== 'send') this._log('JOIN_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode, msg: cls.resultMessage || null });
+        if (meta.direction !== 'send') this._log('JOIN_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode, reason: cls.resultMessage || null });
         break;
       case 'LEAVE_ACK':
         // The server removed this browser (code 2, e.g. "Bạn bị kick vì không sẵn sàng"). What to do about it is the
@@ -117,7 +117,7 @@ class HostTableCoordinator extends EventEmitter {
         if (cls.accepted === true && cls.resultCode === 2 && meta.direction !== 'send') {
           rec._joinedRid = null; rec.manualState = 'KICKED';
           rec.lastError = { code: 'PHOM_KICKED', message: cls.resultMessage || 'Bị máy chủ đưa ra khỏi bàn' };
-          this._log('KICKED', rec, { msg: cls.resultMessage || null });
+          this._log('KICKED', rec, { reason: cls.resultMessage || null });
           this.emit('kicked', { id: rec.id, message: cls.resultMessage || null });
         }
         break;
@@ -235,7 +235,7 @@ class HostTableCoordinator extends EventEmitter {
     const rec = this._rec(profileId);
     if (!rec || !rec.ctx.sendContext()) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND' } };
     if (this.isTableHost(profileId)) return { ok: false, error: { code: 'PHOM_HOST_NEVER_STARTS', message: 'Chủ bàn không tự bấm Bắt đầu' } };
-    try { const r = await rec.send(buildTableReadyFrame(rid), rec.ctx.sendContext()); return { ok: r?.ok !== false }; }
+    try { const r = await rec.send(buildTableReadyFrame(), rec.ctx.sendContext()); return { ok: r?.ok !== false }; }
     catch (e) { return { ok: false, error: { code: 'PHOM_READY_FAILED', message: errMsg(e) } }; }
   }
 
@@ -270,7 +270,7 @@ class HostTableCoordinator extends EventEmitter {
   }
   _joinFailed(rec, rid, error) {
     rec._joinedRid = null; rec.manualState = 'ERROR'; rec.lastError = error;
-    this._log('JOIN_FAILED', rec, { rid, code: error.code, serverCode: error.serverCode });
+    this._log('JOIN_FAILED', rec, { rid, code: error.code, serverCode: error.serverCode, reason: error.message });
     this._changed();
     return { ok: false, id: rec.id, rid, error };
   }
@@ -325,7 +325,7 @@ class HostTableCoordinator extends EventEmitter {
       if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
       if (!seatedFresh()) {
         const r = refusal();
-        this._log('KEY_SCAN_NOT_SEATED', rec, { attempt, code: r ? r.code : null, msg: r ? r.message : null });
+        this._log('KEY_SCAN_NOT_SEATED', rec, { attempt, code: r ? r.code : null, reason: r ? r.message : null });
         if (this._now() >= deadline) return this._searchFail(rec, 'PHOM_NO_KEY_TABLE', `Không ngồi được một mình ở bàn nào cược ${stake} sau 3 phút${r && r.message ? ` — máy chủ: ${r.message}` : ''}`, { stake, attempts: attempt + 1 });
         continue;
       }
@@ -368,7 +368,7 @@ class HostTableCoordinator extends EventEmitter {
       const res = reply();
       if (!res || !res.ok) {
         lastMessage = res && res.message ? res.message : lastMessage;
-        this._log('SCAN_NO_TABLE', rec, { attempt, msg: lastMessage });
+        this._log('SCAN_NO_TABLE', rec, { attempt, reason: lastMessage });
         if (this._now() >= deadline) return giveUp(attempt);
         continue;
       }
@@ -537,6 +537,7 @@ class HostTableCoordinator extends EventEmitter {
 
   // Per-browser state for the in-page bar and the tool window (stable Player 1/2/3 order).
   manualBrowserSnapshot() {
+    const controlled = new Set([...this._profiles.values()].map((r) => r.ctx.uid()).filter(Boolean));
     return [...this._profiles.values()].map((rec, i) => {
       const c = rec.ctx.get();
       const ts = rec.ctx.tableState();
@@ -559,6 +560,14 @@ class HostTableCoordinator extends EventEmitter {
         searchAttempt: rec._searchKind ? rec._searchAttempt : 0,
         searchElapsedSec: rec._searchKind && rec._searchStartedAt != null ? Math.max(0, Math.round((this._now() - rec._searchStartedAt) / 1000)) : 0,
         seat: c.seat, uid: shortUid(c.uid),
+        // The account's money: its seat's `m` at a table, else the wallet the server pushed (cmd 100 / 317).
+        money: this._money(rec),
+        // Who sits at this browser's table, the reference tool's "name-money" list: host 👑, ready ✓, ours = one of the
+        // three controlled accounts (so the user sees at once whether the accounts really sit together).
+        players: ts ? ts.seats.slice().sort((a, b) => (a.sit ?? 9) - (b.sit ?? 9)).map((s) => ({
+          name: s.dn || shortUid(s.uid), money: s.m != null ? Number(s.m) : null, host: s.host, ready: this._readyUids.has(s.uid) || s.ready,
+          self: s.uid === c.uid, ours: controlled.has(s.uid),
+        })) : [],
         membership: ts ? ts.uids.map(shortUid) : [], playerCount: ts ? ts.playerCount : 0,
         lastError: rec.lastError,
       };
@@ -602,6 +611,11 @@ class HostTableCoordinator extends EventEmitter {
     const ts = rec.ctx.tableState(); const uid = rec.ctx.uid();
     const mine = ts && uid ? ts.seats.find((s) => s.uid === uid) : null;
     return mine && mine.dn ? mine.dn : rec.ctx.displayName();
+  }
+  _money(rec) {
+    const ts = rec.ctx.tableState(); const uid = rec.ctx.uid();
+    const mine = ts && uid ? ts.seats.find((s) => s.uid === uid) : null;
+    return mine && mine.m != null ? Number(mine.m) : rec.ctx.money();
   }
   // Ready = this browser signalled READY since the last deal/end, or its own seat row says so.
   _isReady(rec) {

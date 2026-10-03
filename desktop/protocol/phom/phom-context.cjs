@@ -34,6 +34,7 @@ class PhomContext extends EventEmitter {
     this._connected = false;
     this._identitySeen = false; // cmd 100 seen on this socket since the last reset
     this._displayName = null;   // the account's own name (dn), from cmd 100 — known before it sits anywhere
+    this._money = null;         // the account's own money (gold + held at the table), from cmd 100 / 317
     // Server answers to our own JOIN / LEAVE (Test D capture). A JOIN refusal ([3,false,code,-1,msg]) lets a join
     // fail fast with the server's reason; a LEAVE ack ([4,true,code,...]) is the proof the player left the table.
     this._lastJoinAck = null;   // { accepted, code, message, at, seq }
@@ -102,6 +103,12 @@ class PhomContext extends EventEmitter {
       } else if (this._uid == null) {                   // token identity: fallback for the gate only
         this._uid = String(cls.uid); changed = true;
       }
+    }
+
+    // Own money = free gold + gold held at the table (cmd 317 on every sit-down / leave; cmd 100 at login).
+    if ((cls.type === 'WALLET' || (cls.type === 'SELF_IDENTITY' && cls.identityId !== 1)) && meta.direction !== 'send' && (cls.gold != null || cls.heldGold != null)) {
+      const money = (cls.gold || 0) + (cls.heldGold || 0);
+      if (money !== this._money) { this._money = money; changed = true; }
     }
 
     if (cls.type === 'JOIN_ACCEPTED' && meta.direction !== 'send') {
@@ -186,7 +193,7 @@ class PhomContext extends EventEmitter {
   }
 
   reset() {
-    this._identitySeen = false; this._displayName = null;
+    this._identitySeen = false; this._displayName = null; this._money = null;
     this._socket = null; this._channels = []; this._tableState = null; this._lastJoinAck = null; this._lastLeaveAck = null;
     this._connected = false;
     this._emit();
@@ -221,6 +228,7 @@ class PhomContext extends EventEmitter {
   // The account's own identity arrived on the game socket (cmd 100): it is logged in.
   loggedIn() { return !!this._identitySeen; }
   displayName() { return this._displayName; }
+  money() { return this._money; }
   aid() { return this._aid; }
   uid() { return this._uid; }
   channels() { return this._channels.slice(); }
