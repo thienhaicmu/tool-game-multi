@@ -114,9 +114,14 @@ tính P1–P3, và bài / ván ở bàn khác của dự bị không lẫn vào 
 
 | Nút | Làm |
 |---|---|
-| THOÁT BÀN TẤT CẢ | Bỏ tích TỰ ĐỘNG; từng acc rời bàn (có nhịp); nhóm giải tán. |
-| ĐÓNG TẤT CẢ | Như trên, rồi đóng 3 trình duyệt. |
-| XẾP CỬA SỔ | Xếp lại 3 cửa sổ game. |
+| MỨC CƯỢC | Mức cược duy nhất của phiên; Dò Key / Tạo trên mọi thanh dùng mức này. |
+| ☐ TỰ ĐỘNG | Tích = tool tự lập và giữ bàn (mục 2), các nút bàn trên thanh bị khoá. Bỏ tích = về chế độ tay, ghế giữ nguyên. |
+| ☐ ẨN DANH | Mặc định **tắt**: số bàn thật, không có người chơi giả, thấy chat/bài/hiệu ứng. Bật = chế độ ẩn danh của game (từ bàn/ván sau). |
+| ĐỔI (trên thẻ P1/P2/P3) | Chọn dự bị P4/P5 → đổi ngay (mục 2b, R1). Ô đã tắt: chọn dự bị hoặc một profile chưa mở → **Mở**. |
+| BÀN KHÁC | Acc KEY Dò Key bàn trống mới (TỰ ĐỘNG: cả nhóm chuyển theo). |
+| THOÁT BÀN TẤT CẢ | Bỏ tích TỰ ĐỘNG; từng acc rời bàn (có nhịp); nhóm giải tán; huỷ mọi lệnh vào lại đang chờ. |
+| ĐÓNG TẤT CẢ | Như trên, rồi đóng mọi trình duyệt (cả dự bị). Không kích hoạt tự thay acc. |
+| XẾP CỬA SỔ | Xếp lại cửa sổ game; tool luôn nằm trên các cửa sổ dự bị. |
 
 ## 4. Không bao giờ
 
@@ -126,8 +131,12 @@ tính P1–P3, và bài / ván ở bàn khác của dự bị không lẫn vào 
 - Ngồi lại ở bàn người lạ khi đang Tạo: bàn vào thật mà không có acc KEY → rời ngay.
 - Vào một số bàn bằng op 3 (đó là lệnh vào kênh / dò mật khẩu, không phải "vào đúng bàn").
 - Gửi token đăng nhập hoặc mã lấy từ bàn khác làm mật khẩu.
-- Hai acc gửi lệnh cùng một lúc, hoặc gửi lệnh không có nhịp.
-- Tự làm bất cứ việc gì khi ô TỰ ĐỘNG không tích (ngoài đúng nút người dùng bấm).
+- Trong TỰ ĐỘNG: hai acc gửi lệnh cùng một lúc. Ở mọi chế độ: một acc chạy hai việc cùng lúc, hay gửi lệnh không có
+  nhịp — ngoại lệ duy nhất là **vào lại sau khi bị đá** (~0,5 giây, giống tool đối thủ).
+- Tự làm việc bàn khi ô TỰ ĐỘNG không tích, ngoài: đúng nút người dùng bấm · vào lại của acc **đã bấm ReJoin** · VÀO GAME
+  sau khi đăng nhập · quy trình thay acc R1–R5 (do người dùng bấm Đổi hoặc tự đóng cửa sổ đang chơi).
+- Thay một nhóm còn thành viên mà không hỏi (Dò Key lần hai trong 5 giây mới huỷ nhóm cũ).
+- Cho dự bị (P4/P5) ngồi bàn khi TỰ ĐỘNG, hay để bài/ván của bàn khác (của dự bị) lẫn vào Lọc bài.
 
 ## 5. Vì sao làm theo cách của tool đối thủ (2026-10-03)
 
@@ -147,3 +156,44 @@ Kéo theo đó, các phần sau đã gỡ vì không còn đường nào chạm 
 thí nghiệm join (`join-experiment`, `host-anchored-join`), `room-scanner`, `shared-room-session`,
 `stake-catalog`, `phom-simulator-controller`, ô chọn "người tìm bàn", bảng điều khiển thủ công cũ trong tool, lệnh
 tạo bàn riêng 308 + bộ sinh key 6 số, và (2026-10-03) `findPublicTable` + giới hạn 5 lần vào lại/phút.
+
+## 6. Trạng thái của mỗi acc (một nguồn duy nhất)
+
+`desktop/protocol/phom/browser-state.cjs` tính **một** trạng thái cho mỗi trình duyệt; thanh trong trình duyệt và thẻ
+P1/P2/P3 của tool hiện **cùng chữ**. Dự bị đi qua đúng các trạng thái này, chữ có thêm "DỰ BỊ P4 · …".
+
+| Mã | Chữ hiện | Bước tiếp theo |
+|---|---|---|
+| CLOSED | CHƯA MỞ / ĐÃ TẮT | Mở trình duyệt; ô đã tắt → Đổi / Mở |
+| DATA_STALE | MẤT DỮ LIỆU Ns · TẢI LẠI | Nút TẢI LẠI WEB |
+| NOT_IN_GAME | CHƯA VÀO GAME | Đăng nhập — tool tự VÀO GAME (hoặc nút VÀO GAME) |
+| ENTERING | ĐANG VÀO GAME | Chờ (tối đa có giới hạn, quá thì quay lại CHƯA VÀO GAME) |
+| LOBBY | Ở SẢNH · bấm Dò Key / KEY đã ngồi · bấm Tạo / SS n · bấm Vào / NGOÀI BÀN · bấm ReJoin | Đúng nút ghi trong chữ |
+| SEARCHING | ĐANG DÒ KEY / ĐANG DÒ BÀN KEY Ns · lần k | Chờ, hoặc bấm lại nút có dấu chấm để dừng |
+| JOINING | ĐANG VÀO BÀN | Chờ |
+| IN_TABLE | SS n (KÊNH n khi KEY chưa biết số bàn) | — |
+| KICKED | BỊ ĐÁ · bấm ReJoin / BỊ ĐÁ · đang vào lại | ReJoin (tự vào lại nếu đã bật hoặc TỰ ĐỘNG) |
+| LEAVE_UNCONFIRMED | CHƯA XÁC NHẬN RỜI BÀN — bấm Thoát lại | Thoát |
+| ERROR | (chữ của sảnh) + lỗi hiện riêng | Lỗi tự xoá khi trạng thái đổi |
+
+## 7. Kiểm thử thật (3 acc chơi + 2 dự bị) — chạy theo thứ tự, ghi lại số bàn và giờ
+
+Chuẩn bị: 5 profile, mỗi profile một acc đã đăng nhập; tick đủ 5 → Mở trình duyệt; chọn Mức cược. Sau mỗi bước, đối
+chiếu chữ trên thanh của từng trình duyệt với thẻ P1/P2/P3 (phải giống nhau). Log: `%APPDATA%/Phom QA/phom-captures/coseat.jsonl`.
+
+| # | Làm | Phải thấy |
+|---|---|---|
+| K1 | Mở 5 trình duyệt | P1–P3 ở 3 ô; P4, P5 nằm sau tool. Cả 5 tự VÀO GAME; P4/P5 ghi "DỰ BỊ P4 · Ở SẢNH…". |
+| K2 | (TAY) P1 Dò Key | P1 = KEY, "KÊNH …". Trong lúc đó bấm Vào ở P2 vẫn chạy được (tay độc lập). |
+| K3 | P2 bấm Dò Key | Bị từ chối: "Đã có acc KEY (P1) đang ngồi…". |
+| K4 | P2 Tạo, P3 Tạo cùng lúc | Acc tìm ra trước = SẴN SÀNG, acc còn lại dừng dò và Vào = CHƯA SS. SS giống nhau trên cả 5 thanh. |
+| K5 | Bấm Vào lần nữa ở P2 khi P2 đang bận | "Acc này đang … — đợi xong hoặc bấm Dừng". |
+| K6 | Không bấm ReJoin; chờ P3 (CHƯA SS) bị đá | Thanh P3: "BỊ ĐÁ · bấm ReJoin"; **không** tự vào lại. |
+| K7 | Bấm ReJoin ở P3; chờ bị đá vài lần | Mỗi lần vào lại sau ~0,5 giây (log: KICKED → JOIN_SENT cách nhau < 1 giây). |
+| K8 | Tích TỰ ĐỘNG | Thanh cả 5 trình duyệt hiện chip "TỰ ĐỘNG · …", nút bàn bị khoá; bấm vẫn bị từ chối. P4/P5 **không** bị cho ngồi. |
+| K9 | Đổi P2 → P4 (dự bị đang ở sảnh) | P2 cũ rời bàn rồi lui ra sau tool; P4 vào ô P2, nhận vai SẴN SÀNG, ngồi vào bàn ngay; Lọc bài P2 = acc mới. |
+| K10 | Đóng thẳng cửa sổ Chromium của P3 | P5 tự vào ô P3, nhận vai CHƯA SS (+ReJoin nếu có), vào bàn. Thông báo "đã tự thay bằng …". |
+| K11 | Tắt P1 (KEY) bằng nút ⏻ trong tool | **Không** tự thay. Ô P1 hiện ô chọn → chọn dự bị (nếu còn) hoặc profile → Mở. KEY bị thay: nhóm giải tán (TỰ ĐỘNG: lập nhóm mới với acc mới làm KEY). |
+| K12 | Ở acc khác bấm Dò Key khi nhóm còn thành viên (KEY không ngồi) | Lần 1: "Đang có nhóm… bấm lần nữa trong 5 giây"; lần 2 trong 5 giây: nhóm mới. |
+| K13 | Bật / tắt Ẩn danh | Tắt: số bàn trên 3 trình duyệt giống nhau và bằng SS, không có người chơi giả. Log AN_DANH_SET: managers 1. |
+| K14 | Lỗi bàn đầy (nếu gặp lại) | Gửi file coseat.jsonl: JOIN_ACK có serverFrame + money, TABLE_DIAG có maxPlayers — đủ để tìm nguyên nhân. |
