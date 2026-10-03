@@ -353,7 +353,7 @@ test('LAG: another game\'s broadcasts on the shared socket cost nothing — no u
   assert.deepEqual({ updates, logs, hands }, { updates: 0, logs: 0, hands: 0 });
   // a Phỏm frame still goes all the way through
   coord.ingest('B1', { ...meta, raw: '[5,{"b":20000,"ps":[{"uid":"1_1","sit":0,"C":true}],"cmd":202}]' });
-  assert.ok(updates > 0 && logs > 0 && hands > 0);
+  assert.ok(updates > 0 && hands > 0);
 });
 
 test('AUTO-ENTER: the login identity push (cmd 100) marks the browser logged in; a page reset clears it', () => {

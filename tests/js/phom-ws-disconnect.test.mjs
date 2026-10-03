@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { HostTableCoordinator, SESSION, PSTATE } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
+const { HostTableCoordinator } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
 const { HostSessionManager } = require('../../desktop/protocol/phom/host-session-manager.cjs');
 const { PhomContext } = require('../../desktop/protocol/phom/phom-context.cjs');
 
@@ -39,11 +39,11 @@ test('socketMatches: true only for the bound target+host; false for a different 
 test('markSocketClosed ignores an unrelated socket (different target/host)', () => {
   const { coord } = makeSession();
   coord.ingest('A', { raw: JSON.stringify([5, { rs: [{ rid: 139, gid: 8, b: 1000, Mu: 4, uC: 0, zn: 'Simms' }] }]), direction: 'recv', seq: 1, targetId: 'T-A', url: GAME_URL });
-  const stateBefore = coord.state();
+  const stateBefore = coord.snapshot().state;
   assert.equal(coord.markSocketClosed('A', { targetId: 'T-A', url: 'wss://analytics.example.com/telemetry' }), false, 'different host is not the game socket');
   assert.equal(coord.markSocketClosed('A', { targetId: 'T-OTHER', url: GAME_URL }), false, 'different target is not our socket');
   assert.equal(coord.snapshot().profiles.find((p) => p.id === 'A').connected, true, 'still connected');
-  assert.equal(coord.state(), stateBefore, 'unrelated closes never change state');
+  assert.equal(coord.snapshot().state, stateBefore, 'unrelated closes never change state');
 });
 
 test('markSocketClosed on an unknown profile returns false safely', () => {

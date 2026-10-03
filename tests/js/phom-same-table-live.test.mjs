@@ -100,11 +100,11 @@ test('HostTableCoordinator: deltas converge divergent per-profile views to SAME_
   ing('C', tableState(100, [[0, A], [1, C]]), 3);
   ing('B', tableState(100, [[0, A], [1, C], [2, B]]), 4);
   // before deltas: A and C have stale sets -> not same table
-  assert.notEqual(coord.verifySameTable().result, 'SAME_TABLE');
+  assert.notEqual(coord.coSeatStatus().result, 'SAME_TABLE');
   // deltas: A learns C then B; C learns B
   ing('A', seatDelta(C, 1), 5); ing('A', seatDelta(B, 2), 6);
   ing('C', seatDelta(B, 2), 6);
-  const v = coord.verifySameTable();
+  const v = coord.coSeatStatus();
   assert.equal(v.result, 'SAME_TABLE', JSON.stringify(v));
   assert.equal(v.playerCount, 3);
 });

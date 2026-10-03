@@ -106,13 +106,11 @@ test('unauthorized environment blocks requestChannels', async () => {
   assert.equal(res.error.code, 'PHOM_UNAUTHORIZED_ENVIRONMENT');
 });
 
-test('startSession requires 3 distinct runs and a valid host', () => {
+test('startSession requires 3 distinct runs (who leads is the user\'s Dò Key, not a host argument)', () => {
   const { mgr } = makeManager();
-  assert.equal(mgr.startSession({ runIds: ['A', 'B'], hostId: 'A' }).ok, false);
-  assert.equal(mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'Z' }).ok, false);
-  const ok = mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'B', selectedStake: 1000 });
-  assert.equal(ok.ok, true);
-  assert.equal(ok.hostId, 'B');
+  assert.equal(mgr.startSession({ runIds: ['A', 'B'] }).ok, false);
+  assert.equal(mgr.startSession({ runIds: ['A', 'A', 'C'] }).ok, false);
+  assert.equal(mgr.startSession({ runIds: ['A', 'B', 'C'], hostId: 'B' }).ok, true);
 });
 
 test('routeFrame ignores runs outside the session', () => {

@@ -21,7 +21,7 @@
 const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session, dialog, shell: electronShell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
-const { redactDiagnostic, maskSecret } = require('./protocol/phom/diagnostic-redaction.cjs');
+const { redactDiagnostic } = require('./protocol/phom/diagnostic-redaction.cjs');
 const { TokenKeyStore } = require('./protocol/phom/token-key-store.cjs');
 
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
@@ -379,7 +379,7 @@ else {
     // docs/phom-kich-ban.md — what the group flow just did (created, joined, kicked, table lost, rejoined…).
     // The screen turns these into one plain-Vietnamese line, so a paced operation never looks like a freeze.
     phomSessions.on('notice', (n) => send('phom:notice', n));
-    phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') appendCoseatLog(l); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} send('phom:log', l); });
+    phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') appendCoseatLog(l); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} });
     return phomSessions;
   }
 
@@ -703,8 +703,7 @@ else {
     try { lifecycleLog('PHOM_HEADER', { event, ...data }); } catch { /* best effort */ }
   }
 
-  // The cluster's shared RID = the RID of the first browser already JOINED to a table. Other in-game
-  // browsers then show VÀO BÀN (JOIN_SHARED) for that RID — no independent re-discovery (§ shared RID).
+  // The group's số bàn (SS), the same value the Tool window shows. Null until Tạo found the KEY's table.
   // §38 — the shared room comes from the coordinator's single source of truth (sharedRid()), which the Tool window
   // reads too. Rules unchanged: the USER-selected finder's own VALIDATED room (never a provisional anchor that has
   // not passed the post-anchor capacity check); no finder chosen → whichever browser actually found+joined; never
@@ -713,95 +712,10 @@ else {
     return phomSessions && phomSessions.active() ? phomSessions.sharedRid() : null;
   }
 
-  // §co-seat — the moment the finder is seated, fire the OTHER in-game browsers' VÀO BÀN to its rid AT ONCE
-  // (parallel, near-zero gap), so the server's fill-room seats them at the finder's table. Real capture proved
-  // the grouping window is short (~1.3s co-seats, ~2.8s misses forever), so slow manual clicks are the problem.
-  // Only browsers that are IN GAME and not already seated/joining are fired; each JOIN still proves co-seating
-  // from ps[] (manualJoinShared). Best-effort, fire-and-forget.
-
-  // §co-seat — the real số bàn + key are ONLY in the game's ENCRYPTED binary channel, decoded inside the game's
-  // JS. So (like the reference tool) read them from the running game's memory: a bounded walk of `window`/the
-  // Cocos runtime collecting 6–8 digit integers + key-like strings, ranked by how "room/table"-like their property
-  // path is. Results go to coseat.jsonl (GAME_PROBE) so the exact variable holding the số bàn can be pinpointed.
-  // §co-seat — the DECODED table list lives in the game's JS memory (the game decrypts the binary channel into an
-  // array of room objects). Walk the runtime for ARRAYS whose elements look like table entries ({rid,b,uC,Mu}),
-  // and for any single "current room" object — the 7-digit SỐ BÀN we need is right there.
-  const GAME_ROOM_PROBE = `(function(){var out={globals:[],hits:[],both:[],scanned:0,xo:0};try{
-    var seen=new Set(),count=0,CAP=800000;
-    var SKIP=/loader|_pipes|md5|assets?|_cache|spriteFrame|texture|material|shader|font|audio|clip|atlas|prefab|bundle|_deps|dependUtil|prototype|constructor/i;
-    function isWin(o){ try{ return o&&(o.window===o||o.self===o); }catch(e){ return true; } }
-    function is7(v){ return (typeof v==='number'&&Number.isInteger(v)&&v>=1000000&&v<=9999999) || (typeof v==='string'&&/^[0-9]{7}$/.test(v)); }
-    function isKey(v){ return typeof v==='string'&&/^[A-Za-z0-9]{6,12}$/.test(v)&&/[A-Za-z]/.test(v)&&/[0-9]/.test(v); }
-    function shape(o){ var s={}; try{ for(var k in o){ var v=o[k]; var t=typeof v; if((t==='number'||t==='boolean')||(t==='string'&&v.length<=32)) s[k]=v; } }catch(e){} return s; }
-    function walk(o,path,d){ try{
-      if(count>CAP||d>16||o==null)return; var t=typeof o; if(t!=='object')return;
-      if(isWin(o)&&path!=='w'){out.xo++;return;} if(seen.has(o))return; seen.add(o); count++;
-      if(Array.isArray(o)){ if(o.length>4000)return; for(var i=0;i<Math.min(o.length,4000);i++)walk(o[i],path+'['+i+']',d+1); return; }
-      // detect an object that holds a 7-digit number and/or an 8-char key (the room object with SS + key)
-      var has7=false,hasK=false; try{ for(var kk in o){ var vv=o[kk]; if(is7(vv))has7=true; if(isKey(vv))hasK=true; } }catch(e){}
-      if(has7 && hasK && out.both.length<60) out.both.push({path:path,shape:shape(o)});
-      else if(has7 && out.hits.length<150) out.hits.push({path:path,shape:shape(o)});
-      var ks; try{ks=Object.keys(o);}catch(e){out.xo++;return;} if(ks.length>6000)return;
-      for(var j=0;j<ks.length;j++){ var k=ks[j]; if(SKIP.test(k)||k==='parent'||k==='_parent'||k==='node'||k==='frames'||k==='top'||k==='opener'||k==='window'||k==='self')continue; var v; try{v=o[k];}catch(e){continue;} walk(v,path+'.'+k,d+1); }
-    }catch(e){ out.xo++; } }
-    try{ out.globals=Object.getOwnPropertyNames(window).filter(function(k){ try{ if(/^(webkit|chrome|document|location|navigator|history|css|visual|screen|performance|external|caches|crypto|indexedDB|speech|customElements|trusted|on[a-z]|frames|length|closed|status|scroll|inner|outer|device|origin|top|self|window|parent|name)/i.test(k))return false; var v=window[k]; return v&&(typeof v==='object'||typeof v==='function'); }catch(e){return false;} }).slice(0,140); }catch(e){}
-    walk(window,'w',0); out.scanned=count;
-    return JSON.stringify(out);
-  }catch(e){return JSON.stringify({error:String(e&&e.message||e)});}})()`;
-  const _probeCtx = Object.create(null); // runId -> Map(contextId -> {origin,frameId,name})
-  async function probeGameRoom(runId) {
-    const client = runClientFor(runId);
-    if (!client || !client.Runtime) return null;
-    const rid = String(runId);
-    // §co-seat — the game is a cross-origin iframe in the SAME process → no child session, but CDP can still
-    // evaluate in its MAIN world via contextId. Enumerate EVERY frame's execution context (Runtime.enable
-    // re-fires executionContextCreated for all existing contexts) and run the probe in each; the game frame's
-    // context is the one that holds cc + the decoded table list.
-    if (!_probeCtx[rid]) {
-      _probeCtx[rid] = new Map();
-      try { client.Runtime.executionContextCreated((p) => { try { if (p && p.context) _probeCtx[rid].set(p.context.id, { origin: p.context.origin, name: p.context.name, frameId: p.context.auxData && p.context.auxData.frameId }); } catch { /* ignore */ } }); } catch { /* ignore */ }
-      try { client.Runtime.executionContextDestroyed((p) => { try { _probeCtx[rid].delete(p.executionContextId); } catch { /* ignore */ } }); } catch { /* ignore */ }
-    }
-    // Runtime was likely already enabled (header push) → a plain enable does NOT re-fire existing contexts.
-    // DISABLE then ENABLE forces executionContextCreated for every current context (all frames).
-    try { await client.Runtime.disable(); } catch { /* ignore */ }
-    try { await client.Runtime.enable(); } catch { /* ignore */ }
-    await new Promise((r) => setTimeout(r, 600)); // let executionContextCreated events arrive
-    // diagnostic: also dump the frame tree so the game frame's origin is visible even if contexts stay empty
-    let frames = []; try { const ft = await client.Page.getFrameTree(); (function w(n){ if (n && n.frame) frames.push({ url: n.frame.url, origin: n.frame.securityOrigin, id: n.frame.id }); if (n && n.childFrames) n.childFrames.forEach(w); })(ft.frameTree); } catch { /* ignore */ }
-    async function run(cid) {
-      const args = { expression: GAME_ROOM_PROBE, returnByValue: true, timeout: 8000 };
-      if (cid != null) args.contextId = cid;
-      const r = await client.Runtime.evaluate(args);
-      try { return JSON.parse(r && r.result && r.result.value); } catch { return null; }
-    }
-    // A HIT = the probe found a room-shaped object: `both` (a 7-digit số bàn AND a key-like string on the SAME
-    // object — the room record we are after) or, failing that, `hits` (a 7-digit number somewhere). Those are the
-    // fields GAME_ROOM_PROBE actually returns. It used to test `lists`/`cur`, the shape of an EARLIER version of
-    // the probe, so hit() was false for every context: the walk (up to 800k objects) ran in EVERY frame instead
-    // of stopping at the game's, and the result kept below was the FIRST one — the outer page, cross-origin and
-    // holding no game state — so the game frame's findings were thrown away. `globals`/`scanned` come back from
-    // every context and must never count as a hit.
-    const hit = (x) => !!(x && ((x.both && x.both.length) || (x.hits && x.hits.length)));
-    // How informative a non-hit result is, so the fallback keeps the GAME frame's walk instead of the first one.
-    const score = (x) => (x ? ((x.both ? x.both.length : 0) * 1e6) + ((x.hits ? x.hits.length : 0) * 1e3) + Math.min(x.scanned || 0, 999) : -1);
-    try {
-      let best = null, bestCid = null;
-      const ids = [null, ...[..._probeCtx[rid].keys()]];
-      for (const cid of ids) {
-        let parsed = null; try { parsed = await run(cid); } catch { parsed = null; }
-        if (hit(parsed)) { appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE', runId: rid, at: Date.now(), contextId: cid, ctx: _probeCtx[rid].get(cid) || null, result: parsed }); return parsed; }
-        if (score(parsed) > score(best)) { best = parsed; bestCid = cid; }
-      }
-      appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE', runId: rid, at: Date.now(), contextId: bestCid, ctx: bestCid != null ? (_probeCtx[rid].get(bestCid) || null) : null, contexts: [..._probeCtx[rid].values()], frames, result: best });
-      return best;
-    } catch (e) { appendCoseatLog({ tag: 'PHOM-COSEAT', event: 'GAME_PROBE_ERR', runId: rid, at: Date.now(), err: String(e && e.message || e) }); return null; }
-  }
-
   // Build the raw header view for ONE browser from authoritative snapshots (no button logic here — that
   // is deriveHeaderState). opened = a live (non-closed) run; inGame mirrors the renderer's slotInPhom
   // (socketReady + connected + channelList received). account = the logged-in display name (dn) or —.
-  function headerViewFor(runId, browsers, sharedRid, sharedRoomCode) {
+  function headerViewFor(runId, browsers, sharedRid) {
     const run = runManager && runManager.get(String(runId));
     const opened = !!(run && run.status !== RUN_STATUS.CLOSED);
     const b = (browsers || []).find((x) => x && String(x.profileId) === String(runId)) || {};
@@ -826,10 +740,6 @@ else {
       rid: b.rid != null ? b.rid : null,
       joinedViaChannel: !!b.joinedViaChannel, // §stake-channel — label it KÊNH, never SS (see deriveHeaderState)
       lastRid: b.lastRid != null ? b.lastRid : null,
-      // §co-seat — THIS browser's own room code (shown when it holds a table) + the shared code the followers use.
-      // §room-key — a table the tool created shows its own key (the user may need it); otherwise the masked hpwd.
-      roomCode: b.roomKey != null ? b.roomKey : (b.roomCode != null ? b.roomCode : null),
-      sharedRoomCode,
       sharedRid,
       betOptions: Array.isArray(b.betOptions) ? b.betOptions : [],
       // The session stake (picked in the tool) — shown on the bar and used by its TẠO.
@@ -860,14 +770,6 @@ else {
     return { rooms, roomListAt: l.at };
   }
 
-  // Recompute + push the header state into every open Chromium (best-effort). Called after every session
-  // update and after every header action so the bars stay live without a Tool screen.
-  // §co-seat — probe the game memory of any SEATED browser for the số bàn + key (debounced, ≤ once/30s per run),
-  // so the reader runs even when the co-seat FIND (noStakeFallback) hasn't fired — the user just needs P3 at a table.
-  const _lastProbeAt = Object.create(null);
-  function maybeProbeSeated(browsers) {
-    try { for (const b of (browsers || [])) { if (!b || b.manualState !== 'JOINED') continue; const k = String(b.profileId); const now = nowMs(); if (!_lastProbeAt[k] || now - _lastProbeAt[k] > 30000) { _lastProbeAt[k] = now; setTimeout(() => { probeGameRoom(k).catch(() => {}); }, 400); } } } catch { /* best effort */ }
-  }
   // A browser whose game frames stopped arriving lost its capture hook (the page reloaded / the game swapped the
   // target it runs in). Re-enable the CDP network events and re-inject the send hook on that run's CURRENT session
   // instead of leaving the tool blind — at most once every 30s per browser, and only while its Chromium is open.
@@ -892,17 +794,18 @@ else {
       }
     }
   }
+  // Recompute + push the header state into every open Chromium (best-effort). Called after every session
+  // update and after every header action so the bars stay live without a Tool screen.
   function pushHeaderStates() {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
     maybeRehookCapture(browsers); // a browser whose frames stopped gets its hook re-installed (§data-stale)
     const sharedRid = headerSharedRid();
-    const sharedRoomCode = maskSecret(phomSessions && phomSessions.active() && typeof phomSessions.sharedRoomCode === 'function' ? phomSessions.sharedRoomCode() : null);
     for (const run of runManager.list()) {
       if (run.status === RUN_STATUS.CLOSED) continue;
       const client = runClientFor(run.id);
       if (!client) continue;
-      const view = headerViewFor(run.id, browsers, sharedRid, sharedRoomCode);
+      const view = headerViewFor(run.id, browsers, sharedRid);
       const rid = String(run.id);
       maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
       if (view.inGame) {
@@ -1055,15 +958,6 @@ else {
         // the coordinator's search generation is what actually ends it.
         ensurePhomSessions();
         res = await phomSessions.cancelFind(rid);
-      } else if (action === 'JOIN_SHARED') {
-        ensurePhomSessions();
-        // PHASE 6.3.5 — a FOLLOWER joins the anchor's shared RID with bounded same-RID retry + same-room proof.
-        const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
-        res = await phomSessions.joinTable(rid, joinRid);
-      } else if (action === 'JOIN') {
-        ensurePhomSessions();
-        const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
-        res = await phomSessions.manualJoinRoom(rid, joinRid, {});
       } else if (action === 'REJOIN') {
         ensurePhomSessions();
         res = await phomSessions.rejoinTable(rid);
@@ -1533,14 +1427,13 @@ else {
 
     // Browser + session lifecycle.
     ipcMain.handle('phom:open-profile', guarded((_e, cfg) => openProfile(cfg || {})));
-    // HOST/FOLLOWER controlled-table flow.
+    // The Phỏm session (3 runs): the table group + coordinator. Table actions themselves come from the in-page bars.
     ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
     // §13 — Find-Table stake source: request the server channel list + read the
     // AUTHORITATIVE distinct stakes it reports (never a hard-coded fallback).
     // §35 — optionally scoped to ONE browser; seated browsers are always skipped (coordinator).
     ipcMain.handle('phom:request-channels', guarded(async (_e, cfg) => { ensurePhomSessions(); return phomSessions.requestChannels({ profileId: cfg && cfg.browserId != null ? cfg.browserId : null }); }));
     ipcMain.handle('phom:stake-channels', guarded(() => { ensurePhomSessions(); return { ok: true, stakes: phomSessions.availableStakes(), sessionActive: !!(phomSessions && phomSessions.active()) }; }));
-    // §18/§22 — host-first find-again discovery loop (single orchestrator; validates from ps[]).
     ipcMain.handle('phom:leave-all', guarded(() => { ensurePhomSessions(); return phomSessions.leaveAllTables(); }));
     ipcMain.handle('phom:stop', guarded(() => { ensurePhomSessions().stop(); return { ok: true }; }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
@@ -1561,19 +1454,12 @@ else {
     // PHASE-4 — HOST ROOM ANCHOR test (A→room→B/C). Authorized+licensed; observe-only, does not touch
     // the production discovery flow. A native-joins, is confirmed in ps[], its room is bound, then B/C
     // join THAT exact room id and are confirmed co-seated.
-    // PHASE-6 — MANUAL per-browser table control (browserId === browserRunId). Each command targets ONE
-    // browser; there is no host/follower role. Confirmation is authoritative (own ps[]). Observe-only wire.
-    // §find — TÌM BÀN (cmd 307 QUICK_PLAY, with the tool's stake): the server seats this ONE browser at a public
-    // lobby table that still has room and names it (số bàn + password) so the other two can join that table.
-    ipcMain.handle('phom:find-table', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.findTable(cfg && cfg.browserId, (cfg && cfg.opts) || {}); }));
     // §auto — the Phỏm tool's TỰ ĐỘNG checkbox. ON forms the group (finder = browserId, KEY; the others READY /
     // NOT_READY) unless one exists, then rejoins kicked members and takes another table when one is lost. OFF stops it.
     ipcMain.handle('phom:auto-set', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setAuto(!!(cfg && cfg.on), { creatorId: cfg && cfg.browserId, stake: cfg && cfg.stake != null ? Number(cfg.stake) : null }); }));
     // THE mức cược lives in the Phỏm tool; the in-page bars search at this stake (they have no picker of their own).
     ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setStake(cfg && cfg.stake); }));
-    ipcMain.handle('phom:group-snapshot', guarded(() => { ensurePhomSessions(); return { ok: true, group: phomSessions.groupSnapshot() }; }));
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
-    ipcMain.handle('phom:room-list', guarded((_e, cfg) => { ensurePhomSessions(); return { ok: true, ...phomSessions.roomList(cfg && cfg.browserId) }; }));
     ipcMain.handle('phom:token-keys', guarded(async () => {
       try { return { ok: true, ...await tokenKeyStore.snapshot() }; }
       catch { return { ok: false, error: { code: 'TOKEN_STORE_UNAVAILABLE', message: 'Không đọc được kho key đã mã hóa' } }; }
@@ -1595,13 +1481,6 @@ else {
       try { return { ok: true, ...await tokenKeyStore.setEnabled(cfg.id, cfg.enabled) }; }
       catch { return { ok: false, error: { code: 'TOKEN_UPDATE_FAILED', message: 'Không lưu được trạng thái key' } }; }
     }));
-    ipcMain.handle('phom:manual-join', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.manualJoinRoom(cfg && cfg.browserId, cfg && cfg.rid, cfg && cfg.opts); }));
-    // §co-seat — join a số bàn + key with retry through "sai mật khẩu phòng" (key defaults to the host token).
-    ipcMain.handle('phom:manual-join-code', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.joinTable(cfg && cfg.browserId, cfg && cfg.rid); }));
-    // §38 — the Tool window joins the shared room with the SAME semantics as the header's VÀO BÀN (bounded retry +
-    // same-room proof), and can cancel a persistent search just like the header's HỦY.
-    ipcMain.handle('phom:manual-rejoin', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.rejoinTable(cfg && cfg.browserId); }));
-    ipcMain.handle('phom:manual-leave', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.leaveTable(cfg && cfg.browserId); }));
     // ONE snapshot for the whole Phỏm screen. The renderer used to make six IPC round-trips per refresh
     // (browsers + remaining + cards + one analyze per account) and repeat them on every push; now main builds the
     // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
@@ -1625,20 +1504,6 @@ else {
       };
     }
     ipcMain.handle('phom:ui-snapshot', () => phomUiSnapshot());
-    ipcMain.handle('phom:manual-snapshot', () => {
-      const browsers = phomSessions ? phomSessions.manualBrowserSnapshot() : [];
-      // PHASE 6.3.2.2 — merge the READ-ONLY runtime/CDP/header status per browser for Screen 2 (no actions).
-      for (const b of browsers) { if (b && b.profileId != null) Object.assign(b, browserRuntimeStatus(b.profileId)); }
-      // §38 — the SAME shared room the in-Chromium header publishes (single source), so the Tool never derives its own.
-      const active = !!(phomSessions && phomSessions.active());
-      // §co-seat — the cluster verdict (all browsers proven in the SAME ps[]), so the Tool can state "ĐỦ 3
-      // BROWSER CÙNG BÀN" from server evidence instead of three independent JOINED flags.
-      return { ok: true, browsers, sharedRid: active ? phomSessions.sharedRid() : null, sharedRidOwner: active ? phomSessions.sharedRidOwner() : null,
-        sharedRidIsChannel: active ? phomSessions.sharedRidIsChannel() : false,
-        coSeat: active ? phomSessions.coSeatStatus() : null,
-        // §group — the tool-created table: số bàn, key, stake, keep flag and each member's role/ready/host state.
-        group: active ? phomSessions.groupSnapshot() : null };
-    });
     // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
     // saved preference + what each option currently resolves to (so SETUP can show availability).
     ipcMain.handle('phom:browser-runtime-get', () => {
@@ -1692,9 +1557,6 @@ else {
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
     ipcMain.handle('phom:cluster-apply-agents', guarded(() => ensureCluster().applyClusterAgents()));
     ipcMain.handle('phom:cluster-test-proxies', guarded(() => ensureCluster().testClusterProxies()));
-    ipcMain.handle('phom:cluster-acquire-host', guarded(() => ensureCluster().acquireHostTable()));
-    ipcMain.handle('phom:cluster-join-followers', guarded(() => ensureCluster().joinFollowers()));
-    ipcMain.handle('phom:cluster-apply-ready', guarded(() => ensureCluster().applyReadyPolicy()));
     ipcMain.handle('phom:cluster-leave', guarded(async () => { const r = await ensureCluster().leaveCluster(); return r; }));
     // DỪNG = orchestration-only stop: cancels find-table/join/ready/rejoin automation and
     // subscriptions but NEVER closes the browsers (browser lifetime is independent). The

@@ -22,7 +22,7 @@
 //     via a generation token, exactly like the coordinator's own cancellation.
 //
 // It owns NO protocol: every server interaction is a coordinator primitive (findKeyTable / scanForKeyTable /
-// manualJoinByCode / leaveTable / setAutoReadyPref / sendTableReady).
+// joinTable / leaveTable / setAutoReadyPref / sendTableReady).
 // ---------------------------------------------------------------------------
 
 const EventEmitter = require('node:events');
@@ -50,7 +50,6 @@ class TableGroup extends EventEmitter {
     this._queue = Promise.resolve();
     this._busy = null;    // the label of the running operation (for the UI)
     if (this._coord) {
-      this._coord.setRoomKeyResolver((rid) => (this._group && Number(this._group.rid) === Number(rid) ? this._group.key : ''));
       this._coord.on('kicked', ({ id, message } = {}) => this._onKicked(id, message));
     }
   }
@@ -71,12 +70,11 @@ class TableGroup extends EventEmitter {
   // The group's số bàn (SS) — null until TẠO found the KEY's table.
   rid() { return this._group && this._group.rid != null ? Number(this._group.rid) : null; }
   rejoinOn(id) { return !!(this._group && this._group.rejoinOn.has(String(id))); }
-  keyFor(rid) { return this._group && Number(this._group.rid) === Number(rid) ? this._group.key : ''; }
   snapshot() {
     const g = this._group;
     if (!g) return null;
     return {
-      rid: g.rid, key: g.key, stake: g.stake, selectedStake: this._stake, auto: this._auto, busy: this._busy, recreating: g.recreating,
+      rid: g.rid, stake: g.stake, selectedStake: this._stake, auto: this._auto, busy: this._busy, recreating: g.recreating,
       hostUid: this._coord ? this._coord.tableHostUid() : null,
       members: [...g.roles.entries()].map(([id, role]) => ({
         id, role,
@@ -131,8 +129,7 @@ class TableGroup extends EventEmitter {
     await this._coord.setAutoReadyPref(id, false); // KEY never auto-readies
     const res = await this._coord.findKeyTable(id, { stake: Number(stake), pace: () => this.pace(gen) });
     if (!res.ok) { this._event('FIND_FAILED', { id, error: res.error }); return res; }
-    this._group = { rid: null, key: '', stake: Number(stake), creatorId: id, keyUid: this._coord.uidOf(id), roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), rejoinOn: new Set(), autoRejoin: new Set(), rejoinPending: new Set(), recreating: false };
-    this._coord.setHost(id); this._coord.setFinder(id);
+    this._group = { rid: null, stake: Number(stake), creatorId: id, keyUid: this._coord.uidOf(id), roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), rejoinOn: new Set(), autoRejoin: new Set(), rejoinPending: new Set(), recreating: false };
     this._event('KEY_SEATED', { id, channel: res.channel });
     this._emit();
     return { ...res, role: ROLE.KEY, roles: { [id]: ROLE.KEY } };
@@ -191,7 +188,8 @@ class TableGroup extends EventEmitter {
       await this._coord.setAutoReadyPref(id, claim.role === ROLE.READY);
     }
     if (!await this.pace(gen)) return this._release(claim, CANCELLED);
-    const res = await this._coord.manualJoinByCode(id, r, ours ? g.key : null, {});
+    // op 8; at the group's own table the KEY must be there, else it is not our table any more
+    const res = await this._coord.joinTable(id, r, ours ? { expectUid: g.keyUid } : {});
     if (!res.ok) {
       this._event('JOIN_FAILED', { id, rid: r, error: res.error });
       if (ours && this._isMissingRoom(res)) await this._onTableLost(gen);
@@ -308,7 +306,7 @@ class TableGroup extends EventEmitter {
     this._autoRejoinMembers();
     this._event('GROUP_FORMED', { rid: this._group.rid, roles: this._rolesObject() });
     this._emit();
-    return { ok: true, rid: this._group.rid, key: this._group.key, roomKey: this._group.key, found: true, roles: this._rolesObject() };
+    return { ok: true, rid: this._group.rid, found: true, roles: this._rolesObject() };
   }
 
   // A3 — a member the server removed. It comes back when TỰ ĐỘNG is on or its ReJoin is on — every time, like the

@@ -96,23 +96,24 @@ test('REAL-P2: the context records join/leave answers and a leave ack drops the 
   assert.equal(c.tableSeq(), seq + 1);
 });
 
-test('REAL-04: manualJoinRoom reports the refusal reason instead of a timeout', async () => {
+test('REAL-04: VÀO reports the refusal reason instead of a timeout', async () => {
   const { coord } = mk({ tables: [{ others: [] }], placement: () => ({ refuse: 'Phòng đã bị hủy' }) });
   const t0 = Date.now();
-  const r = await coord.manualJoinRoom('B2', 139, { timeoutMs: 5000 });
-  assert.equal(r.ok, false); assert.equal(r.state, 'JOIN_REJECTED');
+  const r = await coord.joinTable('B2', 139, { timeoutMs: 5000 });
+  assert.equal(r.ok, false);
   assert.equal(r.error.code, 'PHOM_JOIN_REJECTED'); assert.match(r.error.message, /Phòng đã bị hủy/);
   assert.ok(Date.now() - t0 < 2000);
   assert.equal(snapB(coord, 'B2').rid, null, 'a refused room is never shown as the browser\'s table');
 });
 
 // ---------------- bug 2: follower JOIN never re-JOINs while seated ----------------
-test('REAL-05: a JOIN while seated is refused locally — it would get the player moved by the server', async () => {
+test('REAL-05: VÀO while seated LEAVES first — a JOIN sent while seated would get the player moved by the server', async () => {
   const { coord, sim } = mk({ tables: [{ others: [] }, { others: [] }], placement: (id, n) => n - 1 });
-  assert.equal((await coord.manualJoinRoom('B2', 139)).ok, true);
-  const r = await coord.manualJoinRoom('B2', 139);
-  assert.equal(r.ok, false); assert.equal(r.error.code, 'PHOM_ALREADY_AT_TABLE');
-  assert.equal(sim.joins.B2, 1, 'no second JOIN left the tool');
+  assert.equal((await coord.joinTable('B2', 139)).ok, true);
+  const r = await coord.joinTable('B2', 139);
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.deepEqual(sim.log.filter((e) => e.id === 'B2').map((e) => e.op), ['JOIN', 'LEAVE', 'JOIN']);
+  noJoinWhileSeated(sim);
 });
 
 // ---------------- bug 3: a reload (F5 or ⟳) resets that browser's Phỏm state ----------------

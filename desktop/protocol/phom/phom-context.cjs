@@ -30,7 +30,6 @@ class PhomContext extends EventEmitter {
     this._channelsAt = null;
     this._tableState = null;  // { b, seats, playerCount, fingerprint }
     this._tableStateAt = null;
-    this._joinedChannel = null;
     this._lastFrameAt = null;
     this._connected = false;
     this._identitySeen = false; // cmd 100 seen on this socket since the last reset
@@ -43,13 +42,9 @@ class PhomContext extends EventEmitter {
     // Bumped on every FULL table snapshot (ps[]). A join is only proven by a snapshot that arrived AFTER it was
     // sent — the old table's state must never count as 'seated at the new one'.
     this._tableSeq = 0;
-    // QUICK_PLAY (cmd 307/313) replies — the server naming the table it put this browser at — and the JOINs sent on
-    // this socket (by the tool OR by the game client, which JOINs the assigned table by itself). The seq lets the
-    // caller tell a fresh reply from an old one.
+    // QUICK_PLAY (cmd 313) replies — the server naming a table. The seq lets the caller tell a fresh reply from an old one.
     this._roomAssign = null;    // { ok, rid, stake, maxPlayers, password, message, at, seq }
     this._roomAssignSeq = 0;
-    this._lastJoinSend = null;  // { rid, at, seq }
-    this._joinSendSeq = 0;
     // The SỐ BÀN list: rs[] rows that are real tables (7-digit rid, rn without '#'), kept apart from the stake
     // channels. The server sends the full table list rarely (~every 60s) while every CMD 300 reply carries only the
     // 14 channels — storing both in _channels meant the table list was overwritten seconds after it arrived.
@@ -64,11 +59,6 @@ class PhomContext extends EventEmitter {
     if (aid != null && (force || this._aid == null)) { this._aid = aid; changed = true; }
     if (uid != null && (force || this._uid == null)) { this._uid = String(uid); changed = true; }
     if (changed) this._emit();
-  }
-
-  setJoinedChannel(channel) {
-    const c = Number.isFinite(channel) ? channel : (channel != null ? Number(channel) : null);
-    if (this._joinedChannel !== c) { this._joinedChannel = c; this._emit(); }
   }
 
   // Feed one captured WebSocket frame. meta carries the socket identity + direction.
@@ -138,9 +128,6 @@ class PhomContext extends EventEmitter {
       };
       changed = true;
     }
-    if (cls.type === 'JOIN_REQUEST' && meta.direction === 'send') {
-      this._lastJoinSend = { rid: cls.channel != null ? Number(cls.channel) : null, at: now, seq: ++this._joinSendSeq };
-    }
 
     if (cls.type === 'CHANNEL_LIST' && Array.isArray(cls.rs)) {
       this._channels = cls.rs.map(normalizeChannel).filter(Boolean);
@@ -201,7 +188,7 @@ class PhomContext extends EventEmitter {
   reset() {
     this._identitySeen = false; this._displayName = null;
     this._socket = null; this._channels = []; this._tableState = null; this._lastJoinAck = null; this._lastLeaveAck = null;
-    this._joinedChannel = null; this._connected = false;
+    this._connected = false;
     this._emit();
   }
 
@@ -209,8 +196,8 @@ class PhomContext extends EventEmitter {
   // abandons a candidate and must immediately search/join again. Clearing the socket (reset) here
   // breaks the next acquireHost with PHOM_PROTOCOL_CONTEXT_MISSING (observed live).
   leaveTable() {
-    if (this._tableState == null && this._joinedChannel == null) return;
-    this._tableState = null; this._tableStateAt = null; this._joinedChannel = null;
+    if (this._tableState == null) return;
+    this._tableState = null; this._tableStateAt = null;
     this._emit();
   }
 
@@ -246,8 +233,6 @@ class PhomContext extends EventEmitter {
   // The table the server last assigned this browser (QUICK_PLAY reply): số bàn + the password a JOIN must carry.
   lastRoomAssign() { return this._roomAssign ? { ...this._roomAssign } : null; }
   roomAssignSeq() { return this._roomAssignSeq; }
-  lastJoinSend() { return this._lastJoinSend ? { ...this._lastJoinSend } : null; }
-  joinSendSeq() { return this._joinSendSeq; }
   // The latest SỐ BÀN list (real tables only) + when it arrived.
   roomList() { return this._roomList.slice(); }
   roomListAt() { return this._roomListAt; }
@@ -282,7 +267,6 @@ class PhomContext extends EventEmitter {
       tableStateAt: this._tableStateAt,
       seat: this.seat(),
       ready: this.ready(),
-      joinedChannel: this._joinedChannel,
       physicalTableIdentity: this._tableState ? this._tableState.identity : null,
       // Phase-3A derivations from the authoritative TABLE_STATE (see buildTableState). The
       // protocol carries no server-assigned table id in TABLE_STATE, so the physical-table
@@ -311,9 +295,6 @@ function buildTableState(cls) {
     seats,
     playerCount: seats.length,
     uids,
-    // The room CODE (hpwd) + table/owner id (cP) another browser needs to JOIN THIS exact table (co-seat).
-    roomCode: (cls.hpwd != null && cls.hpwd !== '') ? String(cls.hpwd) : null,
-    cP: cls.cP != null ? String(cls.cP) : null,
     identity: uids.length ? { type: 'PLAYER_SET_FINGERPRINT', value: uids.join('|') } : null,
   };
 }
@@ -333,8 +314,6 @@ function foldSeat(ts, seat) {
     seats,
     playerCount: seats.length,
     uids,
-    roomCode: ts.roomCode != null ? ts.roomCode : null, // preserved from the base ps[] snapshot
-    cP: ts.cP != null ? ts.cP : null,
     identity: uids.length ? { type: 'PLAYER_SET_FINGERPRINT', value: uids.join('|') } : null,
   };
 }

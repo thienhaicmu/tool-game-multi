@@ -38,7 +38,6 @@ contextBridge.exposeInMainWorld('phomQA', {
   startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
   requestChannels: (browserId) => ipcRenderer.invoke('phom:request-channels', { browserId: browserId != null ? browserId : null }),
   stakeChannels: () => ipcRenderer.invoke('phom:stake-channels'),
-  discover: () => ipcRenderer.invoke('phom:discover'),
   restoreLayout: () => ipcRenderer.invoke('phom:restore-layout'),
   focusBrowser: (runId) => ipcRenderer.invoke('phom:focus-browser', runId),
   // VÀO GAME PHỎM — trigger the verified `vgcg_8` entry action via the site's own Cocos node.
@@ -51,19 +50,14 @@ contextBridge.exposeInMainWorld('phomQA', {
   framesRecordStop: () => ipcRenderer.invoke('phom:frames-record-stop'),
   framesOpenFolder: (p) => ipcRenderer.invoke('phom:frames-open-folder', p),
   // PHASE-6 — manual per-browser control (browserId === browserRunId). No host/follower role.
-  findTable: (browserId, opts) => ipcRenderer.invoke('phom:find-table', { browserId, opts }),
   setAuto: (on, browserId, stake) => ipcRenderer.invoke('phom:auto-set', { on, browserId, stake }),
   setStake: (stake) => ipcRenderer.invoke('phom:set-stake', { stake }),
   newTable: (browserId) => ipcRenderer.invoke('phom:new-table', { browserId }),
-  roomList: (browserId) => ipcRenderer.invoke('phom:room-list', { browserId }),
   tokenKeys: () => ipcRenderer.invoke('phom:token-keys'),
   importTokenKeys: () => ipcRenderer.invoke('phom:token-import'),
   setTokenEnabled: (id, enabled) => ipcRenderer.invoke('phom:token-enabled', { id, enabled }),
   reloadWeb: (browserId) => ipcRenderer.invoke('phom:reload-web', { browserId }),
   closeBrowser: (browserId) => ipcRenderer.invoke('phom:close-browser', { browserId }),
-  manualRejoin: (browserId, opts) => ipcRenderer.invoke('phom:manual-rejoin', { browserId, opts }),
-  manualLeave: (browserId) => ipcRenderer.invoke('phom:manual-leave', { browserId }),
-  manualSnapshot: () => ipcRenderer.invoke('phom:manual-snapshot'),
   uiSnapshot: () => ipcRenderer.invoke('phom:ui-snapshot'),
   remainingCards: () => ipcRenderer.invoke('phom:remaining-cards'),
   // PHASE 6.3.3.2 — card observation engine snapshot (pull + push).
@@ -76,7 +70,6 @@ contextBridge.exposeInMainWorld('phomQA', {
   onUi: (cb) => ipcRenderer.on('phom:ui', (_e, snap) => cb(snap)),
   onNotice: (cb) => ipcRenderer.on('phom:notice', (_e, n) => cb(n)),
   onKick: (cb) => ipcRenderer.on('phom:kick', (_e, k) => cb(k)),
-  onLog: (cb) => ipcRenderer.on('phom:log', (_e, l) => cb(l)),
   // custom Chromium runtime + cluster control-plane
   chromiumStatus: () => ipcRenderer.invoke('phom:chromium-status'),
   // PHASE 6.3.2.2 — browser runtime preference (Custom Chromium / Google Chrome)
@@ -87,9 +80,6 @@ contextBridge.exposeInMainWorld('phomQA', {
   clusterConnect: () => ipcRenderer.invoke('phom:cluster-connect'),
   clusterApplyAgents: () => ipcRenderer.invoke('phom:cluster-apply-agents'),
   clusterTestProxies: () => ipcRenderer.invoke('phom:cluster-test-proxies'),
-  clusterAcquireHost: () => ipcRenderer.invoke('phom:cluster-acquire-host'),
-  clusterJoinFollowers: () => ipcRenderer.invoke('phom:cluster-join-followers'),
-  clusterApplyReady: () => ipcRenderer.invoke('phom:cluster-apply-ready'),
   clusterLeave: () => ipcRenderer.invoke('phom:cluster-leave'),
   // DỪNG — stop orchestration only (NEVER closes the browsers).
   orchestrationStop: () => ipcRenderer.invoke('phom:orchestration-stop'),

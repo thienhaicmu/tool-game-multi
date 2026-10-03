@@ -50,7 +50,6 @@ test('JOINED -> REJOIN primary + THOÁT PHÒNG (danger) secondary; RID shown', (
   assert.equal(s.secondary[0].label, 'THOÁT PHÒNG'); // NOT "THOÁT GAME"
   assert.equal(s.secondary[0].danger, true);
   assert.equal(s.rid, '700100');
-  assert.equal(s.joinedShared, true);
 });
 
 test('account passes through when known; RID falls back to lastRid then —', () => {
@@ -218,10 +217,11 @@ test('main pushes header state on session updates via a coalesced broadcast (no 
   assert.match(main, /if \(headerLastPushed\[rid\] === json\) continue;/); // per-run dedupe skips the CDP evaluate
 });
 
-test('the cluster shared RID = the first JOINED browser (header VÀO BÀN uses it, § shared RID)', () => {
-  // §38 — single source: the header asks the coordinator (the same value the Tool window gets in its snapshot)
+test('the shared số bàn = the group\'s (Tạo found it); header and Tool window read the same value', () => {
   assert.match(main, /function headerSharedRid\(\)/);
-  assert.match(main, /sharedRid: active \? phomSessions\.sharedRid\(\) : null/);
+  assert.match(main, /sharedRid: phomSessions\.sharedRid\(\)/, 'the Tool window snapshot');
+  const sm = read('desktop/protocol/phom/host-session-manager.cjs');
+  assert.match(sm, /sharedRid\(\) \{ const g = this\._g\(\); return g \? g\.rid\(\) : null; \}/);
 });
 
 test('inGame is derived like the renderer slotInPhom (socketReady + connected + channel list)', () => {
@@ -230,8 +230,8 @@ test('inGame is derived like the renderer slotInPhom (socketReady + connected + 
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
   // NOTE: use \s* (not an explicit \n) so the assertion is line-ending agnostic — the file is LF in git but a
   // Windows checkout (autocrlf) yields CRLF, and a literal \n would not match across the intervening \r.
-  assert.match(coord, /channelCount: Array\.isArray\(c\.channels\) \? c\.channels\.length : 0,/);
-  assert.match(coord, /rid: rec\._joinedRid != null \? rec\._joinedRid : null,/);
+  assert.match(coord, /channelCount: c\.channels\.length,/);
+  assert.match(coord, /rid: rec\._joinedRid, lastRid: rec\._lastRid,/);
 });
 
 test('STATE-01 initial lobby (opened, not in game) -> VÀO GAME', () => {

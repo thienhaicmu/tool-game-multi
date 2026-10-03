@@ -83,8 +83,8 @@ test('bar: a role without a seat reads NGOÀI BÀN and offers VÀO LẠI BÀN (r
   assert.match(s.statusLabel, /NGOÀI BÀN · SS 3803041/);
   assert.equal(s.primary.action, 'REJOIN');
   assert.equal(s.seatedAtTable, false);
-  const seated = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 3803041, groupRole: 'KEY', seatedAtTable: true, roomCode: '482913' });
-  assert.match(seated.statusLabel, /SS 3803041 · KEY 482913/);
+  const seated = gh.deriveHeaderState({ opened: true, inGame: true, manualState: 'JOINED', rid: 3803041, groupRole: 'KEY', seatedAtTable: true });
+  assert.equal(seated.statusLabel, 'SS 3803041', 'a public table has no password to show');
   assert.equal(seated.seatedAtTable, true);
   assert.match(gh.bootScript({}), /state\.seatedAtTable \? R\[1\] : '#374151'/);
 });
@@ -101,7 +101,7 @@ test('bar: frames stopped arriving → MẤT DỮ LIỆU + TẢI LẠI (never a 
   assert.match(main, /maybeRehookCapture\(browsers\);/);
   assert.match(main, /attachCapture\(sess\.client, \{ cdpTargetId: t \}\)/);
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
-  assert.match(coord, /lastFrameAt: c\.lastFrameAt != null \? c\.lastFrameAt : null,/);
+  assert.match(coord, /lastFrameAt: c\.lastFrameAt\b/);
 });
 
 test('group events reach the screen as one plain-Vietnamese line (never a raw code)', () => {

@@ -11,10 +11,9 @@ const { createTableGroup, ROLE, PACE_MIN_MS, PACE_MAX_MS } = require('../../desk
 // A coordinator stand-in: records every command with the virtual time it was sent at.
 function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, scanFails = {}, findFails = false } = {}) {
   const c = {
-    clock: 0, sent: [], seats: new Map(), rid: 3700000, keyResolver: null, listeners: {},
+    clock: 0, sent: [], seats: new Map(), rid: 3700000, listeners: {},
     on(ev, fn) { (this.listeners[ev] = this.listeners[ev] || []).push(fn); },
     fire(ev, payload) { for (const fn of (this.listeners[ev] || [])) fn(payload); },
-    setRoomKeyResolver(fn) { this.keyResolver = fn; },
     profileIds: () => ids,
     browserReady: () => true,
     uidOf: (id) => 'uid-' + id,
@@ -25,7 +24,6 @@ function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, scanFails = {}, f
     isTableHost: () => false,
     tableHostUid: () => null,
     roundRunning: () => false,
-    setHost() {}, setFinder() {},
     async leaveTable(id) { this.sent.push({ at: this.clock, id, cmd: 'LEAVE' }); this.seats.delete(id); return { ok: true }; },
     async setAutoReadyPref(id, on) { this.sent.push({ at: this.clock, id, cmd: 'PREF', on }); return { ok: true }; },
     async sendTableReady(id, rid) { this.sent.push({ at: this.clock, id, cmd: 'READY', rid }); return { ok: true }; },
@@ -48,8 +46,8 @@ function fakeCoord({ ids = ['B1', 'B2', 'B3'], joinFails = {}, scanFails = {}, f
     },
     adoptTableRid(id, rid) { this.seats.set(id, rid); return true; },
     cancelSearch() { return { ok: true }; },
-    async manualJoinByCode(id, rid, key) {
-      this.sent.push({ at: this.clock, id, cmd: 'JOIN', rid, key: key || '' });
+    async joinTable(id, rid, opts = {}) {
+      this.sent.push({ at: this.clock, id, cmd: 'JOIN', rid, expectUid: opts.expectUid || null });
       const fail = joinFails[id];
       if (fail) { delete joinFails[id]; return { ok: false, error: fail }; }
       this.seats.set(id, rid); return { ok: true, rid };
@@ -105,7 +103,7 @@ test('T1 + T2a + T2: Dò Key makes KEY; Tạo finds the số bàn (READY); Vào 
   const second = await group.scanTable('B3'); // số bàn known → Tạo is simply Vào
   assert.equal(second.role, ROLE.NOT_READY);
   assert.equal(cmds(coord, 'SCAN').length, 1);
-  assert.deepEqual(cmds(coord, 'JOIN').map((e) => [e.id, e.rid]), [['B3', coord.keyRid]]);
+  assert.deepEqual(cmds(coord, 'JOIN').map((e) => [e.id, e.rid, e.expectUid]), [['B3', coord.keyRid, 'uid-B2']], 'VÀO at the group table checks the KEY is there');
   for (const [id, cmd] of [['B1', 'SCAN'], ['B3', 'JOIN']]) {
     const pref = coord.sent.findIndex((e) => e.id === id && e.cmd === 'PREF');
     const sit = coord.sent.findIndex((e) => e.id === id && e.cmd === cmd);
@@ -218,7 +216,7 @@ test('A4 vs T7: a lost table is replaced when auto is on, and only reported when
   await auto.group.setAuto(true, { creatorId: 'B2', stake: 100 });
   const rid = auto.group.snapshot().rid;
   auto.coord.seats.delete('B1');
-  Object.assign(auto.coord, { manualJoinByCode: async function (id, r, key) { this.sent.push({ at: this.clock, id, cmd: 'JOIN', rid: r, key: key || '' }); if (r === rid) return { ok: false, error: gone }; this.seats.set(id, r); return { ok: true, rid: r }; } });
+  Object.assign(auto.coord, { joinTable: async function (id, r) { this.sent.push({ at: this.clock, id, cmd: 'JOIN', rid: r }); if (r === rid) return { ok: false, error: gone }; this.seats.set(id, r); return { ok: true, rid: r }; } });
   auto.coord.fire('kicked', { id: 'B1', message: 'x' });
   await new Promise((r) => setTimeout(r, 0));
   await auto.group.joinTable('B3', 999999); // drain

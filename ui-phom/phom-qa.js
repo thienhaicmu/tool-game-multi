@@ -34,7 +34,6 @@
   let profiles = {};         // slot -> saved profile (device + proxyRef)
   let hostId = null;         // runId of the chosen HOST (or slot label before open)
   let selectedStake = null;
-  let autoFlow = false;      // CTA-driven happy path (acquire -> join -> ready)
   // Screen-2 entry gate (§1-§4): the user MUST drive each step explicitly; nothing
   // auto-advances. LOGIN (browsers open, user logs in) → CONFIRMED (user pressed ĐÃ LOGIN)
   // → ENTERING (user pressed VÀO GAME PHỎM; passive session started, waiting for the game
@@ -1313,14 +1312,6 @@
       if (!$('workspace').hidden) bgRender();
     }, 2000);
   }
-  let flowBusy = false;
-  // The host-first discovery loop (main-process coordinator) now owns follower join, ready policy,
-  // C-rejoin and invalid-table restart. The renderer must NOT drive join/ready itself (that caused
-  // B/C to join before A was validated). This only clears the local "running" flag on terminal states.
-  function advanceAutoFlow(s) {
-    if (!autoFlow || !s) return;
-    if (s.state === 'HOST_ACQUIRE_FAILED' || s.state === 'REJOIN_EXHAUSTED' || s.state === 'STOPPED') autoFlow = false;
-  }
 
   // Cluster CTA: SETUP → OPENING_CLUSTER → CONTROL. create → open → connect → apply
   // devices → tile (restoreLayout) via PhomClusterCdpManager.
@@ -1404,7 +1395,7 @@
 
   async function closeBrowsers() {
     if (!window.confirm('Đóng cả 3 trình duyệt A/B/C? Cấu hình proxy/thiết bị được giữ nguyên.')) return;
-    autoFlow = false; flowBusy = false; entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
+    entryPhase = ENTRY.LOGIN; phomSessionStarted = false; entrySub = null;
     qaMonitorPlay(false); qaSnap = null;
     uiState = UI.STOPPING; renderApp();
     try { await api.closeBrowsers(); } catch {}
@@ -1468,7 +1459,7 @@
   function note(msg, warn) { const n = $('phq-note'); if (n) { n.textContent = msg; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
 
   // ---------- boot ----------
-  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); advanceAutoFlow(snap); if (!$('workspace').hidden) bgRender(); });
+  if (api.onSession) api.onSession((snap) => { session = snap; if (snap && snap.hands) hands = snap.hands; reconcileEntryPhase(); if (!$('workspace').hidden) bgRender(); });
   // PHASE 6.1 — card state changed: refresh Screen 2 remaining cards + per-browser membership, then re-render.
   if (api.onHands) api.onHands((h) => { hands = h; bgRender(); }); // the cards themselves arrive with the ui push
   // PHASE 6.3.3.2 — a fresh card-observation snapshot arrived (push). Store it + re-render Screen 2.

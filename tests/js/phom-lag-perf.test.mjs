@@ -10,9 +10,11 @@ const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 const main = read('desktop/phom-main.cjs');
 const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
 
-test('the storm SOURCE is documented: coordinator emits update per observed frame (ctx change → _evaluate)', () => {
-  assert.match(coord, /ctx\.on\('change', \(\) => this\._evaluate\(\)\)/);
-  assert.match(coord, /_evaluate\(\)\s*\{[\s\S]*?this\.emit\('update', this\.snapshot\(\)\)/);
+test('the storm SOURCE: ONE update per Phỏm frame, and none for another game\'s broadcast', () => {
+  const ingest = coord.slice(coord.indexOf('  ingest(profileId'), coord.indexOf('  markDisconnected('));
+  assert.match(ingest, /if \(isForeignPush\(cls, meta\)\) return cls;/, 'foreign broadcasts stop before any update');
+  assert.equal((ingest.match(/this\._changed\(\)/g) || []).length, 1, 'exactly one update per frame');
+  assert.doesNotMatch(coord, /ctx\.on\('change'/, 'the context no longer triggers a second evaluation per frame');
 });
 
 test('per-frame update/hands are COALESCED (leading+trailing throttle), not sent every frame', () => {

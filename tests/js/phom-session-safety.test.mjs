@@ -28,9 +28,10 @@ test('a late channel list cannot erase membership; LEAVE_ACK can', () => {
 
 test('STOP while JOIN send awaits cannot publish a room from its late completion', async () => {
   let release; const { coord } = setup(() => new Promise((r) => { release = r; }));
-  const joining = coord.manualJoinRoom('A', 700); coord.stop();
+  const joining = coord.joinTable('A', 700); coord.stop();
   feed(coord, 'A', table('A')); release({ ok: true });
-  assert.equal((await joining).ok, false); assert.equal(coord.sharedRid(), null);
+  assert.equal((await joining).ok, false);
+  assert.equal(coord.manualBrowserSnapshot().find((b) => b.profileId === 'A').rid, null, 'no số bàn from a stopped join');
 });
 
 test('log subscribers cannot receive auth tokens, room codes, binary previews or probe values', () => {
@@ -47,9 +48,12 @@ test('frame recorder redacts positional login and token-identity fields', () => 
   assert.equal(redactFrame('[5,{"cmd":100,"id":1,"uid":"SECRET_ID","As":{}}]').raw.includes('SECRET_ID'), false);
 });
 
-test('login token is never reused as a room password', () => {
-  const { coord } = setup(); feed(coord, 'A', table('A'));
-  Object.assign(coord._rec('A'), { manualState: 'JOINED', _joinedRid: 700, _joinedRidValidated: true, _sessionToken: 'SECRET_LOGIN' });
-  assert.equal(coord._anchorRoomCode(), null);
+test('no password ever leaves the tool: VÀO sends an empty one, whatever the session holds', async () => {
+  const sent = []; const { coord } = setup(async (id, packet) => { sent.push(packet); return { ok: true }; });
+  feed(coord, 'A', [1, true, 1, 'SECRET_LOGIN', 'Simms']);
+  coord.joinTable('A', 700, { timeoutMs: 20 });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(sent.find((f) => f[0] === 8), [8, 'Simms', 700, '', 8]);
+  assert.equal(JSON.stringify(sent).includes('SECRET'), false);
 });
 

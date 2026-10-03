@@ -164,24 +164,6 @@ class PhomClusterCdpManager extends EventEmitter {
     return { ok: failed === 0, pass, direct, results };
   }
 
-  // §14 game orchestration is delegated to the existing HostSessionManager, mapping the
-  // host slot -> its run. Never re-implemented here.
-  async acquireHostTable() { return this._delegateHost((h) => h.acquireHost()); }
-  async joinFollowers() { return this._delegateHost((h) => h.joinFollowers()); }
-  async applyReadyPolicy() { return this._delegateHost((h) => h.applyReady()); }
-  async _delegateHost(fn) {
-    if (!this._guard()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'no cluster' } };
-    if (!this._host) return { ok: false, error: { code: 'PHOM_CLUSTER_NO_HOST_SESSION', message: 'no host session' } };
-    // ensure the host session is bound to the three runs with the chosen host.
-    if (!this._host.active()) {
-      const runIds = SLOTS.map((s) => this._slot(s).profileId).filter(Boolean);
-      if (runIds.length !== 3) return { ok: false, error: { code: 'PHOM_CLUSTER_INCOMPLETE', message: 'three runs required' } };
-      const hostRun = this._slot(this._cluster.hostSlot).profileId;
-      const started = this._host.startSession({ runIds, hostId: hostRun, selectedStake: this._cluster.selectedStake });
-      if (started && started.ok === false) return started;
-    }
-    return fn(this._host);
-  }
 
   // §9 event envelope — normalize + validate one per-profile CDP frame. Old cluster /
   // wrong profile / duplicate / late-round events are rejected BEFORE any mutation.
@@ -210,7 +192,7 @@ class PhomClusterCdpManager extends EventEmitter {
 
   restoreClusterLayout() { return this._guard() ? { ok: true } : { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE' } }; }
 
-  async leaveCluster() { if (this._host && this._host.active()) { try { await this._host.leaveAll(); } catch { /* best effort */ } } this._emit(); return { ok: true }; }
+  async leaveCluster() { if (this._host && this._host.active()) { try { await this._host.leaveAllTables(); } catch { /* best effort */ } } this._emit(); return { ok: true }; }
 
   // ORCHESTRATION-ONLY stop (DỪNG): cancels the HOST automation (search / join / ready /
   // rejoin timers + subscriptions) and marks orchestration stopped. It NEVER touches the
@@ -262,7 +244,6 @@ class PhomClusterCdpManager extends EventEmitter {
   getClusterSnapshot() {
     if (!this._cluster) return null;
     const c = this._cluster;
-    const hostSnap = (this._host && this._host.snapshot && this._host.active()) ? this._host.snapshot() : null;
     const profiles = {};
     for (const s of SLOTS) {
       const slot = c.slots.get(s);
@@ -289,16 +270,11 @@ class PhomClusterCdpManager extends EventEmitter {
       openBrowserCount: SLOTS.filter((s) => c.slots.get(s).profileId && !c.slots.get(s).browserClosed).length,
       closedByUserCount: SLOTS.filter((s) => c.slots.get(s).browserClosed).length,
       hostProfileId: c.slots.get(c.hostSlot).profileId, hostSlot: c.hostSlot,
-      selectedStake: c.selectedStake, tableIdentity: hostSnap ? hostSnap.hostTableIdentity : null,
+      selectedStake: c.selectedStake,
       profiles,
       connectedCount: SLOTS.filter((s) => c.slots.get(s).cdpConnected).length,
       agentAppliedCount: SLOTS.filter((s) => c.slots.get(s).agentApplied && c.slots.get(s).agentApplied.ok).length,
       proxyPassCount: SLOTS.filter((s) => c.slots.get(s).proxyState === 'PASS').length,
-      joinedCount: hostSnap ? hostSnap.profiles.filter((p) => p.confirmedInTable).length : 0,
-      readyCount: hostSnap ? hostSnap.readyCount : 0,
-      sameTableState: hostSnap ? hostSnap.tableVerdict : 'IDLE',
-      authoritativePlayerCount: hostSnap ? hostSnap.playerCount : 0,
-      roundState: hostSnap ? (hostSnap.roundRunning ? 'RUNNING' : hostSnap.state) : 'IDLE',
       errors: SLOTS.map((s) => c.slots.get(s).error).filter(Boolean),
     };
   }

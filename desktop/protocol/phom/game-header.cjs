@@ -16,11 +16,11 @@
 
 // PHASE 6.3.8 — icon + short label + tooltip for every header action. The action SET is state-dependent
 // (deriveHeaderState) but the presentation (icon/label/tip) is a single source of truth. NO new actions are
-// invented here: every id maps to an existing tool action (ENTER_GAME/JOIN/REJOIN/LEAVE and
+// invented here: every id maps to an existing tool action (ENTER_GAME/JOIN_CODE/REJOIN/LEAVE/FIND_TABLE/SCAN_TABLE and
 // the lifecycle RELOAD/STOP/FOCUS). HOST/READY/KICK/DevTools/screenshot are intentionally absent (no action).
 const HEADER_ACTIONS = Object.freeze({
   ENTER_GAME:  { icon: '▶', short: 'Vào Game', tip: 'Đưa Player vào game' },
-  JOIN:        { icon: '🚪', short: 'Vào Bàn', tip: 'Vào bàn' },
+  JOIN_CODE:   { icon: '🚪', short: 'Vào', tip: 'Vào đúng số bàn trong ô SS' },
   REJOIN:      { icon: '↻', short: 'Rejoin', tip: 'Vào lại bàn hiện tại' },
   LEAVE:       { icon: '✕', short: 'Thoát bàn', tip: 'Rời bàn hiện tại (không tắt Chromium)' },
   FIND_TABLE:  { icon: '🔑', short: 'Dò Key', tip: 'Ngồi một mình ở một bàn trống (acc KEY)' },
@@ -40,7 +40,6 @@ function toActionIcon(a) {
     label: a.label != null ? a.label : m.short,
     disabled: !!a.disabled, busy: !!a.busy, danger: !!a.danger,
     rid: a.rid != null ? a.rid : undefined,
-    needsBet: !!a.needsBet, betOptions: Array.isArray(a.betOptions) ? a.betOptions.slice() : undefined,
   };
 }
 
@@ -52,9 +51,7 @@ function toActionIcon(a) {
 function deriveHeaderState(view = {}) {
   const account = view.account && String(view.account).trim() ? String(view.account) : '—';
   const rid = view.rid != null ? String(view.rid) : (view.lastRid != null ? String(view.lastRid) : '—');
-  const betOptions = Array.isArray(view.betOptions) ? view.betOptions.slice() : [];
   const s = view.manualState;
-  const joinedShared = !!view.inGame && s === 'JOINED' && view.rid != null && view.sharedRid != null && Number(view.rid) === Number(view.sharedRid);
   const joined = !!view.inGame && s === 'JOINED' && view.rid != null;
   let statusLabel, statusClass, primary, secondary = [];
   if (!view.opened) { statusLabel = 'CHƯA MỞ'; statusClass = 'off'; primary = { action: 'ENTER_GAME', label: 'VÀO GAME', disabled: true }; }
@@ -70,15 +67,14 @@ function deriveHeaderState(view = {}) {
     statusClass = 'warn'; primary = { action: 'CANCEL_FIND', label: 'DỪNG', danger: true };
   }
   else if (s === 'LEAVE_UNCONFIRMED') { statusLabel = 'CHƯA XÁC NHẬN RỜI'; statusClass = 'warn'; primary = { action: 'LEAVE', label: 'THỬ RỜI BÀN LẠI', danger: true }; }
-  else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
+  else if (view.joining || s === 'JOINING' || s === 'RECONNECTING') { statusLabel = 'ĐANG VÀO BÀN'; statusClass = 'warn'; primary = { action: 'JOIN_CODE', label: 'ĐANG VÀO BÀN…', busy: true, disabled: true }; }
   else if (joined) {
-    // §co-seat — show SS (số bàn = the rid this browser is seated in) + the key, like the reference tool's "SS".
-    const code = view.roomCode != null && String(view.roomCode) !== '' ? String(view.roomCode) : null;
+    // SS = the số bàn this browser is seated at, like the reference tool's bar.
     const ss = view.rid != null ? String(view.rid) : null;
     // §stake-channel — "SS" means the 7-digit SỐ BÀN. A seat taken through the lobby stake channel has no số bàn
     // yet (the server picked the table behind that id), so calling it SS sent users looking for a code to copy
     // that does not exist. It is still the id the other browsers JOIN — only the wording changes.
-    statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + (ss != null ? ss : '—') + (code ? ' · KEY ' + code : '') + (view.groupRole === 'READY' || view.ready ? ' · ✓' : '');
+    statusLabel = (view.joinedViaChannel ? 'KÊNH ' : 'SS ') + (ss != null ? ss : '—') + (view.groupRole === 'READY' || view.ready ? ' · ✓' : '');
     statusClass = 'ok'; primary = { action: 'REJOIN', label: 'REJOIN' }; secondary = [{ action: 'LEAVE', label: 'THOÁT PHÒNG', danger: true }];
   }
   // In the game but NOT at the table, while this browser still holds a role at the group's table: say it is out of
@@ -91,9 +87,7 @@ function deriveHeaderState(view = {}) {
   else { statusLabel = 'ĐÃ VÀO GAME'; statusClass = 'ok'; primary = { action: 'FIND_TABLE', label: 'DÒ KEY' }; }
   // PHASE 6.3.8 — the ordered GAME/TABLE icon set (primary first, then secondary). Lifecycle is added by the page.
   const actions = [toActionIcon(primary), ...secondary.map(toActionIcon)].filter(Boolean);
-  return { account, accountId: view.accountId != null ? String(view.accountId) : null, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null, joinedShared,
-    // §co-seat — this browser's room CODE (hpwd) + the shared code, so the page/⋯ menu can show "mã bàn".
-    roomCode: view.roomCode != null ? String(view.roomCode) : null, sharedRoomCode: view.sharedRoomCode != null ? String(view.sharedRoomCode) : null,
+  return { account, accountId: view.accountId != null ? String(view.accountId) : null, rid, statusLabel, statusClass, primary, secondary, actions, error: view.error || null,
     // TEST D — whether THIS browser is being recorded, and the last capture file name (for the ⋯ menu)
     capturing: !!view.capturing, lastCapture: view.lastCapture || null,
     // §find — the header can look for a table / join a số bàn whenever the browser is in the game (not mid-op).
@@ -104,7 +98,7 @@ function deriveHeaderState(view = {}) {
     // The stake comes from the Phỏm tool (one place), so the bar only displays it and TÌM BÀN needs it.
     stake: Number(view.stake) > 0 ? Number(view.stake) : null,
     rooms: Array.isArray(view.rooms) ? view.rooms.map((r) => ({ rid: r.rid, b: r.b, uC: r.uC, Mu: r.Mu })) : [],
-    // §group — the reference-tool bar: role chip, SS pre-filled with this browser's / the group's số bàn, the table key.
+    // §group — the reference-tool bar: role chip, SS pre-filled with this browser's / the group's số bàn.
     groupRole: view.groupRole || null, isTableHost: !!view.isTableHost, inTable: joined,
     canRejoin: joined || view.lastRid != null || view.sharedRid != null,
     // ReJoin is a toggle (reference tool): ON = this browser comes back by itself after every kick.
@@ -112,7 +106,6 @@ function deriveHeaderState(view = {}) {
     // A KEY sits at the group's table (TẠO has something to look for); this browser is not that KEY.
     keySeated: !!view.keySeated, isKey: view.groupRole === 'KEY',
     ssDefault: joined ? Number(view.rid) : (view.sharedRid != null ? Number(view.sharedRid) : null),
-    tableKey: view.roomCode != null && String(view.roomCode) !== '' ? String(view.roomCode) : null,
     roomListAt: view.roomListAt != null ? view.roomListAt : null };
 }
 
@@ -139,7 +132,7 @@ function bootScript(opts = {}) {
   // click can be traced end-to-end and can NEVER be attributed to the wrong browser.
   function emit(action, extra){ try { var aid=(Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,8)); if(CLICKLOG){ window.__phClickT=CLK(); window.__phClickA=action; try{ console.log('[PHOM-CLK] CLICK_START', action, aid, ID.slotId||ID.runId); }catch(e){} } if(OPTIMISTIC_ACTIONS[action]) applyOptimistic(action); window[BID] && window[BID](JSON.stringify(Object.assign({ action, actionId: aid, slotId: ID.slotId, profileId: ID.profileId, runId: ID.runId }, extra||{}))); } catch(e){} }
   // Only the GAME/TABLE flow actions paint an optimistic busy overlay; lifecycle (RELOAD/STOP/FOCUS) do not.
-  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, JOIN:1, REJOIN:1, LEAVE:1, FIND_TABLE:1, SCAN_TABLE:1, JOIN_CODE:1, NEW_TABLE:1 };
+  var OPTIMISTIC_ACTIONS = { ENTER_GAME:1, REJOIN:1, LEAVE:1, FIND_TABLE:1, SCAN_TABLE:1, JOIN_CODE:1, NEW_TABLE:1 };
   // 6.3.2.11 OPTIMISTIC visual state (page-local only). __authState = last AUTHORITATIVE state pushed by main;
   // __optAction = a transient action the user just clicked. The click paints an immediate busy state with NO
   // CDP/main round-trip; the next authoritative __phomHeaderRender CLEARS it and wins. Only the status/action
@@ -302,7 +295,7 @@ function bootScript(opts = {}) {
         if(state.ssDefault != null && document.activeElement !== ssInput && (__ssValue === '' || __ssValue === __ssAuto)){ __ssAuto = String(state.ssDefault); __ssValue = __ssAuto; }
         ssInput.value = __ssValue;
         act.appendChild(ssInput);
-        act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v + (state.tableKey ? ' ' + state.tableKey : '')); }catch(e){} },'Copy số bàn' + (state.tableKey ? ' + key' : '')));
+        act.appendChild(txtBtn('Copy','#d97706',function(){ var v=String(ssInput.value||'').trim(); if(!v) return; try{ navigator.clipboard.writeText(v); }catch(e){} },'Copy số bàn'));
         act.appendChild(txtBtn('Vào','#16a34a',function(){ var r=ssRid(); if(r!=null) emit('JOIN_CODE',{ rid:r }); },'Vào đúng số bàn trong ô SS (key tự điền nếu bàn do tool tạo)'));
         act.appendChild(txtBtn(state.rejoinOn ? 'ReJoin ●' : 'ReJoin', state.rejoinOn ? '#0f766e' : '#334155',function(){ emit('REJOIN'); }, state.rejoinOn ? 'ReJoin đang BẬT — bị đá sẽ tự vào lại. Bấm để tắt' : 'Vào bàn chung và tự vào lại mỗi lần bị đá', !state.canRejoin));
         function needStake(){ if(state.stake == null){ showFeedback('Chưa chọn mức cược. Mở Phỏm QA → tab PHỎM → Mức cược, chọn tiền rồi bấm lại.'); return true; } feedback.style.display='none'; return false; }
@@ -340,7 +333,7 @@ function bootScript(opts = {}) {
     }
     if(state.lastCapture){ var cap=mk('div','padding:6px 10px;color:#86efac;font-weight:500;white-space:nowrap;'); cap.textContent='📄 Đã lưu: '+state.lastCapture; menu.appendChild(cap); }
     var info = mk('div','padding:8px 10px;color:#9ca3af;font-weight:500;border-top:1px solid #1f2937;margin-top:2px;white-space:nowrap;');
-    info.textContent = (SLOTN?('P'+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.accountId ? ' · ID ' + state.accountId : '') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '') + (state.tableKey ? ' · KEY '+state.tableKey : '');
+    info.textContent = (SLOTN?('P'+SLOTN):'Player') + ' · ' + (state.account||'—') + (state.accountId ? ' · ID ' + state.accountId : '') + (state.rid && state.rid!=='—' ? ' · SS '+state.rid : '');
     menu.appendChild(info);
     // 6.3.2.10 PROFILING (gated) — click→visual in ONE (page) clock on the FIRST paint after a click.
     if(CLICKLOG && window.__phClickT!=null){ try{ console.log('[PHOM-CLK] CLICK_TO_RENDER', Math.round(CLK()-window.__phClickT)+'ms', 'action='+window.__phClickA, '->', state.statusLabel||''); }catch(e){} window.__phClickT=null; }
@@ -353,13 +346,12 @@ function bootScript(opts = {}) {
       : (action==='FIND_TABLE'||action==='NEW_TABLE') ? 'ĐANG DÒ KEY…'
       : action==='SCAN_TABLE' ? 'ĐANG DÒ BÀN KEY…'
       : action==='JOIN_CODE' ? 'ĐANG VÀO BÀN…'
-      : action==='JOIN' ? 'ĐANG VÀO BÀN…'
       : action==='REJOIN' ? 'ĐANG VÀO BÀN…'
       : action==='LEAVE' ? 'ĐANG THOÁT PHÒNG…'
       : 'ĐANG XỬ LÝ…';
     return { account: base.account, rid: base.rid, statusLabel: label, statusClass:'warn', primary:{ action: action, label: label, disabled: true, busy: true }, actions: [{ action: action, icon:(OPT_ICON[action]||'•'), short:label, label:label, disabled:true, busy:true }], secondary: [], error: null };
   }
-  var OPT_ICON = { ENTER_GAME:'▶', JOIN:'🚪', JOIN_CODE:'🚪', REJOIN:'↻', LEAVE:'✕', FIND_TABLE:'🔑', SCAN_TABLE:'🔍', CANCEL_FIND:'■' };
+  var OPT_ICON = { ENTER_GAME:'▶', JOIN_CODE:'🚪', REJOIN:'↻', LEAVE:'✕', FIND_TABLE:'🔑', SCAN_TABLE:'🔍', CANCEL_FIND:'■' };
   // Synchronous, page-local: show the busy state the instant the user clicks — no CDP, no main round-trip.
   function applyOptimistic(action){ try { __optAction = action; paint(optState(action)); } catch(e){} }
   // AUTHORITATIVE render from main ALWAYS wins: store it, clear any optimistic overlay, paint it.
@@ -376,7 +368,7 @@ function optimisticLabel(action) {
     case 'ENTER_GAME': return 'ĐANG VÀO GAME…';
     case 'FIND_TABLE': case 'NEW_TABLE': return 'ĐANG DÒ KEY…';
     case 'SCAN_TABLE': return 'ĐANG DÒ BÀN KEY…';
-    case 'JOIN': case 'JOIN_CODE': return 'ĐANG VÀO BÀN…';
+    case 'JOIN_CODE': return 'ĐANG VÀO BÀN…';
     case 'REJOIN': return 'ĐANG VÀO BÀN…';
     case 'LEAVE': return 'ĐANG THOÁT PHÒNG…';
     default: return 'ĐANG XỬ LÝ…';
