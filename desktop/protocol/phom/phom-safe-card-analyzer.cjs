@@ -107,10 +107,12 @@ function compute(snap, targetUid) {
   // §41 — the target's OWN phỏm still in hand: discarding one breaks it. Prefer the server's own arrangement
   // (sMs, sent with this player's DRAW / ROUND_END hand); fall back to the shared rules for a dealt hand
   // (DEAL carries no sMs). Only the target's OWN cards are used.
-  const serverKnown = target.currentCardsSource === 'DRAW' || target.currentCardsSource === 'ROUND_END';
+  const serverKnown = target.currentCardsSource === 'DRAW' || target.currentCardsSource === 'EAT' || target.currentCardsSource === 'ROUND_END';
   const ownMeld = serverKnown
     ? new Set((target.serverMeldCards || []).filter((c) => hand.includes(c)))
     : cardsInMelds(hand);
+  // a card the target ATE is committed to its phỏm — never a card to discard
+  for (const c of hand) { const e = ledgerByCode.get(c); if (e && e.status === 'EATEN' && String(e.ownerUid) === targetUid) ownMeld.add(c); }
   const ownMeldSource = serverKnown ? 'SERVER' : 'RULES';
 
   // The OTHER controlled players (P1/P2/P3 minus the target) whose exact hands we KNOW. They are opponents
@@ -203,7 +205,7 @@ function classifyCard(code, ctx) {
   // Public signals (explainable reasons — NEVER fake confidence numbers, §14).
   const anyPartner = [...rank, ...runs.flat()];
   if (anyPartner.some((c) => statusOf(c) === 'DISCARDED')) reasonCodes.push('PUBLIC_DISCARD_SIGNAL');
-  if (anyPartner.some((c) => statusOf(c) === 'MELDED')) reasonCodes.push('PUBLIC_MELD_SIGNAL');
+  if (anyPartner.some((c) => statusOf(c) === 'MELDED' || statusOf(c) === 'EATEN')) reasonCodes.push('PUBLIC_MELD_SIGNAL');
   if (!rankOpen) reasonCodes.push('RANK_FAMILY_BLOCKED');
   if (runsOpen === 0 && runs.length) reasonCodes.push('RUNS_BLOCKED');
 

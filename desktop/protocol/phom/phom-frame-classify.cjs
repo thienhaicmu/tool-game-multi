@@ -41,8 +41,13 @@ const CMD = Object.freeze({
   DEAL: 850,           // server deals the opening 9 cards (cs[]) — per-session authoritative
   PLAY: 851,           // a player discards (fP.dCs) and the turn moves to tP.uid
   DRAW: 852,           // a player draws (cs single); own session also gets sAC/sMs
-  END: 853,            // round end / eaten / won — carries subtypes
+  // 853 is an EAT, not the round end (captures play.log/play2.log, 10/10 frames): the player after the discarder
+  // takes it — cs = the eaten card, fP.uid = the eater, fP.puid = the discarder, fP.lm = money; the eater's own
+  // session also gets sAC/sMs. Reading it as "round end" closed the round at the first eat, and a round with NO eat
+  // never closed, so the next deal was merged into the old round (stale discards → false "Nên đánh", 2026-10-05).
+  EAT: 853,
   MELD: 854,           // public meld laid down (mes[].cs)
+  ROUND_END: 855,      // the round is over: ps[] = every player's leftover cards / points / money
 });
 
 // Wire opcodes.
@@ -58,17 +63,18 @@ const CMD_TYPE = Object.freeze({
   [CMD.DEAL]: 'DEAL',
   [CMD.PLAY]: 'PLAY',
   [CMD.DRAW]: 'DRAW',
-  [CMD.END]: 'ROUND_END',
+  [CMD.EAT]: 'EAT',
   [CMD.MELD]: 'MELD',
+  [CMD.ROUND_END]: 'ROUND_END',
 });
 
 // Types that mutate a per-profile hand model (consumed by hand-reducer).
-const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'ROUND_END', 'MELD']));
+const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'EAT', 'ROUND_END', 'MELD']));
 
 // A frame carries authoritative Phỏm SERVER evidence (used to bind the owning
 // game socket) when it is a recognised server push for this game.
 const SERVER_EVIDENCE_TYPES = Object.freeze(new Set([
-  'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'SEAT_UPDATE', 'DEAL', 'PLAY', 'DRAW', 'ROUND_END', 'MELD',
+  'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'SEAT_UPDATE', 'DEAL', 'PLAY', 'DRAW', 'EAT', 'ROUND_END', 'MELD',
   'SELF_IDENTITY', 'ROOM_ASSIGNED',
 ]));
 
@@ -218,7 +224,7 @@ function classifyPhomFrame(raw) {
     // gold = free money, guaranteed_gold = money held at the table; their sum is the account's money (the `m` the
     // table shows, e.g. "gdufuud-453384").
     if (cmd === CMD.WALLET && payload && payload.As && typeof payload.As === 'object') return finalize(out, { type: 'WALLET', ...walletOf(payload.As) });
-    // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / ROUND_END 853 / MELD 854).
+    // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / EAT 853 / MELD 854 / ROUND_END 855).
     if (cmd != null && CMD_TYPE[cmd]) return finalize(out, { type: CMD_TYPE[cmd] });
     return finalize(out, { type: 'UNKNOWN' });
   }

@@ -13,8 +13,9 @@
 //   DRAW  852  uid, cs, sAC[], sMs[]  → own session gets sAC (full hand); a public
 //                                        draw by another uid does NOT expose the card
 //   PLAY  851  fP:{uid,dCs}, tP:{uid} → PUBLIC discard for ANY player (dCs single|multi)
+//   EAT   853  cs, fP:{uid,puid}      → PUBLIC: fP.uid ATE the discard cs of fP.puid (own eater: + sAC/sMs)
 //   MELD  854  uid, mes:[{meid,cs[]}] → PUBLIC meld laid down
-//   END   853  sAC[], sMs[], fP.lm    → round end (own final hand)
+//   END   855  ps[]                   → round end (the next DEAL opens a new round)
 //   TABLE_STATE ps[] {sit,uid,dn,r}   → seat / name / membership for ALL seats
 //
 // What is NOT in the protocol (kept UNSUPPORTED — never fabricated):
@@ -29,8 +30,9 @@
 const { isValidCardCode, decodeCard, MIN_CODE, MAX_CODE } = require('./card-codec.cjs');
 
 // Ledger card statuses (§13). Terminal (public, one-way) statuses win over CURRENT.
-const STATUS = Object.freeze({ CURRENT: 'CURRENT', DRAWN: 'DRAWN', DISCARDED: 'DISCARDED', MELDED: 'MELDED', UNKNOWN: 'UNKNOWN' });
-const TERMINAL = Object.freeze(new Set([STATUS.DISCARDED, STATUS.MELDED]));
+// EATEN: a discard the next player took (853) — public, and committed to the eater's phỏm.
+const STATUS = Object.freeze({ CURRENT: 'CURRENT', DRAWN: 'DRAWN', DISCARDED: 'DISCARDED', MELDED: 'MELDED', EATEN: 'EATEN', UNKNOWN: 'UNKNOWN' });
+const TERMINAL = Object.freeze(new Set([STATUS.DISCARDED, STATUS.MELDED, STATUS.EATEN]));
 
 // What THIS protocol proves (audited). Consumers must not assume more than this.
 const CAPABILITIES = Object.freeze({
@@ -84,11 +86,13 @@ class CardObserver {
     this._observedDiscardEvents = []; // [{ uid, cards, source, observedAt, evidenceKey }]
     this._ledger = new Map();   // code -> { code, status, ownerUid, source, observedAt, evidenceKey }
     this._seenEvents = new Set(); // evidenceKey dedup (draws/discards/melds)
+    this._eats = [];            // [{ card, eaterUid, fromUid, observedAt }] — discards taken this round (853)
+    this._dealtUids = new Set(); // own hands dealt in THIS round — a second DEAL for one of them = a new round
     this._analysisPlayer = null;  // §19 — selected analysis angle (never merges hands)
     // §40 — seat ORDER learned from PUBLIC play: every PLAY names who discarded (fP.uid) and whose turn it is
     // next (tP.uid). Only that next player may eat the discard, so this is what a player at the table knows
-    // anyway. Learned (never assumed from `sit`, whose direction is not evidenced), kept across rounds while
-    // the seated set is unchanged, dropped when someone joins/leaves.
+    // anyway. Seeded at every DEAL from lpi[] (the turn order), then confirmed/overridden by each PLAY; never assumed
+    // from `sit`. Without an lpi it is kept across rounds while the seated set is unchanged.
     this._nextOf = new Map();     // uid -> uid of the player who plays right after them
     this._seatedKey = null;       // fingerprint of the seated uid set the order was learned for
   }
@@ -150,6 +154,8 @@ class CardObserver {
     this._observedDiscardEvents = [];
     this._ledger.clear();
     this._seenEvents.clear();
+    this._eats = [];
+    this._dealtUids = new Set();
     this._pendingOwnHand = {};
     this._log('ROUND_RESET', { roundSeq: this._roundSeq, reason: meta.reason || null });
   }
@@ -168,6 +174,7 @@ class CardObserver {
       case 'DEAL': this._onDeal(cls, input.slot, input.ownUid, now); break;
       case 'DRAW': this._onDraw(cls, input.slot, input.ownUid, now); break;
       case 'PLAY': this._onPlay(cls, now); break;
+      case 'EAT': this._onEat(cls, input.slot, input.ownUid, now); break;
       case 'MELD': this._onMeld(cls, now); break;
       case 'ROUND_END': this._onRoundEnd(cls, input.slot, input.ownUid, now); break;
       default: break; // non-card frames never mutate observation
@@ -187,21 +194,39 @@ class CardObserver {
       if (seat.dn != null) p.name = String(seat.dn);
     }
     const key = ps.map((x) => (x && x.uid != null ? String(x.uid) : '')).filter(Boolean).sort().join('|');
-    if (key && key !== this._seatedKey) { this._seatedKey = key; this._nextOf.clear(); } // someone joined/left: re-learn
+    // someone joined/left: re-learn — but a round being played keeps the order its DEAL gave (a spectator coming in
+    // does not change who plays after whom)
+    if (key && key !== this._seatedKey) { this._seatedKey = key; this._nextOf.clear(); if (this._roundActive) this._seedOrderFromDeal(); }
+  }
+
+  _seedOrderFromDeal() {
+    const a = this._roundPlayers || [];
+    if (a.length < 2) return;
+    this._nextOf.clear();
+    a.forEach((u, i) => this._nextOf.set(u, a[(i + 1) % a.length]));
   }
 
   _onDeal(cls, slot, ownUid, now) {
     // ROUND_END → DEAL delimiter: the first DEAL after a round closed opens a new round. Extra DEALs
     // WITHIN an active round (the other two controlled browsers' own deals) must NOT reset it (§10/§6).
-    if (!this._roundActive) this.resetRound({ now, reason: 'DEAL_NEW_ROUND' });
+    // Belt and braces when the round end was missed (a reload, a dropped frame): a second DEAL to the SAME own hand,
+    // or a dealt card the ledger already has as played, can only be a new round — never merge it into the old one
+    // (live 2026-10-05: old discards made new-round cards look "Nên đánh" and a stranger ate one).
+    const cards = normalizeCards(cls.cs);
+    const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || null;
+    const handKey = uid != null ? uid : (slot ? 'slot:' + slot : null);
+    const stale = this._roundActive && ((handKey != null && cards.length && this._dealtUids.has(handKey))
+      || cards.some((c) => { const e = this._ledger.get(c); return !!(e && TERMINAL.has(e.status)); }));
+    if (!this._roundActive || stale) this.resetRound({ now, reason: stale ? 'DEAL_AGAIN_NEW_ROUND' : 'DEAL_NEW_ROUND' });
     else this._ensureRound(now);
     if (cls.tP && cls.tP.uid != null) this._currentTurnUid = String(cls.tP.uid);
-    // DEAL lpi[] = the players dealt into THIS round (live capture 2026-09-21: a kicked/spectating seat is absent).
+    // DEAL lpi[] = the players dealt into THIS round, IN TURN ORDER (live capture 2026-09-21: a kicked/spectating seat
+    // is absent; play.log/play2.log: every one of 28 plays went to the next uid of lpi). So the next player of everyone
+    // is known from the deal — the order learned in an earlier round (other seats) is never reused.
     const lpi = cls.json && Array.isArray(cls.json) && cls.json[1] && Array.isArray(cls.json[1].lpi) ? cls.json[1].lpi : null;
-    if (lpi && lpi.length) this._roundPlayers = lpi.map(String);
-    const cards = normalizeCards(cls.cs);
+    if (lpi && lpi.length) { this._roundPlayers = lpi.map(String); this._seedOrderFromDeal(); }
     if (!cards.length) return;
-    const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || null;
+    if (handKey != null) this._dealtUids.add(handKey);
     if (uid != null) { this._setCurrentCards(uid, cards, 'DEAL', now); }
     else if (slot) { this._pendingOwnHand[slot] = { cards, source: 'DEAL' }; } // flush on bind
   }
@@ -262,6 +287,30 @@ class CardObserver {
     }
   }
 
+  // 853 — the next player ATE the discard: it leaves the pile and is committed to the eater's phỏm; the eater plays
+  // next. The eater's own session also carries its new full hand (sAC) and the server's phỏm (sMs).
+  _onEat(cls, slot, ownUid, now) {
+    this._ensureRound(now);
+    const fp = cls.fP || {};
+    const code = normalizeCard(cls.cs);
+    const eater = fp.uid != null ? String(fp.uid) : null;
+    const from = fp.puid != null ? String(fp.puid) : null;
+    if (eater != null) this._currentTurnUid = eater;
+    if (eater != null && Array.isArray(cls.sAC) && ownUid != null && String(ownUid) === eater) {
+      this._setCurrentCards(eater, normalizeCards(cls.sAC), 'EAT', now);
+      if (Array.isArray(cls.sMs)) this._player(eater).serverMeldCards = normalizeCards(cls.sMs);
+    }
+    if (code == null) return;
+    const key = `EA:${this._roundSeq}:${code}`;
+    if (this._seenEvents.has(key)) { this._log('DEDUP', { kind: 'eat' }); return; }
+    this._seenEvents.add(key);
+    const i = this._discardPile.lastIndexOf(code);
+    if (i >= 0) this._discardPile.splice(i, 1);
+    this._setLedger(code, STATUS.EATEN, eater, 'EAT', now, key);
+    this._eats.push({ card: code, eaterUid: eater, fromUid: from, observedAt: now });
+    this._log('EAT_OBSERVED', {});
+  }
+
   _onMeld(cls, now) {
     this._ensureRound(now);
     const uid = cls.uid != null ? String(cls.uid) : null;
@@ -282,7 +331,7 @@ class CardObserver {
   }
 
   _onRoundEnd(cls, slot, ownUid, now) {
-    // Round closes; KEEP the observation (snapshot still shows the ended round). The next DEAL resets.
+    // 855 — the round closes; KEEP the observation (snapshot still shows the ended round). The next DEAL resets.
     this._roundActive = false;
     if (Array.isArray(cls.sAC)) {
       const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || (cls.uid != null ? String(cls.uid) : null);
@@ -363,6 +412,7 @@ class CardObserver {
       discardPile: this._discardPile.slice(),
       discardPileView: this._discardPile.map(decodeView),
       observedDiscardEvents: clone(this._observedDiscardEvents),
+      eats: this._eats.map((e) => ({ ...e, view: decodeView(e.card) })), // 853 — who ate which discard of whom
       ledger: this.getLedger(),
       remaining: this.getRemainingCards(),
       selectedAnalysisPlayer: this._analysisPlayer,

@@ -11,7 +11,23 @@ const deal = (cs, tp) => classifyPhomFrame(JSON.stringify([5, { cs, cmd: 850, tP
 const draw = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 852 }]));
 const play = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 851 }]));
 const meld = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 854 }]));
-const end = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 853 }]));
+const end = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 855 }]));
+const eat = (o) => classifyPhomFrame(JSON.stringify([5, { ...o, cmd: 853 }]));
+
+// 853 EAT — the eater's own session gets its new hand; the round goes on (it used to be read as the round end)
+test('EAT: own eater takes the authoritative hand, round stays LIVE, turn to the eater; another eater changes nothing', () => {
+  let h = emptyHand('P1', A);
+  h = reduceHand(h, deal([40, 44, 48, 3, 2, 6, 8, 27, 42], A), { profileUid: A, seq: 1 });
+  h = reduceHand(h, eat({ cs: 26, sAC: [40, 44, 48, 3, 2, 6, 8, 27, 42, 26], sMs: [26, 27], fP: { uid: A, puid: 'B', lm: 100 } }), { profileUid: A, seq: 2 });
+  assert.equal(h.syncState, SYNC.LIVE);
+  assert.equal(h.cardCount, 10);
+  assert.equal(h.currentTurnUid, A);
+  let o = emptyHand('P2', 'C');
+  o = reduceHand(o, deal([0, 1, 2, 3, 4, 5, 6, 7, 8], 'C'), { profileUid: 'C', seq: 1 });
+  o = reduceHand(o, eat({ cs: 26, fP: { uid: A, puid: 'B' } }), { profileUid: 'C', seq: 2 });
+  assert.equal(o.syncState, SYNC.LIVE);
+  assert.equal(o.cardCount, 9);
+});
 
 // §22.H — DEAL initialises 9 cards, starts a new round, resets prior cards.
 test('DEAL: own hand gets 9 cards + new round boundary', () => {

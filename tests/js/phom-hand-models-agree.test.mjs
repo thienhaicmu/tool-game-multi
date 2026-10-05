@@ -61,7 +61,7 @@ test('the reducer and the observer agree on every browser\'s hand through a full
   assertAgree(coord, 'B1 meld');
 
   // round end: each browser receives its own final hand
-  feed('B1', { uid: UID.B1, sAC: [0, 4, 8, 13, 17, 21, 30, 40, 50], sMs: [0, 4, 8], fP: { uid: UID.B1, lm: 0 }, cmd: 853 });
+  feed('B1', { uid: UID.B1, sAC: [0, 4, 8, 13, 17, 21, 30, 40, 50], sMs: [0, 4, 8], fP: { uid: UID.B1, lm: 0 }, cmd: 855 });
   assertAgree(coord, 'round end');
 });
 

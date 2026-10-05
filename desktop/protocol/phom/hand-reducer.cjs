@@ -186,10 +186,23 @@ function reduceHand(prev, event, ctx = {}) {
       return bump({ sourceCommand: 854, publicMelds: melds });
     }
 
+    case 'EAT': {
+      // 853 — the eater's own session gets its new full hand (the eaten card included) + the server's phỏm.
+      const eater = event.fP && event.fP.uid != null ? String(event.fP.uid) : null;
+      if (sameUid(eater, profileUid) && Array.isArray(event.sAC)) {
+        return withCards(
+          { ...state, revision: state.revision + 1, lastAppliedSeq: seq != null ? seq : state.lastAppliedSeq, updatedAt: now },
+          event.sAC,
+          { authoritative: true, syncState: SYNC.LIVE, sourceCommand: 853, currentTurnUid: eater, serverMelds: Array.isArray(event.sMs) ? [...event.sMs] : state.serverMelds }
+        );
+      }
+      return bump({ sourceCommand: 853, currentTurnUid: eater || state.currentTurnUid });
+    }
+
     case 'ROUND_END': {
-      // Round end. Prefer an authoritative final snapshot for this profile.
+      // Round end (855). Prefer an authoritative final snapshot for this profile.
       const patch = {
-        sourceCommand: 853,
+        sourceCommand: 855,
         syncState: SYNC.ENDED,
         serverMelds: Array.isArray(event.sMs) ? [...event.sMs] : state.serverMelds,
         resultDelta: readMoneyDelta(event, profileUid),
@@ -225,6 +238,8 @@ function reduceHand(prev, event, ctx = {}) {
 
 // fP.lm = money delta for the acting player at round end. Keep numeric only.
 function readMoneyDelta(event, profileUid) {
+  // ROUND_END 855: ps[] carries every player's result (mX = money won/lost this round)
+  if (Array.isArray(event.ps)) { const me = event.ps.find((p) => p && sameUid(p.uid, profileUid)); if (me && typeof me.mX === 'number') return me.mX; }
   if (event.fP && sameUid(event.fP.uid, profileUid) && typeof event.fP.lm === 'number') return event.fP.lm;
   return null;
 }

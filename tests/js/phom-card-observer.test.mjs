@@ -152,7 +152,7 @@ test('11. a new round (ROUND_END → DEAL) clears every card of the previous rou
   assert.equal(r1.roundSeq, 1);
   assert.equal(r1.discardPile.length, 1);
   // round ends, then a fresh deal begins round 2
-  feed(obs, classifyPhomFrame(JSON.stringify([5, { cmd: 853, sAC: [0, 1, 2, 3, 4, 5, 6, 7, 8], fP: { uid: 'A', lm: -3 } }])), { slot: 'B1', ownUid: 'A' });
+  feed(obs, classifyPhomFrame(JSON.stringify([5, { cmd: 855, sAC: [0, 1, 2, 3, 4, 5, 6, 7, 8], fP: { uid: 'A', lm: -3 } }])), { slot: 'B1', ownUid: 'A' });
   feed(obs, dealFrame([20, 21, 22, 23, 24, 25, 26, 27, 28]), { slot: 'B1', ownUid: 'A' });
   const r2 = obs.getSnapshot();
   assert.equal(r2.roundSeq, 2);

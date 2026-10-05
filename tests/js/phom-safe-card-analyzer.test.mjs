@@ -151,7 +151,7 @@ test('15. a new round clears the previous analysis (no stale safe cards carry ov
   const a = createSafeCardAnalyzer();
   assert.ok(a.analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' }).safeCards.length >= 1);
   // round ends, new deal begins round 2 with a different hand
-  obs.ingestFrame({ slot: 'B1', ownUid: 'uidA', cls: classifyPhomFrame(JSON.stringify([5, { cmd: 853, sAC: [48, 30], fP: { uid: 'uidA', lm: 0 } }])), now: clk++ });
+  obs.ingestFrame({ slot: 'B1', ownUid: 'uidA', cls: classifyPhomFrame(JSON.stringify([5, { cmd: 855, sAC: [48, 30], fP: { uid: 'uidA', lm: 0 } }])), now: clk++ });
   obs.ingestFrame({ slot: 'B1', ownUid: 'uidA', cls: dealFrame([12, 13]), now: clk++ });
   const r2 = a.analyze({ snapshot: obs.getSnapshot(), targetPlayerUid: 'uidA' });
   assert.equal(r2.roundSeq, 2);

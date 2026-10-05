@@ -78,9 +78,17 @@ test('gameplay commands classify with surfaced fields', () => {
   assert.equal(meld.type, 'MELD');
   assert.equal(meld.mes[0].cs.length, 3);
 
-  const end = classifyPhomFrame(JSON.stringify([5, { uid: 'A', sAC: [1, 2, 3], sMs: [], fP: { uid: 'A', lm: -50 }, cmd: 853 }]));
+  // 853 is an EAT (play.log: [5,{"cs":28,"ic":true,"fP":{"uid":eater,"lm":-400,"puid":discarder,...},"cmd":853}])
+  const eat = classifyPhomFrame(JSON.stringify([5, { cs: 27, sAC: [10, 14, 18, 27], cmc: 8, sMs: [10, 14, 18, 27], ic: false, fP: { uid: 'B', lm: -100, puid: 'A', mX: 100 }, cmd: 853 }]));
+  assert.equal(eat.type, 'EAT');
+  assert.equal(eat.cs, 27);
+  assert.equal(eat.fP.uid, 'B');
+  assert.equal(eat.fP.puid, 'A');
+  assert.equal(eat.isHandEvent, true);
+  // 855 is the round end (ps[] = every player's leftover cards / money)
+  const end = classifyPhomFrame(JSON.stringify([5, { ps: [{ cs: [1, 25], uid: 'A', pt: 8, mX: 98 }], fP: { cs: 30, uid: 'A', pS: 4 }, cmd: 855 }]));
   assert.equal(end.type, 'ROUND_END');
-  assert.equal(end.fP.lm, -50);
+  assert.equal(end.ps[0].mX, 98);
 });
 
 // Pure/total: malformed / non-JSON / binary never throw.
