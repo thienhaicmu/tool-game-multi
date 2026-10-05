@@ -52,9 +52,9 @@ class TableGroup extends EventEmitter {
     this._log = typeof deps.log === 'function' ? deps.log : () => {};
     this._rejoinDelayMs = deps.rejoinDelayMs != null ? Number(deps.rejoinDelayMs) : REJOIN_DELAY_MS;
     this._replacePollMs = deps.replacePollMs != null ? Number(deps.replacePollMs) : REPLACE_POLL_MS;
-    // the CHƯA SẴN SÀNG account readies 1–3 s (random) after a stranger readied (user rule 2026-10-05, was 2–3 s)
-    this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 1000;
-    this._fullReadyMax = deps.fullReadyMaxMs != null ? Number(deps.fullReadyMaxMs) : 3000;
+    // the CHƯA SẴN SÀNG account readies 2–4 s (random) after a stranger readied (user rule 2026-10-05: 2–3 s → 1–3 s → 2–4 s)
+    this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 2000;
+    this._fullReadyMax = deps.fullReadyMaxMs != null ? Number(deps.fullReadyMaxMs) : 4000;
     this._replaceWaitMs = deps.replaceWaitMs != null ? Number(deps.replaceWaitMs) : REPLACE_WAIT_MS;
     this._timers = new Set(); // rejoin + replacement timers — all cleared by reset / leaveAll / auto off
     // ONE operation per account at a time (GĐ3): whatever asks — the bar, the tool window, a timer — a second request
@@ -612,9 +612,18 @@ class TableGroup extends EventEmitter {
     const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
     if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return this._fullWait(g, 'KEY_NOT_SEATED');
     const players = this._coord.tablePlayerCount(key);
-    if (players < 4) { g.fullReadySent = false; g.fullStartSent = false; return this._fullWait(g, 'PLAYERS_' + players); }
+    if (players < 4) {
+      g.fullReadySent = false; g.fullStartSent = false;
+      // user rule 2026-10-05: the stranger LEFT before the round → CHƯA SS goes back to "not ready" and waits for the
+      // next one. The game has no un-ready command (its own JS, 2026-09-21) and a fresh seat is never ready, so it
+      // leaves and sits down again at once. Also the server kicks the HOST ~15 s after everyone else is ready
+      // ("Bạn thoát vì không bắt đầu", captures test-D 2026-09-21): a ready CHƯA SS left alone with the group would
+      // cost the KEY its table.
+      if (nr && this._atGroupTable(nr[0]) && this._coord.isReady(nr[0]) && typeof this._coord.strangerSeated === 'function' && !this._coord.strangerSeated(key)) this._resetNotReady(g, nr[0]);
+      return this._fullWait(g, 'PLAYERS_' + players);
+    }
     // user rule 2026-10-05: KEY · SẴN SÀNG · CHƯA SẴN SÀNG waits — only once a STRANGER at the table is ready does the
-    // CHƯA SẴN SÀNG account ready, after a random 1–3 s
+    // CHƯA SẴN SÀNG account ready, after a random 2–4 s
     const strangerReady = typeof this._coord.strangerReady === 'function' ? this._coord.strangerReady(key) : true;
     if (nr && !this._coord.isReady(nr[0])) {
       if (!strangerReady) return this._fullWait(g, 'STRANGER_NOT_READY');
@@ -626,6 +635,8 @@ class TableGroup extends EventEmitter {
       this._enqueue('READY', async (gen) => {
         await this._sleep(delay);
         if (this._cancelled(gen) || this._group !== g || this._coord.roundRunning(key) || this._coord.isReady(nr[0])) { g.fullReadySent = false; return CANCELLED; }
+        // the stranger left during the 2–4 s: stay not ready
+        if (this._coord.tablePlayerCount(key) < 4 || !this._coord.strangerReady(key)) { g.fullReadySent = false; this._log('FULL_READY_SKIPPED', { id: nr[0], reason: 'STRANGER_GONE' }); return CANCELLED; }
         if (!this._atGroupTable(nr[0])) { g.fullReadySent = false; this._log('FULL_READY_SKIPPED', { id: nr[0], reason: 'NOT_SEATED' }); return CANCELLED; } // kicked meanwhile: asks again when it sits
         const res = await this._coord.sendTableReady(nr[0]);
         if (res && res.ok !== false) this._event('FULL_READY', { id: nr[0], rid: g.rid, delayMs: delay });
@@ -639,11 +650,39 @@ class TableGroup extends EventEmitter {
     if (!this._coord.othersReady(key)) return this._fullWait(g, 'OTHERS_NOT_READY');
     g.fullStartSent = true;
     this._enqueue('START', async (gen) => {
-      if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(key) || !this._coord.othersReady(key)) { g.fullStartSent = false; return CANCELLED; }
+      // never a round of our three alone: the stranger must still be there when the start goes out
+      if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(key) || !this._coord.othersReady(key) || this._coord.tablePlayerCount(key) < 4) { g.fullStartSent = false; return CANCELLED; }
       const res = await this._coord.sendTableStart(key);
       if (res && res.ok !== false) this._event('ROUND_START_SENT', { id: key, rid: g.rid });
       else { g.fullStartSent = false; this._log('ROUND_START_FAILED', { id: key, error: res && res.error ? res.error.code : null }); }
       return res;
+    });
+  }
+  // CHƯA SS back to "not ready": leave + sit down again at the group's table (queued and paced like every command).
+  _resetNotReady(g, id) {
+    if (g.resetPending) return;
+    g.resetPending = true;
+    this._event('NOT_READY_RESET', { id, rid: g.rid, reason: 'STRANGER_LEFT' });
+    this._enqueue('UNREADY', async (gen) => {
+      try {
+        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(g.creatorId)) return CANCELLED;
+        // a new stranger sat down meanwhile, or it is not ready / not seated any more: nothing to undo
+        if (!this._atGroupTable(id) || !this._coord.isReady(id) || this._coord.strangerSeated(g.creatorId)) return CANCELLED;
+        const lv = await this._coord.leaveTable(id);
+        if (!lv || lv.ok === false) { this._log('NOT_READY_RESET_FAILED', { id, step: 'LEAVE', error: lv && lv.error ? lv.error.code : null }); return lv; }
+        if (this._group !== g || this._cancelled(gen)) return CANCELLED;
+        const res = await this._coord.joinTable(id, g.rid, { expectUid: g.keyUid });
+        if (!res.ok) {
+          this._event('JOIN_FAILED', { id, rid: g.rid, error: res.error });
+          if (this._isMissingRoom(res)) this._enqueue('TABLE_LOST', (gen2) => this._onTableLost(gen2));
+          return res;
+        }
+        this._seated(id, g.roles.get(id));
+        this._event('JOINED', { id, rid: g.rid, role: g.roles.get(id) || null, reset: true });
+        this._emit();
+        this._onSeats();
+        return res;
+      } finally { g.resetPending = false; }
     });
   }
   // why the full-table step is waiting — logged once per change, never once per frame

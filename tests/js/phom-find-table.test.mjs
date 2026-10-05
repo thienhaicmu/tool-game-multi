@@ -695,3 +695,31 @@ test('LOG: every leave is in coseat — the tool\'s own (LEAVE_SENT), one the pa
   sim.feed('B2', '[4,"Simms",-1]', 'send');                      // the game page leaving by itself
   assert.ok(logs.some((l) => l.event === 'LEAVE_REQUEST_SEEN' && l.slot === 'B2'));
 });
+
+// user rule 2026-10-05: the stranger LEAVES before the round → CHƯA SS must be "not ready" again. No un-ready command
+// exists, so it leaves and sits again (a fresh seat is not ready); the KEY must not start a round of our three alone.
+function strangerLeaves(sim, room, { uid = 's_lạ', dn = 'nguoila' } = {}) {
+  room.seats = room.seats.filter((u) => u !== uid);
+  for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u)) sim.feed(bid, JSON.stringify([5, { p: { uid, mT: false, dn, id: 0 }, t: 2, cmd: 200 }]));
+}
+test('T8 e2e: the stranger leaves after CHƯA SS readied → CHƯA SS leaves and sits again (not ready), waits for the next', async () => {
+  const { sim, group, coord } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  await group.findTable('B1', {}); await group.scanTable('B2'); await group.joinTable('B3', group.rid());
+  const room = groupRoom(sim, group);
+  strangerSits(sim, room); strangerReadies(sim, room);
+  await until(() => sim.readyFrames.includes('B3'));
+  assert.equal(coord.isReady('B3'), true);
+  const leavesBefore = op(sim, 'B3', 4).length; const joinsBefore = op(sim, 'B3', 8).length;
+  strangerLeaves(sim, room);
+  await until(() => op(sim, 'B3', 8).length > joinsBefore);
+  assert.equal(op(sim, 'B3', 4).length, leavesBefore + 1, 'left the table…');
+  assert.equal(op(sim, 'B3', 8).at(-1)[2], group.rid(), '…and sat again at the group\'s table');
+  assert.ok(room.seats.includes('1_3'));
+  assert.equal(coord.isReady('B3'), false, 'not ready any more');
+  // the next stranger: the same rule again
+  const readyB3 = sim.readyFrames.filter((x) => x === 'B3').length;
+  strangerSits(sim, room, { uid: 's_2', dn: 'nguoila2' }); strangerReadies(sim, room, { uid: 's_2', dn: 'nguoila2' });
+  await until(() => sim.readyFrames.filter((x) => x === 'B3').length > readyB3);
+  assert.equal(sim.readyFrames.filter((x) => x === 'B3').length, readyB3 + 1, 'readies again for the next stranger');
+});

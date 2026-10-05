@@ -369,6 +369,13 @@ class HostTableCoordinator extends EventEmitter {
     const ours = new Set([...this._profiles.values()].map((x) => x.ctx.uid()).filter(Boolean).map(String));
     return ts.seats.some((s) => s.uid && !ours.has(String(s.uid)) && (s.ready || this._readyUids.has(s.uid)));
   }
+  // Is anyone who is NOT one of ours sitting at this browser's table? (a stranger leaving → CHƯA SS goes back to waiting)
+  strangerSeated(profileId) {
+    const r = this._rec(profileId); const ts = r && this._ownSeated(r) ? r.ctx.tableState() : null;
+    if (!ts) return false;
+    const ours = new Set([...this._profiles.values()].map((x) => x.ctx.uid()).filter(Boolean).map(String));
+    return ts.seats.some((s) => s.uid && !ours.has(String(s.uid)));
+  }
   othersReady(profileId) {
     const r = this._rec(profileId); const ts = r && this._ownSeated(r) ? r.ctx.tableState() : null;
     if (!ts) return false;
