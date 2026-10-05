@@ -7,7 +7,7 @@ Tài liệu này là **đặc tả**. Module `desktop/protocol/phom/table-group.
 
 | Quy tắc | Nội dung |
 |---|---|
-| Vai trò | Theo **thứ tự thao tác** (không theo số acc): acc bấm **Dò Key** = **KEY** (chủ bàn, **không bao giờ tự bấm Bắt đầu**). Acc **ngồi vào bàn KEY thứ nhất** (Tạo hoặc Vào) = **SẴN SÀNG**. Acc **ngồi vào thứ hai** = **CHƯA SẴN SÀNG** (bị đá ~10 giây/lần vì chưa sẵn sàng; **tự vào lại chỉ khi bấm ReJoin hoặc tích TỰ ĐỘNG** — sau ~0,5 giây). Ba acc độc lập cho tới khi một acc bấm Dò Key. |
+| Vai trò | Theo **thứ tự thao tác** (không theo số acc): acc bấm **Dò Key** = **KEY** (chủ bàn; chỉ tự bấm **Bắt đầu** khi bàn đủ 4 người và mọi người khác đã sẵn sàng — xem T8). Acc **ngồi vào bàn KEY thứ nhất** (Tạo hoặc Vào) = **SẴN SÀNG**. Acc **ngồi vào thứ hai** = **CHƯA SẴN SÀNG** (bị đá ~10 giây/lần vì chưa sẵn sàng; **tự vào lại chỉ khi bấm ReJoin hoặc tích TỰ ĐỘNG** — sau ~0,5 giây). Ba acc độc lập cho tới khi một acc bấm Dò Key. |
 | Vai trò giữ nguyên | Vai trò gắn với acc cho tới khi nhóm giải tán. Bị đá rồi vào lại vẫn giữ vai trò cũ. |
 | Bàn | Bàn của nhóm là **một bàn công khai trống** mà acc KEY ngồi vào **một mình** (Dò Key). Người chơi khác vào được — đó là mục đích. Tool **không tạo bàn riêng** (308 bắt buộc có mật khẩu nên không ai vào được). |
 | Mức cược | Luôn là mức **Tiền chọn ở tool Phỏm** (Dò Key dùng mức đó; Tạo dùng đúng mức acc KEY đang ngồi). Thanh trong trình duyệt không có ô chọn cược. |
@@ -62,7 +62,7 @@ vai trò · cược` và mọi người trong bàn dạng `👑tên-tiền ✓` 
 | **Thoát** | Bất kỳ | Rời bàn (không tắt trình duyệt). Tắt ReJoin của acc đó. |
 | **Copy** | Bất kỳ | Copy số bàn trong ô SS. |
 
-Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi thứ nhất = SẴN SÀNG) → **acc 3 Vào** (ngồi thứ hai = CHƯA SẴN SÀNG — bấm **ReJoin** cho acc này, hoặc tích TỰ ĐỘNG) → người lạ vào ghế 4 và bấm sẵn sàng → **🔔 chuông reo 3 tiếng ở tool Phỏm QA** → anh **bấm sẵn sàng tay cho acc 3** → **KEY bấm Bắt đầu**. Hoặc acc 2 + acc 3 cùng bấm **Tạo** (ai tìm thấy trước là SẴN SÀNG). Chế độ TỰ ĐỘNG làm các bước tới chuông giống hệt; sẵn sàng của acc 3 và Bắt đầu luôn bấm tay.
+Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi thứ nhất = SẴN SÀNG) → **acc 3 Vào** (ngồi thứ hai = CHƯA SẴN SÀNG — bấm **ReJoin** cho acc này, hoặc tích TỰ ĐỘNG) → người lạ vào ghế 4 → **acc 3 tự sẵn sàng** → người lạ sẵn sàng (🔔 chuông 3 tiếng) → **KEY tự bắt đầu ván**. Hoặc acc 2 + acc 3 cùng bấm **Tạo** (ai tìm thấy trước là SẴN SÀNG). Bước đủ 4 người → sẵn sàng → bắt đầu chạy ở cả chế độ TAY lẫn TỰ ĐỘNG.
 
 ## 1. Chế độ TAY — thanh công cụ trong từng trình duyệt
 
@@ -79,7 +79,7 @@ Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi t
 | **T5** | Bấm **Thoát** | rời bàn | SẴN SÀNG / CHƯA SẴN SÀNG: trả vai trò. KEY: giữ vai trò (có thể Vào lại). |
 | **T6** | *Bị server đá*, ReJoin **tắt** | **không làm gì**; báo "BỊ ĐÁ · bấm ReJoin" | Vai trò giữ nguyên. (ReJoin **bật** → như A3.) |
 | **T7** | *Bàn không còn* (Vào/ReJoin báo "Phòng không tồn tại") | giải tán nhóm | Báo "Bàn đã mất — bấm Tìm bàn". |
-| **T8** | *Người lạ ngồi ghế 4 và bấm sẵn sàng* | 🔔 chuông reo **3 tiếng** ở tool Phỏm QA + dòng thông báo "Người thứ 4 (tên) đã sẵn sàng — Px bấm Sẵn sàng, Py (KEY) bấm Bắt đầu" · mỗi người một lần mỗi ván | Anh bấm sẵn sàng tay cho acc CHƯA SẴN SÀNG, rồi KEY bấm Bắt đầu. |
+| **T8** | *Bàn nhóm đủ 4 người* (chưa vào ván) | (1) acc **CHƯA SẴN SÀNG** tự bấm sẵn sàng (có nhịp) · (2) khi **mọi người trừ chủ bàn đã sẵn sàng** (cả người lạ) → acc **KEY tự bắt đầu ván** (cùng lệnh cmd 5, chủ bàn gửi = Bắt đầu) · người lạ sẵn sàng → 🔔 chuông 3 tiếng · mỗi bước một lần mỗi ván; reset khi hết ván hoặc bàn hụt người | Chạy ở cả TAY và TỰ ĐỘNG. Người lạ chưa sẵn sàng thì KEY chờ. |
 
 ## 2. Chế độ TỰ ĐỘNG — ô ☐ TỰ ĐỘNG ở cuối tool
 
@@ -125,7 +125,7 @@ tính P1–P3, và bài / ván ở bàn khác của dự bị không lẫn vào 
 
 ## 4. Không bao giờ
 
-- Tự bấm **Bắt đầu** cho chủ bàn.
+- Tự bấm **Bắt đầu** cho chủ bàn khi bàn **chưa đủ 4 người** hoặc còn người chưa sẵn sàng (T8 là trường hợp duy nhất).
 - **Tạo bàn riêng** (308) hay tự sinh mật khẩu bàn: bàn như vậy người chơi khác không vào được từ sảnh.
 - Lấy số bàn từ một dòng trong danh sách sảnh rồi coi đó là bàn của nhóm (xem §5).
 - Ngồi lại ở bàn người lạ khi đang Tạo: bàn vào thật mà không có acc KEY → rời ngay.

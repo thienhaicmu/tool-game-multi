@@ -217,6 +217,8 @@ class HostTableCoordinator extends EventEmitter {
         break;
       default: break;
     }
+    // who sits / who is ready at the group's table changed → table-group checks the full-table auto start
+    if (playing && meta.direction !== 'send' && !meta.replay && (cls.type === 'TABLE_STATE' || cls.type === 'SEAT_UPDATE' || cls.type === 'USER_READY')) this.emit('seats', { id: rec.id });
     this._changed();
     this.emit('hands', this.handsSnapshot());
     if (cls.isHandEvent || cls.type === 'TABLE_STATE') this.emit('cards', this.cardObserverSnapshot());
@@ -323,6 +325,23 @@ class HostTableCoordinator extends EventEmitter {
     if (!rec || !rec.ctx.sendContext()) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND' } };
     try { const r = await rec.send(buildAutoReadyPrefFrame(on), rec.ctx.sendContext()); return { ok: r?.ok !== false }; }
     catch (e) { return { ok: false, error: { code: 'PHOM_PREF_FAILED', message: errMsg(e) } }; }
+  }
+  // BẮT ĐẦU — the table HOST starts the round: the same cmd 5 frame that is SẴN SÀNG for anyone else (Phỏm
+  // TableCommand START = READY = 5). Only for the host; table-group decides WHEN (full table, everyone else ready).
+  async sendTableStart(profileId) {
+    const rec = this._rec(profileId);
+    if (!rec || !rec.ctx.sendContext()) return { ok: false, error: { code: 'PHOM_SOCKET_NOT_FOUND' } };
+    if (!this.isTableHost(profileId)) return { ok: false, error: { code: 'PHOM_NOT_HOST', message: 'Chỉ chủ bàn bắt đầu được ván' } };
+    try { const r = await rec.send(buildTableReadyFrame(), rec.ctx.sendContext()); return { ok: r?.ok !== false }; }
+    catch (e) { return { ok: false, error: { code: 'PHOM_START_FAILED', message: errMsg(e) } }; }
+  }
+  // How many sit at this browser's table, and are all of them except the host ready? (the full-table auto start)
+  tablePlayerCount(profileId) { const r = this._rec(profileId); const ts = r && this._ownSeated(r) ? r.ctx.tableState() : null; return ts ? ts.seats.length : 0; }
+  othersReady(profileId) {
+    const r = this._rec(profileId); const ts = r && this._ownSeated(r) ? r.ctx.tableState() : null;
+    if (!ts) return false;
+    const hostUid = r._hostUid || (ts.seats.find((s) => s.host) || {}).uid;
+    return ts.seats.filter((s) => s.uid && s.uid !== hostUid).every((s) => s.ready || this._readyUids.has(s.uid));
   }
   // SẴN SÀNG at the current table — never for the table HOST (for a host the same cmd 5 means BẮT ĐẦU).
   async sendTableReady(profileId, rid) {
@@ -674,7 +693,8 @@ class HostTableCoordinator extends EventEmitter {
 
   // Screen 2 — cards REMAINING after removing every card held by the three browsers (NOT player 4).
   remainingCards(opts = {}) {
-    const hands = [...this._profiles.values()].map((rec) => (rec.hand && Array.isArray(rec.hand.cardsRaw) ? rec.hand.cardsRaw : []));
+    // the PLAYING browsers only — a reserve's hand belongs to another table
+    const hands = [...this._profiles.values()].slice(0, 3).map((rec) => (rec.hand && Array.isArray(rec.hand.cardsRaw) ? rec.hand.cardsRaw : []));
     return remainingCardsView(hands, opts);
   }
   cardObserverSnapshot() { return this._cardObserver.getSnapshot(); }

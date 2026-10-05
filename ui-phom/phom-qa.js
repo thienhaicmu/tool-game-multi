@@ -216,7 +216,7 @@
     const g = manualGroup;
     const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.money, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.lastError && b.lastError.code].join(',')).join(';');
     const cards = ['B1', 'B2', 'B3'].map((sl) => { const a = safeBySlot[sl]; return a ? a.roundSeq + ':' + a.nextPlayerLabel + ':' + (a.targetCards || []).map((c) => c.code + c.classification).join('') : '-'; }).join('|')
-      + '|' + safeTab + safeFollowTurn + (cardsSnap && cardsSnap.currentTurnUid)
+      + '|' + safeTab + safeFollowTurn + (cardsSnap && cardsSnap.currentTurnUid) + remMode + (cardsSnap && cardsSnap.remaining ? cardsSnap.remaining.count + ':' + cardsSnap.remaining.knownOutCount : '')
       + '|' + manualBrowsers.map((b) => b.state && b.state.label).join(',') + '|' + JSON.stringify((clusterSnap && clusterSnap.reserves) || {});
     const slots = SLOTS.map((s) => [assign[s].runId, manualEntering[assign[s].runId], manualEnterError[assign[s].runId], clusterSnap && clusterSnap.profiles && clusterSnap.profiles[s] && clusterSnap.profiles[s].browserState].join(',')).join(';');
     return [uiState, activeTab, g && g.rid, g && g.stake, g && g.auto, g && g.busy, g && g.recreating, autoStake, autoBusy,
@@ -239,7 +239,9 @@
       case 'KEY_SEATED': return who + ' là KEY (chủ bàn) — các acc khác bấm Tạo / Vào.';
       case 'TABLE_FOUND': return 'Số bàn ' + n.rid + ' — đã điền vào ô SS của mọi trình duyệt.';
       case 'READY_SENT': return who + ' đã sẵn sàng.';
-      case 'FOURTH_READY': return '🔔 Người thứ 4' + (n.name ? ' (' + n.name + ')' : '') + ' đã sẵn sàng — ' + (n.notReadyId ? playerLabelOf(n.notReadyId) + ' bấm Sẵn sàng, ' : '') + playerLabelOf(n.keyId) + ' (KEY) bấm Bắt đầu.';
+      case 'FOURTH_READY': return '🔔 Người thứ 4' + (n.name ? ' (' + n.name + ')' : '') + ' đã sẵn sàng — tool tự cho ' + (n.notReadyId ? playerLabelOf(n.notReadyId) + ' sẵn sàng và ' : '') + playerLabelOf(n.keyId) + ' (KEY) bắt đầu ván.';
+      case 'FULL_READY': return 'Bàn đủ 4 người — ' + who + ' đã tự sẵn sàng.';
+      case 'ROUND_START_SENT': return who + ' (KEY) đã bắt đầu ván.';
       case 'SCAN_FAILED': return who + ' chưa dò ra bàn KEY: ' + errText({ error: n.error }) + '.';
       case 'GROUP_FORMED': return 'Cả nhóm đã vào bàn ' + n.rid + '.';
       case 'JOINED': return who + (n.rejoin ? ' đã vào lại bàn' : ' đã vào bàn') +(n.role ? ' · ' + roleLabel(n.role) : '') + '.';
@@ -263,12 +265,21 @@
       const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
       const ctx = ringBell.ctx || (ringBell.ctx = new AC());
       if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+      // A ringing bell (user 2026-10-05: "vang vang"): the inharmonic partials of a real bell, each decaying on its
+      // own (the low hum lasts longest), a short echo for the ring, and a compressor so it is loud but never clips.
+      const out = ctx.createDynamicsCompressor(); out.threshold.value = -14; out.ratio.value = 4; out.connect(ctx.destination);
+      const echo = ctx.createDelay(1); echo.delayTime.value = 0.22;
+      const fb = ctx.createGain(); fb.gain.value = 0.32;
+      echo.connect(fb); fb.connect(echo); echo.connect(out);
+      const BASE = 660;
+      const PARTIALS = [[0.5, 0.30, 2.8], [1, 0.42, 2.4], [1.19, 0.20, 1.8], [1.56, 0.16, 1.4], [2, 0.22, 1.2], [2.74, 0.10, 0.9], [3.76, 0.06, 0.7]];
       for (let i = 0; i < times; i++) {
-        const t = ctx.currentTime + i * 0.6;
-        for (const [f, g] of [[880, 0.35], [1320, 0.18]]) {
+        const t = ctx.currentTime + i * 0.85;
+        for (const [ratio, g, dur] of PARTIALS) {
           const o = ctx.createOscillator(); const v = ctx.createGain();
-          o.type = 'sine'; o.frequency.value = f; v.gain.setValueAtTime(g, t); v.gain.exponentialRampToValueAtTime(0.001, t + 0.55);
-          o.connect(v); v.connect(ctx.destination); o.start(t); o.stop(t + 0.56);
+          o.type = 'sine'; o.frequency.value = BASE * ratio;
+          v.gain.setValueAtTime(0.0001, t); v.gain.exponentialRampToValueAtTime(g, t + 0.008); v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+          o.connect(v); v.connect(out); v.connect(echo); o.start(t); o.stop(t + dur + 0.05);
         }
       }
     } catch { /* no sound device — the notice still shows */ }
@@ -328,7 +339,7 @@
     const missingUrl = !localTest && selectedProfileIds.some((id) => { const p = profilesX.find((x) => x.id === id); return !(p && p.gameUrl && String(p.gameUrl).trim()); });
     const ready = n >= 3 && n <= 5 && !missingUrl;
     const rt = browserRuntimeInfo || {};
-    const opt = (val, label) => { const o = el('option', { value: val }, label); o.selected = (rt.preference || 'AUTO') === val; return o; };
+    const opt = (val, label) => { const o = el('option', { value: val }, label); o.selected = (rt.preference || 'CUSTOM_CHROMIUM') === val; return o; };
     return el('footer', { class: 'bar' },
       el('label', { class: 'field' }, 'Trình duyệt',
         el('select', { class: 'sel', onchange: async (e) => { const res = await api.browserRuntimeSet({ preference: e.target.value }); if (res && res.ok) { await refreshBrowserRuntime(); renderApp(); } } },
@@ -614,7 +625,79 @@
     const follow = el('input', { type: 'checkbox', id: 'phq-follow', onchange: (e) => { setFollow(e.target.checked); renderApp(); } });
     follow.checked = safeFollowTurn;
     tabs.appendChild(el('label', { class: 'follow', for: 'phq-follow', title: 'Tự mở tab của acc đang tới lượt' }, follow, 'Theo lượt'));
-    return el('section', { class: 'safe-panel' }, tabs, safeCardsFor(safeTab));
+    // each account's tab: its LỌC BÀI (left) + the cards not seen anywhere yet (right, big, sorted / by phỏm)
+    return el('section', { class: 'safe-panel' }, tabs, el('div', { class: 'safe-split' }, safeCardsFor(safeTab), remainingPanel(unseenCards())));
+  }
+  function setRemMode(m) { remMode = m; try { localStorage.setItem('phq-rem-mode', m); } catch { /* ignore */ } renderApp(); }
+
+  // ---- CÒN LẠI: the unseen cards (the card observer: 52 − our three hands − every discard − every laid meld) ----
+  let remMode = 'PHOM';
+  try { const v = localStorage.getItem('phq-rem-mode'); if (v === 'ORDER' || v === 'PHOM') remMode = v; } catch { /* per-viewer convenience only */ }
+  const SUIT_ORDER = ['♠', '♣', '♦', '♥'];
+  const rankOfCode = (code) => Math.floor(Number(code) / 4);   // 0 = A … 12 = K (card-codec)
+  const suitOfCode = (code) => Number(code) % 4;
+  function unseenCards() {
+    const obs = cardsSnap && cardsSnap.remaining;
+    if (!obs || !obs.knownOutCount || !Array.isArray(obs.cards)) return null; // no round seen yet → nothing honest to show
+    return obs.cards.slice().sort((a, b) => a.code - b.code); // small → big (A … K), suit order within a rank
+  }
+  // Possible PHỎM among the unseen cards: SETS (3–4 of one rank) and RUNS (3+ consecutive of one suit), each sorted
+  // small → big; a card in no possible phỏm is LẺ. A card may sit in a set AND a run (both are possible).
+  function groupByPhom(cards) {
+    const byRank = new Map(), bySuit = new Map();
+    for (const c of cards) {
+      const r = rankOfCode(c.code), s = suitOfCode(c.code);
+      (byRank.get(r) || byRank.set(r, []).get(r)).push(c);
+      (bySuit.get(s) || bySuit.set(s, []).get(s)).push(c);
+    }
+    const sets = [...byRank.entries()].filter(([, cs]) => cs.length >= 3).sort((a, b) => a[0] - b[0]).map(([, cs]) => cs);
+    const runs = [];
+    for (const s of [0, 1, 2, 3]) {
+      const cs = (bySuit.get(s) || []).slice().sort((a, b) => rankOfCode(a.code) - rankOfCode(b.code));
+      let cur = [];
+      for (const c of cs) {
+        if (cur.length && rankOfCode(c.code) !== rankOfCode(cur[cur.length - 1].code) + 1) { if (cur.length >= 3) runs.push(cur); cur = []; }
+        cur.push(c);
+      }
+      if (cur.length >= 3) runs.push(cur);
+    }
+    const inPhom = new Set([].concat(...sets, ...runs).map((c) => c.code));
+    return { sets, runs, loose: cards.filter((c) => !inPhom.has(c.code)) };
+  }
+  // kind: 'set' / 'run' / 'both' (a card that can be in a phỏm of either kind) / 'loose' — drives the highlight
+  function bigCard(c, kind) {
+    const tip = (c.label || '') + (kind === 'set' ? ' · trong phỏm ngang' : kind === 'run' ? ' · trong phỏm dọc' : kind === 'both' ? ' · trong phỏm ngang và dọc' : kind === 'loose' ? ' · lá lẻ' : '');
+    return el('span', { class: 'card-face big ' + (c.color === 'red' ? 'red' : 'black') + (kind ? ' k-' + kind : ''), title: tip }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?'));
+  }
+  function remainingPanel(cards) {
+    const box = el('div', { class: 'rem' });
+    const mode = (m, label, tip) => el('button', { class: 'seg' + (remMode === m ? ' active' : ''), title: tip, onclick: () => setRemMode(m) }, label);
+    box.appendChild(el('div', { class: 'rem-h' },
+      el('span', { class: 'rem-title', title: 'Lá chưa xuất hiện — đang ở tay acc lạ hoặc còn trong nọc' }, '🂠 Còn lại' + (cards ? ' · ' + cards.length + ' lá' : '')),
+      el('span', { class: 'spacer' }),
+      el('span', { class: 'segs', role: 'group', 'aria-label': 'Cách xếp' }, mode('PHOM', 'Theo phỏm', 'Nhóm thành phỏm ngang / dọc có thể có, rồi lá lẻ'), mode('ORDER', 'Thứ tự', 'Tất cả từ bé tới lớn (A → K)'))));
+    if (!cards) { box.appendChild(el('div', { class: 'safe-empty' }, 'Chưa có ván — vào bàn và chia bài để xem lá còn lại')); return box; }
+    if (!cards.length) { box.appendChild(el('div', { class: 'safe-empty' }, 'Không còn lá nào chưa xuất hiện')); return box; }
+    const g = groupByPhom(cards);
+    // which possible phỏm each card belongs to — the highlight in BOTH views
+    const inSet = new Set([].concat(...g.sets).map((x) => x.code)), inRun = new Set([].concat(...g.runs).map((x) => x.code));
+    const kindOf = (c) => (inSet.has(c.code) && inRun.has(c.code) ? 'both' : inSet.has(c.code) ? 'set' : inRun.has(c.code) ? 'run' : 'loose');
+    const row = (cs, kind) => el('div', { class: 'cards big' }, ...cs.map((c) => bigCard(c, kind || kindOf(c))));
+    if (remMode === 'ORDER') {
+      box.appendChild(row(cards));
+      box.appendChild(el('div', { class: 'rem-legend' }, el('span', { class: 'lg lg-set' }, 'phỏm ngang'), el('span', { class: 'lg lg-run' }, 'phỏm dọc'), el('span', { class: 'lg lg-loose' }, 'lá lẻ (mờ)')));
+      return box;
+    }
+    // each possible phỏm in its own tinted frame (sets purple, runs blue), then the loose cards
+    const phom = (cs, kind, title) => el('div', { class: 'phom-box pb-' + kind, title }, row(cs, kind));
+    const section = (title, cls, groups, kind, tip) => el('div', { class: 'rem-sec ' + cls, title: tip },
+      el('div', { class: 'g-label' }, title + ' (' + groups.length + ')'),
+      el('div', { class: 'rem-groups' }, ...groups.map((cs) => phom(cs, kind, cs.map((x) => x.label).join(' ')))));
+    if (g.sets.length) box.appendChild(section('Phỏm ngang', 'g-set', g.sets, 'set', '3–4 lá cùng số chưa xuất hiện'));
+    if (g.runs.length) box.appendChild(section('Phỏm dọc', 'g-run', g.runs, 'run', '3+ lá cùng chất liền nhau chưa xuất hiện'));
+    if (g.loose.length) box.appendChild(el('div', { class: 'rem-sec g-loose', title: 'Không nằm trong phỏm nào có thể có' }, el('div', { class: 'g-label' }, 'Lá lẻ (' + g.loose.length + ')'), row(g.loose, 'loose')));
+    if (!g.sets.length && !g.runs.length) box.appendChild(el('div', { class: 'muted rem-note' }, 'Không còn phỏm nào có thể có trong các lá chưa xuất hiện.'));
+    return box;
   }
   function setFollow(on) { safeFollowTurn = !!on; try { localStorage.setItem('phq-safe-follow', on ? '1' : '0'); } catch { /* ignore */ } }
 
@@ -623,8 +706,7 @@
     ['safeCards', 'Nên đánh', 'g-safe', 'Người đánh sau chắc chắn không ăn được — điểm cao trước'],
     ['likelySafeCards', 'Có thể', 'g-likely', 'Có thể an toàn — gần như không ăn được'],
     ['unknownCards', 'Chưa rõ', 'g-unknown', 'Chưa chứng minh được — ít cách bị ăn đứng trước'],
-    ['riskyCards', 'Đừng đánh', 'g-risky', 'Người đánh sau ăn được'],
-    ['ownMeldCards', 'Phỏm', 'g-own', 'Trong phỏm của mình — giữ lại'],
+    // "Đừng đánh" and "Phỏm" are not shown (user 2026-10-05): the panel lists only what CAN be played
   ];
   function safeCardsFor(slot) {
     const a = safeBySlot[slot];

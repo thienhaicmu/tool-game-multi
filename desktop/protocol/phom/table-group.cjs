@@ -71,6 +71,7 @@ class TableGroup extends EventEmitter {
       if (typeof this._coord.on === 'function') {
         this._coord.on('strangerReady', (e = {}) => this._onStrangerReady(e.id, e));
         this._coord.on('roundEnd', () => this._onRoundEnd());
+        this._coord.on('seats', () => this._onSeats());
       }
     }
   }
@@ -166,9 +167,12 @@ class TableGroup extends EventEmitter {
     if (cur && cur.creatorId !== id && this._atGroupTable(cur.creatorId)) {
       return { ok: false, error: { code: 'PHOM_KEY_EXISTS', message: `Đã có acc KEY (P${this._orderedIds().indexOf(cur.creatorId) + 1}) đang ngồi — ở acc này bấm Tạo${cur.rid != null ? ' hoặc Vào' : ''}, không bấm Dò Key` } };
     }
-    // Rule D2 — a group that still has members is never replaced silently: the user confirms (Dò Key again within 5s).
-    if (cur && !force && (cur.roles.size > 1 || cur.creatorId !== id)) {
-      return { ok: false, needsConfirm: true, error: { code: 'PHOM_GROUP_EXISTS', message: `Đang có nhóm${cur.rid != null ? ' (SS ' + cur.rid + ')' : ''} với ${cur.roles.size} acc — bấm Dò Key lần nữa trong 5 giây để huỷ nhóm cũ và lập nhóm mới` } };
+    // Rule D2 — a group whose members still SIT at its table is never replaced silently: the user confirms (Dò Key
+    // again within 5s). A group nobody sits at any more (played, everyone out — live 2026-10-05: P1 Dò Key → round →
+    // out → P2 Dò Key asked to confirm) is simply replaced.
+    const stillSeated = cur ? [...cur.roles.keys()].filter((m) => m !== id && this._atGroupTable(m)) : [];
+    if (cur && !force && stillSeated.length) {
+      return { ok: false, needsConfirm: true, error: { code: 'PHOM_GROUP_EXISTS', message: `Nhóm cũ${cur.rid != null ? ' (SS ' + cur.rid + ')' : ''} còn ${stillSeated.length} acc đang ngồi — bấm Dò Key lần nữa trong 5 giây để huỷ nhóm cũ và lập nhóm mới` } };
     }
     const left = await this._leaveIfSeated(id, gen);
     if (!left.ok) return left;
@@ -582,9 +586,40 @@ class TableGroup extends EventEmitter {
     const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
     this._event('FOURTH_READY', { uid, name: name || null, rid: g.rid, notReadyId: nr ? nr[0] : null, keyId: g.creatorId });
   }
+  // FULL TABLE (user rule 2026-10-05): once the group's table has 4 players and no round runs, the CHƯA SẴN SÀNG
+  // member readies; once everyone but the host is ready, the KEY (host) starts the round. Each step once per round
+  // (reset at round end, or when the table is no longer full), paced like every other command.
+  _onSeats() {
+    const g = this._group;
+    if (!g || g.rid == null || !this._coord || this._coord.roundRunning()) return;
+    const key = g.creatorId;
+    const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
+    if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return;
+    if (this._coord.tablePlayerCount(key) < 4) { g.fullReadySent = false; g.fullStartSent = false; return; }
+    if (nr && this._atGroupTable(nr[0]) && !this._coord.isReady(nr[0]) && !g.fullReadySent) {
+      g.fullReadySent = true;
+      this._enqueue('READY', async (gen) => {
+        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning() || this._coord.isReady(nr[0])) return CANCELLED;
+        const res = await this._coord.sendTableReady(nr[0]);
+        if (res && res.ok !== false) this._event('FULL_READY', { id: nr[0], rid: g.rid }); else g.fullReadySent = false;
+        return res;
+      });
+      return; // the start waits for this ready to come back from the server
+    }
+    if (!g.fullStartSent && this._coord.isTableHost(key) && this._coord.othersReady(key)) {
+      g.fullStartSent = true;
+      this._enqueue('START', async (gen) => {
+        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning() || !this._coord.othersReady(key)) { g.fullStartSent = false; return CANCELLED; }
+        const res = await this._coord.sendTableStart(key);
+        if (res && res.ok !== false) this._event('ROUND_START_SENT', { id: key, rid: g.rid }); else g.fullStartSent = false;
+        return res;
+      });
+    }
+  }
   _onRoundEnd() {
     const g = this._group;
     if (!g) return;
+    g.fullReadySent = false; g.fullStartSent = false; // the next round asks again
     g.bellRung.clear(); // a new round: the 4th player readies again
     this._enqueue('READY', (gen) => this._readyCheck(gen));
   }

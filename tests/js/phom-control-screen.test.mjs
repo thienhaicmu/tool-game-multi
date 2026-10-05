@@ -65,7 +65,9 @@ test('LỌC BÀI: each account card carries its own analysis, re-run on every ca
   assert.match(safe, /Lọc bài/);
   assert.match(safe, /'Lượt sau: ' \+ playerLabel\(a\.nextPlayerLabel\)/);
   assert.match(safe, /'Chưa có bài'/);
-  for (const label of ["'Nên đánh'", "'Có thể'", "'Chưa rõ'", "'Đừng đánh'", "'Phỏm'"]) assert.ok(js.includes(label), label);
+  for (const label of ["'Nên đánh'", "'Có thể'", "'Chưa rõ'"]) assert.ok(js.includes(label), label);
+  // user 2026-10-05: the playable groups only — "Đừng đánh" and "Phỏm" are not listed
+  assert.equal(/\['riskyCards'|\['ownMeldCards'/.test(js), false);
   assert.match(fn('applyUiSnapshot'), /safeBySlot = snap\.analyses \|\| \{\};/);
   assert.match(js, /api\.onUi\(\(snap\) => \{ applyUiSnapshot\(snap\);/);
   assert.match(fn('refreshManual'), /api\.uiSnapshot\(\)/);

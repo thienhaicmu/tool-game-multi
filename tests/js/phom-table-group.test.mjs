@@ -490,3 +490,64 @@ test('a fast rejoin never overlaps a request the user is running on that account
   await tick();
   assert.equal(cmds(coord, 'JOIN').filter((e) => e.id === 'B3').length, n, 'no second join on top of it');
 });
+
+// ---- T8 — FULL TABLE: 4 players → CHƯA SS readies, then the KEY starts once everyone but the host is ready ---------
+function fullTable() {
+  const m = mk();
+  const c = m.coord;
+  c.players = 3; c.othersAllReady = false;
+  c.tablePlayerCount = () => c.players;
+  c.othersReady = () => c.othersAllReady;
+  c.isTableHost = (id) => id === 'B2';
+  c.sendTableStart = async (id) => { c.sent.push({ at: c.clock, id, cmd: 'START' }); return { ok: true }; };
+  return m;
+}
+async function formed(m) {
+  await m.group.findTable('B2', { stake: 100 });
+  await m.group.scanTable('B1');              // SẴN SÀNG
+  await m.group.joinTable('B3', m.group.rid()); // CHƯA SS
+}
+
+test('T8: below 4 players nothing happens; at 4 the CHƯA SS member readies; once all others are ready the KEY starts', async () => {
+  const m = fullTable(); await formed(m);
+  const readyBefore = cmds(m.coord, 'READY').length;
+  m.coord.fire('seats', {}); await m.group.leave('B9');
+  assert.equal(cmds(m.coord, 'READY').length, readyBefore, '3 players: no extra ready');
+  assert.equal(cmds(m.coord, 'START').length, 0);
+  m.coord.players = 4;
+  m.coord.fire('seats', {}); await m.group.leave('B9');
+  assert.ok(cmds(m.coord, 'READY').some((e) => e.id === 'B3'), 'the CHƯA SS member readied');
+  m.coord.fire('seats', {}); await m.group.leave('B9');
+  assert.equal(cmds(m.coord, 'START').length, 0, 'the stranger is not ready yet → the KEY waits');
+  m.coord.othersAllReady = true;
+  m.coord.fire('seats', {}); m.coord.fire('seats', {}); await m.group.leave('B9');
+  const starts = cmds(m.coord, 'START');
+  assert.equal(starts.length, 1, 'started once');
+  assert.equal(starts[0].id, 'B2', 'by the KEY (host)');
+});
+
+test('T8: never while a round runs; asks again after the round ends', async () => {
+  const m = fullTable(); await formed(m);
+  m.coord.players = 4; m.coord.othersAllReady = true; m.coord.ready.add('B3');
+  m.coord.round = true;
+  m.coord.fire('seats', {}); await m.group.leave('B9');
+  assert.equal(cmds(m.coord, 'START').length, 0, 'a round is running');
+  m.coord.round = false;
+  m.coord.fire('seats', {}); await m.group.leave('B9');
+  assert.equal(cmds(m.coord, 'START').length, 1);
+  m.coord.fire('roundEnd', {}); await m.group.leave('B9');
+  m.coord.fire('seats', {}); await m.group.leave('B9');
+  assert.equal(cmds(m.coord, 'START').length, 2, 'the next round starts again');
+});
+
+test('rule D2 (live 2026-10-05): after a round everyone is out → another account\'s Dò Key just forms a new group, no confirm', async () => {
+  const { coord, group } = mk();
+  await group.findTable('B1', { stake: 100 });
+  await group.scanTable('B2');
+  await group.joinTable('B3', group.rid());
+  for (const id of ['B1', 'B2', 'B3']) coord.seats.delete(id); // played, everyone left
+  const r = await group.findTable('B2', { stake: 100 });
+  assert.equal(r.ok, true, 'no "bấm lần nữa" when nobody of the old group sits at its table');
+  assert.equal(group.roleOf('B2'), ROLE.KEY);
+  assert.equal(group.roleOf('B1'), null);
+});

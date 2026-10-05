@@ -53,3 +53,20 @@ test('a frame that could hold a secret is never copied into the log', () => {
   const no = logs.find((l) => l.event === 'JOIN_ACK');
   assert.equal(no.serverFrame, null);
 });
+
+test('T8 facts: player count, everyone-but-host ready, and only the HOST may start', async () => {
+  const sent = [];
+  const coord = new HostTableCoordinator({ profiles: [{ id: 'A', uid: '1_100', send: async (f) => { sent.push(f); return { ok: true }; } }], environmentAuthorized: true, now: () => 1 });
+  const feed = (frame) => coord.ingest('A', { raw: JSON.stringify(frame), direction: 'recv', seq: 1, targetId: 'T' });
+  feed([5, { b: 100, ps: [{ uid: '1_100', sit: 0, C: true }, { uid: '1_2', sit: 1, r: true }, { uid: '1_3', sit: 2, r: true }, { uid: '1_9', sit: 3, r: false }], cmd: 202 }]);
+  assert.equal(coord.tablePlayerCount('A'), 4);
+  assert.equal(coord.othersReady('A'), false, 'the stranger (1_9) is not ready');
+  feed([5, { uid: '1_9', cmd: 5 }]);
+  assert.equal(coord.othersReady('A'), true);
+  assert.equal(coord.isTableHost('A'), true);
+  const r = await coord.sendTableStart('A');
+  assert.equal(r.ok !== false, true);
+  const coord2 = new HostTableCoordinator({ profiles: [{ id: 'B', uid: '1_2', send: async () => ({ ok: true }) }], environmentAuthorized: true, now: () => 1 });
+  coord2.ingest('B', { raw: JSON.stringify([5, { b: 100, ps: [{ uid: '1_100', sit: 0, C: true }, { uid: '1_2', sit: 1 }], cmd: 202 }]), direction: 'recv', seq: 1, targetId: 'T' });
+  assert.equal((await coord2.sendTableStart('B')).error.code, 'PHOM_NOT_HOST');
+});

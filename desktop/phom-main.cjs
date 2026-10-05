@@ -189,11 +189,13 @@ else {
   // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME), persisted so the
   // choice survives restarts. AUTO uses the pinned custom Chromium and falls back to Google Chrome.
   function browserRuntimeSettingPath() { return path.join(phomRoot(), 'browser-runtime.json'); }
+  // nothing saved yet → the bundled Chromium (user 2026-10-05)
+  const DEFAULT_BROWSER_RUNTIME = 'CUSTOM_CHROMIUM';
   var _browserRuntimePref = null;
   function browserRuntimePref() {
     if (_browserRuntimePref) return _browserRuntimePref;
     try { const j = JSON.parse(fs.readFileSync(browserRuntimeSettingPath(), 'utf8')); _browserRuntimePref = browserRuntimeResolver.normalizePreference(j && j.preference); }
-    catch { _browserRuntimePref = 'AUTO'; }
+    catch { _browserRuntimePref = DEFAULT_BROWSER_RUNTIME; }
     return _browserRuntimePref;
   }
   function setBrowserRuntimePref(p) {
@@ -483,14 +485,16 @@ else {
   // monitor when ≥3 monitors; tiled otherwise). Uses the three slot devices' viewports so each window
   // fits its mobile-landscape content. Pure geometry (grid-layout); the placement is applied via each
   // run's chrome --window-position/--window-size at launch.
-  function allDisplayWorkAreas() { try { return screen.getAllDisplays().map((d) => d.workArea); } catch { return [currentWorkArea()]; } }
   // §7/§8 — carry BOTH the OS window size and the emulated viewport to grid-layout.
   // A device may request an explicit desktop OS window (e.g. 960×540) that is
   // independent from its game viewport (e.g. 851×393). Legacy mobile-only profiles
   // carry osWindow=null; the geometry layer falls back to viewport + chrome.
   // PHASE-6.2 — the FOUR-window arrangement (3 desktop Chromium windows + the Tool window). Browsers use
   // .slots[1..3]; the Tool window is placed at .tool.
-  function clusterFourWindowArrangement() { return arrangeClusterWindows(allDisplayWorkAreas(), { gap: 8 }); }
+  // User rule 2026-10-05: every game window is ONE QUARTER of a screen — always the 2×2 grid on the monitor the
+  // tool is on (P1 TL · P2 TR · P3 BL · tool BR, reserves behind the tool), whatever the number of monitors. With 2+
+  // monitors the old per-monitor layout made a browser fill a whole screen.
+  function clusterFourWindowArrangement() { return arrangeClusterWindows([currentWorkArea()], { gap: 8 }); }
   // The window of a slot: A/B/C = the three playing places; a RESERVE browser (D/E, not playing) sits exactly where
   // the Phỏm tool is, behind it.
   function windowRectForSlot(slot) {
@@ -516,18 +520,24 @@ else {
   function restoreLayout() {
     try {
       const wa = currentWorkArea();
-      // PHASE-6.2 — place the Tool as the 4th window of the deterministic cluster arrangement (its own
-      // monitor with ≥4 displays, else docked bottom-right of the last browser monitor / BR quadrant on
-      // one display). Falls back to the bottom-right quadrant if the arrangement is unavailable.
+      // The Tool is the 4th quarter (bottom-right) of the 2×2 grid on its own monitor. Falls back to the
+      // bottom-right quadrant if the arrangement is unavailable.
       let control = null;
       try { const arr = clusterFourWindowArrangement(); control = arr && arr.tool; } catch { control = null; }
       if (!control) control = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
       if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: Math.round(control.x), y: Math.round(control.y), width: Math.round(control.width), height: Math.round(control.height) });
+      // XẾP CỬA SỔ also puts every OPEN browser back into its quarter (P1/P2/P3) or behind the tool (P4/P5) — no
+      // reopen needed to fix windows that were moved or opened full-size.
+      try {
+        const snap = phomCluster && phomCluster.active() ? phomCluster.getClusterSnapshot() : null;
+        if (snap) {
+          for (const s of SLOTS_ABC) { const p = snap.profiles[s]; if (p && p.profileId && p.browserState === 'OPEN') moveRunWindow(p.profileId, windowRectForSlot(s)).catch(() => {}); }
+          for (const r of RESERVE_SLOTS) { const p = snap.reserves && snap.reserves[r]; if (p && p.profileId && p.browserState === 'OPEN') moveRunWindow(p.profileId, windowRectForSlot(r)).catch(() => {}); }
+        }
+      } catch { /* best effort */ }
       // reserve browsers (4th/5th profile) open at the tool's place — keep the tool in front of them
       if (shell && !shell.isDestroyed()) shell.moveTop();
-      // Owned browser windows are external Chrome; re-applying geometry to a running
-      // chrome.exe requires reopening. We report the target rects so the UI can guide
-      // a reopen; we never move a window that is not one of our runs.
+      // Only our own runs are moved (through each run's own CDP client); no other window is touched.
     } catch { /* best effort */ }
     return { ok: true };
   }
@@ -638,7 +648,7 @@ else {
   // Structured header lifecycle log (§24) — one line per step so an intermittent failure is diagnosable.
   // Gated behind PHOM_HEADER_LOG / PHOM_LIFECYCLE_LOG. NEVER logs cookies/tokens/secrets.
   // The few steps that explain "the browser opened but never got into the game" always go to coseat.jsonl.
-  const ALWAYS_LOGGED = new Set(['AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE']);
+  const ALWAYS_LOGGED = new Set(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE']);
   function headerLog(event, data = {}) {
     if (ALWAYS_LOGGED.has(event)) { try { appendCoseatLog({ tag: 'PHOM-RUN', event, at: new Date().toISOString(), ...data }); } catch { /* best effort */ } }
     if (process.env.PHOM_HEADER_LOG !== '1' && process.env.PHOM_LIFECYCLE_LOG !== '1') return;
@@ -712,7 +722,7 @@ else {
   const headerFindConfirm = Object.create(null); // runId -> until (ms): a Dò Key asked to confirm replacing the group
   const HEADER_TABLE_ACTIONS = new Set(['FIND_TABLE', 'SCAN_TABLE', 'JOIN_CODE', 'REJOIN', 'LEAVE', 'CANCEL_FIND']);
   // What the group is doing right now, in the words the TỰ ĐỘNG chip on every bar shows.
-  const GROUP_BUSY_WORD = Object.freeze({ AUTO_ON: 'đang lập bàn', REGROUP: 'đang lập lại bàn', FIND: 'đang Dò Key', JOIN: 'đang vào bàn', REPLACE_JOIN: 'acc thay đang vào bàn', READY: 'sẵn sàng', TABLE_LOST: 'mất bàn — lập lại', LEAVE: 'đang rời bàn', LEAVE_ALL: 'đang thoát tất cả' });
+  const GROUP_BUSY_WORD = Object.freeze({ AUTO_ON: 'đang lập bàn', REGROUP: 'đang lập lại bàn', FIND: 'đang Dò Key', JOIN: 'đang vào bàn', REPLACE_JOIN: 'acc thay đang vào bàn', READY: 'sẵn sàng', START: 'đang bắt đầu ván', TABLE_LOST: 'mất bàn — lập lại', LEAVE: 'đang rời bàn', LEAVE_ALL: 'đang thoát tất cả' });
   // GĐ2 — an error shown on a bar belongs to the state it happened in: once that browser's state changes (it got in,
   // left, was kicked…) the old error is cleared instead of sticking until the next click.
   const headerErrorState = Object.create(null); // runId -> state code when the error was set
@@ -766,6 +776,7 @@ else {
       const view = headerViewFor(run.id, browsers, sharedRid);
       const rid = String(run.id);
       maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
+      rememberLoginOrigin(run, browsers.find((x) => x && String(x.profileId) === rid));
       if (view.inGame) {
         // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
         // and log the click→ENTERED latency once, then stop timing this run.
@@ -865,9 +876,38 @@ else {
   // the tool, so the header kept showing the old state (in game / at a table) while the page sat at the web
   // lobby and never offered VÀO GAME. Runs at commit time, so no frame of the old document can re-bind the
   // state afterwards. VÀO GAME in flight is kept: that navigation is the one it is waiting for.
+  // The game keeps its login in localStorage (token / user_token / isAutoLogin), which belongs to ONE origin — and
+  // the site moves between mirror domains (v.hitclub.tienda → .guitars …). A profile whose saved Game URL is another
+  // mirror opens where no token is stored, so every reopen asked for a login (found 2026-10-05: tokens under
+  // .guitars, all profiles saved as .tienda). Once an account is LOGGED IN, the origin it is on becomes the profile's
+  // Game URL, so the next open lands where the login is. Only the origin is stored (no path/query); once per change.
+  function rememberLoginOrigin(run, b) {
+    if (!run || !b || !b.loggedIn || !deviceProfilesStore) return;
+    if (!run.lastTopUrl) {
+      // the page loaded before the tool attached (no navigation seen): ask it once where it is
+      const client = runClientFor(run.id);
+      if (client && !run._originAsked) {
+        run._originAsked = true;
+        client.Runtime.evaluate({ expression: 'location.href', returnByValue: true })
+          .then((r) => { const v = r && r.result && r.result.value; if (typeof v === 'string') run.lastTopUrl = v; else run._originAsked = false; })
+          .catch(() => { run._originAsked = false; });
+      }
+      return;
+    }
+    let origin; try { const u = new URL(run.lastTopUrl); if (!/^https?:$/.test(u.protocol)) return; origin = u.origin + '/'; } catch { return; }
+    if (run._loginOriginSaved === origin) return;
+    run._loginOriginSaved = origin;
+    const pid = run.profileId != null ? String(run.profileId) : null;
+    const p = pid ? deviceProfilesStore.get(pid) : null;
+    if (!p) return;
+    let savedOrigin = null; try { savedOrigin = p.gameUrl ? new URL(p.gameUrl).origin + '/' : null; } catch { savedOrigin = null; }
+    if (savedOrigin === origin) return;
+    try { deviceProfilesStore.update(pid, { gameUrl: origin }); headerLog('GAME_URL_FOLLOWS_LOGIN', { runId: run.id, from: savedOrigin, to: origin }); } catch { /* best effort */ }
+  }
   function onRunDocumentReplaced(runId, url) {
     const rid = String(runId);
     if (!url || /^about:/i.test(url)) return; // the proxy-auth launch page, not the game
+    { const run = runManager && runManager.get(rid); if (run) run.lastTopUrl = String(url); } // where the game really is (login origin)
     try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ }
     resetAutoEnter(rid); // a new page = a new login → auto VÀO GAME again
     delete headerError[rid]; headerDomPresent[rid] = false; delete headerLastPushed[rid];

@@ -85,7 +85,7 @@ test('Tool HEADER indicator is DOM-truthful: READY needs cdp+binding+DOM; RECOVE
 test('NO CDP-storm regression: header DOM is NOT verified per WS frame (event-driven signal only)', () => {
   // pushHeaderStates still dedupes; the DOM-presence check lives in the page (__HEADER_STATUS), not a
   // per-frame Runtime.evaluate. The only evaluate on push is the (deduped) render.
-  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('function pushHeaderStates(') + 1900);
+  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('function pushHeaderStates(') + 2600);
   assert.match(fn, /if \(headerLastPushed\[rid\] === json\) continue;/);
   assert.equal(/verifyPresent|getElementById/.test(fn), false, 'no per-push DOM verify round-trip');
 });

@@ -5,6 +5,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
 const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 const js = read('ui-phom/phom-qa.js');
@@ -146,4 +148,17 @@ test('the profile table shows a COMPACT proxy (TYPE host:port · auth) — never
   assert.match(cellBlock, /px\.endpoint/);
   assert.match(cellBlock, /px\.hasAuth \? ' · auth' : ''/);
   assert.equal(/password|passwordSecretRef/.test(cellBlock), false, 'the proxy cell never references a password');
+});
+
+test('every game window is a QUARTER of the screen: the 2×2 grid on the tool\'s monitor, whatever the monitor count', () => {
+  assert.match(main, /function clusterFourWindowArrangement\(\) \{ return arrangeClusterWindows\(\[currentWorkArea\(\)\], \{ gap: 8 \}\); \}/);
+  assert.equal(/allDisplayWorkAreas/.test(main), false, 'no per-monitor full-screen browsers any more');
+  const { arrangeClusterWindows } = require('../../desktop/protocol/phom/grid-layout.cjs');
+  const a = arrangeClusterWindows([{ x: 0, y: 0, width: 1920, height: 1040 }], { gap: 8 });
+  assert.equal(a.placement, 'GRID_2x2');
+  for (const i of [1, 2, 3]) { assert.ok(a.slots[i].width <= 960 && a.slots[i].height <= 520, 'slot ' + i + ' is a quarter'); }
+  // XẾP CỬA SỔ moves the open browsers back into their quarter / behind the tool
+  const r = main.slice(main.indexOf('function restoreLayout('), main.indexOf('function restoreLayout(') + 2400);
+  assert.match(r, /moveRunWindow\(p\.profileId, windowRectForSlot\(s\)\)/);
+  assert.match(r, /moveRunWindow\(p\.profileId, windowRectForSlot\(r\)\)/);
 });
