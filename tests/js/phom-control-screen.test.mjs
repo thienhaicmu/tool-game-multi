@@ -27,7 +27,7 @@ test('layout order: status line · note · one card per account · controls at t
 
 test('bottom controls: Mức cược + Tự động switch + Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả', () => {
   const f = fn('controlFooter');
-  for (const label of ["'Mức cược'", "type: 'checkbox'", "'Tự động'", "'Bàn khác'", "'Thoát bàn tất cả'", "'Xếp lại 3 cửa sổ game'", 'openFrameCapture()', "'Đóng tất cả'"]) assert.ok(f.includes(label), label);
+  for (const label of ["'Mức cược'", "type: 'checkbox'", "'Tự động'", "'Bàn khác'", "'Thoát bàn tất cả'", "'Xếp lại cửa sổ theo bố cục'", "openLayoutDialog()", 'openFrameCapture()', "'Đóng tất cả'"]) assert.ok(f.includes(label), label);
   assert.match(fn('autoStakes'), /betOptions/);
 });
 

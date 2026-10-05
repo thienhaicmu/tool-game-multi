@@ -73,6 +73,7 @@
     monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
     copy: '<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>',
     rec: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/>',
+    layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M3 12h18"/>',
     folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
     grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
   };
@@ -131,6 +132,7 @@
     try { session = await api.sessionState(); } catch {}
     try { clusterSnap = await api.clusterSnapshot(); } catch { clusterSnap = null; }
     try { const ad = await api.getAnDanh(); anDanhOn = !!(ad && ad.on); } catch { anDanhOn = false; }
+    try { const st = await api.getStake(); if (st && st.stake != null) autoStake = String(st.stake); } catch { /* pick it again */ }
     await refreshProfilesX();
     await refreshBrowserRuntime();
     // a renderer reload with the browsers still open re-binds the slots (the cards never read CHƯA MỞ)
@@ -456,6 +458,45 @@
     return { overlay, body, close };
   }
 
+  // BỐ CỤC — which quarter of the screen each window takes. A 2×2 picture of the screen; each quarter picks P1 / P2 /
+  // P3 / Tool, and picking one that is elsewhere swaps the two (always one window per quarter). Áp dụng = save + arrange.
+  async function openLayoutDialog() {
+    let res = null; try { res = await api.getLayout(); } catch { res = null; }
+    const def = (res && res.defaultLayout) || { A: 'BL', B: 'TL', C: 'TR', TOOL: 'BR' };
+    let layout = { ...((res && res.layout) || def) };
+    const { body, close } = openDialog('Bố cục cửa sổ', 'Chọn ô trên màn hình cho từng cửa sổ — P4/P5 dự bị luôn nằm sau Tool');
+    const ITEM_LABEL = { A: 'P1', B: 'P2', C: 'P3', TOOL: 'Tool' };
+    const QUAD_LABEL = { TL: 'Trên trái', TR: 'Trên phải', BL: 'Dưới trái', BR: 'Dưới phải' };
+    const grid = el('div', { class: 'layout-grid' });
+    const place = (item, quad) => {
+      const other = Object.keys(layout).find((k) => layout[k] === quad);
+      if (other && other !== item) layout[other] = layout[item];
+      layout[item] = quad;
+      paint();
+    };
+    function paint() {
+      grid.replaceChildren();
+      for (const quad of ['TL', 'TR', 'BL', 'BR']) {
+        const item = Object.keys(layout).find((k) => layout[k] === quad);
+        const idx = { A: 0, B: 1, C: 2 }[item];
+        const sel = el('select', { class: 'sel', 'aria-label': QUAD_LABEL[quad], onchange: (e) => place(e.target.value, quad) },
+          ...['A', 'B', 'C', 'TOOL'].map((it) => el('option', { value: it }, ITEM_LABEL[it])));
+        sel.value = item;
+        grid.appendChild(el('div', { class: 'layout-cell' + (item === 'TOOL' ? ' is-tool' : ''), style: idx != null ? '--accent:' + ACCENT[idx] : '' },
+          el('span', { class: 'muted' }, QUAD_LABEL[quad]), el('b', null, ITEM_LABEL[item]), sel));
+      }
+    }
+    paint();
+    const msg = el('div', { class: 'note' }, '');
+    body.append(grid, msg, el('div', { class: 'row end' },
+      el('button', { class: 'btn', onclick: () => { layout = { ...def }; paint(); } }, 'Mặc định'),
+      el('button', { class: 'btn primary', onclick: async () => {
+        let r = null; try { r = await api.setLayout(layout); } catch (e) { r = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+        if (r && r.ok === false) { msg.textContent = errText(r); msg.className = 'note warn'; return; }
+        close(); note('Đã lưu bố cục và xếp lại cửa sổ.');
+      } }, 'Áp dụng & xếp')));
+  }
+
   // ================= PHỎM tab =================
   //   status line   — số bàn (copy) · cược · cùng bàn · tự động / đang xử lý
   //   note line     — what the group just did (notices)
@@ -576,10 +617,11 @@
     const swap = open ? el('span', { class: 'pc-swap', title: 'Cho P' + n + ' vào chơi thay ô…' },
       ...SLOTS.map((slot, i) => el('button', { class: 'btn xs', disabled: replaceBusy[slot] ? 'disabled' : null, title: `P${n} vào chơi ở ô P${i + 1}; trình duyệt P${i + 1} hiện tại thành dự bị (rời bàn trước)`, onclick: () => onSwapSlot(slot, r.slot) }, '→' + (i + 1)))) : null;
     const who = [account || r.label || r.deviceProfileId, b.accountId ? 'ID ' + b.accountId : '', b.money != null ? money(b.money) : '', 'DỰ BỊ — mở sẵn sau tool, chưa chơi'].filter(Boolean).join(' · ');
-    return el('section', { class: 'player reserve st-' + tone },
+    return el('section', { class: 'player reserve st-' + tone, title: label },
       el('div', { class: 'pc-head' },
         el('span', { class: 'p-badge', title: 'Dự bị' }, 'P' + n),
-        el('div', { class: 'pc-name', title: who }, account || r.label || r.deviceProfileId)),
+        el('div', { class: 'pc-name', title: who }, account || r.label || r.deviceProfileId),
+        el('span', { class: 'dot res-dot ' + tone, title: label })), // the state in one dot on a short window
       el('div', { class: 'pc-state', title: label }, el('span', { class: 'dot ' + tone }), el('span', { class: 'pc-label res-label' }, label)),
       el('div', { class: 'pc-res-actions' }, swap, tools));
   }
@@ -738,7 +780,8 @@
     const autoOn = !!(g && g.auto);
     const stakes = autoStakes();
     if (!autoStake && g && g.selectedStake != null) autoStake = String(g.selectedStake); // e.g. after a tool reload
-    if (autoStake && !stakes.includes(Number(autoStake))) autoStake = '';
+    // the remembered stake stays chosen even before the server's stake list arrives (it is shown as an option)
+    if (autoStake && !stakes.includes(Number(autoStake))) stakes.push(Number(autoStake)), stakes.sort((p, q) => p - q);
     const sel = el('select', { class: 'sel bet-sel', id: 'phq-stake', title: 'Mức cược dùng cho Dò Key / Tạo (cả tool và thanh trong web)', onchange: (e) => onPickStake(e.target.value) },
       el('option', { value: '' }, 'Chọn…'), ...stakes.map((v) => el('option', { value: String(v) }, money(v))));
     sel.value = autoStake;
@@ -755,7 +798,8 @@
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Rời bàn này và tìm bàn chờ khác cho cả nhóm', onclick: () => onNewTable() }, 'Bàn khác'),
       el('button', { class: 'btn danger-outline', title: 'Cả 3 acc rời bàn (tắt tự động)', onclick: step(() => api.leaveAll(), 'Đã thoát bàn tất cả.') }, 'Thoát bàn tất cả'),
-      iconButton('grid', 'Xếp lại 3 cửa sổ game', step(() => api.restoreLayout(), 'Đã xếp lại cửa sổ.')),
+      iconButton('grid', 'Xếp lại cửa sổ theo bố cục', step(() => api.restoreLayout(), 'Đã xếp lại cửa sổ.')),
+      iconButton('layout', 'Bố cục: chọn ô cho P1 / P2 / P3 / Tool', () => openLayoutDialog()),
       iconButton('rec', 'Ghi WebSocket (gửi log khi báo lỗi)', () => openFrameCapture()),
       iconButton('folder', 'Các ván đã lưu (xem lại Lọc bài từng bước) — mở thư mục', async () => { const r = await api.openRounds(); if (r && r.ok === false) note(errText(r), true); }),
       el('button', { class: 'btn danger', title: 'Đóng cả 3 trình duyệt', onclick: () => closeBrowsers() }, 'Đóng tất cả'));

@@ -27,6 +27,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   // the three browsers
   clusterOpen: () => ipcRenderer.invoke('phom:cluster-open'),
   openRounds: () => ipcRenderer.invoke('phom:rounds-open'),
+  getLayout: () => ipcRenderer.invoke('phom:layout-get'),
+  setLayout: (layout) => ipcRenderer.invoke('phom:layout-set', { layout }),
   reopenReserve: (reserve) => ipcRenderer.invoke('phom:reserve-reopen', { reserve }),
   swapSlot: (slot, reserve) => ipcRenderer.invoke('phom:slot-swap', { slot, reserve }),
   replaceSlot: (slot, profileId) => ipcRenderer.invoke('phom:slot-replace', { slot, profileId: profileId || null }),
@@ -46,6 +48,7 @@ contextBridge.exposeInMainWorld('phomQA', {
   requestChannels: (browserId) => ipcRenderer.invoke('phom:request-channels', { browserId: browserId != null ? browserId : null }),
   setAuto: (on, browserId, stake) => ipcRenderer.invoke('phom:auto-set', { on, browserId, stake }),
   setStake: (stake) => ipcRenderer.invoke('phom:set-stake', { stake }),
+  getStake: () => ipcRenderer.invoke('phom:stake-get'),
   newTable: (browserId) => ipcRenderer.invoke('phom:new-table', { browserId }),
   getAnDanh: () => ipcRenderer.invoke('phom:an-danh-get'),
   setAnDanh: (on) => ipcRenderer.invoke('phom:an-danh-set', { on }),

@@ -59,10 +59,9 @@ test('the header action router acts on ONE browser via the run-scoped coordinato
 
 test('the Tool is the 4th window of the deterministic cluster arrangement', () => {
   assert.match(main, /arrangeClusterWindows/);
-  assert.match(main, /function windowRectForSlot[\s\S]*?clusterFourWindowArrangement\(\)[\s\S]*?arr\.slots\[idx\]/);
-  // a reserve browser (D/E, not playing) sits at the tool's place, behind it
-  assert.match(main, /function windowRectForSlot[\s\S]*?let tool = arr && arr\.tool;/);
-  assert.match(main, /clusterFourWindowArrangement\(\);\s*control = arr && arr\.tool/);
+  // each window's quarter comes from the user's layout (window-layout.cjs); a reserve sits where the tool is
+  assert.match(main, /function windowRectForSlot[\s\S]*?windowLayout\.rectForItem\(item, clusterFourWindowArrangement\(\), currentWindowLayout\(\)\)/);
+  assert.match(main, /control = windowLayout\.rectForItem\('TOOL', clusterFourWindowArrangement\(\), currentWindowLayout\(\)\)/);
 });
 
 test('status line: số bàn (click = copy) · cược · cùng bàn · còn lại N lá — the remaining-card list itself is not shown', () => {

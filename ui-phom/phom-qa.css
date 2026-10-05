@@ -257,6 +257,7 @@ button.stat:disabled { opacity: 1; }
   .bar .field .sel { max-width: 82px; }
 }
 /* reserve card: name / state / [→1 →2 →3 … tools] */
+.res-dot { display: none; }
 .player.reserve .pc-state { min-height: 18px; padding-bottom: 0; font-size: 11px; }
 .pc-res-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 3px; padding: 2px 7px 5px; }
 .pc-res-actions .pc-tools { margin-left: auto; }
@@ -305,8 +306,62 @@ button.stat:disabled { opacity: 1; }
 .safe-split .rem { gap: 4px 14px; padding-top: 6px; }
 .safe-split .rem-groups { gap: 4px 10px; }
 .safe-split .rem-sec { gap: 3px; }
-@media (max-width: 760px) {
+@media (max-width: 760px) and (min-height: 561px) {
   .safe-split { grid-template-columns: 1fr; grid-auto-rows: max-content; overflow-y: auto; }
   .safe-split > .safe, .safe-split > .rem { overflow: visible; min-height: auto; }
   .safe-split > .rem { border-left: 0; border-top: 1px solid var(--line); }
+}
+
+/* BỐ CỤC dialog: a 2×2 picture of the screen */
+.layout-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.layout-cell { display: flex; flex-direction: column; gap: 4px; padding: 10px; border-radius: 10px; border: 2px solid var(--accent, var(--line-strong)); background: var(--panel-2); min-height: 92px; }
+.layout-cell b { font-size: 18px; color: var(--accent, var(--text)); }
+.layout-cell.is-tool { border-style: dashed; }
+.layout-cell .sel { margin-top: auto; }
+
+/* COMPACT — a short tool window (a quarter of a 1366×768 screen is ~683×384): every bar shrinks so the cards panel
+   keeps the room, and LỌC BÀI | CÒN LẠI stay side by side (stacking them would hide the cards below the fold). */
+@media (max-height: 560px) {
+  #phq-root { gap: 4px; padding: 0 8px 5px; }
+  .topbar { height: 32px; gap: 10px; }
+  .brand { font-size: 12.5px; } .brand-mark { width: 20px; height: 20px; font-size: 11px; border-radius: 6px; }
+  .tabs { padding: 2px; } .tab { padding: 2px 12px; font-size: 12px; }
+  .lic { font-size: 11px; }
+  .note { padding: 3px 8px; font-size: 11.5px; }
+  .stat { height: 24px; padding: 0 8px; gap: 5px; border-radius: 7px; }
+  .stat span { font-size: 9.5px; } .stat b { font-size: 12.5px; }
+  .status-line { gap: 5px; padding-top: 0; }
+  .players { gap: 4px; }
+  .pc-head { padding: 3px 6px 0; gap: 4px; }
+  .pc-name { font-size: 11.5px; }
+  .pc-state { min-height: 20px; padding: 0 6px 3px; font-size: 10.5px; }
+  .player .p-badge { min-width: 20px; height: 17px; font-size: 9.5px; }
+  .player .role { font-size: 9px; padding: 0 4px; }
+  .pc-tools .icon-btn { width: 19px; height: 19px; }
+  .pc-res-actions { padding: 1px 6px 3px; gap: 2px; }
+  .pc-swap .btn.xs, .btn.xs { height: 18px; font-size: 10.5px; padding: 0 4px; }
+  .player.reserve .pc-state { display: none; } /* the state is the dot next to the name (+ tooltip) */
+  .res-dot { display: inline-block; }
+  .safe-split { grid-template-columns: minmax(0, .8fr) minmax(0, 1.4fr); }
+  .safe-tabs { padding: 3px 6px 0; }
+  .safe-tab { padding: 3px 8px; font-size: 11px; }
+  .safe, .rem { padding: 4px 8px 6px; gap: 4px 10px; }
+  .safe-h, .rem-h { font-size: 9.5px; }
+  .seg { height: 19px; padding: 0 7px; font-size: 10.5px; }
+  .g-label { font-size: 9px; padding: 0 4px; }
+  .safe-group { gap: 2px; }
+  .card-face { width: 23px; height: 31px; border-radius: 4px; }
+  .card-face b { font-size: 11px; } .card-face span { font-size: 10px; }
+  .safe-split .card-face.big { width: 27px; height: 37px; }
+  .safe-split .card-face.big b { font-size: 12.5px; } .safe-split .card-face.big span { font-size: 11.5px; }
+  .safe-split .rem-groups { gap: 3px 8px; }
+  .phom-box { padding: 1px; border-radius: 6px; }
+  .safe-split > .safe { grid-template-columns: 1fr; }
+  /* group label on the same line as its cards: one line per group */
+  .safe-group, .rem-sec { flex-direction: row; align-items: center; gap: 6px; }
+  .safe-group .g-label, .rem-sec > .g-label { flex: 0 0 auto; min-width: 54px; align-self: center; }
+  .player.reserve .pc-tools { display: none; } /* ↻ ⏻ of a reserve: on a taller window */
+  .bar { padding: 4px 6px; gap: 4px; }
+  .bar .btn, .bar .switch, .bar .sel { height: 26px; font-size: 11.5px; }
+  .bar .icon-btn { width: 24px; height: 24px; }
 }

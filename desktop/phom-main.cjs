@@ -54,6 +54,7 @@ const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
 const anDanh = require('./protocol/phom/an-danh.cjs');
 const crypto = require('node:crypto');
+const windowLayout = require('./protocol/phom/window-layout.cjs');
 const { createRoundJournal } = require('./protocol/phom/round-journal.cjs');
 const { deriveBrowserState } = require('./protocol/phom/browser-state.cjs');
 const headerActionGuard = require('./protocol/phom/header-action-guard.cjs');
@@ -497,13 +498,33 @@ else {
   function clusterFourWindowArrangement() { return arrangeClusterWindows([currentWorkArea()], { gap: 8 }); }
   // The window of a slot: A/B/C = the three playing places; a RESERVE browser (D/E, not playing) sits exactly where
   // the Phỏm tool is, behind it.
+  // MỨC CƯỢC — the last stake the user picked is remembered across restarts (stake.json), not picked again each time.
+  function stakePath() { return path.join(phomRoot(), 'stake.json'); }
+  function savedStake() { try { const v = Number(JSON.parse(fs.readFileSync(stakePath(), 'utf8')).stake); return Number.isFinite(v) && v > 0 ? v : null; } catch { return null; } }
+  function saveStake(stake) {
+    const v = Number(stake);
+    try { ensureDir(phomRoot()); fs.writeFileSync(stakePath(), JSON.stringify({ stake: Number.isFinite(v) && v > 0 ? v : null }, null, 2), 'utf8'); } catch { /* best effort */ }
+  }
+  // The quarter each window takes follows the user's LAYOUT (window-layout.cjs; default P2|P3 over P1|Tool), saved in
+  // window-layout.json. A reserve (D/E) sits in the tool's quarter, behind it.
+  function windowLayoutPath() { return path.join(phomRoot(), 'window-layout.json'); }
+  let _windowLayout = null;
+  function currentWindowLayout() {
+    if (_windowLayout) return _windowLayout;
+    try { _windowLayout = windowLayout.normalizeLayout(JSON.parse(fs.readFileSync(windowLayoutPath(), 'utf8'))); }
+    catch { _windowLayout = { ...windowLayout.DEFAULT_LAYOUT }; }
+    return _windowLayout;
+  }
+  function setWindowLayout(layout) {
+    _windowLayout = windowLayout.normalizeLayout(layout);
+    try { ensureDir(phomRoot()); fs.writeFileSync(windowLayoutPath(), JSON.stringify(_windowLayout, null, 2), 'utf8'); } catch { /* best effort */ }
+    return _windowLayout;
+  }
   function windowRectForSlot(slot) {
-    const arr = clusterFourWindowArrangement();
-    const idx = { A: 1, B: 2, C: 3 }[slot];
-    if (idx) return (arr && arr.slots && arr.slots[idx]) || gridRectForSlot(slot);
-    let tool = arr && arr.tool;
-    try { if (shell && !shell.isDestroyed()) tool = shell.getBounds(); } catch { /* arrangement fallback */ }
-    return tool || gridRectForSlot('A');
+    const item = { A: 'A', B: 'B', C: 'C', D: 'D', E: 'E' }[slot] || 'TOOL';
+    let r = null;
+    try { r = windowLayout.rectForItem(item, clusterFourWindowArrangement(), currentWindowLayout()); } catch { r = null; }
+    return r || gridRectForSlot(item === 'B' || item === 'C' ? item : 'A');
   }
   // Move a RUNNING browser's window (CDP Browser.setWindowBounds through its own page client). Best effort.
   async function moveRunWindow(runId, rect) {
@@ -523,7 +544,7 @@ else {
       // The Tool is the 4th quarter (bottom-right) of the 2×2 grid on its own monitor. Falls back to the
       // bottom-right quadrant if the arrangement is unavailable.
       let control = null;
-      try { const arr = clusterFourWindowArrangement(); control = arr && arr.tool; } catch { control = null; }
+      try { control = windowLayout.rectForItem('TOOL', clusterFourWindowArrangement(), currentWindowLayout()); } catch { control = null; }
       if (!control) control = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
       if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: Math.round(control.x), y: Math.round(control.y), width: Math.round(control.width), height: Math.round(control.height) });
       // XẾP CỬA SỔ also puts every OPEN browser back into its quarter (P1/P2/P3) or behind the tool (P4/P5) — no
@@ -1447,7 +1468,13 @@ else {
     ipcMain.handle('phom:open-selected', guarded((_e, cfg) => openSelectedProfiles(cfg || {})));
 
     // The Phỏm session (3 runs): the table group + coordinator. Table actions themselves come from the in-page bars.
-    ipcMain.handle('phom:start-session', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake }); }));
+    ipcMain.handle('phom:start-session', guarded((_e, cfg) => {
+      ensurePhomSessions();
+      const r = phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake });
+      // the last stake the user picked is the session's stake from the start (bars + Dò Key / Tạo use it)
+      const saved = savedStake(); if (r && r.ok !== false && saved != null) phomSessions.setStake(saved);
+      return r;
+    }));
     // §13 — Find-Table stake source: request the server channel list + read the
     // AUTHORITATIVE distinct stakes it reports (never a hard-coded fallback).
     // §35 — optionally scoped to ONE browser; seated browsers are always skipped (coordinator).
@@ -1473,7 +1500,8 @@ else {
     // NOT_READY) unless one exists, then rejoins kicked members and takes another table when one is lost. OFF stops it.
     ipcMain.handle('phom:auto-set', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setAuto(!!(cfg && cfg.on), { creatorId: cfg && cfg.browserId, stake: cfg && cfg.stake != null ? Number(cfg.stake) : null }); }));
     // THE mức cược lives in the Phỏm tool; the in-page bars search at this stake (they have no picker of their own).
-    ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setStake(cfg && cfg.stake); }));
+    ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); saveStake(cfg && cfg.stake); return phomSessions.setStake(cfg && cfg.stake); }));
+    ipcMain.handle('phom:stake-get', () => ({ ok: true, stake: savedStake() }));
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
     // ẨN DANH switch (default OFF) — forced into every open browser now and into every one opened later.
     ipcMain.handle('phom:an-danh-get', () => ({ ok: true, on: anDanhOn }));
@@ -1513,6 +1541,9 @@ else {
       try { const j = ensureRoundJournal(); j.flush('OPEN_FOLDER'); fs.mkdirSync(j.dir(), { recursive: true }); const err = await electronShell.openPath(j.dir()); return err ? { ok: false, error: { code: 'OPEN_FAILED', message: err } } : { ok: true, dir: j.dir() }; }
       catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: safeMsg(e) } }; }
     });
+    // BỐ CỤC — which quarter each window takes (P1/P2/P3/Tool); set = save + arrange at once
+    ipcMain.handle('phom:layout-get', () => ({ ok: true, layout: currentWindowLayout(), defaultLayout: { ...windowLayout.DEFAULT_LAYOUT } }));
+    ipcMain.handle('phom:layout-set', guarded((_e, cfg) => { const layout = setWindowLayout(cfg && cfg.layout); restoreLayout(); return { ok: true, layout }; }));
     ipcMain.handle('phom:reserve-reopen', guarded(async (_e, cfg) => reopenReserve(cfg && cfg.reserve)));
     ipcMain.handle('phom:slot-swap', guarded(async (_e, cfg) => swapSlot(cfg && cfg.slot, cfg && cfg.reserve)));
     ipcMain.handle('phom:slot-replace', guarded(async (_e, cfg) => replaceSlot(cfg && cfg.slot, cfg && cfg.profileId ? String(cfg.profileId) : null)));
