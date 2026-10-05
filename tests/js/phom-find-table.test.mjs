@@ -624,3 +624,74 @@ test('ROUND state is per table: a TẠO sitting at a stranger\'s running table n
   assert.equal(coord.roundRunning('B1'), false, 'the KEY waits alone: no round');
   assert.equal(coord.roundRunning(), false);
 });
+
+// ---- T8 end to end: the REAL coordinator + the REAL group, fed the server's REAL frames (captures test-D 2026-09-19 /
+// 2026-09-21): a stranger sits → [5,{p:{uid,r:false,…},t:1,cmd:200}] to everyone already seated, then readies →
+// [5,{uid,dn,cmd:5}] delivered TWICE; the host's start is the same cmd 5 frame. Rule (user 2026-10-05): KEY ·
+// SẴN SÀNG · CHƯA SS waits; once the stranger is ready CHƯA SS readies, then the KEY starts.
+function strangerSits(sim, room, { uid = 's_lạ', dn = 'nguoila' } = {}) {
+  room.seats.push(uid);
+  const p = { uid, a: 'Avatar1', r: false, As: { gold: 1000, guaranteedGold: 0 }, C: false, mT: false, g: 0, dn, pid: 0, id: 0, m: 1000, sit: room.seats.length - 1 };
+  for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u)) sim.feed(bid, JSON.stringify([5, { p, t: 1, cmd: 200 }]));
+}
+function strangerReadies(sim, room, { uid = 's_lạ', dn = 'nguoila' } = {}) {
+  for (let i = 0; i < 2; i++) for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u)) sim.feed(bid, JSON.stringify([5, { uid, dn, cmd: 5 }]));
+}
+const groupRoom = (sim, group) => sim.rooms.get(group.rid());
+
+test('T8 e2e (real frames): CHƯA SS waits for the stranger\'s ready, then readies; then the KEY (host) starts', async () => {
+  const { sim, group } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  assert.equal((await group.findTable('B1', {})).role, 'KEY');
+  assert.equal((await group.scanTable('B2')).role, 'READY');
+  assert.equal((await group.joinTable('B3', group.rid())).role, 'NOT_READY');
+  assert.deepEqual(sim.readyFrames, ['B2']);
+  const room = groupRoom(sim, group);
+  strangerSits(sim, room);
+  await tick(); await tick();
+  assert.deepEqual(sim.readyFrames, ['B2'], 'the stranger sat but is not ready → CHƯA SS waits');
+  strangerReadies(sim, room);
+  await until(() => sim.readyFrames.includes('B1'));
+  assert.deepEqual(sim.readyFrames, ['B2', 'B3', 'B1'], 'CHƯA SS readies, then the KEY starts (host cmd 5)');
+});
+
+test('T8 e2e: the stranger readies while CHƯA SS is out (kicked) → it readies as soon as it sits again; then the start', async () => {
+  const { sim, group } = mkGroup();
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  assert.deepEqual(r.roles, { B1: 'KEY', B2: 'READY', B3: 'NOT_READY' });
+  const room = sim.rooms.get(r.rid);
+  sim.kick('B3');                                   // the every-10s kick of the not-ready account
+  strangerSits(sim, room); strangerReadies(sim, room);
+  await until(() => sim.readyFrames.includes('B1'));
+  assert.ok(room.seats.includes('1_3'), 'back at the table');
+  assert.deepEqual(sim.readyFrames, ['B2', 'B3', 'B1']);
+});
+
+test('T8 e2e: SẴN SÀNG left and sat again (server: not ready any more) — readied again, never a start with it unready', async () => {
+  const { sim, group } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  await group.findTable('B1', {}); await group.scanTable('B2'); await group.joinTable('B3', group.rid());
+  assert.deepEqual(sim.readyFrames, ['B2']);
+  const room = groupRoom(sim, group);
+  // SẴN SÀNG leaves (live coseat (3): t:2 without a kick) — everyone else gets the real t:2 delta — and sits again
+  room.seats = room.seats.filter((u) => u !== '1_2');
+  for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u)) sim.feed(bid, JSON.stringify([5, { p: { uid: '1_2', mT: false, dn: 'B2', id: 0 }, t: 2, cmd: 200 }]));
+  sim.feed('B2', '[4,true,1,-1,0,""]');
+  await group.rejoin('B2');
+  await until(() => sim.readyFrames.filter((x) => x === 'B2').length >= 2);
+  assert.equal(sim.readyFrames.filter((x) => x === 'B2').length, 2, 'SẴN SÀNG readied again after sitting down again');
+  strangerSits(sim, room); strangerReadies(sim, room);
+  await until(() => sim.readyFrames.includes('B1'));
+  assert.deepEqual(sim.readyFrames.slice(-2), ['B3', 'B1']);
+});
+
+test('LOG: every leave is in coseat — the tool\'s own (LEAVE_SENT), one the page sent, and every server removal code', async () => {
+  const { sim } = mk({ scan: [] });
+  const coord = sim.coord; const logs = []; coord.on('log', (l) => logs.push(l));
+  await coord.findKeyTable('B1', { stake: CHANNELS[0].b });
+  await coord.leaveTable('B1');
+  assert.ok(logs.some((l) => l.event === 'LEAVE_SENT' && l.slot === 'B1' && l.by === 'tool'));
+  assert.ok(logs.some((l) => l.event === 'LEAVE_ACK' && l.code === 1), 'a code-1 leave (not a kick) is logged too');
+  sim.feed('B2', '[4,"Simms",-1]', 'send');                      // the game page leaving by itself
+  assert.ok(logs.some((l) => l.event === 'LEAVE_REQUEST_SEEN' && l.slot === 'B2'));
+});

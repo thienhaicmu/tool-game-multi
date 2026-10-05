@@ -509,7 +509,7 @@ async function formed(m) {
   await m.group.joinTable('B3', m.group.rid()); // CHƯA SS
 }
 
-test('T8 (user rule 2026-10-05): CHƯA SS waits until a STRANGER is ready, then readies 2–3 s later; then the KEY starts', async () => {
+test('T8 (user rule 2026-10-05): CHƯA SS waits until a STRANGER is ready, then readies 1–3 s later; then the KEY starts', async () => {
   const m = fullTable(); await formed(m);
   const readyBefore = cmds(m.coord, 'READY').length;
   m.coord.fire('seats', {}); await m.group.leave('B9');
@@ -523,7 +523,7 @@ test('T8 (user rule 2026-10-05): CHƯA SS waits until a STRANGER is ready, then 
   m.coord.fire('seats', {}); await tick();
   const r3 = cmds(m.coord, 'READY').find((e) => e.id === 'B3');
   assert.ok(r3, 'the CHƯA SS member readied');
-  assert.ok(r3.at - t0 >= 2000 && r3.at - t0 <= 3000, 'after a random 2–3 s (' + (r3.at - t0) + ' ms)');
+  assert.ok(r3.at - t0 >= 1000 && r3.at - t0 <= 3000, 'after a random 1–3 s (' + (r3.at - t0) + ' ms)');
   m.coord.fire('seats', {}); await m.group.leave('B9');
   assert.equal(cmds(m.coord, 'START').length, 0, 'the stranger is not ready yet → the KEY waits');
   m.coord.othersAllReady = true;
@@ -557,4 +557,17 @@ test('rule D2 (live 2026-10-05): after a round everyone is out → another accou
   assert.equal(r.ok, true, 'no "bấm lần nữa" when nobody of the old group sits at its table');
   assert.equal(group.roleOf('B2'), ROLE.KEY);
   assert.equal(group.roleOf('B1'), null);
+});
+
+// live coseat (3): a player who left / was kicked / sat down again is NOT ready any more (a stale ready kept the
+// rejoining account from being readied); the group's decisions and every READY seen reach coseat.jsonl
+test('wiring: stale ready dropped on t:2 / kick / fresh join; group log + READY_SEEN go to coseat.jsonl', async () => {
+  const { readFileSync } = await import('node:fs');
+  const coord = readFileSync(new URL('../../desktop/protocol/phom/host-table-coordinator.cjs', import.meta.url), 'utf8');
+  assert.match(coord, /if \(cls\.t === 2 && cls\.seat && cls\.seat\.uid != null\) this\._unready\(cls\.seat\.uid\);/);
+  assert.match(coord, /if \(rec\.ctx\.uid\(\) != null\) this\._unready\(rec\.ctx\.uid\(\)\);\s*this\.emit\('kicked'/);
+  assert.match(coord, /cls\.accepted === true && meta\.direction !== 'send' && rec\.ctx\.uid\(\) != null\) this\._unready/);
+  assert.match(coord, /this\._log\('READY_SEEN'/);
+  const main = readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
+  assert.match(main, /else if \(l && l\.tag === 'PHOM-GROUP'\) appendCoseatLog\(\{ at: Date\.now\(\), \.\.\.l \}\)/);
 });

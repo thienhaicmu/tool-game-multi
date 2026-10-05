@@ -337,7 +337,9 @@ else {
     // docs/phom-kich-ban.md — what the group flow just did (created, joined, kicked, table lost, rejoined…).
     // The screen turns these into one plain-Vietnamese line, so a paced operation never looks like a freeze.
     phomSessions.on('notice', (n) => send('phom:notice', n));
-    phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') appendCoseatLog(l); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} });
+    // the group's own decisions (roles, ready / start, why the full-table step waits) go to coseat.jsonl too — without
+    // them a "acc 3 did not ready" report could not be explained from the log (2026-10-05)
+    phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') appendCoseatLog(l); else if (l && l.tag === 'PHOM-GROUP') appendCoseatLog({ at: Date.now(), ...l }); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} });
     return phomSessions;
   }
 

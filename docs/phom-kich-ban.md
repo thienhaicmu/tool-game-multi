@@ -62,7 +62,7 @@ vai trò · cược` và mọi người trong bàn dạng `👑tên-tiền ✓` 
 | **Thoát** | Bất kỳ | Rời bàn (không tắt trình duyệt). Tắt ReJoin của acc đó. |
 | **Copy** | Bất kỳ | Copy số bàn trong ô SS. |
 
-Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi thứ nhất = SẴN SÀNG) → **acc 3 Vào** (ngồi thứ hai = CHƯA SẴN SÀNG — bấm **ReJoin** cho acc này, hoặc tích TỰ ĐỘNG) → người lạ vào ghế 4 và **sẵn sàng** (🔔 chuông 4 hồi) → **2–3 giây (ngẫu nhiên) sau acc 3 tự sẵn sàng** → **KEY tự bắt đầu ván**. Hoặc acc 2 + acc 3 cùng bấm **Tạo** (ai tìm thấy trước là SẴN SÀNG). Bước đủ 4 người → sẵn sàng → bắt đầu chạy ở cả chế độ TAY lẫn TỰ ĐỘNG.
+Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi thứ nhất = SẴN SÀNG) → **acc 3 Vào** (ngồi thứ hai = CHƯA SẴN SÀNG — bấm **ReJoin** cho acc này, hoặc tích TỰ ĐỘNG) → người lạ vào ghế 4 và **sẵn sàng** (🔔 chuông 4 hồi) → **1–3 giây (ngẫu nhiên) sau acc 3 tự sẵn sàng** → **KEY tự bắt đầu ván**. Hoặc acc 2 + acc 3 cùng bấm **Tạo** (ai tìm thấy trước là SẴN SÀNG). Bước đủ 4 người → sẵn sàng → bắt đầu chạy ở cả chế độ TAY lẫn TỰ ĐỘNG.
 
 ## 1. Chế độ TAY — thanh công cụ trong từng trình duyệt
 
@@ -79,7 +79,7 @@ Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi t
 | **T5** | Bấm **Thoát** | rời bàn | SẴN SÀNG / CHƯA SẴN SÀNG: trả vai trò. KEY: giữ vai trò (có thể Vào lại). |
 | **T6** | *Bị server đá*, ReJoin **tắt** | **không làm gì**; báo "BỊ ĐÁ · bấm ReJoin" | Vai trò giữ nguyên. (ReJoin **bật** → như A3.) |
 | **T7** | *Bàn không còn* (Vào/ReJoin báo "Phòng không tồn tại") | giải tán nhóm | Báo "Bàn đã mất — bấm Tìm bàn". |
-| **T8** | *Bàn nhóm đủ 4 người* (chưa vào ván) | (1) acc CHƯA SẴN SÀNG **chờ** · (2) **người lạ sẵn sàng** → 🔔 chuông **4 hồi** · **2–3 giây ngẫu nhiên** sau, acc **CHƯA SẴN SÀNG** tự bấm sẵn sàng · (3) khi **mọi người trừ chủ bàn đã sẵn sàng** → acc **KEY tự bắt đầu ván** (cùng lệnh cmd 5, chủ bàn gửi = Bắt đầu) · mỗi bước một lần mỗi ván; reset khi hết ván hoặc bàn hụt người | Chạy ở cả TAY và TỰ ĐỘNG. Người lạ chưa sẵn sàng thì KEY chờ. |
+| **T8** | *Bàn nhóm đủ 4 người* (chưa vào ván) | (1) acc CHƯA SẴN SÀNG **chờ** · (2) **người lạ sẵn sàng** → 🔔 chuông **4 hồi** · **1–3 giây ngẫu nhiên** sau (kiểm tra lại ngay khi acc của mình vừa ngồi xuống; acc rời bàn / bị đá thì không còn tính là đã sẵn sàng; lý do chờ ghi vào coseat.jsonl: FULL_WAIT), acc **CHƯA SẴN SÀNG** tự bấm sẵn sàng · (3) khi **mọi người trừ chủ bàn đã sẵn sàng** → acc **KEY tự bắt đầu ván** (cùng lệnh cmd 5, chủ bàn gửi = Bắt đầu) · mỗi bước một lần mỗi ván; reset khi hết ván hoặc bàn hụt người | Chạy ở cả TAY và TỰ ĐỘNG. Người lạ chưa sẵn sàng thì KEY chờ. |
 
 ## 2. Chế độ TỰ ĐỘNG — ô ☐ TỰ ĐỘNG ở cuối tool
 

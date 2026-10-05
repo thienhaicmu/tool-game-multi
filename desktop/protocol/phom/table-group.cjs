@@ -52,8 +52,8 @@ class TableGroup extends EventEmitter {
     this._log = typeof deps.log === 'function' ? deps.log : () => {};
     this._rejoinDelayMs = deps.rejoinDelayMs != null ? Number(deps.rejoinDelayMs) : REJOIN_DELAY_MS;
     this._replacePollMs = deps.replacePollMs != null ? Number(deps.replacePollMs) : REPLACE_POLL_MS;
-    // the CHƯA SẴN SÀNG account readies 2–3 s (random) after a stranger readied (user rule 2026-10-05)
-    this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 2000;
+    // the CHƯA SẴN SÀNG account readies 1–3 s (random) after a stranger readied (user rule 2026-10-05, was 2–3 s)
+    this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 1000;
     this._fullReadyMax = deps.fullReadyMaxMs != null ? Number(deps.fullReadyMaxMs) : 3000;
     this._replaceWaitMs = deps.replaceWaitMs != null ? Number(deps.replaceWaitMs) : REPLACE_WAIT_MS;
     this._timers = new Set(); // rejoin + replacement timers — all cleared by reset / leaveAll / auto off
@@ -245,6 +245,8 @@ class TableGroup extends EventEmitter {
     this._seated(id, claim.role);
     this._event('JOINED', { id, rid: g.rid, role: claim.role });
     this._emit();
+    // the seat frames arrived BEFORE this join was confirmed (they could not count it as seated): look at the full table again
+    this._onSeats();
     await this._readyCheck(gen);
     return { ...res, role: claim.role };
   }
@@ -278,6 +280,7 @@ class TableGroup extends EventEmitter {
     if (claim) this._seated(id, claim.role);
     this._event('JOINED', { id, rid: r, role: claim ? claim.role : null });
     this._emit();
+    if (claim) this._onSeats();
     if (claim) await this._readyCheck(gen);
     return { ...res, role: claim ? claim.role : null };
   }
@@ -423,6 +426,7 @@ class TableGroup extends EventEmitter {
       this._seated(id, g.roles.get(id));
       this._event('JOINED', { id, rid: g.rid, role: g.roles.get(id) || null, rejoin: true });
       this._emit();
+      this._onSeats();
       this._enqueue('READY', (gen) => this._readyCheck(gen));
     });
   }
@@ -598,36 +602,55 @@ class TableGroup extends EventEmitter {
   // FULL TABLE (user rule 2026-10-05): once the group's table has 4 players and no round runs, the CHƯA SẴN SÀNG
   // member readies; once everyone but the host is ready, the KEY (host) starts the round. Each step once per round
   // (reset at round end, or when the table is no longer full), paced like every other command.
+  // Each decision not to act is written to the log once (FULL_WAIT + reason), so a coseat.jsonl shows why acc 3 did
+  // not ready (live coseat (3) 2026-10-05 could not tell).
   _onSeats() {
     const g = this._group;
-    if (!g || g.rid == null || !this._coord || this._coord.roundRunning(this._group ? this._group.creatorId : undefined)) return;
+    if (!g || g.rid == null || !this._coord) return;
     const key = g.creatorId;
+    if (this._coord.roundRunning(key)) return this._fullWait(g, 'ROUND_RUNNING');
     const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
-    if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return;
-    if (this._coord.tablePlayerCount(key) < 4) { g.fullReadySent = false; g.fullStartSent = false; return; }
+    if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return this._fullWait(g, 'KEY_NOT_SEATED');
+    const players = this._coord.tablePlayerCount(key);
+    if (players < 4) { g.fullReadySent = false; g.fullStartSent = false; return this._fullWait(g, 'PLAYERS_' + players); }
     // user rule 2026-10-05: KEY · SẴN SÀNG · CHƯA SẴN SÀNG waits — only once a STRANGER at the table is ready does the
-    // CHƯA SẴN SÀNG account ready, after a random 2–3 s
+    // CHƯA SẴN SÀNG account ready, after a random 1–3 s
     const strangerReady = typeof this._coord.strangerReady === 'function' ? this._coord.strangerReady(key) : true;
-    if (nr && strangerReady && this._atGroupTable(nr[0]) && !this._coord.isReady(nr[0]) && !g.fullReadySent) {
+    if (nr && !this._coord.isReady(nr[0])) {
+      if (!strangerReady) return this._fullWait(g, 'STRANGER_NOT_READY');
+      if (!this._atGroupTable(nr[0])) return this._fullWait(g, 'NOT_READY_ACC_NOT_SEATED');
+      if (g.fullReadySent) return;
       g.fullReadySent = true;
+      const delay = Math.round(this._fullReadyMin + this._random() * (this._fullReadyMax - this._fullReadyMin));
+      this._log('FULL_READY_SCHEDULED', { id: nr[0], rid: g.rid, delayMs: delay });
       this._enqueue('READY', async (gen) => {
-        await this._sleep(Math.round(this._fullReadyMin + this._random() * (this._fullReadyMax - this._fullReadyMin)));
-        if (this._cancelled(gen) || this._group !== g || this._coord.roundRunning(this._group ? this._group.creatorId : undefined) || this._coord.isReady(nr[0])) { g.fullReadySent = false; return CANCELLED; }
+        await this._sleep(delay);
+        if (this._cancelled(gen) || this._group !== g || this._coord.roundRunning(key) || this._coord.isReady(nr[0])) { g.fullReadySent = false; return CANCELLED; }
+        if (!this._atGroupTable(nr[0])) { g.fullReadySent = false; this._log('FULL_READY_SKIPPED', { id: nr[0], reason: 'NOT_SEATED' }); return CANCELLED; } // kicked meanwhile: asks again when it sits
         const res = await this._coord.sendTableReady(nr[0]);
-        if (res && res.ok !== false) this._event('FULL_READY', { id: nr[0], rid: g.rid }); else g.fullReadySent = false;
+        if (res && res.ok !== false) this._event('FULL_READY', { id: nr[0], rid: g.rid, delayMs: delay });
+        else { g.fullReadySent = false; this._log('FULL_READY_FAILED', { id: nr[0], error: res && res.error ? res.error.code : null }); }
         return res;
       });
       return; // the start waits for this ready to come back from the server
     }
-    if (!g.fullStartSent && this._coord.isTableHost(key) && this._coord.othersReady(key)) {
-      g.fullStartSent = true;
-      this._enqueue('START', async (gen) => {
-        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(this._group ? this._group.creatorId : undefined) || !this._coord.othersReady(key)) { g.fullStartSent = false; return CANCELLED; }
-        const res = await this._coord.sendTableStart(key);
-        if (res && res.ok !== false) this._event('ROUND_START_SENT', { id: key, rid: g.rid }); else g.fullStartSent = false;
-        return res;
-      });
-    }
+    if (g.fullStartSent) return;
+    if (!this._coord.isTableHost(key)) return this._fullWait(g, 'KEY_NOT_HOST');
+    if (!this._coord.othersReady(key)) return this._fullWait(g, 'OTHERS_NOT_READY');
+    g.fullStartSent = true;
+    this._enqueue('START', async (gen) => {
+      if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(key) || !this._coord.othersReady(key)) { g.fullStartSent = false; return CANCELLED; }
+      const res = await this._coord.sendTableStart(key);
+      if (res && res.ok !== false) this._event('ROUND_START_SENT', { id: key, rid: g.rid });
+      else { g.fullStartSent = false; this._log('ROUND_START_FAILED', { id: key, error: res && res.error ? res.error.code : null }); }
+      return res;
+    });
+  }
+  // why the full-table step is waiting — logged once per change, never once per frame
+  _fullWait(g, reason) {
+    if (g.fullWaitReason === reason) return;
+    g.fullWaitReason = reason;
+    this._log('FULL_WAIT', { rid: g.rid, reason });
   }
   _onRoundEnd() {
     const g = this._group;

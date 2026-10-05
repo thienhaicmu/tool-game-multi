@@ -185,8 +185,12 @@ class HostTableCoordinator extends EventEmitter {
         if (wasRunning) this.emit('roundEnd', {}); // once, though all three browsers receive it
         break;
       }
-      case 'USER_READY': this._readyUids.add(cls.uid); this._maybeStrangerReady(rec, cls.uid); break;
+      case 'USER_READY': this._readyUids.add(cls.uid); this._logReady(rec, cls.uid); this._maybeStrangerReady(rec, cls.uid); break;
       case 'SEAT_UPDATE':
+        // a player who LEFT the table (t:2 — kicked, moved, quit) is not ready any more: a stale "ready" kept the
+        // account that sat down again from being readied, and the KEY waited for a start that never came (live
+        // coseat (3) 2026-10-05: the stranger sat 62 s and left)
+        if (cls.t === 2 && cls.seat && cls.seat.uid != null) this._unready(cls.seat.uid);
         if (cls.present && cls.seat && cls.seat.r === true) this._maybeStrangerReady(rec, String(cls.seat.uid));
         if (meta.direction !== 'send' && !meta.replay) this._logSeats('SEAT_DIAG', rec, cls, [cls.json && cls.json[1] && cls.json[1].p]);
         break;
@@ -206,6 +210,7 @@ class HostTableCoordinator extends EventEmitter {
         // a refusal keeps the server's own frame (no secrets in it: [3,false,code,rid,text]) — 166 "Phòng đầy" at a
         // 2-player table (live 2026-10-03) cannot be explained from the code alone
         if (meta.direction !== 'send') this._log('JOIN_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode, reason: cls.resultMessage || null, ...(cls.accepted === true ? {} : { serverFrame: frameText(meta.raw), money: this._money(rec) }) });
+        if (cls.accepted === true && meta.direction !== 'send' && rec.ctx.uid() != null) this._unready(rec.ctx.uid()); // a fresh seat is not ready
         // Auto-ready OFF right after EVERY accepted join, as the reference tool does (capture 2026-10-02: 363 aRd
         // "false" 4–7 ms after each [3,true,0,-1,null] — Dò Key, Vào, every ReJoin). Sent before the join it did not
         // hold: the game's own auto-ready readied the 2nd account and the server kicked the KEY 15 s later, "Bạn thoát
@@ -215,7 +220,15 @@ class HostTableCoordinator extends EventEmitter {
           this._log('AUTO_READY_OFF', rec, {});
         }
         break;
+      case 'LEAVE_REQUEST':
+        // every leave this page sends (the tool's own is also logged as LEAVE_SENT by:'tool' just before) — a leave seen
+        // here without a LEAVE_SENT came from the game page itself (live coseat (3): members left the group's table
+        // seconds after sitting, no kick, no tool leave logged — could not be explained)
+        if (meta.direction === 'send' && !meta.replay) this._log('LEAVE_REQUEST_SEEN', rec, {});
+        break;
       case 'LEAVE_ACK':
+        // every removal is logged with the server's own code/message (only code 2 = kick was logged before)
+        if (meta.direction !== 'send' && !meta.replay && !(cls.accepted === true && cls.resultCode === 2)) this._log('LEAVE_ACK', rec, { accepted: cls.accepted === true, code: cls.resultCode, reason: cls.resultMessage || null, serverFrame: frameText(meta.raw) });
         // The server removed this browser (code 2, e.g. "Bạn bị kick vì không sẵn sàng"). What to do about it is the
         // GROUP's decision (table-group.cjs) — here it is only recorded and announced.
         if (cls.accepted === true && cls.resultCode === 2 && meta.direction !== 'send') {
@@ -223,6 +236,7 @@ class HostTableCoordinator extends EventEmitter {
           rec.lastError = { code: 'PHOM_KICKED', message: cls.resultMessage || 'Bị máy chủ đưa ra khỏi bàn' };
           this._log('KICKED', rec, { reason: cls.resultMessage || null, serverFrame: frameText(meta.raw), host: wasHost, roundRunning: !!rec._inRound });
           rec._inRound = false;
+          if (rec.ctx.uid() != null) this._unready(rec.ctx.uid());
           this.emit('kicked', { id: rec.id, message: cls.resultMessage || null });
         }
         break;
@@ -407,6 +421,7 @@ class HostTableCoordinator extends EventEmitter {
   }
   async _leaveConfirmed(rec, myGen) {
     const ackBefore = rec.ctx.ackSeq();
+    this._log('LEAVE_SENT', rec, { by: 'tool', state: rec.manualState || null, search: rec._searchKind || null });
     let sent = true; try { const r = await rec.send(buildLeaveFrame(), rec.ctx.sendContext()); sent = r?.ok !== false; } catch { sent = false; }
     const acked = () => { const a = rec.ctx.lastLeaveAck(); return !!(a && a.seq > ackBefore && a.accepted); };
     const confirmed = sent && await this._waitManual(() => acked() || !this._ownSeated(rec), rec, myGen, this._leaveConfirmMs);
@@ -900,6 +915,19 @@ class HostTableCoordinator extends EventEmitter {
       rec.manualState = 'READY'; rec._joinedRid = null; rec._hostUid = null;
     }
     this.emit('update', this.snapshot());
+  }
+  _unready(uid) { this._readyUids.delete(uid); this._readyUids.delete(String(uid)); }
+  // Every READY press seen at the table (ours or a stranger's) goes to coseat.jsonl once — the three browsers all
+  // receive it, so a repeat within 3 s is the same press.
+  _logReady(rec, uid) {
+    if (uid == null) return;
+    const u = String(uid); const now = this._now();
+    this._readyLogAt = this._readyLogAt || new Map();
+    if (now - (this._readyLogAt.get(u) || -Infinity) < 3000) return;
+    this._readyLogAt.set(u, now);
+    const ours = [...this._profiles.values()].find((r) => r.ctx.uid() != null && String(r.ctx.uid()) === u);
+    const seat = rec.ctx.tableState() ? rec.ctx.tableState().seats.find((s) => String(s.uid) === u) : null;
+    this._log('READY_SEEN', rec, { uid: u, name: seat && seat.dn ? seat.dn : null, ours: ours ? 'B' + (this.profileIds().indexOf(ours.id) + 1) : null, players: this.tablePlayerCount(rec.id) });
   }
   _log(event, rec, data = {}) {
     try {
