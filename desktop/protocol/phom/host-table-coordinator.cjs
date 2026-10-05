@@ -35,6 +35,12 @@ const JOIN_REJECT_GRACE_MS = 600;
 const PROBE_ACK_MS = 1500;
 // The whole DÒ KEY / TẠO budget before the user is told.
 const SEARCH_BUDGET_MS = 180000;
+// TẠO fast path: at most this many one-player tables taken from the table list are sat at per search (the KEY's is
+// normally the newest; the cap keeps the account from sitting at a row of strangers' tables).
+const LIST_CANDIDATE_MAX = 6;
+// TẠO lottery: every SCAN_PAUSE_EVERY 313 asks, an extra SCAN_PAUSE_MS pause (fewer wrong-password joins per minute).
+const SCAN_PAUSE_EVERY = 12;
+const SCAN_PAUSE_MS = 6000;
 
 // The game socket is shared with the site's other games, and they broadcast constantly (capture 2026-10-02, one
 // browser, 183s: 2009× cmd 10004 + 519× 10003 for mini-games gid 10112/10110/10888, 149× 1015, 61× 10000 jackpots,
@@ -60,6 +66,7 @@ class HostTableCoordinator extends EventEmitter {
     this._rerollCooldownMs = deps.rerollCooldownMs != null ? Number(deps.rerollCooldownMs) : REROLL_COOLDOWN_MS;
     this._joinRejectGraceMs = deps.joinRejectGraceMs != null ? Number(deps.joinRejectGraceMs) : JOIN_REJECT_GRACE_MS;
     this._probeAckMs = deps.probeAckMs != null ? Number(deps.probeAckMs) : PROBE_ACK_MS;
+    this._scanPauseMs = deps.scanPauseMs != null ? Number(deps.scanPauseMs) : SCAN_PAUSE_MS;
     this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : SEARCH_BUDGET_MS;
     this._stopped = false;
     this._roundRunning = false;
@@ -467,11 +474,47 @@ class HostTableCoordinator extends EventEmitter {
     if (!keyUid) return this._searchFail(rec, 'PHOM_NO_KEY', 'Chưa có acc KEY ngồi bàn — bấm Dò Key ở một trình duyệt trước');
     this._searchBegin(rec, 'SCAN');
     let lastMessage = null;
+    // FAST PATH (2026-10-05 "Tạo is slow, it seems to browse"): the server broadcasts the whole table list to every
+    // browser (~every 60s). The KEY sits ALONE at a FRESH public table of the stake, and table numbers only grow — so
+    // in a list received after the KEY sat down, its table is a one-player row of the stake, near the top when sorted
+    // by number (newest first). Those rows are tried first, straight with op 8; the 313 lottery only runs while no
+    // such list has arrived yet. Rows already tried (either way) are never tried again; strangers' tables tried from
+    // the list are capped.
+    const tried = new Set();
+    let listTries = 0;
+    let lotteryAsks = 0;
+    const keySeatedAt = opts.keySeatedAt != null ? Number(opts.keySeatedAt) : null;
     const giveUp = (attempt) => this._searchFail(rec, 'PHOM_NO_KEY_TABLE', `Chưa dò ra bàn của acc KEY (cược ${stake}) sau 3 phút${lastMessage ? ` — máy chủ: ${lastMessage}` : ''}`, { stake, attempts: attempt + 1 });
     for (let attempt = 0; ; attempt++) {
       if (!await this._searchBreathe(rec, sg, opts)) return this._searchCancelled(rec);
       const myGen = this._searchStep(rec, attempt);
+      const listRid = listTries < LIST_CANDIDATE_MAX ? this._listCandidates(stake, keySeatedAt, tried)[0] : undefined;
+      if (listRid != null) {
+        tried.add(listRid); listTries += 1;
+        this._log('SCAN_LIST_CANDIDATE', rec, { rid: listRid, attempt, listTries });
+        const j = await this._joinTable(rec, listRid, { timeoutMs });
+        if (j.superseded || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+        if (j.ok && this._seatedWith(rec, keyUid)) return this._scanFound(rec, listRid, attempt);
+        rec.manualState = 'SEARCHING';
+        if (j.ok) {
+          this._log('SCAN_NOT_KEY', rec, { rid: listRid, host: rec._hostUid, attempt, from: 'list' });
+          const lv = await this._leaveConfirmed(rec, rec._manualGen);
+          if (lv.cancelled || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+          if (!lv.confirmed) { this._searchEnd(rec); return { ok: false, id: rec.id, state: rec.manualState, error: rec.lastError }; }
+        }
+        if (this._now() >= deadline) return giveUp(attempt);
+        continue;
+      }
+      // Each 313 is one wrong-password join (the game's own, armed) — a long lottery piles them up (live 2026-10-05: an
+      // account was logged out after a long Tạo). Every SCAN_PAUSE_EVERY asks the search breathes a little longer.
+      lotteryAsks += 1;
+      if (lotteryAsks % SCAN_PAUSE_EVERY === 0) {
+        this._log('SCAN_PAUSE', rec, { attempt, asks: lotteryAsks });
+        await this._waitManual(() => false, rec, myGen, this._scanPauseMs);
+        if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+      }
       const assignBefore = rec.ctx.roomAssignSeq();
+      const ackBeforeAsk = rec.ctx.ackSeq(); // the game's own (armed) join answering the 313 acks after this
       const tableBefore = rec.ctx.tableSeq(); // before the ask: the game client may sit down the instant the answer lands
       this._log('SCAN_SENT', rec, { stake, attempt });
       // The game client answers a 313 by joining the named table ITSELF ([3,"Simms",rid,""]) — at a stranger's table,
@@ -491,12 +534,24 @@ class HostTableCoordinator extends EventEmitter {
       }
       const rid = Number(res.rid);
       const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
+      if (res.isTable && tried.has(rid) && !seatedFresh()) { // already looked at this one (from the list or before)
+        if (this._now() >= deadline) return giveUp(attempt);
+        continue;
+      }
+      if (res.isTable) tried.add(rid);
       if (res.isTable) {
-        // The probe: a JOIN that cannot succeed. Wait for its refusal (or for a seat the game client produced itself).
-        const ackBefore = rec.ctx.ackSeq();
-        await this._searchSend(rec, buildProbeJoinFrame(rid));
-        await this._waitManual(() => { const a = rec.ctx.lastJoinAck(); return !!(a && a.seq > ackBefore) || seatedFresh(); }, rec, myGen, this._probeAckMs);
+        // The game client answers the 313 with its own JOIN, armed to the invisible password → refused (103). That
+        // refusal is the proof the account did not sit down: wait for it first, and send the tool's own probe (a
+        // second wrong-password join) ONLY when the game's join did not come back.
+        const gameAck = () => { const a = rec.ctx.lastJoinAck(); return !!(a && a.seq > ackBeforeAsk) || seatedFresh(); };
+        await this._waitManual(gameAck, rec, myGen, this._probeAckMs);
         if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+        if (!gameAck()) {
+          const ackBefore = rec.ctx.ackSeq();
+          await this._searchSend(rec, buildProbeJoinFrame(rid));
+          await this._waitManual(() => { const a = rec.ctx.lastJoinAck(); return !!(a && a.seq > ackBefore) || seatedFresh(); }, rec, myGen, this._probeAckMs);
+          if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+        }
       }
       if (seatedFresh()) {
         // Seated anyway (the game client answering the 313 by itself): fine only at the KEY's table.
@@ -527,6 +582,21 @@ class HostTableCoordinator extends EventEmitter {
       }
       if (this._now() >= deadline) return giveUp(attempt);
     }
+  }
+
+  // TẠO fast path — one-player public tables of the stake from the FRESHEST table list any of our browsers received,
+  // only if that list arrived AFTER the KEY sat down (an older list cannot contain its table), newest number first.
+  _listCandidates(stake, sinceMs, tried) {
+    let best = null;
+    for (const r of this._profiles.values()) {
+      const at = r.ctx.roomListAt();
+      if (at != null && (!best || at > best.at)) best = { at, rows: r.ctx.roomList() };
+    }
+    if (!best || (sinceMs != null && best.at < sinceMs)) return [];
+    return best.rows
+      .filter((c) => Number(c.b) === Number(stake) && Number(c.uC) === 1 && !c.hpwd && !tried.has(Number(c.rid)))
+      .map((c) => Number(c.rid))
+      .sort((a, b) => b - a);
   }
 
   // DỪNG on the header: stop the DÒ KEY / TẠO running on this browser. A seat it already holds is kept.

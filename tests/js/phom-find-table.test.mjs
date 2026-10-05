@@ -31,8 +31,8 @@ const CHANNELS = [{ rid: 139, b: 100 }, { rid: 145, b: 20000 }];
 // unless `keyNever`. `gameAutoJoin` = the game client answers every 313 with its own plain op-3 JOIN, which (worst
 // case) seats the account there.
 class Sim {
-  constructor({ strangersFirst = 0, scan = ['full', 'channel', 'lone'], keyNever = false, gameAutoJoin = false } = {}) {
-    this.strangersFirst = strangersFirst; this.scan = scan.slice(); this.keyNever = keyNever; this.gameAutoJoin = gameAutoJoin;
+  constructor({ strangersFirst = 0, scan = ['full', 'channel', 'lone'], keyNever = false, gameAutoJoin = false, armedGame = false } = {}) {
+    this.strangersFirst = strangersFirst; this.scan = scan.slice(); this.keyNever = keyNever; this.gameAutoJoin = gameAutoJoin; this.armedGame = armedGame;
     this.uids = { B1: '1_1', B2: '1_2', B3: '1_3' };
     this.rooms = new Map(); this.nextRid = 7900000; this.special = {};
     this.sent = { B1: [], B2: [], B3: [] }; this.coord = null; this.asks = 0;
@@ -63,6 +63,8 @@ class Sim {
         if (!n) { this.feed(id, JSON.stringify([5, { mgs: 'Không tìm thấy phòng thích hợp!', cmd: 313 }])); return { ok: true }; }
         this.feed(id, JSON.stringify([5, { ri: { rid: n.rid, rn: n.rn, b: Number(j[3].b), sid: 1, Mu: 4, uC: n.uC, hpwd: false, gid: 8 }, cmd: 313 }]));
         const room = this.rooms.get(n.rid);
+        // the game's own join answering the 313, armed to the invisible password by the tool → refused 103
+        if (this.armedGame && room) this.feed(id, JSON.stringify([3, false, 103, n.rid, 'Sai mật khẩu phòng']));
         if (this.gameAutoJoin && room) { this.feed(id, JSON.stringify([3, 'Simms', n.rid, '']), 'send'); if (room.seats.length < 4) this.seat(id, room); }
         return { ok: true };
       }
@@ -496,4 +498,82 @@ test('LỌC BÀI lives in the Phỏm QA tool (a tab per account) — never on th
   assert.match(ui, /safeCardsFor\(safeTab\)/); // tab P<n> = browser n = analysis B<n>
   assert.match(ui, /\['B1', 'B2', 'B3'\]\.forEach\(\(sl, i\) => \{/);
   assert.match(ui, /const a = safeBySlot\[slot\];/);
+});
+
+// ---- TẠO fast path (2026-10-05 "Tạo is slow, it browses"): the table list broadcast after the KEY sat down -------
+const listFrame = (rows) => JSON.stringify([5, { rs: rows.map((r) => ({ zn: 'Simms', gid: 8, rn: 'Phom', Mu: 4, hpwd: false, ...r })), cmd: 300 }]);
+
+test('TẠO fast path: a table list received after the KEY sat → its one-player table (newest number) is joined directly, no 313', async () => {
+  const { coord, sim } = mk({ scan: [] });
+  const b = CHANNELS[0].b;
+  const seatedAt = Date.now() - 5;
+  const k = await coord.findKeyTable('B1', { stake: b });
+  assert.equal(k.ok, true);
+  const keyRoom = sim.keyRoom();
+  const older = [sim.room(b, 1), sim.room(b, 1)];               // strangers alone at older (lower) numbers… created later here,
+  for (const r of older) r.rid = keyRoom.rid - 10 - older.indexOf(r); // …so give them lower numbers explicitly
+  for (const r of older) sim.rooms.set(r.rid, r);
+  sim.feed('B2', listFrame([
+    { rid: keyRoom.rid, b, uC: 1 }, { rid: older[0].rid, b, uC: 1 }, { rid: older[1].rid, b, uC: 1 },
+    { rid: 7000001, b, uC: 3 }, { rid: 7000002, b: b * 10, uC: 1 }, { rid: 7000003, b, uC: 1, hpwd: true },
+  ]));
+  const r = await coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, keySeatedAt: seatedAt });
+  assert.equal(r.ok, true, JSON.stringify(r.error || r));
+  assert.equal(r.rid, keyRoom.rid);
+  assert.equal(sim.asks, 0, 'no 313 lottery needed');
+  assert.deepEqual(sim.sent.B2.filter((j) => j[0] === 8).map((j) => j[2]), [keyRoom.rid], 'the newest one-player table first — the KEY\'s');
+});
+
+test('TẠO fast path: a list from BEFORE the KEY sat is ignored (its table cannot be in it) → the 313 search runs', async () => {
+  const { coord, sim } = mk({ scan: [] });
+  const b = CHANNELS[0].b;
+  const lone = sim.room(b, 1);
+  sim.feed('B2', listFrame([{ rid: lone.rid, b, uC: 1 }]));          // list arrives first…
+  await new Promise((res) => setTimeout(res, 5));
+  const seatedAt = Date.now();                                          // …then the KEY sits
+  await coord.findKeyTable('B1', { stake: b });
+  const r = await coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, keySeatedAt: seatedAt });
+  assert.equal(r.ok, true);
+  assert.ok(sim.asks >= 1, 'found through 313');
+  assert.equal(sim.sent.B2.some((j) => j[0] === 8 && j[2] === lone.rid), false, 'the stale list row was never joined');
+});
+
+test('TẠO fast path: a stranger alone at the newest table is left at once, the next candidate is tried; tries are capped', async () => {
+  const { coord, sim } = mk({ scan: [] });
+  const b = CHANNELS[0].b;
+  const seatedAt = Date.now() - 5;
+  await coord.findKeyTable('B1', { stake: b });
+  const keyRoom = sim.keyRoom();
+  const stranger = sim.room(b, 1);                                       // newer number than the KEY's
+  sim.feed('B2', listFrame([{ rid: stranger.rid, b, uC: 1 }, { rid: keyRoom.rid, b, uC: 1 }]));
+  const r = await coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, keySeatedAt: seatedAt });
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, keyRoom.rid);
+  const joins = sim.sent.B2.filter((j) => j[0] === 8).map((j) => j[2]);
+  assert.deepEqual(joins, [stranger.rid, keyRoom.rid]);
+  assert.ok(sim.sent.B2.some((j) => j[0] === 4), 'left the stranger\'s table');
+  const src = readFileSync(new URL('../../desktop/protocol/phom/host-table-coordinator.cjs', import.meta.url), 'utf8');
+  assert.match(src, /const LIST_CANDIDATE_MAX = 6;/);
+});
+
+test('TẠO: the game client own (armed) join already proves the refusal → the tool sends NO second wrong-password probe', async () => {
+  const { coord, sim } = mk({ scan: ['full', 'lone', 'full'], armedGame: true });
+  const b = CHANNELS[0].b;
+  await coord.findKeyTable('B1', { stake: b });
+  const r = await coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1 });
+  assert.equal(r.ok, true);
+  assert.equal(sim.sent.B2.filter((j) => j[0] === 3 && j[3] === ZWSP).length, 0, 'no extra probe from the tool');
+});
+
+test('TẠO: a long 313 lottery breathes — an extra pause every 12 asks', async () => {
+  const { sim } = mk({ keyNever: true, armedGame: true });
+  const coord = sim.coord;
+  coord._scanPauseMs = 1; coord._findBudgetMs = 400;
+  const logs = []; coord.on('log', (l) => logs.push(l.event));
+  const b = CHANNELS[0].b;
+  await coord.findKeyTable('B1', { stake: b });
+  await coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, budgetMs: 400 });
+  const asks = logs.filter((e) => e === 'SCAN_SENT').length;
+  assert.ok(asks >= 12, 'enough asks for a pause (' + asks + ')');
+  assert.equal(logs.filter((e) => e === 'SCAN_PAUSE').length, Math.floor(asks / 12));
 });

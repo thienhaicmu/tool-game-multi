@@ -181,7 +181,7 @@ class TableGroup extends EventEmitter {
     await this._coord.setAutoReadyPref(id, false); // KEY never auto-readies
     const res = await this._coord.findKeyTable(id, { stake: Number(stake), pace: () => this.pace(gen) });
     if (!res.ok) { this._event('FIND_FAILED', { id, error: res.error }); return res; }
-    this._group = { rid: null, stake: Number(stake), creatorId: id, keyUid: this._coord.uidOf(id), roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), rejoinOn: new Set(), autoRejoin: new Set(), rejoinPending: new Set(), bellRung: new Set(), recreating: false };
+    this._group = { rid: null, stake: Number(stake), creatorId: id, keyUid: this._coord.uidOf(id), keySeatedAt: this._now(), roles: new Map([[id, ROLE.KEY]]), kicks: new Map(), rejoinOn: new Set(), autoRejoin: new Set(), rejoinPending: new Set(), bellRung: new Set(), recreating: false };
     this._event('KEY_SEATED', { id, channel: res.channel });
     this._emit();
     return { ...res, role: ROLE.KEY, roles: { [id]: ROLE.KEY } };
@@ -215,7 +215,7 @@ class TableGroup extends EventEmitter {
     // Searching sits down at strangers' one-player tables now and then: never ready there (the reference tool keeps
     // auto-ready off throughout). The role — and with it readiness — is decided once the KEY's table is found.
     await this._coord.setAutoReadyPref(id, false);
-    const res = await this._coord.scanForKeyTable(id, { stake: g.stake, keyUid: g.keyUid, pace: () => this.pace(gen) });
+    const res = await this._coord.scanForKeyTable(id, { stake: g.stake, keyUid: g.keyUid, keySeatedAt: g.keySeatedAt, pace: () => this.pace(gen) });
     if (!res.ok) {
       if (!res.cancelled) this._event('SCAN_FAILED', { id, error: res.error });
       return res;
