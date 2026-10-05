@@ -495,9 +495,10 @@ test('a fast rejoin never overlaps a request the user is running on that account
 function fullTable() {
   const m = mk();
   const c = m.coord;
-  c.players = 3; c.othersAllReady = false;
+  c.players = 3; c.othersAllReady = false; c.strangerIsReady = false;
   c.tablePlayerCount = () => c.players;
   c.othersReady = () => c.othersAllReady;
+  c.strangerReady = () => c.strangerIsReady;
   c.isTableHost = (id) => id === 'B2';
   c.sendTableStart = async (id) => { c.sent.push({ at: c.clock, id, cmd: 'START' }); return { ok: true }; };
   return m;
@@ -508,15 +509,21 @@ async function formed(m) {
   await m.group.joinTable('B3', m.group.rid()); // CHƯA SS
 }
 
-test('T8: below 4 players nothing happens; at 4 the CHƯA SS member readies; once all others are ready the KEY starts', async () => {
+test('T8 (user rule 2026-10-05): CHƯA SS waits until a STRANGER is ready, then readies 2–3 s later; then the KEY starts', async () => {
   const m = fullTable(); await formed(m);
   const readyBefore = cmds(m.coord, 'READY').length;
   m.coord.fire('seats', {}); await m.group.leave('B9');
   assert.equal(cmds(m.coord, 'READY').length, readyBefore, '3 players: no extra ready');
   assert.equal(cmds(m.coord, 'START').length, 0);
-  m.coord.players = 4;
+  m.coord.players = 4;                              // a stranger sat down…
   m.coord.fire('seats', {}); await m.group.leave('B9');
-  assert.ok(cmds(m.coord, 'READY').some((e) => e.id === 'B3'), 'the CHƯA SS member readied');
+  assert.equal(cmds(m.coord, 'READY').filter((e) => e.id === 'B3').length, 0, '…but is not ready yet → CHƯA SS keeps waiting');
+  m.coord.strangerIsReady = true;                   // …the stranger readies
+  const t0 = m.coord.clock;
+  m.coord.fire('seats', {}); await tick();
+  const r3 = cmds(m.coord, 'READY').find((e) => e.id === 'B3');
+  assert.ok(r3, 'the CHƯA SS member readied');
+  assert.ok(r3.at - t0 >= 2000 && r3.at - t0 <= 3000, 'after a random 2–3 s (' + (r3.at - t0) + ' ms)');
   m.coord.fire('seats', {}); await m.group.leave('B9');
   assert.equal(cmds(m.coord, 'START').length, 0, 'the stranger is not ready yet → the KEY waits');
   m.coord.othersAllReady = true;

@@ -70,3 +70,13 @@ test('T8 facts: player count, everyone-but-host ready, and only the HOST may sta
   coord2.ingest('B', { raw: JSON.stringify([5, { b: 100, ps: [{ uid: '1_100', sit: 0, C: true }, { uid: '1_2', sit: 1 }], cmd: 202 }]), direction: 'recv', seq: 1, targetId: 'T' });
   assert.equal((await coord2.sendTableStart('B')).error.code, 'PHOM_NOT_HOST');
 });
+
+test('strangerReady: true only when a player who is NOT one of ours is ready at this browser table', () => {
+  const coord = new HostTableCoordinator({ profiles: [{ id: 'A', uid: '1_100', send: async () => ({ ok: true }) }, { id: 'B', uid: '1_2', send: async () => ({ ok: true }) }], environmentAuthorized: true, now: () => 1 });
+  coord.setIdentity('B', { uid: '1_2' });
+  const feed = (frame) => coord.ingest('A', { raw: JSON.stringify(frame), direction: 'recv', seq: 1, targetId: 'T' });
+  feed([5, { b: 100, ps: [{ uid: '1_100', sit: 0, C: true }, { uid: '1_2', sit: 1, r: true }, { uid: '1_9', sit: 2, r: false }], cmd: 202 }]);
+  assert.equal(coord.strangerReady('A'), false, 'our own B is ready, the stranger is not');
+  feed([5, { uid: '1_9', cmd: 5 }]);
+  assert.equal(coord.strangerReady('A'), true);
+});

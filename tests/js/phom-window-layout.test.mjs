@@ -36,8 +36,12 @@ test('wiring: windows + tool follow the saved layout; IPC get/set saves and arra
   assert.match(main, /ipcMain\.handle\('phom:layout-set', guarded\(\(_e, cfg\) => \{ const layout = setWindowLayout\(cfg && cfg\.layout\); restoreLayout\(\);/);
   assert.match(main, /path\.join\(phomRoot\(\), 'window-layout\.json'\)/);
   const ui = read('ui-phom/phom-qa.js');
-  assert.match(ui, /iconButton\('layout', 'Bố cục: chọn ô cho P1 \/ P2 \/ P3 \/ Tool', \(\) => openLayoutDialog\(\)\)/);
-  assert.match(ui, /async function openLayoutDialog\(\)[\s\S]*?api\.setLayout\(layout\)/);
+  assert.match(ui, /iconButton\('layout', 'Đổi vị trí cửa sổ \(bấm 2 cửa sổ để đổi chỗ\)', \(\) => openLayoutDialog\(\)\)/);
+  // click one window then another: they trade quarters and the windows move at once (no separate apply step)
+  const dlg = ui.slice(ui.indexOf('async function openLayoutDialog('));
+  assert.match(dlg, /next\[a\] = layout\[b\]; next\[b\] = layout\[a\];/);
+  assert.match(dlg, /apply\(next, 'Đã đổi chỗ '/);
+  assert.match(dlg, /api\.setLayout\(layout\)/);
 });
 
 test('MỨC CƯỢC is remembered: saved on every pick, applied when a session starts, kept in the picker before the server list', () => {

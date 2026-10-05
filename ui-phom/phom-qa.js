@@ -262,7 +262,7 @@
     }
   }
   // 🔔 the 4th player is ready: three bell strikes in the tool window (WebAudio, nothing to ship)
-  function ringBell(times = 3) {
+  function ringBell(times = 4) {
     try {
       const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
       const ctx = ringBell.ctx || (ringBell.ctx = new AC());
@@ -458,43 +458,50 @@
     return { overlay, body, close };
   }
 
-  // BỐ CỤC — which quarter of the screen each window takes. A 2×2 picture of the screen; each quarter picks P1 / P2 /
-  // P3 / Tool, and picking one that is elsewhere swaps the two (always one window per quarter). Áp dụng = save + arrange.
+  // BỐ CỤC — swap the windows' places DIRECTLY: a 2×2 picture of the screen, click one window then another and the
+  // two windows trade places at once on the screen (their P numbers stay). Saved; launches and Xếp cửa sổ follow it.
   async function openLayoutDialog() {
     let res = null; try { res = await api.getLayout(); } catch { res = null; }
     const def = (res && res.defaultLayout) || { A: 'BL', B: 'TL', C: 'TR', TOOL: 'BR' };
     let layout = { ...((res && res.layout) || def) };
-    const { body, close } = openDialog('Bố cục cửa sổ', 'Chọn ô trên màn hình cho từng cửa sổ — P4/P5 dự bị luôn nằm sau Tool');
+    let picked = null; // the window clicked first
+    const { body, close } = openDialog('Đổi vị trí cửa sổ', 'Bấm 1 cửa sổ rồi bấm cửa sổ khác — 2 cửa sổ đổi chỗ ngay. P4/P5 dự bị luôn nằm sau Tool.');
     const ITEM_LABEL = { A: 'P1', B: 'P2', C: 'P3', TOOL: 'Tool' };
-    const QUAD_LABEL = { TL: 'Trên trái', TR: 'Trên phải', BL: 'Dưới trái', BR: 'Dưới phải' };
-    const grid = el('div', { class: 'layout-grid' });
-    const place = (item, quad) => {
-      const other = Object.keys(layout).find((k) => layout[k] === quad);
-      if (other && other !== item) layout[other] = layout[item];
-      layout[item] = quad;
-      paint();
+    const grid = el('div', { class: 'layout-grid', role: 'group', 'aria-label': 'Màn hình' });
+    const msg = el('div', { class: 'note' }, '');
+    const nameOf = (item) => {
+      const i = { A: 0, B: 1, C: 2 }[item]; if (i == null) return 'Phỏm QA';
+      const b = manualBrowserById(assign[SLOTS[i]].runId) || {};
+      return b.username && b.username !== 'USER_UNKNOWN' ? b.username : '';
     };
+    async function apply(next, text) {
+      const prev = layout; layout = next; picked = null; paint();
+      let r = null; try { r = await api.setLayout(layout); } catch (e) { r = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+      if (r && r.ok === false) { layout = prev; paint(); msg.textContent = errText(r); msg.className = 'note warn'; return; }
+      msg.textContent = text; msg.className = 'note ok';
+    }
+    function onTile(item) {
+      if (!picked) { picked = item; paint(); return; }
+      if (picked === item) { picked = null; paint(); return; }
+      const a = picked, b = item, next = { ...layout };
+      next[a] = layout[b]; next[b] = layout[a];               // the two windows trade quarters
+      apply(next, 'Đã đổi chỗ ' + ITEM_LABEL[a] + ' ⇄ ' + ITEM_LABEL[b] + '.');
+    }
     function paint() {
       grid.replaceChildren();
       for (const quad of ['TL', 'TR', 'BL', 'BR']) {
         const item = Object.keys(layout).find((k) => layout[k] === quad);
         const idx = { A: 0, B: 1, C: 2 }[item];
-        const sel = el('select', { class: 'sel', 'aria-label': QUAD_LABEL[quad], onchange: (e) => place(e.target.value, quad) },
-          ...['A', 'B', 'C', 'TOOL'].map((it) => el('option', { value: it }, ITEM_LABEL[it])));
-        sel.value = item;
-        grid.appendChild(el('div', { class: 'layout-cell' + (item === 'TOOL' ? ' is-tool' : ''), style: idx != null ? '--accent:' + ACCENT[idx] : '' },
-          el('span', { class: 'muted' }, QUAD_LABEL[quad]), el('b', null, ITEM_LABEL[item]), sel));
+        grid.appendChild(el('button', { class: 'layout-cell' + (item === 'TOOL' ? ' is-tool' : '') + (picked === item ? ' picked' : ''), style: idx != null ? '--accent:' + ACCENT[idx] : '',
+          title: picked && picked !== item ? 'Đổi chỗ với ' + ITEM_LABEL[picked] : 'Chọn cửa sổ này để đổi chỗ', 'aria-pressed': picked === item ? 'true' : 'false', onclick: () => onTile(item) },
+          el('b', null, ITEM_LABEL[item]), el('span', { class: 'muted' }, nameOf(item) || ' '),
+          el('span', { class: 'lc-hint' }, picked === item ? 'đã chọn — bấm ô khác' : picked ? '⇄ đổi chỗ' : '')));
       }
     }
     paint();
-    const msg = el('div', { class: 'note' }, '');
     body.append(grid, msg, el('div', { class: 'row end' },
-      el('button', { class: 'btn', onclick: () => { layout = { ...def }; paint(); } }, 'Mặc định'),
-      el('button', { class: 'btn primary', onclick: async () => {
-        let r = null; try { r = await api.setLayout(layout); } catch (e) { r = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-        if (r && r.ok === false) { msg.textContent = errText(r); msg.className = 'note warn'; return; }
-        close(); note('Đã lưu bố cục và xếp lại cửa sổ.');
-      } }, 'Áp dụng & xếp')));
+      el('button', { class: 'btn', onclick: () => apply({ ...def }, 'Đã về bố cục mặc định.') }, 'Mặc định'),
+      el('button', { class: 'btn primary', onclick: () => close() }, 'Xong')));
   }
 
   // ================= PHỎM tab =================
@@ -799,7 +806,7 @@
       el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Rời bàn này và tìm bàn chờ khác cho cả nhóm', onclick: () => onNewTable() }, 'Bàn khác'),
       el('button', { class: 'btn danger-outline', title: 'Cả 3 acc rời bàn (tắt tự động)', onclick: step(() => api.leaveAll(), 'Đã thoát bàn tất cả.') }, 'Thoát bàn tất cả'),
       iconButton('grid', 'Xếp lại cửa sổ theo bố cục', step(() => api.restoreLayout(), 'Đã xếp lại cửa sổ.')),
-      iconButton('layout', 'Bố cục: chọn ô cho P1 / P2 / P3 / Tool', () => openLayoutDialog()),
+      iconButton('layout', 'Đổi vị trí cửa sổ (bấm 2 cửa sổ để đổi chỗ)', () => openLayoutDialog()),
       iconButton('rec', 'Ghi WebSocket (gửi log khi báo lỗi)', () => openFrameCapture()),
       iconButton('folder', 'Các ván đã lưu (xem lại Lọc bài từng bước) — mở thư mục', async () => { const r = await api.openRounds(); if (r && r.ok === false) note(errText(r), true); }),
       el('button', { class: 'btn danger', title: 'Đóng cả 3 trình duyệt', onclick: () => closeBrowsers() }, 'Đóng tất cả'));
@@ -1131,7 +1138,7 @@
   if (api.onSession) api.onSession((snap) => { session = snap; if (!$('workspace').hidden) bgRender(); });
   if (api.onUi) api.onUi((snap) => { applyUiSnapshot(snap); if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
   if (api.onNotice) api.onNotice(async (n) => {
-    if (n && n.event === 'FOURTH_READY') ringBell(3);
+    if (n && n.event === 'FOURTH_READY') ringBell(4);
     const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST/.test(n.event));
     // a reserve was swapped in by itself (a playing browser was closed from its window): the cards follow at once
     if (n && /^SLOT_AUTO_/.test(n.event)) {

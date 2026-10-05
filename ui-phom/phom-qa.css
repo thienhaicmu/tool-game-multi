@@ -365,3 +365,7 @@ button.stat:disabled { opacity: 1; }
   .bar .btn, .bar .switch, .bar .sel { height: 26px; font-size: 11.5px; }
   .bar .icon-btn { width: 24px; height: 24px; }
 }
+.layout-cell { cursor: pointer; text-align: left; font: inherit; color: inherit; }
+.layout-cell:hover { box-shadow: 0 0 0 3px var(--panel-2), 0 0 0 5px var(--line-strong); }
+.layout-cell.picked { box-shadow: 0 0 0 3px #fff, 0 0 0 6px var(--accent, var(--primary)); transform: scale(.98); }
+.layout-cell .lc-hint { margin-top: auto; font-size: 11px; font-weight: 700; color: var(--accent, var(--primary)); }

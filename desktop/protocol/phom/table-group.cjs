@@ -52,6 +52,9 @@ class TableGroup extends EventEmitter {
     this._log = typeof deps.log === 'function' ? deps.log : () => {};
     this._rejoinDelayMs = deps.rejoinDelayMs != null ? Number(deps.rejoinDelayMs) : REJOIN_DELAY_MS;
     this._replacePollMs = deps.replacePollMs != null ? Number(deps.replacePollMs) : REPLACE_POLL_MS;
+    // the CHƯA SẴN SÀNG account readies 2–3 s (random) after a stranger readied (user rule 2026-10-05)
+    this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 2000;
+    this._fullReadyMax = deps.fullReadyMaxMs != null ? Number(deps.fullReadyMaxMs) : 3000;
     this._replaceWaitMs = deps.replaceWaitMs != null ? Number(deps.replaceWaitMs) : REPLACE_WAIT_MS;
     this._timers = new Set(); // rejoin + replacement timers — all cleared by reset / leaveAll / auto off
     // ONE operation per account at a time (GĐ3): whatever asks — the bar, the tool window, a timer — a second request
@@ -602,10 +605,14 @@ class TableGroup extends EventEmitter {
     const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
     if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return;
     if (this._coord.tablePlayerCount(key) < 4) { g.fullReadySent = false; g.fullStartSent = false; return; }
-    if (nr && this._atGroupTable(nr[0]) && !this._coord.isReady(nr[0]) && !g.fullReadySent) {
+    // user rule 2026-10-05: KEY · SẴN SÀNG · CHƯA SẴN SÀNG waits — only once a STRANGER at the table is ready does the
+    // CHƯA SẴN SÀNG account ready, after a random 2–3 s
+    const strangerReady = typeof this._coord.strangerReady === 'function' ? this._coord.strangerReady(key) : true;
+    if (nr && strangerReady && this._atGroupTable(nr[0]) && !this._coord.isReady(nr[0]) && !g.fullReadySent) {
       g.fullReadySent = true;
       this._enqueue('READY', async (gen) => {
-        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(this._group ? this._group.creatorId : undefined) || this._coord.isReady(nr[0])) return CANCELLED;
+        await this._sleep(Math.round(this._fullReadyMin + this._random() * (this._fullReadyMax - this._fullReadyMin)));
+        if (this._cancelled(gen) || this._group !== g || this._coord.roundRunning(this._group ? this._group.creatorId : undefined) || this._coord.isReady(nr[0])) { g.fullReadySent = false; return CANCELLED; }
         const res = await this._coord.sendTableReady(nr[0]);
         if (res && res.ok !== false) this._event('FULL_READY', { id: nr[0], rid: g.rid }); else g.fullReadySent = false;
         return res;

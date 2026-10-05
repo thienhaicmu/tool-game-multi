@@ -348,6 +348,13 @@ class HostTableCoordinator extends EventEmitter {
   }
   // How many sit at this browser's table, and are all of them except the host ready? (the full-table auto start)
   tablePlayerCount(profileId) { const r = this._rec(profileId); const ts = r && this._ownSeated(r) ? r.ctx.tableState() : null; return ts ? ts.seats.length : 0; }
+  // Is a player who is NOT one of ours ready at this browser's table? (the trigger for the CHƯA SẴN SÀNG account)
+  strangerReady(profileId) {
+    const r = this._rec(profileId); const ts = r && this._ownSeated(r) ? r.ctx.tableState() : null;
+    if (!ts) return false;
+    const ours = new Set([...this._profiles.values()].map((x) => x.ctx.uid()).filter(Boolean).map(String));
+    return ts.seats.some((s) => s.uid && !ours.has(String(s.uid)) && (s.ready || this._readyUids.has(s.uid)));
+  }
   othersReady(profileId) {
     const r = this._rec(profileId); const ts = r && this._ownSeated(r) ? r.ctx.tableState() : null;
     if (!ts) return false;
