@@ -215,12 +215,18 @@ class TableGroup extends EventEmitter {
     // Searching sits down at strangers' one-player tables now and then: never ready there (the reference tool keeps
     // auto-ready off throughout). The role — and with it readiness — is decided once the KEY's table is found.
     await this._coord.setAutoReadyPref(id, false);
-    const res = await this._coord.scanForKeyTable(id, { stake: g.stake, keyUid: g.keyUid, keySeatedAt: g.keySeatedAt, pace: () => this.pace(gen) });
+    // keySeatedAt is read LIVE: the KEY may be kicked and Dò Key again while this search runs (a new group, same KEY)
+    const res = await this._coord.scanForKeyTable(id, { stake: g.stake, keyUid: g.keyUid, keySeatedAt: () => (this._group && this._group.keyUid === g.keyUid ? this._group.keySeatedAt : g.keySeatedAt), pace: () => this.pace(gen) });
     if (!res.ok) {
       if (!res.cancelled) this._event('SCAN_FAILED', { id, error: res.error });
       return res;
     }
-    if (this._group !== g) return res; // the group was dissolved meanwhile
+    // the group the KEY formed again meanwhile (same KEY) is the one this browser joins; another KEY → nothing to claim
+    const cur = this._group;
+    if (cur !== g && !(cur && cur.keyUid === g.keyUid && cur.rid == null)) return res;
+    return this._scanFoundIn(cur, id, res, gen);
+  }
+  async _scanFoundIn(g, id, res, gen) {
     const claim = this._claimRole(id);
     if (g.rid == null) {
       g.rid = Number(res.rid);
@@ -566,14 +572,14 @@ class TableGroup extends EventEmitter {
   // kicks the host for not starting ~16s later; with the not-ready member seated the KEY never owes a start.
   async _readyCheck(gen) {
     const g = this._group;
-    if (!g || this._coord.roundRunning()) return;
+    if (!g || this._coord.roundRunning(this._group ? this._group.creatorId : undefined)) return;
     const ids = [...g.roles.entries()];
     const ready = ids.find(([, role]) => role === ROLE.READY);
     const notReady = ids.find(([, role]) => role === ROLE.NOT_READY);
     if (!ready || !notReady) return;
     const [rid] = ready;
     if (!this._atGroupTable(rid) || !this._atGroupTable(notReady[0]) || this._coord.isReady(rid)) return;
-    if (!await this.pace(gen) || this._group !== g || this._coord.isReady(rid) || this._coord.roundRunning()) return;
+    if (!await this.pace(gen) || this._group !== g || this._coord.isReady(rid) || this._coord.roundRunning(this._group ? this._group.creatorId : undefined)) return;
     const res = await this._coord.sendTableReady(rid);
     if (res && res.ok !== false) this._event('READY_SENT', { id: rid, rid: g.rid });
   }
@@ -591,7 +597,7 @@ class TableGroup extends EventEmitter {
   // (reset at round end, or when the table is no longer full), paced like every other command.
   _onSeats() {
     const g = this._group;
-    if (!g || g.rid == null || !this._coord || this._coord.roundRunning()) return;
+    if (!g || g.rid == null || !this._coord || this._coord.roundRunning(this._group ? this._group.creatorId : undefined)) return;
     const key = g.creatorId;
     const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
     if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return;
@@ -599,7 +605,7 @@ class TableGroup extends EventEmitter {
     if (nr && this._atGroupTable(nr[0]) && !this._coord.isReady(nr[0]) && !g.fullReadySent) {
       g.fullReadySent = true;
       this._enqueue('READY', async (gen) => {
-        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning() || this._coord.isReady(nr[0])) return CANCELLED;
+        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(this._group ? this._group.creatorId : undefined) || this._coord.isReady(nr[0])) return CANCELLED;
         const res = await this._coord.sendTableReady(nr[0]);
         if (res && res.ok !== false) this._event('FULL_READY', { id: nr[0], rid: g.rid }); else g.fullReadySent = false;
         return res;
@@ -609,7 +615,7 @@ class TableGroup extends EventEmitter {
     if (!g.fullStartSent && this._coord.isTableHost(key) && this._coord.othersReady(key)) {
       g.fullStartSent = true;
       this._enqueue('START', async (gen) => {
-        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning() || !this._coord.othersReady(key)) { g.fullStartSent = false; return CANCELLED; }
+        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(this._group ? this._group.creatorId : undefined) || !this._coord.othersReady(key)) { g.fullStartSent = false; return CANCELLED; }
         const res = await this._coord.sendTableStart(key);
         if (res && res.ok !== false) this._event('ROUND_START_SENT', { id: key, rid: g.rid }); else g.fullStartSent = false;
         return res;

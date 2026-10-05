@@ -565,15 +565,62 @@ test('TẠO: the game client own (armed) join already proves the refusal → the
   assert.equal(sim.sent.B2.filter((j) => j[0] === 3 && j[3] === ZWSP).length, 0, 'no extra probe from the tool');
 });
 
-test('TẠO: a long 313 lottery breathes — an extra pause every 12 asks', async () => {
+// ---- live 2026-10-05: an account logged out after ~60 wrong-password joins a minute for 10 minutes ---------------
+test('TẠO: the 313 lottery is capped — at most N asks a minute (all accounts together)', async () => {
   const { sim } = mk({ keyNever: true, armedGame: true });
   const coord = sim.coord;
-  coord._scanPauseMs = 1; coord._findBudgetMs = 400;
+  coord._lotteryPerMin = 5;
   const logs = []; coord.on('log', (l) => logs.push(l.event));
   const b = CHANNELS[0].b;
   await coord.findKeyTable('B1', { stake: b });
   await coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, budgetMs: 400 });
-  const asks = logs.filter((e) => e === 'SCAN_SENT').length;
-  assert.ok(asks >= 12, 'enough asks for a pause (' + asks + ')');
-  assert.equal(logs.filter((e) => e === 'SCAN_PAUSE').length, Math.floor(asks / 12));
+  assert.equal(logs.filter((e) => e === 'SCAN_SENT').length, 5, 'stopped asking at the cap');
+  assert.ok(logs.includes('SCAN_THROTTLED'));
+});
+
+test('TẠO: ONE account runs the lottery at a time — the other waits (same IP), and takes over when it ends', async () => {
+  const { sim } = mk({ keyNever: true, armedGame: true });
+  const coord = sim.coord;
+  const b = CHANNELS[0].b;
+  await coord.findKeyTable('B1', { stake: b });
+  const asksBy = (id) => sim.sent[id].filter((j) => j[0] === 6 && j[3] && j[3].cmd === 313).length;
+  await Promise.all([
+    coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, budgetMs: 250 }),
+    coord.scanForKeyTable('B3', { stake: b, keyUid: sim.uids.B1, budgetMs: 250 }),
+  ]);
+  assert.ok(asksBy('B2') > 0);
+  assert.equal(asksBy('B3'), 0, 'B3 never asked while B2 owned the lottery');
+  assert.equal(coord._lottery.owner, null, 'released when the searches ended');
+});
+
+test('TẠO: while the KEY is not seated (kicked — its table is gone) nothing is asked; it resumes once the KEY sits again', async () => {
+  const { sim } = mk({ scan: [] });
+  const coord = sim.coord;
+  const b = CHANNELS[0].b;
+  await coord.findKeyTable('B1', { stake: b });
+  sim.kick('B1', 'Bạn thoát vì không bắt đầu');                 // the KEY's table is gone
+  const logs = []; coord.on('log', (l) => logs.push(l.event));
+  let seatedAt = 0;
+  const p = coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, budgetMs: 2000, keySeatedAt: () => seatedAt });
+  await new Promise((r) => setTimeout(r, 120));
+  assert.equal(sim.asks, 0, 'no 313 while the KEY has no table');
+  assert.ok(logs.includes('SCAN_WAIT_KEY'));
+  seatedAt = Date.now();
+  await coord.findKeyTable('B1', { stake: b });                  // the KEY sits again (a new table)
+  const newKeyRoom = sim.keyRoom();
+  const r = await p;
+  assert.equal(r.ok, true);
+  assert.equal(r.rid, newKeyRoom.rid, 'found the NEW table');
+});
+
+test('ROUND state is per table: a TẠO sitting at a stranger\'s running table never leaves the group "in a round"', () => {
+  const { sim } = mk();
+  const coord = sim.coord;
+  sim.feed('B2', JSON.stringify([5, { b: 500, gS: 4, ps: [{ uid: 's1', sit: 0, C: true, r: true }, { uid: sim.uids.B2, sit: 1 }], cmd: 202 }]));
+  assert.equal(coord.roundRunning('B2'), true, 'that stranger table is playing');
+  sim.feed('B2', '[4,true,1,-1,0,""]');                              // left it
+  assert.equal(coord.roundRunning('B2'), false);
+  sim.feed('B1', JSON.stringify([5, { b: 500, gS: 1, ps: [{ uid: sim.uids.B1, sit: 0, C: true }], cmd: 202 }]));
+  assert.equal(coord.roundRunning('B1'), false, 'the KEY waits alone: no round');
+  assert.equal(coord.roundRunning(), false);
 });

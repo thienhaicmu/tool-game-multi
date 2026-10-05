@@ -38,9 +38,8 @@ const SEARCH_BUDGET_MS = 180000;
 // TẠO fast path: at most this many one-player tables taken from the table list are sat at per search (the KEY's is
 // normally the newest; the cap keeps the account from sitting at a row of strangers' tables).
 const LIST_CANDIDATE_MAX = 6;
-// TẠO lottery: every SCAN_PAUSE_EVERY 313 asks, an extra SCAN_PAUSE_MS pause (fewer wrong-password joins per minute).
-const SCAN_PAUSE_EVERY = 12;
-const SCAN_PAUSE_MS = 6000;
+// TẠO lottery: at most this many 313 asks a minute, all accounts together (each ask = one wrong-password join).
+const LOTTERY_PER_MIN = 15;
 
 // The game socket is shared with the site's other games, and they broadcast constantly (capture 2026-10-02, one
 // browser, 183s: 2009× cmd 10004 + 519× 10003 for mini-games gid 10112/10110/10888, 149× 1015, 61× 10000 jackpots,
@@ -66,7 +65,8 @@ class HostTableCoordinator extends EventEmitter {
     this._rerollCooldownMs = deps.rerollCooldownMs != null ? Number(deps.rerollCooldownMs) : REROLL_COOLDOWN_MS;
     this._joinRejectGraceMs = deps.joinRejectGraceMs != null ? Number(deps.joinRejectGraceMs) : JOIN_REJECT_GRACE_MS;
     this._probeAckMs = deps.probeAckMs != null ? Number(deps.probeAckMs) : PROBE_ACK_MS;
-    this._scanPauseMs = deps.scanPauseMs != null ? Number(deps.scanPauseMs) : SCAN_PAUSE_MS;
+    this._lotteryPerMin = deps.lotteryPerMin != null ? Number(deps.lotteryPerMin) : LOTTERY_PER_MIN;
+    this._lottery = { owner: null, asks: [] };
     this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : SEARCH_BUDGET_MS;
     this._stopped = false;
     this._roundRunning = false;
@@ -178,10 +178,10 @@ class HostTableCoordinator extends EventEmitter {
       this._cardObserver.ingestFrame({ slot: 'B' + (idx + 1), browserIndex: idx + 1, ownUid: rec.ctx.uid(), cls, seq, now });
     }
     switch (playing ? cls.type : RESERVE_TYPES.has(cls.type) ? cls.type : null) {
-      case 'DEAL': this._roundRunning = true; this._readyUids.clear(); break;
+      case 'DEAL': rec._inRound = true; this._roundRunning = true; this._readyUids.clear(); break;
       case 'ROUND_END': {
         const wasRunning = this._roundRunning;
-        this._roundRunning = false; this._readyUids.clear();
+        rec._inRound = false; this._roundRunning = false; this._readyUids.clear();
         if (wasRunning) this.emit('roundEnd', {}); // once, though all three browsers receive it
         break;
       }
@@ -195,6 +195,9 @@ class HostTableCoordinator extends EventEmitter {
         const ts = rec.ctx.tableState();
         const h = ts && ts.seats.find((s) => s.host);
         rec._hostUid = h ? h.uid : null;
+        // the round state of THIS browser's table (gS 4 = a round is being played; 1 = waiting) — a TẠO that sat at
+        // a stranger's running table must not leave the whole group "in a round" (live 2026-10-05: stale for minutes)
+        { const gS = cls.json && cls.json[1] && cls.json[1].gS; if (gS != null) rec._inRound = Number(gS) === 4; }
         if (playing && ts) for (const s of ts.seats) if (s.ready && s.uid) this._readyUids.add(s.uid);
         if (meta.direction !== 'send' && !meta.replay) this._logSeats('TABLE_DIAG', rec, cls, cls.json && cls.json[1] && cls.json[1].ps);
         break;
@@ -218,7 +221,8 @@ class HostTableCoordinator extends EventEmitter {
         if (cls.accepted === true && cls.resultCode === 2 && meta.direction !== 'send') {
           rec._joinedRid = null; rec.manualState = 'KICKED';
           rec.lastError = { code: 'PHOM_KICKED', message: cls.resultMessage || 'Bị máy chủ đưa ra khỏi bàn' };
-          this._log('KICKED', rec, { reason: cls.resultMessage || null, serverFrame: frameText(meta.raw), host: wasHost, roundRunning: this._roundRunning });
+          this._log('KICKED', rec, { reason: cls.resultMessage || null, serverFrame: frameText(meta.raw), host: wasHost, roundRunning: !!rec._inRound });
+          rec._inRound = false;
           this.emit('kicked', { id: rec.id, message: cls.resultMessage || null });
         }
         break;
@@ -256,7 +260,7 @@ class HostTableCoordinator extends EventEmitter {
     if (!rec) return false;
     rec._manualGen += 1; rec._searchGen += 1;
     try { rec.ctx.reset(); } catch { /* best effort */ }
-    rec._joinedRid = null; rec._hostUid = null; rec.lastError = null; rec.manualState = 'READY';
+    rec._joinedRid = null; rec._hostUid = null; rec._inRound = false; rec.lastError = null; rec.manualState = 'READY';
     rec._searchKind = null; rec._searchStartedAt = null;
     this._changed();
     this.emit('hands', this.handsSnapshot());
@@ -406,7 +410,7 @@ class HostTableCoordinator extends EventEmitter {
       this._changed();
       return { confirmed: false, cancelled: false };
     }
-    rec.ctx.leaveTable(); rec._joinedRid = null; rec._hostUid = null;
+    rec.ctx.leaveTable(); rec._joinedRid = null; rec._hostUid = null; rec._inRound = false;
     if (rec.manualState !== 'SEARCHING') rec.manualState = 'READY';
     return { confirmed: true, cancelled: false };
   }
@@ -483,12 +487,27 @@ class HostTableCoordinator extends EventEmitter {
     const tried = new Set();
     let listTries = 0;
     let lotteryAsks = 0;
-    const keySeatedAt = opts.keySeatedAt != null ? Number(opts.keySeatedAt) : null;
+    let lastGate = null;
+    // when the KEY last sat down — a function (the group's current value: the KEY may be kicked and sit again) or a number
+    const keySince = () => { const v = typeof opts.keySeatedAt === 'function' ? opts.keySeatedAt() : opts.keySeatedAt; return v != null ? Number(v) : null; };
+    const keyRec = [...this._profiles.values()].find((r) => r.ctx.uid() != null && String(r.ctx.uid()) === keyUid) || null;
+    let waitingKey = false;
     const giveUp = (attempt) => this._searchFail(rec, 'PHOM_NO_KEY_TABLE', `Chưa dò ra bàn của acc KEY (cược ${stake}) sau 3 phút${lastMessage ? ` — máy chủ: ${lastMessage}` : ''}`, { stake, attempts: attempt + 1 });
     for (let attempt = 0; ; attempt++) {
       if (!await this._searchBreathe(rec, sg, opts)) return this._searchCancelled(rec);
       const myGen = this._searchStep(rec, attempt);
-      const listRid = listTries < LIST_CANDIDATE_MAX ? this._listCandidates(stake, keySeatedAt, tried)[0] : undefined;
+      // (1) The KEY is not at a table (kicked — its table is gone — or re-running Dò Key): nothing to look for. Wait
+      // for it to sit again WITHOUT asking (live 2026-10-05: the KEY's table lived ~20s, the lottery chased dead tables
+      // for minutes and the account was logged out).
+      if (keyRec && keyRec !== rec && !this._ownSeated(keyRec)) {
+        if (!waitingKey) { waitingKey = true; this._log('SCAN_WAIT_KEY', rec, { attempt }); }
+        await this._waitManual(() => this._ownSeated(keyRec), rec, myGen, 1000);
+        if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+        if (this._now() >= deadline) return giveUp(attempt);
+        continue;
+      }
+      waitingKey = false;
+      const listRid = listTries < LIST_CANDIDATE_MAX ? this._listCandidates(stake, keySince(), tried)[0] : undefined;
       if (listRid != null) {
         tried.add(listRid); listTries += 1;
         this._log('SCAN_LIST_CANDIDATE', rec, { rid: listRid, attempt, listTries });
@@ -505,14 +524,19 @@ class HostTableCoordinator extends EventEmitter {
         if (this._now() >= deadline) return giveUp(attempt);
         continue;
       }
-      // Each 313 is one wrong-password join (the game's own, armed) — a long lottery piles them up (live 2026-10-05: an
-      // account was logged out after a long Tạo). Every SCAN_PAUSE_EVERY asks the search breathes a little longer.
-      lotteryAsks += 1;
-      if (lotteryAsks % SCAN_PAUSE_EVERY === 0) {
-        this._log('SCAN_PAUSE', rec, { attempt, asks: lotteryAsks });
-        await this._waitManual(() => false, rec, myGen, this._scanPauseMs);
+      // (2) Each 313 is one wrong-password join (the game's own, armed). An account was logged out after ~60 of them a
+      // minute for 10 minutes (live 2026-10-05). So: ONE account runs the lottery at a time (the accounts share an IP),
+      // and all of them together ask at most LOTTERY_PER_MIN times a minute. A waiting account still uses the list.
+      const gate = this._lotteryGate(rec);
+      if (gate.wait) {
+        if (gate.reason !== lastGate) { lastGate = gate.reason; this._log('SCAN_THROTTLED', rec, { attempt, reason: gate.reason }); }
+        await this._waitManual(() => false, rec, myGen, Math.min(1000, gate.wait));
         if (this._searchStopped(rec, sg)) return this._searchCancelled(rec);
+        if (this._now() >= deadline) return giveUp(attempt);
+        continue;
       }
+      lastGate = null;
+      lotteryAsks += 1;
       const assignBefore = rec.ctx.roomAssignSeq();
       const ackBeforeAsk = rec.ctx.ackSeq(); // the game's own (armed) join answering the 313 acks after this
       const tableBefore = rec.ctx.tableSeq(); // before the ask: the game client may sit down the instant the answer lands
@@ -584,6 +608,18 @@ class HostTableCoordinator extends EventEmitter {
     }
   }
 
+  // The 313 lottery gate: one account at a time (the owner keeps it until its search ends), and at most
+  // _lotteryPerMin asks a minute across all accounts. Returns { wait: ms } when this account must not ask now.
+  _lotteryGate(rec) {
+    const L = this._lottery; const now = this._now();
+    const owner = L.owner != null ? this._rec(L.owner) : null;
+    if (owner && owner !== rec && owner._searchKind === 'SCAN') return { wait: 800, reason: 'OTHER_ACCOUNT' };
+    L.owner = rec.id;
+    L.asks = L.asks.filter((t) => now - t < 60000);
+    if (L.asks.length >= this._lotteryPerMin) return { wait: Math.max(50, 60000 - (now - L.asks[0])), reason: 'RATE' };
+    L.asks.push(now);
+    return { wait: 0 };
+  }
   // TẠO fast path — one-player public tables of the stake from the FRESHEST table list any of our browsers received,
   // only if that list arrived AFTER the KEY sat down (an older list cannot contain its table), newest number first.
   _listCandidates(stake, sinceMs, tried) {
@@ -653,6 +689,7 @@ class HostTableCoordinator extends EventEmitter {
     try { const r = await rec.send(frame, rec.ctx.sendContext()); return r?.ok !== false; } catch { return false; }
   }
   _searchEnd(rec) {
+    if (this._lottery.owner === rec.id) this._lottery.owner = null; // the lottery is free for another account
     if (rec.manualState === 'SEARCHING') rec.manualState = this._ownSeated(rec) ? 'JOINED' : 'READY';
     rec._searchKind = null; rec._searchStartedAt = null;
   }
@@ -696,7 +733,12 @@ class HostTableCoordinator extends EventEmitter {
   // The table host (chủ bàn) as seen from any seated browser.
   tableHostUid() { for (const r of this._profiles.values()) if (this._ownSeated(r) && r._hostUid) return r._hostUid; return null; }
   isTableHost(profileId) { const r = this._rec(profileId); return !!(r && this._ownSeated(r) && r._hostUid != null && r._hostUid === r.ctx.uid()); }
-  roundRunning() { return this._roundRunning; }
+  // Is a round being played? With a browser: at THAT browser's table (the group asks for the KEY's). Without one: at
+  // any playing browser's table. Per browser, so a stranger's table a TẠO passed through never sticks to the group.
+  roundRunning(profileId) {
+    if (profileId != null) { const r = this._rec(profileId); return !!(r && r._inRound && this._ownSeated(r)); }
+    return [...this._profiles.values()].slice(0, 3).some((r) => r._inRound && this._ownSeated(r));
+  }
 
   // ---- views ----------------------------------------------------------------------------------------------------
   // Are all browsers proven to sit at ONE table? Read from every browser's own ps[] — never from one browser's count.
