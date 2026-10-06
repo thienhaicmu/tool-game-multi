@@ -511,7 +511,7 @@ async function formed(m) {
   await m.group.joinTable('B3', m.group.rid()); // CHƯA SS
 }
 
-test('T8 (user rule 2026-10-05): CHƯA SS waits until a STRANGER is ready, then readies 2–4 s later; then the KEY starts', async () => {
+test('T8 (user rule 2026-10-05): CHƯA SS waits until a STRANGER is ready, then readies 1–2 s later; then the KEY starts AT ONCE', async () => {
   const m = fullTable(); await formed(m);
   const readyBefore = cmds(m.coord, 'READY').length;
   m.coord.fire('seats', {}); await m.group.leave('B9');
@@ -525,12 +525,14 @@ test('T8 (user rule 2026-10-05): CHƯA SS waits until a STRANGER is ready, then 
   m.coord.fire('seats', {}); await tick();
   const r3 = cmds(m.coord, 'READY').find((e) => e.id === 'B3');
   assert.ok(r3, 'the CHƯA SS member readied');
-  assert.ok(r3.at - t0 >= 2000 && r3.at - t0 <= 4000, 'after a random 2–4 s (' + (r3.at - t0) + ' ms)');
+  assert.ok(r3.at - t0 >= 1000 && r3.at - t0 <= 2000, 'after a random 1–2 s (' + (r3.at - t0) + ' ms)');
   m.coord.fire('seats', {}); await m.group.leave('B9');
   assert.equal(cmds(m.coord, 'START').length, 0, 'the stranger is not ready yet → the KEY waits');
   m.coord.othersAllReady = true;
+  const tReady = m.coord.clock;
   m.coord.fire('seats', {}); m.coord.fire('seats', {}); await m.group.leave('B9');
   const starts = cmds(m.coord, 'START');
+  assert.equal(starts[0] && starts[0].at, tReady, 'the KEY starts at once — no pause (user 2026-10-06)');
   assert.equal(starts.length, 1, 'started once');
   assert.equal(starts[0].id, 'B2', 'by the KEY (host)');
 });
@@ -574,13 +576,13 @@ test('wiring: stale ready dropped on t:2 / kick / fresh join; group log + READY_
   assert.match(main, /else if \(l && l\.tag === 'PHOM-GROUP'\) appendCoseatLog\(\{ at: Date\.now\(\), \.\.\.l \}\)/);
 });
 
-// user rule 2026-10-05: the stranger leaves while CHƯA SS waits its 2–4 s, or before the KEY's start goes out
+// user rule 2026-10-05: the stranger leaves while CHƯA SS waits its 1–2 s, or before the KEY's start goes out
 function heldSleep(m) {
   const held = [];
   const group = createTableGroup({ coord: m.coord, random: () => 0.5, now: () => m.coord.clock, sleep: (ms) => new Promise((r) => held.push({ ms, r })) });
   return { group, held, releaseAll: async () => { while (held.length) { held.shift().r(); await tick(); } } };
 }
-test('T8: the stranger leaves during CHƯA SS\'s 2–4 s → it does NOT ready (stays waiting)', async () => {
+test('T8: the stranger leaves during CHƯA SS\'s 1–2 s → it does NOT ready (stays waiting)', async () => {
   const m = fullTable(); m.coord.listeners = {};
   const h = heldSleep(m); const g = h.group;
   const logs = []; g._log = (ev, d) => logs.push({ ev, ...d });
@@ -589,7 +591,7 @@ test('T8: the stranger leaves during CHƯA SS\'s 2–4 s → it does NOT ready (
   await run; await h.releaseAll();
   m.coord.players = 4; m.coord.strangerIsReady = true;
   m.coord.fire('seats', {}); await tick();
-  assert.ok(logs.some((l) => l.ev === 'FULL_READY_SCHEDULED'), 'the 2–4 s wait started');
+  assert.ok(logs.some((l) => l.ev === 'FULL_READY_SCHEDULED'), 'the 1–2 s wait started');
   m.coord.players = 3; m.coord.strangerIsReady = false;  // …the stranger left
   await h.releaseAll();
   assert.equal(cmds(m.coord, 'READY').filter((e) => e.id === 'B3').length, 0);
@@ -602,9 +604,10 @@ test('T8: the stranger leaves before the KEY\'s start goes out → no start (nev
   while (!g.rid() || !m.coord.isSeated('B3')) { await h.releaseAll(); await tick(); }
   await run; await h.releaseAll();
   m.coord.players = 4; m.coord.strangerIsReady = true; m.coord.othersAllReady = true; m.coord.ready.add('B3');
-  m.coord.fire('seats', {}); await tick();               // START queued, waiting for its pace
+  let free; g._enqueue('LONG', () => new Promise((r) => { free = r; }));   // something else holds the queue
+  m.coord.fire('seats', {}); await tick();               // START queued behind it (it has no pause of its own any more)
   m.coord.players = 3;                                   // …the stranger left
-  await h.releaseAll();
+  free({ ok: true }); await tick(); await h.releaseAll();
   assert.equal(cmds(m.coord, 'START').length, 0);
 });
 

@@ -87,7 +87,7 @@ class CardObserver {
     this._ledger = new Map();   // code -> { code, status, ownerUid, source, observedAt, evidenceKey }
     this._seenEvents = new Set(); // evidenceKey dedup (draws/discards/melds)
     this._eats = [];            // [{ card, eaterUid, fromUid, observedAt }] — discards taken this round (853)
-    this._dealtUids = new Set(); // own hands dealt in THIS round — a second DEAL for one of them = a new round
+    this._dealtUids = new Map(); // own hand → the cards dealt to it in THIS round (another set = a new round)
     this._analysisPlayer = null;  // §19 — selected analysis angle (never merges hands)
     // §40 — seat ORDER learned from PUBLIC play: every PLAY names who discarded (fP.uid) and whose turn it is
     // next (tP.uid). Only that next player may eat the discard, so this is what a player at the table knows
@@ -155,7 +155,7 @@ class CardObserver {
     this._ledger.clear();
     this._seenEvents.clear();
     this._eats = [];
-    this._dealtUids = new Set();
+    this._dealtUids = new Map();
     this._pendingOwnHand = {};
     this._log('ROUND_RESET', { roundSeq: this._roundSeq, reason: meta.reason || null });
   }
@@ -182,6 +182,21 @@ class CardObserver {
   }
 
   // TABLE_STATE ps[] binds seat + name + membership for EVERY seat (own + others). No card data here.
+  // ONE table per round (code review 2026-10-06, "lọc bài thi thoảng lỗi"): every card frame of P1–P3 reaches here, also
+  // from a browser sitting at ANOTHER table (live: coseat (3) 19:31:51 the game seated B1 at a stranger's running table;
+  // Dò Key / Tạo pass through running tables). While a round runs, an actor who is not one of its players (DEAL lpi[])
+  // is another table's — never counted (its discards would make our cards look "Nên đánh", its DEAL would replace the
+  // turn order, its 855 would end our round).
+  _foreign(uid) {
+    return !!(this._roundActive && this._roundPlayers && this._roundPlayers.length && uid != null && !this._roundPlayers.includes(String(uid)));
+  }
+  _skipForeign(kind, uid) {
+    if (!this._foreign(uid)) return false;
+    this._foreignSkipped = (this._foreignSkipped || 0) + 1;
+    this._log('FOREIGN_TABLE_SKIPPED', { kind });
+    return true;
+  }
+
   ingestTableState(cls, meta = {}) {
     const ps = cls && Array.isArray(cls.ps) ? cls.ps : null;
     if (!ps) return;
@@ -193,6 +208,8 @@ class CardObserver {
       if (seat.sit != null) p.seat = seat.sit;
       if (seat.dn != null) p.name = String(seat.dn);
     }
+    // another table's seats (none of this round's players): names only, never our turn order
+    if (this._roundActive && this._roundPlayers && this._roundPlayers.length && !ps.some((x) => x && x.uid != null && this._roundPlayers.includes(String(x.uid)))) return;
     const key = ps.map((x) => (x && x.uid != null ? String(x.uid) : '')).filter(Boolean).sort().join('|');
     // someone joined/left: re-learn — but a round being played keeps the order its DEAL gave (a spectator coming in
     // does not change who plays after whom)
@@ -215,6 +232,13 @@ class CardObserver {
     const cards = normalizeCards(cls.cs);
     const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || null;
     const handKey = uid != null ? uid : (slot ? 'slot:' + slot : null);
+    // a browser that is not in our running round dealt at another table: none of that deal's players are ours
+    const lpiNow = cls.json && Array.isArray(cls.json) && cls.json[1] && Array.isArray(cls.json[1].lpi) ? cls.json[1].lpi.map(String) : [];
+    if (this._foreign(uid) && !lpiNow.some((u) => this._roundPlayers.includes(u))) { this._skipForeign('DEAL', uid); return; }
+    // the SAME deal delivered again (a capture attached twice: the cluster re-connects every browser when a reserve is
+    // reopened, a stale hook is re-installed) is that deal, not a new round — it used to wipe the round (2026-10-06)
+    const dealSig = cards.slice().sort((a, b) => a - b).join(',');
+    if (this._roundActive && handKey != null && cards.length && this._dealtUids.get(handKey) === dealSig) { this._log('DEDUP', { kind: 'deal' }); return; }
     const stale = this._roundActive && ((handKey != null && cards.length && this._dealtUids.has(handKey))
       || cards.some((c) => { const e = this._ledger.get(c); return !!(e && TERMINAL.has(e.status)); }));
     if (!this._roundActive || stale) this.resetRound({ now, reason: stale ? 'DEAL_AGAIN_NEW_ROUND' : 'DEAL_NEW_ROUND' });
@@ -226,7 +250,7 @@ class CardObserver {
     const lpi = cls.json && Array.isArray(cls.json) && cls.json[1] && Array.isArray(cls.json[1].lpi) ? cls.json[1].lpi : null;
     if (lpi && lpi.length) { this._roundPlayers = lpi.map(String); this._seedOrderFromDeal(); }
     if (!cards.length) return;
-    if (handKey != null) this._dealtUids.add(handKey);
+    if (handKey != null) this._dealtUids.set(handKey, dealSig);
     if (uid != null) { this._setCurrentCards(uid, cards, 'DEAL', now); }
     else if (slot) { this._pendingOwnHand[slot] = { cards, source: 'DEAL' }; } // flush on bind
   }
@@ -236,6 +260,7 @@ class CardObserver {
     if (Array.isArray(cls.sAC)) {
       // OWN authoritative full hand.
       const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || (cls.uid != null ? String(cls.uid) : null);
+      if (this._skipForeign('DRAW', uid)) return;
       if (uid != null) {
         this._setCurrentCards(uid, normalizeCards(cls.sAC), 'DRAW', now);
         if (Array.isArray(cls.sMs)) this._player(uid).serverMeldCards = normalizeCards(cls.sMs); // own phỏm (§41)
@@ -263,6 +288,7 @@ class CardObserver {
     const fp = cls.fP;
     if (!fp || fp.uid == null) return;
     const uid = String(fp.uid);
+    if (this._skipForeign('PLAY', uid)) return;
     const cards = normalizeCards(fp.dCs);
     if (cls.tP && cls.tP.uid != null) {
       this._currentTurnUid = String(cls.tP.uid);
@@ -295,6 +321,7 @@ class CardObserver {
     const code = normalizeCard(cls.cs);
     const eater = fp.uid != null ? String(fp.uid) : null;
     const from = fp.puid != null ? String(fp.puid) : null;
+    if (this._skipForeign('EAT', eater)) return;
     if (eater != null) this._currentTurnUid = eater;
     if (eater != null && Array.isArray(cls.sAC) && ownUid != null && String(ownUid) === eater) {
       this._setCurrentCards(eater, normalizeCards(cls.sAC), 'EAT', now);
@@ -314,6 +341,7 @@ class CardObserver {
   _onMeld(cls, now) {
     this._ensureRound(now);
     const uid = cls.uid != null ? String(cls.uid) : null;
+    if (this._skipForeign('MELD', uid)) return;
     const mes = Array.isArray(cls.mes) ? cls.mes : [];
     for (const m of mes) {
       const meid = m && m.meid != null ? m.meid : null;
@@ -332,6 +360,9 @@ class CardObserver {
 
   _onRoundEnd(cls, slot, ownUid, now) {
     // 855 — the round closes; KEEP the observation (snapshot still shows the ended round). The next DEAL resets.
+    // Another table's round end (none of its players are in ours) does not end ours.
+    const endUids = Array.isArray(cls.ps) ? cls.ps.filter((x) => x && x.uid != null).map((x) => String(x.uid)) : [];
+    if (endUids.length && endUids.every((u) => this._foreign(u))) { this._skipForeign('ROUND_END', endUids[0]); return; }
     this._roundActive = false;
     if (Array.isArray(cls.sAC)) {
       const uid = ownUid != null ? String(ownUid) : (slot && this._slotBinding[slot]) || (cls.uid != null ? String(cls.uid) : null);

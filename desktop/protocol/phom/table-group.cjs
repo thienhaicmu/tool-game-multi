@@ -54,9 +54,10 @@ class TableGroup extends EventEmitter {
     // after the KEY is kicked: how long to wait for the server's cmd 203 (the new host) before deciding (B4)
     this._hostCheckMs = deps.hostCheckMs != null ? Number(deps.hostCheckMs) : 1000;
     this._replacePollMs = deps.replacePollMs != null ? Number(deps.replacePollMs) : REPLACE_POLL_MS;
-    // the CHƯA SẴN SÀNG account readies 2–4 s (random) after a stranger readied (user rule 2026-10-05: 2–3 s → 1–3 s → 2–4 s)
-    this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 2000;
-    this._fullReadyMax = deps.fullReadyMaxMs != null ? Number(deps.fullReadyMaxMs) : 4000;
+    // the CHƯA SẴN SÀNG account readies 1–2 s (random) after a stranger readied, then the KEY starts at once
+    // (user rule 2026-10-05/06: 2–3 s → 1–3 s → 2–4 s → 1–2 s)
+    this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 1000;
+    this._fullReadyMax = deps.fullReadyMaxMs != null ? Number(deps.fullReadyMaxMs) : 2000;
     this._replaceWaitMs = deps.replaceWaitMs != null ? Number(deps.replaceWaitMs) : REPLACE_WAIT_MS;
     this._timers = new Set(); // rejoin + replacement timers — all cleared by reset / leaveAll / auto off
     // ONE operation per account at a time (GĐ3): whatever asks — the bar, the tool window, a timer — a second request
@@ -716,7 +717,7 @@ class TableGroup extends EventEmitter {
       return this._fullWait(g, 'PLAYERS_' + players);
     }
     // user rule 2026-10-05: KEY · SẴN SÀNG · CHƯA SẴN SÀNG waits — only once a STRANGER at the table is ready does the
-    // CHƯA SẴN SÀNG account ready, after a random 2–4 s
+    // CHƯA SẴN SÀNG account ready, after a random 1–2 s
     const strangerReady = typeof this._coord.strangerReady === 'function' ? this._coord.strangerReady(key) : true;
     // CHƯA SS NOT at the table while it is full (4 here, so without it): it lost its seat to a stranger (user 2026-10-06)
     // → the round goes on with our two accounts; the KEY starts once everyone seated is ready
@@ -747,7 +748,8 @@ class TableGroup extends EventEmitter {
     g.fullStartSent = true;
     this._enqueue('START', async (gen) => {
       // never a round of our three alone: the stranger must still be there when the start goes out
-      if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(key) || !this._coord.othersReady(key) || this._coord.tablePlayerCount(key) < 4) { g.fullStartSent = false; return CANCELLED; }
+      // the KEY starts AT ONCE once everyone else is ready (user 2026-10-06 "acc key bắt đầu luôn") — no pause before it
+      if (this._cancelled(gen) || this._group !== g || this._coord.roundRunning(key) || !this._coord.othersReady(key) || this._coord.tablePlayerCount(key) < 4) { g.fullStartSent = false; return CANCELLED; }
       const res = await this._coord.sendTableStart(key);
       if (res && res.ok !== false) this._event('ROUND_START_SENT', { id: key, rid: g.rid });
       else {

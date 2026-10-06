@@ -66,6 +66,14 @@ class SafeCardAnalyzer {
   }
 }
 
+// A hand we have SEEN — only a session's own frames carry one (DEAL / DRAW / EAT / ROUND_END) — is exact knowledge,
+// whether that account is still ours or was moved out by ĐỔI (user 2026-10-06: after a swap its cards were dropped from
+// the threat check while still counted as 'known location', so a card it could eat became 'Nên đánh').
+const SEEN_SOURCES = new Set(['DEAL', 'DRAW', 'EAT', 'ROUND_END']);
+function handKnown(p) {
+  return !!(p && Array.isArray(p.currentCards) && p.currentCards.length && (p.controlled || SEEN_SOURCES.has(p.currentCardsSource)));
+}
+
 // ---- pure computation ----
 function compute(snap, targetUid) {
   const caps = { otherPlayerHand: false, otherPlayerDrawnCard: false }; // §9 — the certainty boundary
@@ -117,13 +125,13 @@ function compute(snap, targetUid) {
 
   // The OTHER controlled players (P1/P2/P3 minus the target) whose exact hands we KNOW. They are opponents
   // too, so a known partner pair in their hand proves a real (not hypothetical) eat.
-  const controlledOpps = Object.values(players).filter((p) => p && p.controlled && p.uid !== targetUid)
+  const controlledOpps = Object.values(players).filter((p) => p && handKnown(p) && p.uid !== targetUid)
     .map((p) => ({ uid: p.uid, slot: p.slot, hand: new Set((p.currentCards || []).filter(isValidCardCode)) }));
 
   const nextSet = nextCandidates(snap, targetUid);
   const threats = nextSet.map((uid) => {
     const p = players[uid];
-    const known = !!(p && p.controlled && Array.isArray(p.currentCards) && p.currentCards.length);
+    const known = handKnown(p);
     return { uid, known, slot: p ? p.slot : null, hand: new Set(known ? p.currentCards.filter(isValidCardCode) : []) };
   });
   const cards = hand.map((code) => {
@@ -279,7 +287,7 @@ function fingerprint(snap, targetUid) {
   const tp = snap.players && snap.players[targetUid];
   const t = tp ? (tp.currentCards || []).slice().sort((a, b) => a - b).join(',') : '';
   const sm = tp ? `${tp.currentCardsSource || ''}:${(tp.serverMeldCards || []).slice().sort((a, b) => a - b).join(',')}` : '';
-  const nx = nextCandidates(snap, targetUid).join(',') + '|' + Object.values(snap.players || {}).filter((p) => p.controlled && p.uid !== targetUid).map((p) => (p.currentCards || []).slice().sort((a, b) => a - b).join('.')).join(';');
+  const nx = nextCandidates(snap, targetUid).join(',') + '|' + Object.values(snap.players || {}).filter((p) => handKnown(p) && p.uid !== targetUid).map((p) => (p.currentCards || []).slice().sort((a, b) => a - b).join('.')).join(';');
   return `${targetUid}|r${snap.roundSeq}|H[${t}]|M[${sm}]|N[${nx}]|L[${led}]`;
 }
 
