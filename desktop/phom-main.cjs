@@ -851,7 +851,8 @@ else {
       const json = JSON.stringify(gameHeader.deriveHeaderState(view));
       if (headerLastPushed[rid] === json) continue;
       headerLastPushed[rid] = json;
-      client.Runtime.evaluate({ expression: `window.__phomHeaderRender && window.__phomHeaderRender(${json})` }).catch((e) => headerLog('push-error', { runId: rid, error: String(e && e.message || e) }));
+      // the tab title too, separately: a page still running an older bar has no title code in its render (2026-10-06)
+      client.Runtime.evaluate({ expression: `window.__phomHeaderRender && window.__phomHeaderRender(${json}); window.__phomSetTitle && window.__phomSetTitle(${JSON.stringify(view.account || null)})` }).catch((e) => headerLog('push-error', { runId: rid, error: String(e && e.message || e) }));
     }
   }
 
@@ -947,6 +948,11 @@ else {
   function accountNames() {
     if (!_accountNames) _accountNames = chromiumProfileName.createAccountNameStore(path.join(phomRoot(), 'account-names.json'));
     return _accountNames;
+  }
+  let _profileFolders = null;
+  function profileFolders() {
+    if (!_profileFolders) _profileFolders = chromiumProfileName.createFolderMapStore(path.join(phomRoot(), 'profile-folders.json'));
+    return _profileFolders;
   }
   function rememberAccountName(run, b) {
     if (!run || !b || !run.profileId || !b.username || b.username === 'USER_UNKNOWN') return;
@@ -1379,12 +1385,21 @@ else {
     }
     // Per-profile persistent user-data-dir so reopening a slot reuses ITS profile's dir
     // (keyed by the authoritative browser profile, not the window slot) (§12).
-    const profileDir = path.join(phomRoot(), 'browser-profiles', udKey || slot || 'X');
+    // ONE name everywhere (user 2026-10-06 "làm cho đồng bộ"): the game account last seen in this profile, else the
+    // tool's profile name — for the cookie FOLDER (browser-profiles/<name>, renamed while the browser is closed; the
+    // profile id stays the key in profile-folders.json) and for the Chromium profile name. The tab shows it as well.
+    const profileName = accountNames().get(udKey) || label || saved.name || `Profile ${slot}`;
+    const profilesRoot = path.join(phomRoot(), 'browser-profiles');
+    let profileDir = path.join(profilesRoot, udKey || slot || 'X');
+    try {
+      const pd = chromiumProfileName.resolveProfileDir({ root: profilesRoot, key: udKey || slot || 'X', name: profileName, map: profileFolders() });
+      profileDir = pd.dir;
+      if (pd.renamedFrom || pd.renameError) headerLog('profile-folder', { slotId: slot, profileId: udKey, renamed: !!pd.renamedFrom, error: pd.renameError || null });
+    } catch { /* never blocks a launch */ }
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
-    // The profile's Chromium name = the game account last seen in it, else the tool's profile name (user 2026-10-06).
     // Written now, while this profile's browser is closed (Chromium reads it at start, rewrites it at exit).
     try {
-      const pn = chromiumProfileName.applyProfileName(profileDir, accountNames().get(udKey) || label || saved.name || `Profile ${slot}`);
+      const pn = chromiumProfileName.applyProfileName(profileDir, profileName);
       if (pn.changed) headerLog('profile-name', { slotId: slot, profileId: udKey, fromAccount: !!accountNames().get(udKey) });
     } catch { /* never blocks a launch */ }
     // PHASE-6 — DETERMINISTIC multi-monitor placement. Browser slot A/B/C ⇒ window 1/2/3 (stable, never
@@ -1503,8 +1518,20 @@ else {
     ipcMain.handle('phom:agents', () => ({ ok: true, agents: browserAgent.AGENTS.map((a) => ({ agent: a, ...browserAgent.publicSnapshot(a) })), defaultAgent: browserAgent.DEFAULT_AGENT }));
     // ---- PHASE-6.3.1 — flexible N-profile CRUD + open-from-selection ----
     ipcMain.handle('phom:profiles-list', guarded(() => { ensureStores(); return { ok: true, profiles: deviceProfilesStore.list() }; }));
-    ipcMain.handle('phom:profile-create', guarded((_e, input) => { ensureStores(); return deviceProfilesStore.create(input && typeof input === 'object' ? input : {}); }));
-    ipcMain.handle('phom:profile-update-x', guarded((_e, id, patch) => { ensureStores(); return deviceProfilesStore.update(String(id == null ? '' : id), patch && typeof patch === 'object' ? patch : {}); }));
+    // A profile created / renamed in the tool gets its Chromium profile at once — the cookie folder and the Chromium
+    // profile name (user 2026-10-06: "tạo profile xong thì cũng phải tạo profile trên web"); not while its browser is open.
+    const syncBrowserProfile = (res) => {
+      try {
+        const p = res && res.ok && res.profile; if (!p || !p.id || profileInUse(String(p.id))) return res;
+        const name = accountNames().get(p.id) || p.name || p.id;
+        const pd = chromiumProfileName.resolveProfileDir({ root: path.join(phomRoot(), 'browser-profiles'), key: String(p.id), name, map: profileFolders() });
+        chromiumProfileName.applyProfileName(pd.dir, name);
+        headerLog('profile-synced', { profileId: p.id, folder: pd.folder, renamed: !!pd.renamedFrom });
+      } catch { /* the next launch syncs it anyway */ }
+      return res;
+    };
+    ipcMain.handle('phom:profile-create', guarded((_e, input) => { ensureStores(); return syncBrowserProfile(deviceProfilesStore.create(input && typeof input === 'object' ? input : {})); }));
+    ipcMain.handle('phom:profile-update-x', guarded((_e, id, patch) => { ensureStores(); return syncBrowserProfile(deviceProfilesStore.update(String(id == null ? '' : id), patch && typeof patch === 'object' ? patch : {})); }));
     // Delete blocked while the profile backs a LIVE Chromium (§11/§30) — close the browser first.
     ipcMain.handle('phom:profile-delete-x', guarded((_e, id) => {
       ensureStores();

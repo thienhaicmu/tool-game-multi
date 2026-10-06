@@ -88,4 +88,59 @@ function createAccountNameStore(file) {
   };
 }
 
-module.exports = { applyProfileName, createAccountNameStore, cleanName, MAX_NAME };
+// ---------------------------------------------------------------------------
+// The profile FOLDER (where Chromium keeps the cookies) carries the same name (user 2026-10-06 "làm cho đồng bộ"):
+// browser-profiles/<account or the tool's profile name>. The tool's profile id stays the key — a small JSON map
+// (id → folder) remembers which folder is whose. The folder is renamed right before a launch, while that profile's
+// browser is closed; everything inside (cookies, logins) moves with it. When the rename is not possible (a file still
+// in use) the current folder is used — a launch is never blocked by a name.
+// ---------------------------------------------------------------------------
+const WIN_RESERVED = /^(con|prn|aux|nul|com[0-9]|lpt[0-9])$/i;
+function folderNameOf(name) {
+  let s = String(name == null ? '' : name).replace(/[<>:"/\\|?*\u0000-\u001f]/g, '').replace(/[. ]+$/, '').trim().slice(0, MAX_NAME);
+  if (!s || WIN_RESERVED.test(s)) return null;
+  return s;
+}
+
+function createFolderMapStore(file) {
+  let cache = null;
+  const load = () => { if (cache) return cache; const r = readJson(file); cache = r.json && typeof r.json === 'object' ? r.json : {}; return cache; };
+  return {
+    get(key) { const v = load()[String(key)]; return typeof v === 'string' && v ? v : null; },
+    all() { return { ...load() }; },
+    set(key, folder) {
+      const all = load(); if (all[String(key)] === folder) return;
+      all[String(key)] = folder;
+      try { fs.mkdirSync(path.dirname(file), { recursive: true }); writeJson(file, all); } catch { /* best effort */ }
+    },
+  };
+}
+
+// → { dir, folder, renamedFrom } — never throws. root = .../browser-profiles; key = the tool's profile id.
+function resolveProfileDir({ root, key, name, map, fsx = fs }) {
+  const k = String(key == null ? '' : key) || 'X';
+  const exists = (d) => { try { return fsx.statSync(d).isDirectory(); } catch { return false; } };
+  const mapped = map.get(k);
+  let current = mapped && exists(path.join(root, mapped)) ? mapped : (exists(path.join(root, k)) ? k : null); // k = the old id-named folder
+  const wanted = folderNameOf(name) || folderNameOf(k) || 'X';
+  const others = new Set(Object.entries(map.all()).filter(([kk]) => kk !== k).map(([, f]) => String(f).toLowerCase()));
+  // a free name: not another profile's folder, not an existing folder that is not ours
+  let target = wanted;
+  for (let i = 2; (others.has(target.toLowerCase()) || (exists(path.join(root, target)) && (!current || target.toLowerCase() !== current.toLowerCase()))) && i < 100; i++) target = `${wanted} (${i})`;
+  if (!current) {
+    try { fsx.mkdirSync(path.join(root, target), { recursive: true }); } catch { /* best effort */ }
+    map.set(k, target);
+    return { dir: path.join(root, target), folder: target, renamedFrom: null };
+  }
+  if (current === target) { if (mapped !== current) map.set(k, current); return { dir: path.join(root, current), folder: current, renamedFrom: null }; }
+  try {
+    fsx.renameSync(path.join(root, current), path.join(root, target));
+    map.set(k, target);
+    return { dir: path.join(root, target), folder: target, renamedFrom: current };
+  } catch (e) {
+    if (mapped !== current) map.set(k, current);
+    return { dir: path.join(root, current), folder: current, renamedFrom: null, renameError: String(e && e.code || e) };
+  }
+}
+
+module.exports = { applyProfileName, createAccountNameStore, cleanName, MAX_NAME, folderNameOf, createFolderMapStore, resolveProfileDir };

@@ -60,5 +60,6 @@ test('runtime resolves each browser URL from ITS profile (openProfile uses cfg.g
 
 test('per-profile user-data-dir is keyed by the stable profile id (login persists across restarts)', () => {
   assert.match(main, /const udKey = \(profileId != null[^\n]*\) \? String\(profileId\)/);
-  assert.match(main, /path\.join\(phomRoot\(\), 'browser-profiles', udKey/);
+  // the folder is NAMED after the account / profile now (2026-10-06), but still found by the stable profile id
+  assert.match(main, /resolveProfileDir\(\{ root: profilesRoot, key: udKey \|\| slot \|\| 'X'/);
 });

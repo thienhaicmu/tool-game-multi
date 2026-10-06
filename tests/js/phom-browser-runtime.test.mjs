@@ -84,7 +84,7 @@ test('openProfile launches from the resolved runtime per-run and preserves the p
   assert.match(fn, /run\.chromeExecutable = usingChrome \? rtChoice\.executable : null/);
   assert.match(fn, /run\.browserKind = rtChoice\.kind/);
   // user-data-dir stays keyed by the stable profile id regardless of runtime kind (§16/§17)
-  assert.match(fn, /path\.join\(phomRoot\(\), 'browser-profiles', udKey/);
+  assert.match(fn, /resolveProfileDir\(\{ root: profilesRoot, key: udKey \|\| slot \|\| 'X'/);
   // the custom-Chromium sandbox ACL is skipped when running Google Chrome
   assert.match(fn, /if \(!usingChrome && !sandbox\.sandboxDisabled && rt\.ok\)/);
 });

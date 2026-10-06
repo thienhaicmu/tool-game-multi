@@ -55,10 +55,10 @@ test('account names: remembered per profile key, saved to one file, junk ignored
 
 test('wiring: the name is written right before each launch; the account is learned from the header state', () => {
   const main = read('desktop/phom-main.cjs');
-  const i = main.indexOf("const profileDir = path.join(phomRoot(), 'browser-profiles'");
+  const i = main.indexOf('const profileName = accountNames().get(udKey) || label || saved.name');
   const j = main.indexOf('runManager.createRun(', i);
   assert.ok(i > 0 && j > i);
-  assert.match(main.slice(i, j), /chromiumProfileName\.applyProfileName\(profileDir, accountNames\(\)\.get\(udKey\) \|\| label \|\| saved\.name/);
+  assert.match(main.slice(i, j), /chromiumProfileName\.applyProfileName\(profileDir, profileName\)/);
   assert.match(main, /rememberAccountName\(run, browsers\.find/);
   assert.match(main, /b\.username === 'USER_UNKNOWN'\) return;/);
 });
@@ -153,4 +153,88 @@ test('tab title before the login: A/B/C → [P1]/[P2]/[P3], reserves D/E → [P4
     page.window.__phomHeaderRender(gh.deriveHeaderState({ opened: true }));
     assert.equal(page.document.title, want, String(slot));
   }
+});
+
+// live 2026-10-06: the browsers stayed open while the tool restarted — the page still ran the OLDER bar, so the new boot
+// stopped at the install-once guard and the title code never ran. The title setter is installed before that guard, and
+// main calls it with every header push.
+test('tab title also on a page that still runs an OLDER bar (browser kept open across a tool restart)', () => {
+  const page = fakePage();
+  page.window.__phomHeaderInstalled = true;                            // the old bar is there
+  page.window.__phomHeaderRender = () => {};                            // …with its old render (no title code)
+  const ctx = vm.createContext({ window: page.window, document: page.document, MutationObserver: page.window.MutationObserver, performance: { now: () => 0 }, console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {}, requestAnimationFrame: () => 0, navigator: {}, location: { href: 'https://v.hitclub.guitars/' } });
+  vm.runInContext(gh.bootScript({ slotId: 'C' }), ctx);
+  assert.equal(typeof page.window.__phomSetTitle, 'function', 'installed although the bar was already there');
+  page.window.__phomSetTitle(null);
+  assert.equal(page.document.title, '[P3] Hit Club');
+  page.window.__phomSetTitle('baycao1003');
+  assert.equal(page.document.title, '[baycao1003] Hit Club');
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /window\.__phomHeaderRender\(\$\{json\}\); window\.__phomSetTitle && window\.__phomSetTitle\(\$\{JSON\.stringify\(view\.account \|\| null\)\}\)/);
+  const src = gh.bootScript();
+  assert.ok(src.indexOf('window.__phomSetTitle = setTitleAccount') < src.indexOf('if (window.__phomHeaderInstalled)'), 'before the install-once guard');
+});
+
+// ---- the cookie FOLDER carries the same name (user 2026-10-06 "làm cho đồng bộ") ----
+function profilesRootWith(entries = {}) {
+  const root = mkdtempSync(join(tmpdir(), 'bp-'));
+  for (const [folder, files] of Object.entries(entries)) { mkdirSync(join(root, folder, 'Default'), { recursive: true }); for (const f of files) writeFileSync(join(root, folder, 'Default', f), f + '-DATA'); }
+  return root;
+}
+test('profile folder: the old id-named folder becomes "P1", then the account — cookies move with it', () => {
+  const root = profilesRootWith({ 'prof-1': ['Cookies'] });
+  const map = pn.createFolderMapStore(join(root, '..', 'pf-' + Date.now() + '.json'));
+  const a = pn.resolveProfileDir({ root, key: 'prof-1', name: 'P1', map });
+  assert.deepEqual([a.folder, a.renamedFrom], ['P1', 'prof-1']);
+  assert.equal(readFileSync(join(root, 'P1', 'Default', 'Cookies'), 'utf8'), 'Cookies-DATA', 'the login is still there');
+  assert.equal(existsSync(join(root, 'prof-1')), false);
+  const b = pn.resolveProfileDir({ root, key: 'prof-1', name: 'vietanhcoo5365', map });
+  assert.deepEqual([b.folder, b.renamedFrom], ['vietanhcoo5365', 'P1']);
+  assert.equal(readFileSync(join(b.dir, 'Default', 'Cookies'), 'utf8'), 'Cookies-DATA');
+  const c = pn.resolveProfileDir({ root, key: 'prof-1', name: 'vietanhcoo5365', map });
+  assert.deepEqual([c.folder, c.renamedFrom], ['vietanhcoo5365', null], 'same name: nothing moves');
+});
+test('profile folder: a rename that is refused (files in use) keeps the folder — a launch is never blocked', () => {
+  const root = profilesRootWith({ 'prof-1': ['Cookies'] });
+  const map = pn.createFolderMapStore(join(root, '..', 'pf-busy-' + Date.now() + '.json'));
+  const fsx = { ...require('node:fs'), renameSync: () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } };
+  const r = pn.resolveProfileDir({ root, key: 'prof-1', name: 'P1', map, fsx });
+  assert.deepEqual([r.folder, r.renameError], ['prof-1', 'EBUSY']);
+  assert.equal(map.get('prof-1'), 'prof-1');
+});
+test('profile folder: never two profiles in one folder; a folder that is not ours is never taken; unsafe characters dropped', () => {
+  const root = profilesRootWith({ P3: ['Cookies'] });                // somebody else's folder named P3 (not in the map)
+  const map = pn.createFolderMapStore(join(root, '..', 'pf-c-' + Date.now() + '.json'));
+  const a = pn.resolveProfileDir({ root, key: 'prof-a', name: 'P3', map });
+  assert.equal(a.folder, 'P3 (2)', 'the existing P3 folder is not ours');
+  const b = pn.resolveProfileDir({ root, key: 'prof-b', name: 'P3', map });
+  assert.equal(b.folder, 'P3 (3)');
+  assert.equal(pn.folderNameOf('a:b/c*?'), 'abc');
+  assert.equal(pn.folderNameOf('CON'), null);
+  assert.equal(pn.folderNameOf('name. '), 'name');
+  const c = pn.resolveProfileDir({ root, key: 'prof-c', name: 'CON', map });
+  assert.equal(c.folder, 'prof-c', 'no usable name → the id');
+});
+test('wiring: ONE name for the folder and the Chromium profile, resolved before each launch', () => {
+  const main = read('desktop/phom-main.cjs');
+  const i = main.indexOf("const profileName = accountNames().get(udKey) || label || saved.name");
+  const j = main.indexOf('runManager.createRun(', i);
+  assert.ok(i > 0 && j > i);
+  const seg = main.slice(i, j);
+  assert.match(seg, /chromiumProfileName\.resolveProfileDir\(\{ root: profilesRoot, key: udKey \|\| slot \|\| 'X', name: profileName, map: profileFolders\(\) \}\)/);
+  assert.match(seg, /chromiumProfileName\.applyProfileName\(profileDir, profileName\)/);
+  assert.match(main, /path\.join\(phomRoot\(\), 'profile-folders\.json'\)/);
+});
+
+test('a profile created / renamed in the tool gets its Chromium profile at once (folder + name), not while its browser is open', () => {
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /ipcMain\.handle\('phom:profile-create', guarded\(\(_e, input\) => \{ ensureStores\(\); return syncBrowserProfile\(deviceProfilesStore\.create\(/);
+  assert.match(main, /ipcMain\.handle\('phom:profile-update-x', guarded\(\(_e, id, patch\) => \{ ensureStores\(\); return syncBrowserProfile\(deviceProfilesStore\.update\(/);
+  const fn = main.slice(main.indexOf('const syncBrowserProfile = (res) => {'), main.indexOf("ipcMain.handle('phom:profile-create'"));
+  assert.match(fn, /profileInUse\(String\(p\.id\)\)\) return res;/);
+  assert.match(fn, /const name = accountNames\(\)\.get\(p\.id\) \|\| p\.name \|\| p\.id;/, 'the account wins over the tool name, as at launch');
+  assert.match(fn, /resolveProfileDir\(\{ root: path\.join\(phomRoot\(\), 'browser-profiles'\), key: String\(p\.id\), name, map: profileFolders\(\) \}\)/);
+  assert.match(fn, /applyProfileName\(pd\.dir, name\)/);
+  // a close is graceful first (cookies flushed — an abrupt kill loses the newest ones, measured 2026-10-06)
+  assert.match(read('desktop/browser-run/browser-run-manager.cjs'), /await run\.launcher\.closeGraceful\(\);/);
 });
