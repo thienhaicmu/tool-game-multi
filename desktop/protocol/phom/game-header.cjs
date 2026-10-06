@@ -258,8 +258,36 @@ function bootScript(opts = {}) {
     return { account: base.account, accountId: base.accountId, rid: base.rid, statusLabel: label, primary:{ action: action, label: label, disabled: true, busy: true }, error: null };
   }
   function applyOptimistic(action){ try { __optAction = action; paint(optState(action)); } catch(e){} }
+  // The game account in the tab / taskbar / Alt+Tab title — "[acc] <page title>" (user 2026-10-06: Chromium shows no
+  // profile name on its toolbar, tested on 149). Kept when the game changes its own title. String ops only (no regex).
+  // Observers stay NARROW (no subtree): the <title> element's own children (setting the title replaces its text) and
+  // the <head>'s direct children (the game swapping the whole <title>).
+  var __titleAcc = null, __titleObs = null, __titleEl = null;
+  function watchTitle(){ try {
+    if (!__titleObs) return;
+    var el = document.querySelector && document.querySelector('title');
+    if (el && el !== __titleEl) { __titleEl = el; __titleObs.observe(el, { childList: true, subtree: false }); }
+  } catch(e){} }
+  function applyTitle(){ try {
+    if (!__titleAcc) return;
+    var pre = '[' + __titleAcc + '] ';
+    var t = document.title || '';
+    var base = (t.charAt(0) === '[' && t.indexOf('] ') > 0) ? t.slice(t.indexOf('] ') + 2) : t;
+    if (t !== pre + base) document.title = pre + base;
+    watchTitle();
+  } catch(e){} }
+  function setTitleAccount(acc){ try {
+    var a = (acc && acc !== '—') ? String(acc) : null;
+    if (!a || a === __titleAcc) return;
+    __titleAcc = a;
+    if (!__titleObs && window.MutationObserver) {
+      __titleObs = new MutationObserver(applyTitle);
+      if (document.head) __titleObs.observe(document.head, { childList: true, subtree: false });
+    }
+    applyTitle();
+  } catch(e){} }
   // AUTHORITATIVE render from main ALWAYS wins: store it, clear any optimistic overlay, paint it.
-  window.__phomHeaderRender = function(state){ try { __authState = state; __optAction = null; paint(state); } catch(e){} };
+  window.__phomHeaderRender = function(state){ try { __authState = state; __optAction = null; paint(state); } catch(e){} setTitleAccount(state && state.account); };
 })();`;
 }
 

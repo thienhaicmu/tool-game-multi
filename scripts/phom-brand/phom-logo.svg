@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Phỏm QA logo (2026-10-06): felt-green tile, two fanned cards, the front one marked "P" — one source for the
+       tool's window/installer icon AND the bundled Chromium's taskbar/window icon -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#16a374"/>
+      <stop offset="1" stop-color="#05503a"/>
+    </linearGradient>
+    <filter id="sh" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#012219" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+  <rect x="6" y="6" width="244" height="244" rx="58" fill="url(#bg)"/>
+  <rect x="6" y="6" width="244" height="244" rx="58" fill="none" stroke="#ffffff" stroke-opacity="0.18" stroke-width="4"/>
+  <g filter="url(#sh)">
+    <g transform="rotate(-15 100 132)">
+      <rect x="46" y="58" width="108" height="150" rx="16" fill="#eef2f1"/>
+      <path transform="translate(72 82) scale(0.95)" fill="#1f2937" d="M14 0 C14 0 0 13 0 22 C0 28 5 32 10 32 C12 32 13.5 31 14 30 C13.5 34 12 37 9 40 L19 40 C16 37 14.5 34 14 30 C14.5 31 16 32 18 32 C23 32 28 28 28 22 C28 13 14 0 14 0 Z"/>
+    </g>
+    <g transform="rotate(9 156 128)">
+      <rect x="100" y="52" width="112" height="156" rx="16" fill="#ffffff"/>
+      <text x="156" y="168" text-anchor="middle" font-family="Segoe UI, Arial, sans-serif" font-weight="900" font-size="108" fill="#c81e1e">P</text>
+    </g>
+  </g>
+</svg>

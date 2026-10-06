@@ -30,7 +30,7 @@
   ],
   "extraResources": [
     {
-      "from": "runtime/phom-chromium",
+      "from": ".phom-brand/phom-chromium",
       "to": "phom-chromium",
       "filter": [
         "**/*"
@@ -39,7 +39,7 @@
   ],
   "extraMetadata": {
     "main": "desktop/phom-main.cjs",
-    "version": "3.1.24"
+    "version": "3.1.25"
   },
   "artifactName": "Phom-QA Setup ${version}.${ext}",
   "npmRebuild": false,
@@ -52,11 +52,16 @@
           "x64"
         ]
       }
-    ]
+    ],
+    "icon": "build/phom-icon.ico"
   },
   "nsis": {
     "oneClick": false,
     "allowToChangeInstallationDirectory": true,
-    "createDesktopShortcut": true
-  }
+    "createDesktopShortcut": true,
+    "installerIcon": "build/phom-icon.ico",
+    "uninstallerIcon": "build/phom-icon.ico",
+    "installerHeaderIcon": "build/phom-icon.ico"
+  },
+  "beforePack": "scripts/phom-brand/before-pack.cjs"
 }

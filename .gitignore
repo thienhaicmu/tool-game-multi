@@ -10,6 +10,8 @@ build/
 build/*
 !build/aviator-icon.ico
 !build/aviator-icon.png
+!build/phom-icon.ico
+!build/phom-icon.png
 *.db
 artifacts/
 .env
@@ -53,3 +55,6 @@ tools/license-gen.cjs
 # a fresh clone + `git lfs pull` materializes the full runtime — no manual ZIP, no
 # D:\m-profile. Only the built archives / installers stay out of Git.
 runtime-archives/
+
+# Phom QA packaging: branded copy of runtime/phom-chromium (scripts/phom-brand/before-pack.cjs)
+.phom-brand/

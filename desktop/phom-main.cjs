@@ -28,6 +28,7 @@ const { lifecycleLog } = require('./browser/chrome-launcher.cjs');
 const phomChromium = require('./browser/phom-chromium-runtime.cjs');
 const browserRuntimeResolver = require('./browser/browser-runtime-resolver.cjs');
 const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
+const chromiumProfileName = require('./browser/chromium-profile-name.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -800,6 +801,7 @@ else {
       const rid = String(run.id);
       maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
       rememberLoginOrigin(run, browsers.find((x) => x && String(x.profileId) === rid));
+      rememberAccountName(run, browsers.find((x) => x && String(x.profileId) === rid));
       if (view.inGame) {
         // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
         // and log the click→ENTERED latency once, then stop timing this run.
@@ -904,6 +906,17 @@ else {
   // mirror opens where no token is stored, so every reopen asked for a login (found 2026-10-05: tokens under
   // .guitars, all profiles saved as .tienda). Once an account is LOGGED IN, the origin it is on becomes the profile's
   // Game URL, so the next open lands where the login is. Only the origin is stored (no path/query); once per change.
+  // The game account playing in each browser profile (user 2026-10-06): it becomes that profile's Chromium name on the
+  // next launch (Chromium only takes a new name while it is closed).
+  let _accountNames = null;
+  function accountNames() {
+    if (!_accountNames) _accountNames = chromiumProfileName.createAccountNameStore(path.join(phomRoot(), 'account-names.json'));
+    return _accountNames;
+  }
+  function rememberAccountName(run, b) {
+    if (!run || !b || !run.profileId || !b.username || b.username === 'USER_UNKNOWN') return;
+    try { if (accountNames().set(run.profileId, b.username)) headerLog('account-name', { runId: run.id, profileId: run.profileId }); } catch { /* best effort */ }
+  }
   function rememberLoginOrigin(run, b) {
     if (!run || !b || !b.loggedIn || !deviceProfilesStore) return;
     if (!run.lastTopUrl) {
@@ -1333,6 +1346,12 @@ else {
     // (keyed by the authoritative browser profile, not the window slot) (§12).
     const profileDir = path.join(phomRoot(), 'browser-profiles', udKey || slot || 'X');
     try { fs.mkdirSync(profileDir, { recursive: true }); } catch { /* best effort */ }
+    // The profile's Chromium name = the game account last seen in it, else the tool's profile name (user 2026-10-06).
+    // Written now, while this profile's browser is closed (Chromium reads it at start, rewrites it at exit).
+    try {
+      const pn = chromiumProfileName.applyProfileName(profileDir, accountNames().get(udKey) || label || saved.name || `Profile ${slot}`);
+      if (pn.changed) headerLog('profile-name', { slotId: slot, profileId: udKey, fromAccount: !!accountNames().get(udKey) });
+    } catch { /* never blocks a launch */ }
     // PHASE-6 — DETERMINISTIC multi-monitor placement. Browser slot A/B/C ⇒ window 1/2/3 (stable, never
     // by launch/PID order). Each window FILLS its region of the live display topology (on one monitor:
     // a quadrant of the 2×2 grid whose fourth cell is the Tool), so the four windows cover the screen and
