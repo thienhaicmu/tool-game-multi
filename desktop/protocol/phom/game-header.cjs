@@ -276,8 +276,10 @@ function bootScript(opts = {}) {
     if (t !== pre + base) document.title = pre + base;
     watchTitle();
   } catch(e){} }
+  // Before the login the browser's place in the tool — P1..P3 (P4/P5 = reserves D/E) — then the account (user 2026-10-06).
+  var TITLE_SLOT = (function(){ var sid=String(ID.slotId||'').toUpperCase(); var n={A:1,B:2,C:3,D:4,E:5,B1:1,B2:2,B3:3}[sid]; return n ? 'P' + n : null; })();
   function setTitleAccount(acc){ try {
-    var a = (acc && acc !== '—') ? String(acc) : null;
+    var a = (acc && acc !== '—') ? String(acc) : TITLE_SLOT;
     if (!a || a === __titleAcc) return;
     __titleAcc = a;
     if (!__titleObs && window.MutationObserver) {

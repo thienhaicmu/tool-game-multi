@@ -29,8 +29,9 @@ const REQUIRED_DIRECTORIES = Object.freeze(['locales']);
 function err(code, message, extra = {}) { return { ok: false, error: { code, message, ...extra } }; }
 function sha256(file) { return 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
 
-// Resolve the runtime ROOT. Dev: PHOM_CHROMIUM_PATH override, else the project's
-// runtime/phom-chromium. Packaged: <resources>/phom-chromium. No system-Chrome fallback.
+// Resolve the runtime ROOT. Dev: PHOM_CHROMIUM_PATH override, else the BRANDED copy the packaging staged
+// (.phom-brand/phom-chromium — `npm run brand:phom` or any dist:phom) when it passes the launch check, else the
+// project's runtime/phom-chromium. Packaged: <resources>/phom-chromium. No system-Chrome fallback.
 function resolveRuntimeRoot({ env = process.env, isPackaged = false, resourcesPath = null, projectRoot = null } = {}) {
   if (env.PHOM_CHROMIUM_PATH) return env.PHOM_CHROMIUM_PATH;
   if (isPackaged) {
@@ -38,6 +39,8 @@ function resolveRuntimeRoot({ env = process.env, isPackaged = false, resourcesPa
     return path.join(resourcesPath, 'phom-chromium');
   }
   const base = projectRoot || path.join(__dirname, '..', '..');
+  const branded = path.join(base, '.phom-brand', 'phom-chromium');
+  if (env.PHOM_CHROMIUM_STOCK !== '1' && fs.existsSync(path.join(branded, 'runtime-manifest.json')) && validateRuntime(branded).ok) return branded;
   return path.join(base, 'runtime', 'phom-chromium');
 }
 

@@ -26,6 +26,9 @@ const { toChromeArgs } = require('../browser-run/proxy-config.cjs');
 const CDP = require('chrome-remote-interface');
 
 const DEFAULT_WINDOW = Object.freeze({ width: 720, height: 405 });
+// A Chromium build without Google API keys shows "Google API keys are missing. Some functionality of Chromium will be
+// disabled." over the page; the documented way to tell it the keys are deliberately absent is "no" (tested on 149).
+const CHROMIUM_INFOBAR_ENV = Object.freeze({ GOOGLE_API_KEY: 'no', GOOGLE_DEFAULT_CLIENT_ID: 'no', GOOGLE_DEFAULT_CLIENT_SECRET: 'no' });
 
 // ---------------------------------------------------------------------------
 // EXIT CLASSIFICATION (browser-auto-close root cause). The process we spawn is a
@@ -293,6 +296,10 @@ class ChromeLauncher {
       // Per-run proxy (credential-free). Placed before --new-window/url so it applies to
       // THIS chrome.exe only; a null proxy adds nothing (unchanged direct behaviour).
       ...proxyArgs(this.proxy),
+      // No bar over the page (user 2026-10-06 "giữ đúng size chuẩn"): Chromium's "Begin browsing instantly — launch when
+      // Windows starts" infobar. (The "Google API keys are missing" one goes with CHROMIUM_INFOBAR_ENV below.) Tested on
+      // 149 with a fresh profile: neither bar shows. Only ONE --disable-features may be passed (the last one wins).
+      '--disable-features=LaunchOnStartup',
       '--new-window',
       url,
     ];
@@ -304,7 +311,7 @@ class ChromeLauncher {
     this._appClosing = false;
     this._cdpEverUp = false;
     this._stderrTail = '';
-    this.process = this._spawn(executable, args, { detached: true, windowsHide: false, stdio: ['ignore', 'ignore', 'pipe'] });
+    this.process = this._spawn(executable, args, { detached: true, windowsHide: false, stdio: ['ignore', 'ignore', 'pipe'], env: { ...(this.env || process.env), ...CHROMIUM_INFOBAR_ENV } });
     if (this.process && this.process.unref) this.process.unref();
     this._bootstrapPid = this.process.pid;
     this._trackedPid = this.process.pid;
@@ -455,4 +462,4 @@ class ChromeLauncher {
   }
 }
 
-module.exports = { ChromeLauncher, findChromeExecutable, ensureChromePersistentSession, DEFAULT_WINDOW, EXIT_REASONS, classifyGoneExit, defaultProbeCdp, lifecycleLog };
+module.exports = { ChromeLauncher, findChromeExecutable, ensureChromePersistentSession, DEFAULT_WINDOW, CHROMIUM_INFOBAR_ENV, EXIT_REASONS, classifyGoneExit, defaultProbeCdp, lifecycleLog };

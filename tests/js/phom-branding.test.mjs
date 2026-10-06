@@ -87,10 +87,10 @@ test('tab / taskbar title: "[account] <page title>", kept when the game changes 
   vm.runInContext(gh.bootScript({ slotId: 'B1' }), ctx);
   const render = page.window.__phomHeaderRender;
   assert.equal(typeof render, 'function');
-  render(gh.deriveHeaderState({ opened: true, inGame: true }));       // account not known yet
-  assert.equal(page.document.title, 'Hit Club');
+  render(gh.deriveHeaderState({ opened: true, inGame: false }));      // not logged in yet: the browser's place P1
+  assert.equal(page.document.title, '[P1] Hit Club');
   render(gh.deriveHeaderState({ opened: true, inGame: true, account: 'vietanhcoo5365' }));
-  assert.equal(page.document.title, '[vietanhcoo5365] Hit Club');
+  assert.equal(page.document.title, '[vietanhcoo5365] Hit Club', 'the account replaces P1 once known');
   render(gh.deriveHeaderState({ opened: true, inGame: true, account: 'vietanhcoo5365' }));
   assert.equal(page.document.title, '[vietanhcoo5365] Hit Club', 'never prefixed twice');
   page.document.title = 'Phỏm';                                      // the game sets its own title
@@ -112,5 +112,45 @@ test('logo: one icon for the tool (exe + installer) and the bundled Chromium (br
   const brand = require('../../scripts/phom-brand/brand-chromium.cjs');
   assert.deepEqual(brand.BRANDED_GROUPS, ['IDR_MAINFRAME', 'IDR_X001_APP_LIST']);
   assert.equal(brand.DLL_WINDOW_ICON_GROUP, 101, 'the window/taskbar icon lives in chrome.dll');
-  assert.match(read('scripts/phom-brand/before-pack.cjs'), /fs\.cpSync\(src, dst, \{ recursive: true \}\);\s*return brandChromiumDir\(dst,/);
+  assert.match(read('scripts/phom-brand/before-pack.cjs'), /fs\.cpSync\(src, dst, \{ recursive: true \}\);\s*const r = brandChromiumDir\(dst,/);
+});
+
+// 3.1.25 shipped a branded chrome.exe with the OLD manifest → the launch check refused it (PHOM_CHROMIUM_CHECKSUM_MISMATCH):
+// the staging writes a new manifest and runs the same check, and dev only takes the branded copy when it passes.
+function fakeRuntime(dir, exeBody = 'EXE') {
+  const rt = require('../../desktop/browser/phom-chromium-runtime.cjs');
+  mkdirSync(join(dir, 'locales'), { recursive: true });
+  for (const f of rt.REQUIRED_FILES) writeFileSync(join(dir, f), f === 'chrome.exe' ? exeBody : 'x');
+  writeFileSync(join(dir, 'runtime-manifest.json'), JSON.stringify(rt.generateManifest(dir).manifest));
+  return rt;
+}
+test('runtime: dev takes the branded copy only when it passes the launch check; else (or STOCK=1) the stock runtime', () => {
+  const proj = mkdtempSync(join(tmpdir(), 'proj-'));
+  const stock = join(proj, 'runtime', 'phom-chromium'); const branded = join(proj, '.phom-brand', 'phom-chromium');
+  mkdirSync(stock, { recursive: true }); mkdirSync(branded, { recursive: true });
+  const rt = fakeRuntime(stock); fakeRuntime(branded, 'BRANDED-EXE');
+  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), branded);
+  assert.equal(rt.resolveRuntimeRoot({ env: { PHOM_CHROMIUM_STOCK: '1' }, projectRoot: proj }), stock);
+  writeFileSync(join(branded, 'chrome.exe'), 'CHANGED-AFTER-MANIFEST');      // the 3.1.25 situation
+  assert.equal(rt.validateRuntime(branded).error.code, 'PHOM_CHROMIUM_CHECKSUM_MISMATCH');
+  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), stock, 'a copy that would not launch is never used');
+  assert.equal(rt.resolveRuntimeRoot({ env: {}, isPackaged: true, resourcesPath: 'R' }).endsWith('phom-chromium'), true);
+});
+test('staging: new manifest for the branded files + the launch check, before anything is packaged; brand:phom for dev', () => {
+  const src = read('scripts/phom-brand/before-pack.cjs');
+  const brand = src.indexOf('brandChromiumDir(dst,'); const man = src.indexOf("'runtime-manifest.json'"); const chk = src.indexOf('rt.validateRuntime(dst, { deep: true })');
+  assert.ok(brand > 0 && man > brand && chk > man, 'brand → manifest → check, in that order');
+  assert.match(src, /if \(!after\.ok\) throw new Error/);
+  assert.equal(JSON.parse(read('package.json')).scripts['brand:phom'], 'node scripts/phom-brand/before-pack.cjs');
+  assert.match(read('desktop/phom-main.cjs'), /const devIcon = app\.isPackaged \? null : path\.join\(__dirname, '\.\.', 'build', 'phom-icon\.png'\);/);
+});
+
+test('tab title before the login: A/B/C → [P1]/[P2]/[P3], reserves D/E → [P4]/[P5]; no slot → untouched', () => {
+  for (const [slot, want] of [['A', '[P1] Hit Club'], ['C', '[P3] Hit Club'], ['E', '[P5] Hit Club'], [null, 'Hit Club']]) {
+    const page = fakePage();
+    const ctx = vm.createContext({ window: page.window, document: page.document, MutationObserver: page.window.MutationObserver, performance: { now: () => 0 }, console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {}, requestAnimationFrame: () => 0, navigator: {}, location: { href: 'https://v.hitclub.guitars/' } });
+    vm.runInContext(gh.bootScript({ slotId: slot }), ctx);
+    page.window.__phomHeaderRender(gh.deriveHeaderState({ opened: true }));
+    assert.equal(page.document.title, want, String(slot));
+  }
 });

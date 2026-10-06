@@ -29,6 +29,7 @@ const phomChromium = require('./browser/phom-chromium-runtime.cjs');
 const browserRuntimeResolver = require('./browser/browser-runtime-resolver.cjs');
 const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
 const chromiumProfileName = require('./browser/chromium-profile-name.cjs');
+const windowLock = require('./protocol/phom/window-lock.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -539,6 +540,40 @@ else {
       await client.Browser.setWindowBounds({ windowId, bounds: { left: Math.round(rect.x), top: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } });
       return true;
     } catch { return false; }
+  }
+  // KHÓA KHUNG (user 2026-10-06): every open browser is kept in its standard frame — maximized / full screen / resized /
+  // moved → put back (window-lock.cjs). One CDP call per open browser every 1.5 s; PHOM_WINDOW_LOCK=0 turns it off.
+  const _lockAccepted = {}; // runId → { rect, bounds } Chromium really took for that rect
+  let _lockBusy = false;
+  async function enforceWindowFrames() {
+    if (_lockBusy || process.env.PHOM_WINDOW_LOCK === '0') return;
+    const snap = phomCluster && phomCluster.active() ? phomCluster.getClusterSnapshot() : null;
+    if (!snap) return;
+    _lockBusy = true;
+    try {
+      const open = [];
+      for (const s of SLOTS_ABC) { const p = snap.profiles[s]; if (p && p.profileId && p.browserState === 'OPEN') open.push([p.profileId, s]); }
+      for (const r of RESERVE_SLOTS) { const p = snap.reserves && snap.reserves[r]; if (p && p.profileId && p.browserState === 'OPEN') open.push([p.profileId, r]); }
+      for (const [runId, slot] of open) {
+        const client = runClientFor(runId);
+        if (!client || !client.Browser) continue;
+        let rect = null; try { rect = windowRectForSlot(slot); } catch { rect = null; }
+        if (!rect) continue;
+        try {
+          const { windowId, bounds } = await client.Browser.getWindowForTarget({});
+          const why = windowLock.reframeReason(bounds, rect, _lockAccepted[runId]);
+          if (!why) continue;
+          await moveRunWindow(runId, rect);
+          const after = await client.Browser.getWindowBounds({ windowId }).catch(() => null);
+          if (after && after.bounds) _lockAccepted[runId] = { rect: windowLock.toBounds(rect), bounds: after.bounds };
+          headerLog('window-reframed', { runId, slotId: slot, reason: why });
+        } catch { /* the browser may be closing */ }
+      }
+    } finally { _lockBusy = false; }
+  }
+  function startWindowLock() {
+    const t = setInterval(() => { enforceWindowFrames().catch(() => {}); }, windowLock.CHECK_MS);
+    if (t && t.unref) t.unref();
   }
   // Re-tile all owned session runs into the 2×2 grid + place the control window BR.
   function restoreLayout() {
@@ -1442,8 +1477,11 @@ else {
   }
   function createWindow() {
     const bounds = fitToCurrentDisplay(loadWindowState());
+    // dev runs electron.exe (its own icon): show the Phỏm QA logo on the window too — packaged, Phom QA.exe has it
+    const devIcon = app.isPackaged ? null : path.join(__dirname, '..', 'build', 'phom-icon.png');
     shell = new BrowserWindow({
       ...bounds, backgroundColor: '#f4f6fb', title: PRODUCT_NAME,
+      ...(devIcon && fs.existsSync(devIcon) ? { icon: devIcon } : {}),
       // autoplay without a gesture: the 4th-player bell must ring even if nobody clicked the tool window first
       webPreferences: { preload: path.join(__dirname, 'phom-preload.cjs'), contextIsolation: true, sandbox: true, autoplayPolicy: 'no-user-gesture-required' },
     });
@@ -1592,6 +1630,7 @@ else {
     licenseGuard.initializeAsync().then((status) => { send('phom:license', { ...status, gameProduct: GAME_PRODUCT }); }).catch(() => {});
     registerIpc();
     createWindow();
+    startWindowLock();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
   app.on('window-all-closed', () => { lifecycleLog('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });
