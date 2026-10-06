@@ -56,3 +56,13 @@ test('no bars over the page: the launch carries --disable-features=LaunchOnStart
   assert.equal(seen.opts.env.PATH, 'p', 'the rest of the environment is kept');
   assert.equal(seen.args.indexOf('--disable-features=LaunchOnStartup') < seen.args.indexOf('--new-window'), true);
 });
+
+test('the profile button names the window: every launch carries --pm-show-profile-name (owned Chromium patch; stock ignores it)', async () => {
+  let seen = null;
+  const fakeChild = { pid: 4243, stderr: null, unref() {}, once() {}, on() {}, killed: false };
+  const L = new ChromeLauncher({ profilePath: 'X:/p', chromeExecutable: 'X:/chrome.exe', env: {}, spawn: (exe, args, opts) => { seen = { args, opts }; return fakeChild; } });
+  L.cdpPort = async () => 9334;
+  await L.open('about:blank');
+  assert.ok(seen.args.includes('--pm-show-profile-name'));
+  assert.ok(seen.args.indexOf('--pm-show-profile-name') < seen.args.indexOf('--new-window'));
+});

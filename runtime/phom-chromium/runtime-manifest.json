@@ -3,7 +3,7 @@
   "chromiumVersion": "149.0.7827.55",
   "architecture": "x64",
   "executable": "chrome.exe",
-  "generatedAt": "2026-09-12T14:35:45.433Z",
+  "generatedAt": "2026-10-06T06:58:48.383Z",
   "fileCount": 26,
   "requiredFiles": [
     "chrome.exe",
@@ -21,6 +21,6 @@
   ],
   "checksums": {
     "chrome.exe": "sha256:62f018964e7aab9a774a8aacc479c4fa123a87f13bf062d60a17a156a8fbfc96",
-    "chrome.dll": "sha256:04c3e31313fe6d7443f12fba5ce0c46616a73ca03fc211a968525d5423d277f4"
+    "chrome.dll": "sha256:6feeb09e5c053dd264a03ec856ba84fda97bfbb17bcbb32646642fdcad9a912a"
   }
 }

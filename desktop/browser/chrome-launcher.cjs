@@ -300,6 +300,9 @@ class ChromeLauncher {
       // Windows starts" infobar. (The "Google API keys are missing" one goes with CHROMIUM_INFOBAR_ENV below.) Tested on
       // 149 with a fresh profile: neither bar shows. Only ONE --disable-features may be passed (the last one wins).
       '--disable-features=LaunchOnStartup',
+      // The owned Chromium (m-profile patch 070_ui avatar label) shows the profile's name — Default/Preferences
+      // profile.name, written by the tool before each launch — on the profile button. A stock browser ignores it.
+      '--pm-show-profile-name',
       '--new-window',
       url,
     ];
