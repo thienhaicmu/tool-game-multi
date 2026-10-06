@@ -248,6 +248,7 @@ test('A1: TỰ ĐỘNG without a stake (and with no group) refuses and turns its
   assert.equal(group.autoActive(), false);
 });
 
+// user 2026-10-06: manual stays manual — only what the user presses; TỰ ĐỘNG searches again
 test('A4 vs T7: a lost table is replaced when auto is on, and only reported when it is off', async () => {
   const gone = { code: 'PHOM_JOIN_REJECTED', message: 'Phòng không tồn tại', serverCode: 102 };
   const manual = mk({ joinFails: { B3: gone } });
@@ -257,6 +258,7 @@ test('A4 vs T7: a lost table is replaced when auto is on, and only reported when
   await manual.group.joinTable('B3', manual.group.rid());
   assert.ok(notices.includes('TABLE_LOST'));
   assert.equal(manual.group.active(), false, 'manual: the group is dissolved, no new table is taken');
+  assert.equal(cmds(manual.coord, 'FIND').length, 1, 'manual: no Dò Key by itself');
 
   const auto = mk();
   await auto.group.setAuto(true, { creatorId: 'B2', stake: 100 });
@@ -604,4 +606,16 @@ test('T8: the stranger leaves before the KEY\'s start goes out → no start (nev
   m.coord.players = 3;                                   // …the stranger left
   await h.releaseAll();
   assert.equal(cmds(m.coord, 'START').length, 0);
+});
+
+test('B5: the start is refused once → tried again once (conditions checked again)', async () => {
+  const m = fullTable(); await formed(m);
+  let calls = 0;
+  m.coord.sendTableStart = async (id) => { calls++; m.coord.sent.push({ at: m.coord.clock, id, cmd: 'START' }); return calls === 1 ? { ok: false, error: { code: 'X' } } : { ok: true }; };
+  m.coord.players = 4; m.coord.strangerIsReady = true; m.coord.othersAllReady = true; m.coord.ready.add('B3');
+  m.coord.fire('seats', {});
+  for (let i = 0; i < 10 && calls < 2; i++) await tick();
+  assert.equal(calls, 2, 'one retry');
+  m.coord.fire('seats', {}); await tick(); await tick();
+  assert.equal(calls, 2, 'no more after the success');
 });

@@ -51,6 +51,8 @@ class TableGroup extends EventEmitter {
     this._paceMax = deps.paceMaxMs != null ? Number(deps.paceMaxMs) : PACE_MAX_MS;
     this._log = typeof deps.log === 'function' ? deps.log : () => {};
     this._rejoinDelayMs = deps.rejoinDelayMs != null ? Number(deps.rejoinDelayMs) : REJOIN_DELAY_MS;
+    // after the KEY is kicked: how long to wait for the server's cmd 203 (the new host) before deciding (B4)
+    this._hostCheckMs = deps.hostCheckMs != null ? Number(deps.hostCheckMs) : 1000;
     this._replacePollMs = deps.replacePollMs != null ? Number(deps.replacePollMs) : REPLACE_POLL_MS;
     // the CHƯA SẴN SÀNG account readies 2–4 s (random) after a stranger readied (user rule 2026-10-05: 2–3 s → 1–3 s → 2–4 s)
     this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 2000;
@@ -75,6 +77,7 @@ class TableGroup extends EventEmitter {
         this._coord.on('strangerReady', (e = {}) => this._onStrangerReady(e.id, e));
         this._coord.on('roundEnd', () => this._onRoundEnd());
         this._coord.on('seats', () => this._onSeats());
+        this._coord.on('hostChanged', (e = {}) => this._onHostChanged(e.id, e.uid));
       }
     }
   }
@@ -405,13 +408,22 @@ class TableGroup extends EventEmitter {
     const comeBack = this._auto || g.rejoinOn.has(id);
     this._event('KICKED', { id, rid: g.rid, message: message || null, auto: this._auto, rejoinOn: g.rejoinOn.has(id), kicksLastMinute: recent.length });
     this._emit();
-    if (!comeBack || g.rid == null || g.rejoinPending.has(id)) return; // T6 — the user presses ReJoin
-    g.rejoinPending.add(id);
+    // B4 (user 2026-10-06): the KEY lost the table ("Bạn thoát vì không bắt đầu" …). Who owns it now decides: the
+    // server names the new host with a cmd 203 to the others — look a moment later (_checkHost)
+    if (g.roles.get(id) === ROLE.KEY) { this._after(this._hostCheckMs, () => this._checkHost(g, 'KEY_KICKED')); return; }
+    if (!comeBack || g.rid == null) return; // T6 — the user presses ReJoin
     // FAST path: op 8 straight to the group's table ~0.5s after the kick, outside the queue and without pacing; the
     // auto-ready-off (363) follows every accepted join in the coordinator, so it is not sent twice.
+    this._rejoinSoon(g, id, 'KICK');
+  }
+  // Back to the group's table ~0.5 s from now (after a kick, or a member out while a seat is free — B2). One at a time
+  // per account; never while the user is doing something with it.
+  _rejoinSoon(g, id, why) {
+    if (g.rejoinPending.has(id)) return;
+    g.rejoinPending.add(id);
     this._after(this._rejoinDelayMs, async () => {
       g.rejoinPending.delete(id);
-      if (this._group !== g || this._atGroupTable(id)) return;
+      if (this._group !== g || g.recreating || this._atGroupTable(id)) return;
       if (!this._auto && !g.rejoinOn.has(id)) return; // switched off while it waited
       if (!this._coord.browserReady(id)) return;
       if (this._acting.has(id)) return; // the user is doing something with this account right now — never overlap
@@ -419,15 +431,86 @@ class TableGroup extends EventEmitter {
       if (this._group !== g) return;
       if (!res.ok) {
         if (res.superseded || res.cancelled) return;
-        this._event('JOIN_FAILED', { id, rid: g.rid, error: res.error });
+        this._event('JOIN_FAILED', { id, rid: g.rid, error: res.error, why });
         if (this._isMissingRoom(res)) this._enqueue('TABLE_LOST', (gen) => this._onTableLost(gen));
         return;
       }
       this._seated(id, g.roles.get(id));
-      this._event('JOINED', { id, rid: g.rid, role: g.roles.get(id) || null, rejoin: true });
+      this._event('JOINED', { id, rid: g.rid, role: g.roles.get(id) || null, rejoin: true, why });
       this._emit();
       this._onSeats();
       this._enqueue('READY', (gen) => this._readyCheck(gen));
+    });
+  }
+  // B4 — another player became the host of the group's table (the KEY left / was kicked). Between rounds: decide now;
+  // during a round (the KEY dropped mid-game): once the round is over.
+  _onHostChanged(profileId, uid) {
+    const g = this._group;
+    if (!g || g.rid == null || uid == null || !this._atGroupTable(String(profileId))) return;
+    if (g.keyUid != null && String(uid) === String(g.keyUid)) return;
+    if (this._coord.roundRunning(String(profileId))) { g.hostCheckAfterRound = 'HOST_CHANGED'; this._log('HOST_CHECK_AFTER_ROUND', { rid: g.rid }); return; }
+    this._checkHost(g, 'HOST_CHANGED');
+  }
+  // B4 (user 2026-10-06, refined): the rule is "the table's host is ONE OF OUR accounts that are there".
+  //  - the host is one of ours (the server handed it to SẴN SÀNG / CHƯA SS) → that account is the KEY now; the table
+  //    is kept (nothing leaves);
+  //  - the host is a stranger → the rule is broken: everyone of ours leaves the table. MANUAL stops there (the user
+  //    presses Dò Key / Tạo / Vào); TỰ ĐỘNG searches again (Dò Key with the same KEY, Tạo, Vào);
+  //  - none of ours is at the table any more → the table is gone for the group: MANUAL dissolves it, TỰ ĐỘNG searches again.
+  _checkHost(g, reason) {
+    if (this._group !== g || g.recreating || g.rid == null) return;
+    if (this._coord.roundRunning(g.creatorId)) { g.hostCheckAfterRound = reason; return; }
+    const here = this._orderedIds().filter((id) => this._atGroupTable(id));
+    const host = here.find((id) => this._coord.isTableHost(id));
+    if (host) { if (host !== g.creatorId) this._adoptKey(g, host, reason); return; }
+    if (this._auto) return this._regroup(reason);
+    if (!here.length) { this._group = null; this._event('GROUP_DISSOLVED', { reason, rid: g.rid }); this._emit(); return; }
+    return this._outAll(g, reason);
+  }
+  // The server made one of ours the host: it is the KEY now (the old KEY, out of the table, loses its role — pressing
+  // ReJoin / Vào for it later takes the free SẴN SÀNG / CHƯA SS place).
+  _adoptKey(g, id, reason) {
+    const old = g.creatorId;
+    if (!this._atGroupTable(old)) { g.roles.delete(old); g.rejoinOn.delete(old); }
+    g.roles.set(id, ROLE.KEY);
+    g.rejoinOn.delete(id);
+    g.creatorId = id;
+    const uid = typeof this._coord.uidOf === 'function' ? this._coord.uidOf(id) : null;
+    if (uid != null) g.keyUid = String(uid);
+    this._event('KEY_CHANGED', { id, from: old, rid: g.rid, reason });
+    this._emit();
+    this._onSeats();
+  }
+  // The host is not one of ours (MANUAL): everyone of ours at the group's table leaves; the group is dissolved.
+  _outAll(g, reason) {
+    g.recreating = true;
+    this._clearTimers();
+    this._event('RULE_BROKEN_OUT', { rid: g.rid, reason });
+    this._emit();
+    return this._enqueue('LEAVE_ALL', async (gen) => {
+      for (const id of this._orderedIds()) {
+        if (this._cancelled(gen)) break;
+        if (!(g.rid != null && Number(this._coord.seatedRid(id)) === Number(g.rid))) continue;
+        if (!await this.pace(gen)) break;
+        await this._coord.leaveTable(id);
+      }
+      if (this._group === g) { this._group = null; this._event('GROUP_DISSOLVED', { reason, rid: g.rid }); this._emit(); }
+      return { ok: true };
+    });
+  }
+  // TỰ ĐỘNG: everyone leaves and the search starts again — Dò Key (same KEY), Tạo, Vào.
+  _regroup(reason) {
+    const g = this._group;
+    if (!g || g.recreating) return;
+    g.recreating = true;
+    this._clearTimers();
+    this._event('REGROUP', { rid: g.rid, reason, auto: this._auto });
+    this._emit();
+    return this._enqueue('REGROUP', async (gen) => {
+      if (this._group !== g) return CANCELLED;
+      const { creatorId, stake } = g;
+      this._group = null; this._emit();
+      return this._form(creatorId, stake, gen);
     });
   }
   _after(ms, fn) {
@@ -487,13 +570,13 @@ class TableGroup extends EventEmitter {
   }
 
   // A4 / T7 — the table is gone. AUTO runs DÒ KEY again with the same KEY browser and re-forms the group; MANUAL
-  // reports it.
+  // reports it (user 2026-10-06: manual stays manual — only what the user presses).
   async _onTableLost(gen) {
     const g = this._group;
     if (!g || g.recreating) return;
     this._event('TABLE_LOST', { rid: g.rid, auto: this._auto });
     if (!this._auto) { this._group = null; this._emit(); return; }
-    g.recreating = true; this._emit();
+    g.recreating = true; this._clearTimers(); this._emit();
     const { creatorId, stake } = g;
     this._group = null;
     await this._form(creatorId, stake, gen);
@@ -606,28 +689,41 @@ class TableGroup extends EventEmitter {
   // not ready (live coseat (3) 2026-10-05 could not tell).
   _onSeats() {
     const g = this._group;
-    if (!g || g.rid == null || !this._coord) return;
+    if (!g || g.rid == null || !this._coord || g.recreating) return;
     const key = g.creatorId;
     if (this._coord.roundRunning(key)) return this._fullWait(g, 'ROUND_RUNNING');
     const nr = [...g.roles.entries()].find(([, role]) => role === ROLE.NOT_READY);
+    const ss = [...g.roles.entries()].find(([, role]) => role === ROLE.READY);
     if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return this._fullWait(g, 'KEY_NOT_SEATED');
     const players = this._coord.tablePlayerCount(key);
     if (players < 4) {
-      g.fullReadySent = false; g.fullStartSent = false;
+      g.fullReadySent = false; g.fullStartSent = false; g.startRetried = false;
       // user rule 2026-10-05: the stranger LEFT before the round → CHƯA SS goes back to "not ready" and waits for the
       // next one. The game has no un-ready command (its own JS, 2026-09-21) and a fresh seat is never ready, so it
       // leaves and sits down again at once. Also the server kicks the HOST ~15 s after everyone else is ready
       // ("Bạn thoát vì không bắt đầu", captures test-D 2026-09-21): a ready CHƯA SS left alone with the group would
-      // cost the KEY its table.
-      if (nr && this._atGroupTable(nr[0]) && this._coord.isReady(nr[0]) && typeof this._coord.strangerSeated === 'function' && !this._coord.strangerSeated(key)) this._resetNotReady(g, nr[0]);
+      // cost the KEY its table. B1 (user 2026-10-06, choice b): the same when SẴN SÀNG is the one who left — CHƯA SS
+      // goes back to not ready and the group waits for SẴN SÀNG to come back.
+      const ssOut = !!(ss && !this._atGroupTable(ss[0]));
+      const strangerHere = typeof this._coord.strangerSeated === 'function' ? this._coord.strangerSeated(key) : true;
+      if (nr && this._atGroupTable(nr[0]) && this._coord.isReady(nr[0]) && (ssOut || !strangerHere)) this._resetNotReady(g, nr[0], ssOut ? 'SS_LEFT' : 'STRANGER_LEFT');
+      // B2 (2026-10-06): a member who is not at the table while a seat is free (lost its seat to a stranger, or left)
+      // comes back — when TỰ ĐỘNG or its ReJoin is on, like after a kick
+      for (const [id, role] of g.roles) {
+        if (role === ROLE.KEY || this._atGroupTable(id) || (g.resetPending && id === (nr && nr[0]))) continue;
+        if (this._auto || g.rejoinOn.has(id)) this._rejoinSoon(g, id, 'SEAT_FREE');
+      }
       return this._fullWait(g, 'PLAYERS_' + players);
     }
     // user rule 2026-10-05: KEY · SẴN SÀNG · CHƯA SẴN SÀNG waits — only once a STRANGER at the table is ready does the
     // CHƯA SẴN SÀNG account ready, after a random 2–4 s
     const strangerReady = typeof this._coord.strangerReady === 'function' ? this._coord.strangerReady(key) : true;
-    if (nr && !this._coord.isReady(nr[0])) {
+    // CHƯA SS NOT at the table while it is full (4 here, so without it): it lost its seat to a stranger (user 2026-10-06)
+    // → the round goes on with our two accounts; the KEY starts once everyone seated is ready
+    const nrOut = !!(nr && !this._atGroupTable(nr[0]));
+    if (nrOut) this._fullWait(g, 'NOT_READY_ACC_LOST_SEAT');
+    if (nr && !nrOut && !this._coord.isReady(nr[0])) {
       if (!strangerReady) return this._fullWait(g, 'STRANGER_NOT_READY');
-      if (!this._atGroupTable(nr[0])) return this._fullWait(g, 'NOT_READY_ACC_NOT_SEATED');
       if (g.fullReadySent) return;
       g.fullReadySent = true;
       const delay = Math.round(this._fullReadyMin + this._random() * (this._fullReadyMax - this._fullReadyMin));
@@ -654,20 +750,29 @@ class TableGroup extends EventEmitter {
       if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(key) || !this._coord.othersReady(key) || this._coord.tablePlayerCount(key) < 4) { g.fullStartSent = false; return CANCELLED; }
       const res = await this._coord.sendTableStart(key);
       if (res && res.ok !== false) this._event('ROUND_START_SENT', { id: key, rid: g.rid });
-      else { g.fullStartSent = false; this._log('ROUND_START_FAILED', { id: key, error: res && res.error ? res.error.code : null }); }
+      else {
+        g.fullStartSent = false;
+        this._log('ROUND_START_FAILED', { id: key, error: res && res.error ? res.error.code : null, retry: !g.startRetried });
+        // B5 — one more try (the server kicks the host ~15 s after everyone else is ready); the conditions are checked again
+        if (!g.startRetried) { g.startRetried = true; this._after(this._rejoinDelayMs, () => this._onSeats()); }
+      }
       return res;
     });
   }
   // CHƯA SS back to "not ready": leave + sit down again at the group's table (queued and paced like every command).
-  _resetNotReady(g, id) {
+  // reason STRANGER_LEFT: undone if a new stranger sat down meanwhile; SS_LEFT: undone if SẴN SÀNG is back.
+  _resetNotReady(g, id, reason = 'STRANGER_LEFT') {
     if (g.resetPending) return;
     g.resetPending = true;
-    this._event('NOT_READY_RESET', { id, rid: g.rid, reason: 'STRANGER_LEFT' });
+    this._event('NOT_READY_RESET', { id, rid: g.rid, reason });
     this._enqueue('UNREADY', async (gen) => {
       try {
-        if (!await this.pace(gen) || this._group !== g || this._coord.roundRunning(g.creatorId)) return CANCELLED;
-        // a new stranger sat down meanwhile, or it is not ready / not seated any more: nothing to undo
-        if (!this._atGroupTable(id) || !this._coord.isReady(id) || this._coord.strangerSeated(g.creatorId)) return CANCELLED;
+        if (!await this.pace(gen) || this._group !== g || g.recreating || this._coord.roundRunning(g.creatorId)) return CANCELLED;
+        if (!this._atGroupTable(id) || !this._coord.isReady(id)) return CANCELLED; // not seated / not ready any more: nothing to undo
+        const ss = [...g.roles.entries()].find(([, role]) => role === ROLE.READY);
+        const ssBack = !ss || this._atGroupTable(ss[0]);
+        if (reason === 'STRANGER_LEFT' && this._coord.strangerSeated(g.creatorId) && ssBack) return CANCELLED; // a new stranger sat down meanwhile
+        if (reason === 'SS_LEFT' && ssBack && this._coord.tablePlayerCount(g.creatorId) >= 4) return CANCELLED; // SẴN SÀNG is back, the table is full
         const lv = await this._coord.leaveTable(id);
         if (!lv || lv.ok === false) { this._log('NOT_READY_RESET_FAILED', { id, step: 'LEAVE', error: lv && lv.error ? lv.error.code : null }); return lv; }
         if (this._group !== g || this._cancelled(gen)) return CANCELLED;
@@ -694,8 +799,9 @@ class TableGroup extends EventEmitter {
   _onRoundEnd() {
     const g = this._group;
     if (!g) return;
-    g.fullReadySent = false; g.fullStartSent = false; // the next round asks again
+    g.fullReadySent = false; g.fullStartSent = false; g.startRetried = false; // the next round asks again
     g.bellRung.clear(); // a new round: the 4th player readies again
+    if (g.hostCheckAfterRound) { const why = g.hostCheckAfterRound; g.hostCheckAfterRound = null; this._checkHost(g, why); if (this._group !== g || g.recreating) return; } // B4 — the host changed during the round
     this._enqueue('READY', (gen) => this._readyCheck(gen));
   }
   async _leaveIfSeated(id, gen) {

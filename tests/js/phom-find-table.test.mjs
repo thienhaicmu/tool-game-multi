@@ -723,3 +723,139 @@ test('T8 e2e: the stranger leaves after CHƯA SS readied → CHƯA SS leaves and
   await until(() => sim.readyFrames.filter((x) => x === 'B3').length > readyB3);
   assert.equal(sim.readyFrames.filter((x) => x === 'B3').length, readyB3 + 1, 'readies again for the next stranger');
 });
+
+// user 2026-10-06: CHƯA SS lost its seat (another stranger sat in the free chair while it left / was out) → the table is
+// full with KEY + SẴN SÀNG + two strangers: the round goes on with our two (LỌC BÀI works for them); the KEY starts.
+test('T8 e2e: CHƯA SS lost its seat (2 strangers fill the table) → the KEY still starts with our two accounts', async () => {
+  const { sim, group, coord } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  await group.findTable('B1', {}); await group.scanTable('B2'); await group.joinTable('B3', group.rid());
+  const room = groupRoom(sim, group);
+  sim.kick('B3');                                   // out (manual, no ReJoin) …
+  strangerSits(sim, room, { uid: 's_1', dn: 'la1' }); strangerReadies(sim, room, { uid: 's_1', dn: 'la1' });
+  strangerSits(sim, room, { uid: 's_2', dn: 'la2' }); strangerReadies(sim, room, { uid: 's_2', dn: 'la2' });
+  assert.equal(coord.tablePlayerCount('B1'), 4, '… and the table is full without it');
+  const back = await group.joinTable('B3', group.rid());
+  assert.equal(back.ok, false, 'its seat is gone (Phòng đầy)');
+  await until(() => sim.readyFrames.includes('B1'));
+  assert.ok(sim.readyFrames.includes('B1'), 'the KEY (host) started the round');
+  assert.equal(sim.readyFrames.includes('B3'), false);
+});
+
+test('LỌC BÀI with two of ours (CHƯA SS lost its seat): both get their analysis and the right next player; CHƯA SS has none', async () => {
+  const { createSafeCardAnalyzer } = require('../../desktop/protocol/phom/phom-safe-card-analyzer.cjs');
+  const { sim, group, coord } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  await group.findTable('B1', {}); await group.scanTable('B2'); await group.joinTable('B3', group.rid());
+  const room = groupRoom(sim, group);
+  sim.kick('B3');
+  strangerSits(sim, room, { uid: 's_1', dn: 'la1' }); strangerSits(sim, room, { uid: 's_2', dn: 'la2' });
+  // the deal: each of our two sockets gets its own 9 cards; lpi = turn order (KEY, s_1, SẴN SÀNG, s_2)
+  const lpi = [sim.uids.B1, 's_1', sim.uids.B2, 's_2'];
+  sim.feed('B1', JSON.stringify([5, { cs: [0, 4, 8, 13, 17, 21, 30, 40, 50], lpi, cmd: 850, tP: { uid: sim.uids.B1 } }]));
+  sim.feed('B2', JSON.stringify([5, { cs: [1, 5, 9, 14, 18, 22, 31, 41, 51], lpi, cmd: 850, tP: { uid: sim.uids.B1 } }]));
+  const snap = coord.cardObserverSnapshot();
+  const an = (uid) => createSafeCardAnalyzer().analyze({ snapshot: snap, targetPlayerUid: uid });
+  assert.equal(an(sim.uids.B1).status, 'OK'); assert.equal(an(sim.uids.B1).nextPlayerUid, 's_1');
+  assert.equal(an(sim.uids.B2).status, 'OK'); assert.equal(an(sim.uids.B2).nextPlayerUid, 's_2');
+  assert.notEqual(an(sim.uids.B3).status, 'OK', 'CHƯA SS is not in the round: no analysis');
+});
+
+// ---- user decisions 2026-10-06: B1 = (b), B2, B4 ----
+function memberLeaves(sim, id) {   // the server removes one of ours (no kick) — everyone else gets the real t:2 delta
+  const uid = sim.uids[id];
+  for (const room of sim.rooms.values()) {
+    if (!room.seats.includes(uid)) continue;
+    room.seats = room.seats.filter((u) => u !== uid);
+    for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u)) sim.feed(bid, JSON.stringify([5, { p: { uid, mT: false, dn: id, id: 0 }, t: 2, cmd: 200 }]));
+  }
+  sim.feed(id, '[4,true,1,-1,0,""]');
+}
+test('B1 e2e: SẴN SÀNG leaves while CHƯA SS and the stranger are ready → CHƯA SS back to not ready; no start; waits for SS', async () => {
+  const { sim, group, coord } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  await group.findTable('B1', {}); await group.scanTable('B2'); await group.joinTable('B3', group.rid());
+  const room = groupRoom(sim, group);
+  coord.sendTableStart = async () => ({ ok: true }); // keep the table waiting: this case is before any start
+  strangerSits(sim, room); strangerReadies(sim, room);
+  await until(() => coord.isReady('B3'));
+  const joins = op(sim, 'B3', 8).length;
+  memberLeaves(sim, 'B2');
+  await until(() => op(sim, 'B3', 8).length > joins);
+  assert.equal(op(sim, 'B3', 8).length, joins + 1, 'CHƯA SS left and sat again');
+  assert.equal(coord.isReady('B3'), false, 'not ready any more — the KEY owes no start');
+  assert.equal(room.seats.includes('1_2'), false, 'manual, no ReJoin: SẴN SÀNG is waited for, not forced back');
+});
+
+test('B2 e2e: CHƯA SS lost its seat (table full) → when a seat frees up it comes back by itself (TỰ ĐỘNG)', async () => {
+  const { sim, group } = mkGroup();
+  const r = await group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  const room = sim.rooms.get(r.rid);
+  sim.kick('B3');
+  strangerSits(sim, room, { uid: 's_1', dn: 'la1' }); strangerSits(sim, room, { uid: 's_2', dn: 'la2' });
+  await until(() => op(sim, 'B3', 8).length >= 2); await tick();
+  assert.equal(room.seats.includes('1_3'), false, 'its rejoin met a full table');
+  strangerLeaves(sim, room, { uid: 's_2', dn: 'la2' });
+  await until(() => room.seats.includes('1_3'));
+  assert.ok(room.seats.includes('1_3'), 'back as soon as a seat was free');
+});
+
+// B4 (user 2026-10-06, refined): the rule is "the host is ONE OF OUR accounts at the table". Manual stays manual.
+async function formedOn(mode) {
+  const m = mkGroup({ scan: [] });
+  if (mode === 'auto') await m.group.setAuto(true, { creatorId: 'B1', stake: 20000 });
+  else { m.group.setStake(20000); await m.group.findTable('B1', {}); await m.group.scanTable('B2'); await m.group.joinTable('B3', m.group.rid()); }
+  return m;
+}
+for (const mode of ['manual', 'auto']) {
+  test(`B4 e2e (${mode}): the KEY is kicked and the server makes SẴN SÀNG the host → it is the KEY now; the table is kept`, async () => {
+    const { sim, group, coord } = await formedOn(mode);
+    const rid = group.rid(); const room = sim.rooms.get(rid);
+    const notices = []; group.on('notice', (n) => notices.push(n));
+    const leaves = op(sim, 'B2', 4).length + op(sim, 'B3', 4).length;
+    sim.kick('B1', 'Bạn thoát vì không bắt đầu');   // 202 to the others: B2 now sits first (host)
+    for (const id of ['B2', 'B3']) sim.feed(id, JSON.stringify([5, { uid: sim.uids.B2, dn: 'B2', cmd: 203 }]));
+    await until(() => notices.some((n) => n.event === 'KEY_CHANGED'));
+    const kc = notices.find((n) => n.event === 'KEY_CHANGED');
+    assert.deepEqual([kc.id, kc.from], ['B2', 'B1']);
+    assert.equal(group.rid(), rid, 'the same table');
+    assert.equal(group.snapshot().members.find((x) => x.id === 'B2').role, 'KEY');
+    assert.equal(group.snapshot().members.some((x) => x.id === 'B1'), false, 'the old KEY (out of the table) lost its role');
+    assert.equal(op(sim, 'B2', 4).length + op(sim, 'B3', 4).length, leaves, 'nobody left');
+    assert.ok(room.seats.includes('1_2') && room.seats.includes('1_3'));
+    assert.equal(coord.isTableHost('B2'), true);
+  });
+}
+test('B4 e2e (manual): the host became a STRANGER → everyone of ours leaves; no new search (the user presses)', async () => {
+  const { sim, group } = await formedOn('manual');
+  const room = sim.rooms.get(group.rid());
+  strangerSits(sim, room, { uid: 's_1', dn: 'la1' });
+  const dk = op(sim, 'B1', 3).length;
+  sim.kick('B1', 'Bạn thoát vì không bắt đầu');
+  for (const id of ['B2', 'B3']) sim.feed(id, JSON.stringify([5, { uid: 's_1', dn: 'la1', cmd: 203 }]));
+  await until(() => !room.seats.includes('1_2') && !room.seats.includes('1_3'));
+  await tick(); await tick();
+  assert.equal(room.seats.includes('1_2') || room.seats.includes('1_3'), false, 'all of ours left');
+  assert.equal(group.active(), false, 'the group is dissolved');
+  assert.equal(op(sim, 'B1', 3).length, dk, 'manual: no Dò Key by itself');
+});
+test('B4 e2e (auto): the host became a STRANGER → everyone leaves and the search starts again with the same KEY', async () => {
+  const { sim, group } = await formedOn('auto');
+  const oldRid = group.rid(); const room = sim.rooms.get(oldRid);
+  strangerSits(sim, room, { uid: 's_1', dn: 'la1' });
+  const dk = op(sim, 'B1', 3).filter((f) => f[4] === true).length;
+  sim.kick('B1', 'Bạn thoát vì không bắt đầu');
+  for (const id of ['B2', 'B3']) sim.feed(id, JSON.stringify([5, { uid: 's_1', dn: 'la1', cmd: 203 }]));
+  await until(() => group.rid() != null && group.rid() !== oldRid && sim.rooms.get(group.rid()).seats.length === 3);
+  assert.equal(op(sim, 'B1', 3).filter((f) => f[4] === true).length > dk, true, 'Dò Key again');
+  assert.deepEqual([...sim.rooms.get(group.rid()).seats].sort(), ['1_1', '1_2', '1_3']);
+  assert.equal(sim.rooms.get(group.rid()).seats[0], '1_1', 'the same KEY');
+});
+
+test('B4 e2e (manual): the KEY is kicked, no cmd 203 seen — the seat list (C flag) names SẴN SÀNG → it becomes the KEY ~1 s later', async () => {
+  const { sim, group } = await formedOn('manual');
+  const notices = []; group.on('notice', (n) => notices.push(n));
+  sim.kick('B1', 'Bạn thoát vì không bắt đầu');   // only the 202 broadcast (B2 first = host), no 203
+  await until(() => notices.some((n) => n.event === 'KEY_CHANGED'));
+  assert.equal(notices.find((n) => n.event === 'KEY_CHANGED').id, 'B2');
+});

@@ -252,7 +252,11 @@
       case 'LEAVE_FAILED': return who + ' chưa rời được bàn: ' + errText({ error: n.error }) + '.';
       case 'KICKED': return who + ' bị đá khỏi bàn' + (n.message ? ' (' + n.message + ')' : '') + (n.auto ? ' — đang tự vào lại…' : ' — bấm ReJoin để vào lại.');
       case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang dò bàn khác…' : ' — bấm Dò Key để vào bàn khác.');
-      case 'GROUP_DISSOLVED': return n.reason === 'KEY_REPLACED' ? 'Acc KEY đã được thay — nhóm bị hủy, bấm Dò Key để lập bàn mới.' : 'Đã thoát bàn tất cả.';
+      case 'REGROUP': return 'Chủ bàn ' + n.rid + ' không còn là acc của mình — cả nhóm rời bàn, đang dò bàn khác…';
+      case 'RULE_BROKEN_OUT': return 'Chủ bàn ' + n.rid + ' không còn là acc của mình — cả nhóm đã rời bàn. Bấm Dò Key để tìm bàn mới.';
+      case 'KEY_CHANGED': return 'KEY mất bàn — ' + who + ' thành chủ bàn, là KEY mới (giữ bàn ' + n.rid + ').';
+      case 'NOT_READY_RESET': return (n.reason === 'SS_LEFT' ? 'Acc SẴN SÀNG rời bàn' : 'Người lạ rời bàn') + ' — acc CHƯA SS vào lại để về chưa sẵn sàng.';
+      case 'GROUP_DISSOLVED': return n.reason === 'KEY_REPLACED' ? 'Acc KEY đã được thay — nhóm bị hủy, bấm Dò Key để lập bàn mới.' : (n.reason === 'KEY_KICKED' || n.reason === 'HOST_CHANGED') ? 'Nhóm đã rời bàn ' + n.rid + ' (chủ bàn không còn là acc của mình) — bấm Dò Key để tìm bàn mới.' : 'Đã thoát bàn tất cả.';
       case 'MEMBER_REPLACED': return who + ' thay acc cũ, nhận vai ' + roleLabel(n.role) + ' — vào game xong sẽ tự vào bàn' + (n.rid != null ? ' ' + n.rid : '') + '.';
       case 'REPLACE_TIMEOUT': return who + ' chưa vào game sau 2 phút — đăng nhập rồi bấm Tạo / Vào.';
       case 'SLOT_AUTO_REPLACED': return 'Trình duyệt P' + (SLOTS.indexOf(n.slot) + 1) + ' bị tắt — đã tự thay bằng ' + (n.label || 'trình duyệt dự bị') + '.';

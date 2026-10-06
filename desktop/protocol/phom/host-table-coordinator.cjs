@@ -194,7 +194,11 @@ class HostTableCoordinator extends EventEmitter {
         if (cls.present && cls.seat && cls.seat.r === true) this._maybeStrangerReady(rec, String(cls.seat.uid));
         if (meta.direction !== 'send' && !meta.replay) this._logSeats('SEAT_DIAG', rec, cls, [cls.json && cls.json[1] && cls.json[1].p]);
         break;
-      case 'HOST_CHANGED': rec._hostUid = cls.uid; break;
+      case 'HOST_CHANGED':
+        rec._hostUid = cls.uid;
+        // the table's owner changed (the KEY left / was kicked) — table-group decides (user rule B4: re-form the group)
+        if (playing && meta.direction !== 'send' && !meta.replay) { this._log('HOST_CHANGED', rec, { uid: String(cls.uid) }); this.emit('hostChanged', { id: rec.id, uid: String(cls.uid) }); }
+        break;
       case 'TABLE_STATE': {
         const ts = rec.ctx.tableState();
         const h = ts && ts.seats.find((s) => s.host);
@@ -243,7 +247,9 @@ class HostTableCoordinator extends EventEmitter {
       default: break;
     }
     // who sits / who is ready at the group's table changed → table-group checks the full-table auto start
-    if (playing && meta.direction !== 'send' && !meta.replay && (cls.type === 'TABLE_STATE' || cls.type === 'SEAT_UPDATE' || cls.type === 'USER_READY')) this.emit('seats', { id: rec.id });
+    // Also on this browser's OWN leave / join answer: the others' t:2 / t:1 for it travel on other sockets and may be
+    // read first, while this browser still counted as seated (or not yet) — the rule must look again (B1 e2e 2026-10-06)
+    if (playing && meta.direction !== 'send' && !meta.replay && (cls.type === 'TABLE_STATE' || cls.type === 'SEAT_UPDATE' || cls.type === 'USER_READY' || cls.type === 'LEAVE_ACK' || cls.type === 'JOIN_ACCEPTED')) this.emit('seats', { id: rec.id });
     this._changed();
     this.emit('hands', this.handsSnapshot());
     if (cls.isHandEvent || cls.type === 'TABLE_STATE') this.emit('cards', this.cardObserverSnapshot());
