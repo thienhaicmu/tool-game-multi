@@ -226,6 +226,16 @@ test('wiring: ONE name for the folder and the Chromium profile, resolved before 
   assert.match(main, /path\.join\(phomRoot\(\), 'profile-folders\.json'\)/);
 });
 
+// Measured 2026-10-07: Chromium 149 does not start on a profile Google Chrome 154 has used (a newer browser upgrades the
+// profile; an older one cannot read it). Each runtime gets its own root.
+test('Google Chrome and the bundled Chromium never share a profile folder', () => {
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /function profilesRootFor\(kind\) \{ return path\.join\(phomRoot\(\), kind === 'chrome' \? 'browser-profiles-chrome' : 'browser-profiles'\); \}/);
+  const open = main.slice(main.indexOf('async function openProfile('), main.indexOf('// ---- license gate ----'));
+  assert.match(open, /const profilesRoot = profilesRootFor\(rtChoice\.kind\);/, 'the launch uses the root of the runtime it launches');
+  assert.doesNotMatch(main, /path\.join\(phomRoot\(\), 'browser-profiles'\)/, 'no path into the Chromium root that ignores the runtime');
+});
+
 test('a profile created / renamed in the tool gets its Chromium profile at once (folder + name), not while its browser is open', () => {
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /ipcMain\.handle\('phom:profile-create', guarded\(\(_e, input\) => \{ ensureStores\(\); return syncBrowserProfile\(deviceProfilesStore\.create\(/);
@@ -233,7 +243,7 @@ test('a profile created / renamed in the tool gets its Chromium profile at once 
   const fn = main.slice(main.indexOf('const syncBrowserProfile = (res) => {'), main.indexOf("ipcMain.handle('phom:profile-create'"));
   assert.match(fn, /profileInUse\(String\(p\.id\)\)\) return res;/);
   assert.match(fn, /const name = accountNames\(\)\.get\(p\.id\) \|\| p\.name \|\| p\.id;/, 'the account wins over the tool name, as at launch');
-  assert.match(fn, /resolveProfileDir\(\{ root: path\.join\(phomRoot\(\), 'browser-profiles'\), key: String\(p\.id\), name, map: profileFolders\(\) \}\)/);
+  assert.match(fn, /resolveProfileDir\(\{ root: profilesRootFor\(rtNow\.ok \? rtNow\.kind : 'chromium'\), key: String\(p\.id\), name, map: profileFolders\(\) \}\)/);
   assert.match(fn, /applyProfileName\(pd\.dir, name\)/);
   // a close is graceful first (cookies flushed — an abrupt kill loses the newest ones, measured 2026-10-06)
   assert.match(read('desktop/browser-run/browser-run-manager.cjs'), /await run\.launcher\.closeGraceful\(\);/);

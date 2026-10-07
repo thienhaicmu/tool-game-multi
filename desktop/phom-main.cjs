@@ -206,6 +206,10 @@ else {
     try { ensureDir(phomRoot()); fs.writeFileSync(browserRuntimeSettingPath(), JSON.stringify({ preference: _browserRuntimePref }, null, 2), 'utf8'); } catch { /* best effort */ }
     return _browserRuntimePref;
   }
+  // Google Chrome keeps its profiles apart from the bundled Chromium's: one browser cannot open a profile a NEWER one
+  // has written ("profile from a newer version" — measured 2026-10-07: Chromium 149 does not start on a profile
+  // Chrome 154 used), so sharing the folder broke whichever was older. Chrome needs one game login of its own.
+  function profilesRootFor(kind) { return path.join(phomRoot(), kind === 'chrome' ? 'browser-profiles-chrome' : 'browser-profiles'); }
   // Resolve the executable for a launch given the current preference (custom Chromium result injected).
   function resolveBrowserRuntimeChoice() {
     return browserRuntimeResolver.resolveBrowserRuntime({ preference: browserRuntimePref(), customChromium: chromiumRuntime(), env: process.env });
@@ -1389,7 +1393,7 @@ else {
     // tool's profile name — for the cookie FOLDER (browser-profiles/<name>, renamed while the browser is closed; the
     // profile id stays the key in profile-folders.json) and for the Chromium profile name. The tab shows it as well.
     const profileName = accountNames().get(udKey) || label || saved.name || `Profile ${slot}`;
-    const profilesRoot = path.join(phomRoot(), 'browser-profiles');
+    const profilesRoot = profilesRootFor(rtChoice.kind);
     let profileDir = path.join(profilesRoot, udKey || slot || 'X');
     try {
       const pd = chromiumProfileName.resolveProfileDir({ root: profilesRoot, key: udKey || slot || 'X', name: profileName, map: profileFolders() });
@@ -1524,7 +1528,8 @@ else {
       try {
         const p = res && res.ok && res.profile; if (!p || !p.id || profileInUse(String(p.id))) return res;
         const name = accountNames().get(p.id) || p.name || p.id;
-        const pd = chromiumProfileName.resolveProfileDir({ root: path.join(phomRoot(), 'browser-profiles'), key: String(p.id), name, map: profileFolders() });
+        const rtNow = resolveBrowserRuntimeChoice();
+        const pd = chromiumProfileName.resolveProfileDir({ root: profilesRootFor(rtNow.ok ? rtNow.kind : 'chromium'), key: String(p.id), name, map: profileFolders() });
         chromiumProfileName.applyProfileName(pd.dir, name);
         headerLog('profile-synced', { profileId: p.id, folder: pd.folder, renamed: !!pd.renamedFrom });
       } catch { /* the next launch syncs it anyway */ }
