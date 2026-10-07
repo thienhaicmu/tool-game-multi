@@ -1414,14 +1414,14 @@ else {
     const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
     let windowRect;
     try { windowRect = windowRectForSlot(slot); } catch { windowRect = gridRectForSlot(slotIndex === 1 ? 'A' : slot); }
-    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, profileDir, sandboxDisabled: sandbox.sandboxDisabled });
+    // The executable goes INTO createRun: the launcher is built inside it and reads run.chromeExecutable once. Setting
+    // it afterwards (as before 3.1.30) was too late — "Chrome" silently launched the custom Chromium, and without the
+    // sandbox ACL step that Chrome skips, so on a fresh machine no window appeared while the tool said it opened.
+    const run = runManager.createRun({ launchUrl: String(url || ''), proxy: gate.runProxy, windowRect, profileDir, sandboxDisabled: sandbox.sandboxDisabled, chromeExecutable: usingChrome ? rtChoice.executable : null });
     run.profileLabel = label || saved.name || `Profile ${slot}`;
     run.slot = slot;
     run.profileId = udKey; // PHASE-6.3.1 — runtime browserRunId → profileId mapping (active-guard + reopen)
     run.browserAgent = agent; // re-applied on every attach
-    // PHASE 6.3.2.2 — per-run executable so each browser launches from the resolved runtime. The launcher
-    // uses run.chromeExecutable first (chrome-runtime.cjs); null keeps the runtime's pinned custom Chromium.
-    run.chromeExecutable = usingChrome ? rtChoice.executable : null;
     run.browserKind = rtChoice.kind; // 'chromium' | 'chrome' — surfaced read-only on Screen 2
     headerLog('browser-launch', { runId: run.id, slotId: slot, kind: rtChoice.kind, profileDir });
     run.proxyUsername = username || (gate.config && gate.config.username) || null;

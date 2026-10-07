@@ -81,12 +81,35 @@ test('openProfile launches from the resolved runtime per-run and preserves the p
   const fn = main.slice(main.indexOf('async function openProfile('), main.indexOf('async function openProfile(') + 7000);
   assert.match(fn, /resolveBrowserRuntimeChoice\(\)/);
   assert.match(fn, /const usingChrome = rtChoice\.kind === 'chrome'/);
-  assert.match(fn, /run\.chromeExecutable = usingChrome \? rtChoice\.executable : null/);
+  // the executable goes INTO createRun (the launcher is built inside it) — never assigned afterwards
+  assert.match(fn, /runManager\.createRun\(\{[^}]*chromeExecutable: usingChrome \? rtChoice\.executable : null \}\)/);
+  assert.doesNotMatch(fn, /run\.chromeExecutable = /, 'a later assignment is too late: the launcher already exists');
   assert.match(fn, /run\.browserKind = rtChoice\.kind/);
   // user-data-dir stays keyed by the stable profile id regardless of runtime kind (§16/§17)
   assert.match(fn, /resolveProfileDir\(\{ root: profilesRoot, key: udKey \|\| slot \|\| 'X'/);
   // the custom-Chromium sandbox ACL is skipped when running Google Chrome
   assert.match(fn, /if \(!usingChrome && !sandbox\.sandboxDisabled && rt\.ok\)/);
+});
+
+// The bug behind "Trình duyệt: Chrome opens no browser" (2026-10-07): phom-main set run.chromeExecutable AFTER
+// createRun, but createRun builds the launcher at once — "Chrome" launched the custom Chromium (and skipped its
+// sandbox ACL step). Behavioural: the run manager + the real launcher facade spawn the executable given to createRun.
+test('createRun({ chromeExecutable }) — the launcher spawns THAT executable, not the runtime default', async () => {
+  const { BrowserRunManager } = require('../../desktop/browser-run/browser-run-manager.cjs');
+  const { ChromeRuntime } = require('../../desktop/browser/chrome-runtime.cjs');
+  const spawned = [];
+  const fakeChild = { pid: 4242, killed: false, once() {}, on() {}, unref() {}, stderr: null };
+  const chromeRt = new ChromeRuntime({ env: {}, chromeExecutable: process.execPath, spawn: (exe) => { spawned.push(exe); return fakeChild; } });
+  const mgr = new BrowserRunManager({ createLauncher: (run) => chromeRt.launcher(run), createTargetManager: () => ({}) });
+  const chrome = process.execPath + '.chrome'; // any distinct path: the spawn is faked
+  const { mkdtempSync } = require('node:fs'); const { tmpdir } = require('node:os'); const { join } = require('node:path');
+  const base = mkdtempSync(join(tmpdir(), 'phom-rt-'));
+  const r1 = mgr.createRun({ profileDir: join(base, 'p1'), chromeExecutable: chrome });
+  assert.equal(r1.chromeExecutable, chrome);
+  await r1.launcher.open('about:blank').catch(() => {});
+  const r2 = mgr.createRun({ profileDir: join(base, 'p2') });
+  await r2.launcher.open('about:blank').catch(() => {});
+  assert.deepEqual(spawned, [chrome, process.execPath], 'Chrome for the Chrome run, the pinned runtime for the other');
 });
 
 test('browser runtime preference is persisted + exposed over IPC; preload bridges it', () => {

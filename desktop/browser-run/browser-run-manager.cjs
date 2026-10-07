@@ -61,7 +61,7 @@ class BrowserRunManager extends EventEmitter {
   // ---- run creation ----
   // Builds the per-run launcher + protocol subsystem. The TargetManager is
   // attached later (once the launcher yields a CDP endpoint) via setTargetManager.
-  createRun({ launchUrl = '', browserId = null, profileDir = null, proxy = null, windowRect = null, sandboxDisabled = false } = {}) {
+  createRun({ launchUrl = '', browserId = null, profileDir = null, proxy = null, windowRect = null, sandboxDisabled = false, chromeExecutable = null } = {}) {
     const id = this._nextId();
     const ordinal = this._order.length; // 0 for the first run
     const run = {
@@ -79,6 +79,9 @@ class BrowserRunManager extends EventEmitter {
       // Chromium sandbox disabled for THIS run — set only by the owner's gated dev
       // diagnostic policy. false = sandbox ON (production behaviour, the default).
       sandboxDisabled: !!sandboxDisabled,
+      // Executable for THIS run (e.g. Google Chrome) — must be on the run BEFORE the launcher is created below, which
+      // reads it once. null = the runtime's pinned custom Chromium.
+      chromeExecutable: chromeExecutable ? String(chromeExecutable) : null,
       status: STATUS.STARTING,
       createdAt: new Date(this._now()).toISOString(),
       endedAt: null,
