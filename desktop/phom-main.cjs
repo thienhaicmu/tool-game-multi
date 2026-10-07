@@ -206,9 +206,10 @@ else {
     try { ensureDir(phomRoot()); fs.writeFileSync(browserRuntimeSettingPath(), JSON.stringify({ preference: _browserRuntimePref }, null, 2), 'utf8'); } catch { /* best effort */ }
     return _browserRuntimePref;
   }
-  // Google Chrome keeps its profiles apart from the bundled Chromium's: one browser cannot open a profile a NEWER one
-  // has written ("profile from a newer version" — measured 2026-10-07: Chromium 149 does not start on a profile
-  // Chrome 154 used), so sharing the folder broke whichever was older. Chrome needs one game login of its own.
+  // Google Chrome keeps its profiles apart from the bundled Chromium's, so switching the runtime never hands one
+  // browser a profile another version wrote (an older Chrome refuses a profile from a newer version). Measured
+  // 2026-10-07: 149 ↔ 154 both open each other's profile when the first browser has fully exited — the folder split is a
+  // precaution, not the proven cause of "Chrome opens no browser". Chrome needs one game login of its own.
   function profilesRootFor(kind) { return path.join(phomRoot(), kind === 'chrome' ? 'browser-profiles-chrome' : 'browser-profiles'); }
   // Resolve the executable for a launch given the current preference (custom Chromium result injected).
   function resolveBrowserRuntimeChoice() {

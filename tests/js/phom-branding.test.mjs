@@ -226,8 +226,8 @@ test('wiring: ONE name for the folder and the Chromium profile, resolved before 
   assert.match(main, /path\.join\(phomRoot\(\), 'profile-folders\.json'\)/);
 });
 
-// Measured 2026-10-07: Chromium 149 does not start on a profile Google Chrome 154 has used (a newer browser upgrades the
-// profile; an older one cannot read it). Each runtime gets its own root.
+// Switching the runtime must never hand one browser a profile another version wrote (an older Chrome refuses a profile
+// from a newer version). Each runtime gets its own root.
 test('Google Chrome and the bundled Chromium never share a profile folder', () => {
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /function profilesRootFor\(kind\) \{ return path\.join\(phomRoot\(\), kind === 'chrome' \? 'browser-profiles-chrome' : 'browser-profiles'\); \}/);
