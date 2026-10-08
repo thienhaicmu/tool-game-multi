@@ -5,7 +5,6 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const { normalizeProxyConfig, parseProxyUrl, toChromeArgs, toRunProxy, publicSnapshot, resolveLaunchProxy, SUPPORTED_PROTOCOLS } = require('../../desktop/browser-run/proxy-config.cjs');
 const { ProxySecretStore } = require('../../desktop/browser-run/proxy-secret-store.cjs');
-const { ProxyTester, testAll, STATE } = require('../../desktop/browser-run/proxy-tester.cjs');
 const { decideAuth } = require('../../desktop/browser-run/proxy-auth-handler.cjs');
 const { ChromeLauncher } = require('../../desktop/browser/chrome-launcher.cjs');
 
@@ -117,33 +116,4 @@ test('ProxySecretStore with safeStorage writes only ciphertext', () => {
   const store2 = new ProxySecretStore({ filePath: fp, safeStorage: fakeSafe });
   assert.equal(store2.getPassword('proxy:PX'), 'hunter2');
   fs.unlinkSync(fp);
-});
-
-// ---------------- §17.E Test Proxy ----------------
-test('ProxyTester enforces allowlist, timeout, routes observed IP; no fallback', async () => {
-  const proxy = toRunProxy(normalizeProxyConfig({ protocol: 'http', host: 'p', port: 8080 }).config);
-  // not allowlisted
-  const t0 = new ProxyTester({ transport: async () => ({ ok: true, ip: '9.9.9.9' }), allowlist: ['ipcheck.test'], ipCheckUrl: 'https://evil.test/ip' });
-  assert.equal((await t0.test(proxy)).state, STATE.FAILED);
-  // pass
-  const t1 = new ProxyTester({ transport: async ({ url }) => { assert.ok(url.includes('ipcheck.test')); return { ok: true, ip: '203.0.113.5' }; }, allowlist: ['ipcheck.test'], ipCheckUrl: 'https://ipcheck.test/ip' });
-  const r1 = await t1.test(proxy);
-  assert.equal(r1.state, STATE.PASS);
-  assert.equal(r1.observedIp, '203.0.113.5');
-  // auth failure -> AUTH_FAILED
-  const t2 = new ProxyTester({ transport: async () => ({ ok: false, error: { code: 'PROXY_AUTH_FAILED' } }), allowlist: ['ipcheck.test'], ipCheckUrl: 'https://ipcheck.test/ip' });
-  assert.equal((await t2.test(proxy)).state, STATE.AUTH_FAILED);
-  // timeout
-  const t3 = new ProxyTester({ transport: () => new Promise(() => {}), allowlist: ['ipcheck.test'], ipCheckUrl: 'https://ipcheck.test/ip', timeoutMs: 20 });
-  assert.equal((await t3.test(proxy)).state, STATE.TIMEOUT);
-});
-
-test('testAll runs with bounded concurrency and isolates failures', async () => {
-  let active = 0, peak = 0;
-  const runner = async (id) => { active++; peak = Math.max(peak, active); await new Promise((r) => setTimeout(r, 5)); active--; return id === 'B' ? { state: STATE.FAILED } : { state: STATE.PASS }; };
-  const out = await testAll(['A', 'B', 'C'], runner, 2);
-  assert.ok(peak <= 2, 'concurrency bounded');
-  assert.equal(out.get('A').state, STATE.PASS);
-  assert.equal(out.get('B').state, STATE.FAILED);
-  assert.equal(out.get('C').state, STATE.PASS);
 });

@@ -17,6 +17,9 @@ const tableStateFrame = (ps, b) => classifyPhomFrame(JSON.stringify([5, { ps, b,
 
 let clock = 1000;
 const feed = (obs, cls, extra = {}) => obs.ingestFrame({ cls, now: clock++, ...extra });
+// read through the snapshot — the observer's one public read path (the per-player getters are gone, 3.2)
+const player = (obs, uid) => obs.getSnapshot().players[uid] || null;
+const observedDiscards = (obs) => obs.getSnapshot().observedDiscardEvents;
 
 // ---- Test 1 — new observer empty state ----
 test('1. a new observer starts empty (no players, no cards out, full deck remaining)', () => {
@@ -46,7 +49,7 @@ test('2. a browser SLOT binds to its AUTHORITATIVE own uid (never the browser in
 test('3. DEAL sets the socket owner currentCards (own hand) with source', () => {
   const obs = createCardObserver();
   feed(obs, dealFrame([0, 4, 8, 12, 16, 20, 24, 28, 32]), { slot: 'B1', ownUid: 'A' });
-  const p = obs.getPlayer('A');
+  const p = player(obs, 'A');
   assert.equal(p.currentCards.length, 9);
   assert.equal(p.currentCardsSource, 'DEAL');
   assert.deepEqual(p.currentCards, [0, 4, 8, 12, 16, 20, 24, 28, 32]);
@@ -57,14 +60,14 @@ test('4. own DRAW (sAC) replaces the hand and records the drawn card; a public d
   const obs = createCardObserver();
   feed(obs, dealFrame([0, 4, 8, 12, 16, 20, 24, 28, 32]), { slot: 'B1', ownUid: 'A' });
   feed(obs, drawFrame({ uid: 'A', cs: 40, sAC: [0, 4, 8, 12, 16, 20, 24, 28, 32, 40] }), { slot: 'B1', ownUid: 'A' });
-  const p = obs.getPlayer('A');
+  const p = player(obs, 'A');
   assert.equal(p.currentCards.length, 10);
   assert.equal(p.drawnHistory.length, 1);
   assert.equal(p.drawnHistory[0].card, 40);
   assert.equal(p.drawnHistory[0].source, 'DRAW_OWN');
   // a PUBLIC draw by another player: fact only, no card fabricated
   feed(obs, drawFrame({ uid: 'X', cs: 7 }), { slot: 'B1', ownUid: 'A' });
-  assert.equal(obs.getPlayer('X'), null, 'no card evidence → no fabricated draw for the other player');
+  assert.equal(player(obs, 'X'), null, 'no card evidence → no fabricated draw for the other player');
 });
 
 // ---- Test 5 — single discard (public) ----
@@ -72,24 +75,24 @@ test('5. PLAY records a single public discard for the acting uid', () => {
   const obs = createCardObserver();
   feed(obs, dealFrame([0, 4, 8, 12, 16, 20, 24, 28, 32]), { slot: 'B1', ownUid: 'A' });
   feed(obs, playFrame({ fP: { uid: 'A', dCs: 8 }, tP: { uid: 'B' } }), { slot: 'B1', ownUid: 'A' });
-  const p = obs.getPlayer('A');
+  const p = player(obs, 'A');
   assert.equal(p.discardedHistory.length, 1);
   assert.equal(p.discardedHistory[0].card, 8);
   const s = obs.getSnapshot();
   assert.deepEqual(s.discardPile, [8]);
   assert.equal(s.ledger.find((e) => e.code === 8).status, STATUS.DISCARDED);
   // discarded card left the owner's hand
-  assert.equal(obs.getPlayer('A').currentCards.includes(8), false);
+  assert.equal(player(obs, 'A').currentCards.includes(8), false);
 });
 
 // ---- Test 6 — multiple-card discard ----
 test('6. PLAY supports a MULTI-card discard (dCs array)', () => {
   const obs = createCardObserver();
   feed(obs, playFrame({ fP: { uid: 'B', dCs: [10, 14, 18] }, tP: { uid: 'C' } }), { slot: 'B2', ownUid: 'A' });
-  const p = obs.getPlayer('B');
+  const p = player(obs, 'B');
   assert.equal(p.discardedHistory.length, 3);
   assert.deepEqual(p.discardedHistory.map((d) => d.card).sort((a, b) => a - b), [10, 14, 18]);
-  const ev = obs.getAllObservedDiscards();
+  const ev = observedDiscards(obs);
   assert.equal(ev.length, 1);
   assert.deepEqual(ev[0].cards, [10, 14, 18]);
 });
@@ -101,7 +104,7 @@ test('7. the SAME discard echoed on all 3 browser sockets is recorded ONCE (dedu
   feed(obs, f(), { slot: 'B1', ownUid: 'A' }); // echo on B1
   feed(obs, f(), { slot: 'B2', ownUid: 'B' }); // echo on B2
   feed(obs, f(), { slot: 'B3', ownUid: 'C' }); // echo on B3
-  const p = obs.getPlayer('A');
+  const p = player(obs, 'A');
   assert.equal(p.discardedHistory.length, 1, 'one discard, not three');
   assert.deepEqual(obs.getSnapshot().discardPile, [8]);
 });
@@ -113,7 +116,7 @@ test('8. re-applying the same authoritative hand does not duplicate cards (idemp
   feed(obs, deal, { slot: 'B1', ownUid: 'A' });
   feed(obs, deal, { slot: 'B1', ownUid: 'A' });
   feed(obs, deal, { slot: 'B1', ownUid: 'A' });
-  assert.equal(obs.getPlayer('A').currentCards.length, 9);
+  assert.equal(player(obs, 'A').currentCards.length, 9);
   assert.equal(obs.getSnapshot().remaining.count, 43); // 52 − 9, no double count
 });
 
@@ -123,11 +126,11 @@ test('9. three controlled browsers track three SEPARATE hands (never merged)', (
   feed(obs, dealFrame([0, 1, 2, 3, 4, 5, 6, 7, 8]), { slot: 'B1', ownUid: 'A' });
   feed(obs, dealFrame([9, 10, 11, 12, 13, 14, 15, 16, 17]), { slot: 'B2', ownUid: 'B' });
   feed(obs, dealFrame([18, 19, 20, 21, 22, 23, 24, 25, 26]), { slot: 'B3', ownUid: 'C' });
-  assert.equal(obs.getPlayer('A').currentCards.length, 9);
-  assert.equal(obs.getPlayer('B').currentCards.length, 9);
-  assert.equal(obs.getPlayer('C').currentCards.length, 9);
+  assert.equal(player(obs, 'A').currentCards.length, 9);
+  assert.equal(player(obs, 'B').currentCards.length, 9);
+  assert.equal(player(obs, 'C').currentCards.length, 9);
   // hands stay distinct — no A∪B∪C merge into one
-  assert.notDeepEqual(obs.getPlayer('A').currentCards, obs.getPlayer('B').currentCards);
+  assert.notDeepEqual(player(obs, 'A').currentCards, player(obs, 'B').currentCards);
   assert.equal(obs.getSnapshot().remaining.count, 52 - 27);
 });
 
@@ -136,7 +139,7 @@ test('10. a discard by a NON-controlled player (no open browser) is still observ
   const obs = createCardObserver();
   feed(obs, dealFrame([0, 1, 2, 3, 4, 5, 6, 7, 8]), { slot: 'B1', ownUid: 'A' });
   feed(obs, playFrame({ fP: { uid: 'P4', dCs: 51 }, tP: { uid: 'A' } }), { slot: 'B1', ownUid: 'A' });
-  const p4 = obs.getPlayer('P4');
+  const p4 = player(obs, 'P4');
   assert.ok(p4, 'other player tracked');
   assert.equal(p4.controlled, false);
   assert.equal(p4.discardedHistory[0].card, 51);
@@ -215,13 +218,13 @@ test('16. MELD (854) is parsed and stored per owner uid (protocol proves it — 
   assert.equal(CAPABILITIES.meld, true);
   const obs = createCardObserver();
   feed(obs, meldFrame({ uid: 'A', mes: [{ meid: 1, cs: [10, 14, 18] }] }), { slot: 'B1', ownUid: 'A' });
-  const p = obs.getPlayer('A');
+  const p = player(obs, 'A');
   assert.equal(p.melds.length, 1);
   assert.equal(p.melds[0].meid, 1);
   assert.deepEqual(p.melds[0].cards, [10, 14, 18]);
   // dedup: the same public meld echoed on another socket is not duplicated
   feed(obs, meldFrame({ uid: 'A', mes: [{ meid: 1, cs: [10, 14, 18] }] }), { slot: 'B2', ownUid: 'B' });
-  assert.equal(obs.getPlayer('A').melds.length, 1);
+  assert.equal(player(obs, 'A').melds.length, 1);
 });
 
 // ---- capabilities + analysis angle (§8/§19/§20) ----
@@ -232,13 +235,11 @@ test('17. capabilities declare exactly what the protocol proves; other-player ha
   assert.equal(CAPABILITIES.serverRoundId, false);
 });
 
-test('18. the analysis angle selects ONE player and never merges the three hands (§20)', () => {
+test('18. the snapshot never merges the hands of our accounts (§20)', () => {
   const obs = createCardObserver();
   feed(obs, dealFrame([0, 1, 2, 3, 4, 5, 6, 7, 8]), { slot: 'B1', ownUid: 'A' });
   feed(obs, dealFrame([9, 10, 11, 12, 13, 14, 15, 16, 17]), { slot: 'B2', ownUid: 'B' });
-  obs.setAnalysisPlayer('B');
   const s = obs.getSnapshot();
-  assert.equal(s.selectedAnalysisPlayer, 'B');
   // players remain distinct entries — there is no combined/merged hand anywhere in the snapshot
   assert.equal(Object.keys(s.players).length, 2);
   assert.equal(s.players.A.currentCards.length, 9);

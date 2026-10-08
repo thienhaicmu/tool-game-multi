@@ -49,8 +49,6 @@ class SafeCardAnalyzer {
   constructor() { this._last = null; this._key = null; }
 
   reset() { this._last = null; this._key = null; }
-  getAnalysis() { return this._last; }
-  getSafeCards() { return this._last ? this._last.safeCards.slice() : []; }
 
   // analyze({ snapshot, targetPlayerUid }) -> a fresh, read-only result. Pure: the same snapshot + target
   // always yields the same output (§15). Never mutates the snapshot. Memoised by a content fingerprint so

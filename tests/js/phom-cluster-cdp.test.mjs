@@ -21,7 +21,6 @@ function makeManager(opts = {}) {
     openProfile: async (slot) => { if (opts.failOpen === slot) return { ok: false, error: { code: 'PHOM_CHROMIUM_LAUNCH_FAILED' } }; opened.push(slot); return { ok: true, runId: runIdBySlot[slot] }; },
     getRunClient: (runId) => clients[slotByRun[runId]] || null,
     applyAgentToClient: async (client, agent) => { const slot = Object.keys(clients).find((s) => clients[s] === client); applied[slot].push(agent); return { applied: agent === 'MOBILE' ? ['setUserAgentOverride'] : [], unsupported: [] }; },
-    testProxy: async (ref) => ({ state: 'PASS', observedIp: '203.0.113.' + ref.slice(-1) }),
     closeRun: async (runId) => { closed.push(runId); },
     getRunInfo: (runId) => ({ pid: 1000 + runId.charCodeAt(3), port: 9300 + runId.charCodeAt(3), userDataDir: `D:/ud/${runId}` }),
     hostSession: opts.hostSession || null,
@@ -92,15 +91,6 @@ test('applyClusterAgents PARTIAL when one client is missing (no fake full succes
   assert.equal(res.applied, 2);
 });
 
-// §8 — proxy fan-out per profile.
-test('testClusterProxies fans out; 3/3 PASS => ok', async () => {
-  const { mgr, dev } = makeManager();
-  baseCluster(mgr, dev);
-  const res = await mgr.testClusterProxies();
-  assert.equal(res.ok, true);
-  assert.equal(res.pass, 3);
-});
-
 // PROXY OPTIONAL — a cluster with Direct slots opens and tests without treating the
 // missing proxy as a failure (§10/§11).
 test('cluster opens with all THREE slots Direct (no proxyRef) — proxy optional', async () => {
@@ -121,19 +111,6 @@ test('cluster opens in MIXED mode: A=PROXY, B=DIRECT, C=PROXY', async () => {
   const res = await mgr.openCluster();
   assert.equal(res.ok, true);
   assert.deepEqual(opened.sort(), ['A', 'B', 'C']);
-});
-
-test('TEST TẤT CẢ: Direct slots return DIRECT (skipped), never a failure; configured proxies still pass', async () => {
-  const { mgr, dev } = makeManager();
-  mgr.createCluster({ hostSlot: 'A', selectedStake: 1000, profiles: [
-    { slot: 'A', proxyRef: 'px-A', agent: dev.A }, { slot: 'B', proxyRef: null, agent: dev.B }, { slot: 'C', proxyRef: 'px-C', agent: dev.C },
-  ] });
-  const res = await mgr.testClusterProxies();
-  assert.equal(res.ok, true, 'mixed cluster with a Direct slot is OK (Direct is not a failure)');
-  assert.equal(res.pass, 2, 'two configured proxies passed');
-  assert.equal(res.direct, 1, 'one Direct slot skipped');
-  const bySlot = Object.fromEntries(res.results.map((r) => [r.slot, r.state]));
-  assert.equal(bySlot.B, 'DIRECT');
 });
 
 // §9/§17.C — event envelope validation + isolation.
@@ -188,21 +165,6 @@ test('createCluster REUSES an open cluster (idempotent RUN GAME, no teardown)', 
 });
 
 // ============ §15/§16 BROWSER LIFETIME INDEPENDENCE ============
-// DỪNG (orchestration stop) must NEVER close a browser.
-test('stopOrchestration cancels automation but closes NO browser (DỪNG semantics)', async () => {
-  const { mgr, dev, closed } = makeManager({ hostSession: { active: () => true, stop() { this._stopped = true; }, snapshot: () => null, startSession: () => ({ ok: true }) } });
-  baseCluster(mgr, dev);
-  await mgr.openCluster();
-  const r = await mgr.stopOrchestration();
-  assert.equal(r.ok, true);
-  assert.equal(r.browsersClosed, false);
-  assert.equal(closed.length, 0, 'DỪNG must not call closeRun for any slot');
-  const snap = mgr.getClusterSnapshot();
-  assert.equal(snap.openBrowserCount, 3, 'all three browsers still open after DỪNG');
-  assert.equal(snap.orchestrationStopped, true);
-  assert.equal(snap.browserClusterState, 'OPEN');
-});
-
 test('an open failure keeps the browsers that DID open (PARTIAL, no cascade close) (§14)', async () => {
   const { mgr, dev, closed, opened } = makeManager({ failOpen: 'C' });
   baseCluster(mgr, dev);
@@ -285,7 +247,7 @@ test('cluster references only its A/B/C run ids (harness port never becomes a ru
 test('snapshot exposes pid/port/userDataDir and never a secret', async () => {
   const { mgr, dev } = makeManager();
   baseCluster(mgr, dev);
-  await mgr.openCluster(); mgr.connectClusterCdp(); await mgr.testClusterProxies();
+  await mgr.openCluster(); mgr.connectClusterCdp();
   const snap = mgr.getClusterSnapshot();
   for (const s of SLOTS) { assert.ok(snap.profiles[s].pid > 0); assert.ok(snap.profiles[s].cdpPort > 0); assert.match(snap.profiles[s].userDataDir, /BR-/); }
   assert.equal(/password|token|cookie|secret|authorization/i.test(JSON.stringify(snap)), false);

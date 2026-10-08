@@ -12,7 +12,6 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const ba = require('../../desktop/browser-run/browser-agent.cjs');
-const { PhomProfileStore } = require('../../desktop/browser-run/phom-profile-store.cjs');
 const { PhomDeviceProfilesStore } = require('../../desktop/browser-run/phom-device-profiles-store.cjs');
 const { parseFlexibleProxy, normalizeProxyConfig, publicSnapshot } = require('../../desktop/browser-run/proxy-config.cjs');
 
@@ -64,19 +63,6 @@ test('the web size IS the window size: one default viewport + the chrome allowan
 });
 
 // ---- profiles keep only the agent, and a profile saved under the old model still opens ----
-test('a profile stores its agent; three slots stay independent', () => {
-  const store = new PhomProfileStore({ filePath: null });
-  store.upsert('A', { name: 'A', proxyRef: 'px-A', agent: 'MOBILE' });
-  store.upsert('B', { name: 'B', proxyRef: 'px-B', agent: 'WEB' });
-  assert.equal(store.agentFor('A'), 'MOBILE');
-  assert.equal(store.agentFor('B'), 'WEB');
-  store.upsert('A', { agent: 'WEB' });
-  assert.equal(store.agentFor('A'), 'WEB');
-  assert.equal(store.agentFor('B'), 'WEB', 'B was set to WEB itself — not by A');
-  assert.equal(store.getPublic('A').name, 'A', 'an agent edit never touches the name');
-  assert.equal(store.upsert('A', { agent: 'phone' }).error.code, 'PHOM_AGENT_INVALID');
-});
-
 test('a profile saved with the OLD device object is migrated: its UA decides the agent, the rest is dropped', () => {
   const dir = mkdtempSync(join(tmpdir(), 'phom-agent-'));
   const fp = join(dir, 'phom-device-profiles.json');
@@ -121,14 +107,6 @@ test('create / update / reload — the profile id (and its Chromium user-data-di
   assert.equal(s2.getPublic(id).name, 'P1 renamed');
   assert.equal(s2.agentFor(id), 'MOBILE');
   assert.equal(/password|token|cookie|secret/i.test(readFileSync(fp, 'utf8')), false);
-});
-
-test('slotsUsingProxy guards proxy deletion', () => {
-  const store = new PhomProfileStore({ filePath: null });
-  store.upsert('A', { proxyRef: 'PX1' });
-  store.upsert('B', { proxyRef: 'PX2' });
-  assert.deepEqual(store.slotsUsingProxy('PX1'), ['A']);
-  assert.deepEqual(store.slotsUsingProxy('PX9'), []);
 });
 
 // ---- flexible proxy input parsing (unchanged; kept here with the profile model) ----

@@ -88,7 +88,6 @@ class CardObserver {
     this._seenEvents = new Set(); // evidenceKey dedup (draws/discards/melds)
     this._eats = [];            // [{ card, eaterUid, fromUid, observedAt }] — discards taken this round (853)
     this._dealtUids = new Map(); // own hand → the cards dealt to it in THIS round (another set = a new round)
-    this._analysisPlayer = null;  // §19 — selected analysis angle (never merges hands)
     // §40 — seat ORDER learned from PUBLIC play: every PLAY names who discarded (fP.uid) and whose turn it is
     // next (tP.uid). Only that next player may eat the discard, so this is what a player at the table knows
     // anyway. Seeded at every DEAL from lpi[] (the turn order), then confirmed/overridden by each PLAY; never assumed
@@ -395,11 +394,7 @@ class CardObserver {
     }
   }
 
-  // ---- queries (§15) ----
-  getPlayer(uid) { const p = this._players.get(String(uid)); return p ? clone(p) : null; }
-  getPlayers() { return [...this._players.values()].map(clone); }
-  getDiscardHistory(uid) { const p = this._players.get(String(uid)); return p ? clone(p.discardedHistory) : []; }
-  getAllObservedDiscards() { return clone(this._observedDiscardEvents); }
+  // ---- queries (§15) — everything a reader needs is in getSnapshot() ----
   getLedger() { return [...this._ledger.values()].map(clone); }
 
   // §12 — remaining = canonical 52 − every card PROVEN out (any ledger entry). A card in an unknown
@@ -410,10 +405,6 @@ class CardObserver {
     for (let c = MIN_CODE; c <= MAX_CODE; c++) if (!this._ledger.has(c)) codes.push(c);
     return { count: codes.length, codes, cards: codes.map(decodeView), knownOutCount: this._ledger.size };
   }
-
-  // §19 — the analysis ANGLE (one player). Never merges P1+P2+P3 into one hand (§20).
-  setAnalysisPlayer(uid) { this._analysisPlayer = uid != null ? String(uid) : null; return this._analysisPlayer; }
-  getAnalysisPlayer() { return this._analysisPlayer; }
 
   // Deep-cloned, immutable snapshot (§15). Includes decoded views so the renderer needs no codec.
   getSnapshot() {
@@ -446,7 +437,6 @@ class CardObserver {
       eats: this._eats.map((e) => ({ ...e, view: decodeView(e.card) })), // 853 — who ate which discard of whom
       ledger: this.getLedger(),
       remaining: this.getRemainingCards(),
-      selectedAnalysisPlayer: this._analysisPlayer,
       capabilities: { ...CAPABILITIES },
     };
     this._log('SNAPSHOT', { players: this._players.size, remaining: snap.remaining.count });

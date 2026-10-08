@@ -3,25 +3,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { parseObservedIp, isIp } = require('../../desktop/browser-run/ip-parse.cjs');
 const { computeGridLayout, rectForSlot, chromeWindowArgs, SLOTS } = require('../../desktop/protocol/phom/grid-layout.cjs');
-
-// §6/§7 — observed-IP parsing (JSON + plain text) with a strict IP check.
-test('parseObservedIp handles JSON shapes and plain text', () => {
-  assert.equal(parseObservedIp('{"ip":"203.0.113.7"}'), '203.0.113.7');
-  assert.equal(parseObservedIp('{"origin":"198.51.100.9, 10.0.0.1"}'), '198.51.100.9');
-  assert.equal(parseObservedIp('{"query":"192.0.2.5"}'), '192.0.2.5');
-  assert.equal(parseObservedIp('Your IP is 192.0.2.33 today'), '192.0.2.33');
-  assert.equal(parseObservedIp('no ip here'), null);
-  assert.equal(parseObservedIp(''), null);
-  assert.equal(parseObservedIp('{"nope":true}'), null);
-});
-test('isIp validates v4 and v6', () => {
-  assert.equal(isIp('1.2.3.4'), true);
-  assert.equal(isIp('2001:db8::1'), true);
-  assert.equal(isIp('999.1'), false);
-  assert.equal(isIp('hello'), false);
-});
 
 // §9/§13 — 2×2 grid geometry: four non-overlapping quadrants.
 test('computeGridLayout tiles four quadrants inside the work area', () => {

@@ -157,8 +157,12 @@ test('15. a new round clears the previous analysis (no stale safe cards carry ov
   assert.equal(r2.roundSeq, 2);
   assert.deepEqual(r2.targetCards.map((c) => c.code).sort((x, y) => x - y), [12, 13], 'fresh round hand only');
   assert.equal(r2.safeCards.find((c) => c.code === 48), undefined, 'previous safe card cleared');
+  // the same snapshot answers from the cache; after reset() it is analysed afresh
+  const snap = obs.getSnapshot();
+  const cached = a.analyze({ snapshot: snap, targetPlayerUid: 'uidA' });
+  assert.equal(a.analyze({ snapshot: snap, targetPlayerUid: 'uidA' }), cached);
   a.reset();
-  assert.equal(a.getAnalysis(), null);
+  assert.notEqual(a.analyze({ snapshot: snap, targetPlayerUid: 'uidA' }), cached);
 });
 
 // ---- Test 16 — no analyzer output is a game command ----

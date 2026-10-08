@@ -81,11 +81,10 @@ test('the explicit close (ĐÓNG TẤT CẢ) is the only IPC that closes the bro
   assert.match(preloadSrc, /closeBrowsers:\s*\(\)\s*=>\s*ipcRenderer\.invoke\('phom:cluster-stop'\)/);
 });
 
-// The manager's stopOrchestration must NOT close runs; only stopCluster closes them.
-test('cluster manager: stopOrchestration has no closeRun; only stopCluster does', () => {
+// stopCluster is the ONE manager path that closes the owned runs.
+test('cluster manager: only stopCluster closes runs', () => {
   const mgrSrc = read('desktop/protocol/phom/phom-cluster-cdp-manager.cjs');
-  const stopOrch = mgrSrc.slice(mgrSrc.indexOf('stopOrchestration()'), mgrSrc.indexOf('orchestrationStopped()'));
-  assert.equal(/_closeRun/.test(stopOrch), false, 'stopOrchestration must never call _closeRun');
+  assert.equal((mgrSrc.match(/this\._closeRun\(/g) || []).length, 1, 'one call site');
   const stopClu = mgrSrc.slice(mgrSrc.indexOf('async stopCluster()'), mgrSrc.indexOf('getClusterSnapshot()'));
   assert.match(stopClu, /_closeRun/, 'stopCluster is the explicit close path');
 });

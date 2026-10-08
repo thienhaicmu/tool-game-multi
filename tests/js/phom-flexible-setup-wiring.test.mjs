@@ -42,7 +42,7 @@ test('open-from-selection maps selection order → B1/B2/B3 (internal slots A/B/
 });
 
 test('openProfile forwards an explicit agent + records browserRunId → profileId (reopen uses the right profile)', () => {
-  assert.match(main, /browserAgent\.normalizeAgent\(agentArg \|\| profileStore\.agentFor\(pk\)\)/);
+  assert.match(main, /browserAgent\.normalizeAgent\(agentArg \|\| deviceProfilesStore\.agentFor\(pk\)\)/);
   assert.match(main, /run\.browserAgent = agent/);
   assert.match(main, /run\.profileId = udKey/);
   // the cluster openProfile closure forwards the profile id + its agent

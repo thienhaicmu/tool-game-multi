@@ -11,14 +11,14 @@
 //   - CaptureCorrelator                  (shared, target-keyed WS/HTTP capture)
 //   - WsReplay.sendProtocol              (the ONLY send seam — the run's own socket)
 //   - HostSessionManager + phom domain   (host coordinator / reducer / classifier)
-//   - proxy-config / proxy-secret-store / proxy-tester / proxy-auth-handler
+//   - proxy-config / proxy-secret-store / proxy-auth-handler
 //   - licensing/*                        (verifier + guard, expectedGameProduct PHOM)
 //
 // It does NOT import the Control renderer, the Analytics renderer/store, the
 // Aviator UI/coordinator, or any Control/Analytics singleton.
 // ===========================================================================
 
-const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, net, session, shell: electronShell } = require('electron');
+const { app, BrowserWindow, ipcMain, protocol, safeStorage, screen, shell: electronShell } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { redactDiagnostic } = require('./protocol/phom/diagnostic-redaction.cjs');
@@ -41,9 +41,7 @@ const { PhomClusterCdpManager } = require('./protocol/phom/phom-cluster-cdp-mana
 const { createFrameRecorder } = require('./protocol/phom/frame-recorder.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
-const { ProxyTester } = require('./browser-run/proxy-tester.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
-const { PhomProfileStore } = require('./browser-run/phom-profile-store.cjs');
 const { PhomDeviceProfilesStore } = require('./browser-run/phom-device-profiles-store.cjs');
 const { runEnterGameViaSite } = require('./protocol/cocos-lobby-entry.cjs');
 const { GAME_ID: PHOM_GAME_ID } = require('./protocol/phom/phom-frame-classify.cjs');
@@ -51,7 +49,6 @@ const browserAgent = require('./browser-run/browser-agent.cjs');
 const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
-const { parseObservedIp } = require('./browser-run/ip-parse.cjs');
 const { rectForSlot, toolWindowBounds, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const gameHeader = require('./protocol/phom/game-header.cjs');
 const headerBridge = require('./protocol/phom/phom-header-bridge.cjs');
@@ -71,11 +68,6 @@ const GAME_PRODUCT = 'PHOM';
 // has ~956px quadrants); the compact Setup/Control layouts scroll if a quadrant is
 // smaller than the minimum on low-resolution displays.
 const WIN_DEFAULTS = Object.freeze({ minWidth: 380, minHeight: 480 });
-// IP-check allowlist for proxy Observed-IP tests (§7). Explicit hosts only — never a
-// wildcard, never a game endpoint, never promoted from a user-entered URL.
-const IP_CHECK_ALLOWLIST = (process.env.PHOM_IP_CHECK_HOSTS || '').split(',').map((s) => s.trim()).filter(Boolean);
-const IP_CHECK_URL = process.env.PHOM_IP_CHECK_URL || null;
-
 // ---- renderer scheme (privileged, before ready) ----
 protocol.registerSchemesAsPrivileged([
   { scheme: 'phom-app', privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } },
@@ -101,8 +93,6 @@ else {
   var runManager = null;
   var proxyConfigStore = null;
   var proxySecretStore = null;
-  var proxyTester = null;
-  var profileStore = null;
   var deviceProfilesStore = null; // PHASE-6.3.1 flexible N-profile store
   var phomSessions = null;
   // Lọc Bài: one analyzer PER account, so each P1/P2/P3 column is computed (and memoised) on its own — every one of
@@ -262,55 +252,10 @@ else {
     ensureDir(phomRoot());
     proxySecretStore = new ProxySecretStore({ filePath: path.join(phomRoot(), 'proxy-secrets.dat'), safeStorage });
     proxyConfigStore = new ProxyConfigStore({ filePath: path.join(phomRoot(), 'proxies.json'), secretStore: proxySecretStore });
-    profileStore = new PhomProfileStore({ filePath: path.join(phomRoot(), 'phom-profiles.json') });
-    // PHASE-6.3.1 — the canonical flexible profile LIST store (N profiles; add/edit/delete + selection).
+    // The ONE profile store (N profiles; add/edit/delete + selection). The old per-slot store (phom-profiles.json) is
+    // gone (3.2): every open path passes proxy + agent explicitly, and its stale proxyRef once made a DIRECT slot
+    // inherit a dead proxy.
     deviceProfilesStore = new PhomDeviceProfilesStore({ filePath: path.join(phomRoot(), 'phom-device-profiles.json') });
-    proxyTester = new ProxyTester({
-      allowlist: IP_CHECK_ALLOWLIST,
-      ipCheckUrl: IP_CHECK_URL,
-      transport: netProxyTransport,     // RUNTIME-UNVERIFIED without a real proxy
-    });
-  }
-
-  // Proxy observed-IP transport (§6): a dedicated, throwaway Electron session with the
-  // run's proxy applied, fetching the allowlisted IP-check URL. It NEVER touches the
-  // default session (no shared cookies), NEVER falls back to direct, and NEVER logs
-  // credentials. Real code; RUNTIME-UNVERIFIED until an authorized proxy is supplied.
-  async function netProxyTransport({ proxy, url, timeoutMs, auth } = {}) {
-    if (!proxy || !proxy.host) return { ok: false, error: { code: 'PROXY_CONFIG_REQUIRED', message: 'no proxy' } };
-    let ses;
-    const partition = `phom-proxy-test-${proxy.id || Math.random().toString(36).slice(2)}-${Date.now()}`;
-    try { ses = session.fromPartition(partition); } catch (e) { return { ok: false, error: { code: 'PROXY_SESSION_CREATE_FAILED', message: safeMsg(e) } }; }
-    const rules = `${proxy.protocol}://${proxy.host}:${proxy.port}`;
-    // proxy auth via the session 'login' event, bound to THIS session only.
-    const onLogin = (event, _details, authInfo, callback) => {
-      if (authInfo && authInfo.isProxy && auth && auth.password) { event.preventDefault(); callback(auth.username || '', auth.password); }
-      // else: let it fail (no direct fallback, no origin creds)
-    };
-    ses.on('login', onLogin);
-    try {
-      await ses.setProxy({ proxyRules: rules, proxyBypassRules: '<-loopback>' });
-      const body = await new Promise((resolve, reject) => {
-        let done = false; const chunks = [];
-        const timer = setTimeout(() => { if (!done) { done = true; try { req.abort(); } catch {} const e = new Error('timeout'); e.code = 'PROXY_TEST_TIMEOUT'; reject(e); } }, timeoutMs || 8000);
-        const req = net.request({ url, session: ses, useSessionCookies: false });
-        req.on('response', (res) => {
-          if (res.statusCode === 407) { const e = new Error('proxy auth'); e.code = 'PROXY_AUTH_FAILED'; clearTimeout(timer); done = true; return reject(e); }
-          res.on('data', (d) => chunks.push(d));
-          res.on('end', () => { if (!done) { done = true; clearTimeout(timer); resolve(Buffer.concat(chunks).toString('utf8')); } });
-        });
-        req.on('error', (e) => { if (!done) { done = true; clearTimeout(timer); const err = new Error(safeMsg(e)); err.code = /ERR_PROXY/.test(String(e)) ? 'PROXY_CONNECT_FAILED' : 'PROXY_CONNECT_FAILED'; reject(err); } });
-        req.end();
-      });
-      const ip = parseObservedIp(body);
-      if (!ip) return { ok: false, error: { code: 'PROXY_IP_RESPONSE_INVALID', message: 'IP-check response had no usable IP' } };
-      return { ok: true, ip };
-    } catch (e) {
-      return { ok: false, error: { code: e.code || 'PROXY_CONNECT_FAILED', message: safeMsg(e) } };
-    } finally {
-      try { ses.off('login', onLogin); } catch {}
-      try { await ses.setProxy({ mode: 'direct' }); await ses.clearStorageData(); } catch {}
-    }
   }
   function safeMsg(e) { return String((e && e.message) || e || '').slice(0, 200); }
 
@@ -353,11 +298,9 @@ else {
 
   function phomAuthorizedEnv() {
     // A valid product license (or the dev bypass) IS the authorization for manual QA control — that is the
-    // gate an end user passes by activating the app. The legacy env/IP opt-in stays for headless CI runs
-    // that have no license, but is no longer required for a normally licensed desktop app.
+    // gate an end user passes by activating the app. The env opt-in stays for headless CI runs without a license.
     if (licenseActive()) return true;
-    if (process.env.PHOM_QA_ENABLED !== '1') return false;
-    return process.env.PHOM_QA_AUTHORIZED === '1' || IP_CHECK_ALLOWLIST.length > 0;
+    return process.env.PHOM_QA_ENABLED === '1' && process.env.PHOM_QA_AUTHORIZED === '1';
   }
 
   // ---- PhomClusterCdpManager: control-plane over the three independent CDP clients ----
@@ -394,13 +337,6 @@ else {
     const run = runManager && runManager.get(runId);
     let snap = {}; try { if (run && run.launcher && run.launcher.snapshot) snap = run.launcher.snapshot() || {}; } catch { snap = {}; }
     return { pid: snap.chromePid != null ? snap.chromePid : null, port: snap.cdpPort != null ? snap.cdpPort : (run && run.cdpEndpoint ? run.cdpEndpoint.port : null), userDataDir: snap.chromeProfile || (run ? run.profileDir : null) };
-  }
-  async function testProxyById(id) {
-    ensureStores();
-    const cfg = proxyConfigStore.get(String(id));
-    if (!cfg) return { state: 'NOT_CONFIGURED' };
-    const { toRunProxy } = require('./browser-run/proxy-config.cjs');
-    return proxyTester.test(toRunProxy(cfg), { resolveAuth: () => ({ username: cfg.username, password: proxyConfigStore.resolvePassword(cfg.id) }) });
   }
   // PHASE-6.3.1 — is a flexible profile currently backing a LIVE Chromium? (guards delete/proxy-change §30)
   function profileInUse(profileId) {
@@ -463,7 +399,6 @@ else {
       }),
       getRunClient: runClientFor,
       applyAgentToClient: (client, agent) => applyBrowserAgent(client, agent, null),
-      testProxy: (ref) => testProxyById(ref),
       closeRun: (runId) => runManager.closeRun(runId),
       getRunInfo: runInfoFor,
       hostSession: ensurePhomSessions(),
@@ -1404,17 +1339,17 @@ else {
     // open path defaults it to the window slot. The window slot (A/B/C) still drives the
     // 2×2 grid placement, but profile identity is resolved from profileKey.
     const pk = (profileKey != null && String(profileKey).trim()) ? String(profileKey).trim() : slot;
-    // Prefer the saved profile's proxy/device; explicit args override.
-    const saved = profileStore.get(pk) || {};
+    // The saved profile (the one profile store) fills what the caller did not pass; an explicit proxyRef — null
+    // included, meaning DIRECT — always wins.
+    const saved = deviceProfilesStore.get(pk) || {};
     const effProxyRef = proxyRef !== undefined ? proxyRef : (saved.proxyRef || null);
     // Proxy is OPTIONAL: no proxyRef => DIRECT. A bound proxyRef must resolve (no silent
     // fallback). `proxyRequired` stays an explicit opt-IN (default optional).
     const gate = resolveLaunchProxy({ proxyRef: effProxyRef || null, proxyRequired: proxyRequired === true }, (ref) => proxyConfigStore && proxyConfigStore.get(ref));
     if (!gate.ok) return gate; // PROXY_CONFIG_NOT_FOUND / DISABLED (bound proxy) — launch blocked; DIRECT is allowed
-    // A selected profile passes its AGENT explicitly; otherwise fall back to the legacy per-slot
-    // agent, then to the default. The persistent user-data-dir is keyed by the profile identity so
-    // each profile keeps its own Chromium data + reopens the SAME identity.
-    const agentNorm = browserAgent.normalizeAgent(agentArg || profileStore.agentFor(pk));
+    // A selected profile passes its AGENT explicitly; otherwise the saved profile's, then the default. The
+    // persistent user-data-dir is keyed by the profile identity so each profile reopens the SAME identity.
+    const agentNorm = browserAgent.normalizeAgent(agentArg || deviceProfilesStore.agentFor(pk));
     const agent = agentNorm.ok ? agentNorm.agent : browserAgent.DEFAULT_AGENT;
     const udKey = (profileId != null && String(profileId).trim()) ? String(profileId).trim() : pk;
     // Chromium sandbox policy for THIS launch (sandbox ON unless the fully-gated dev
@@ -1615,7 +1550,6 @@ else {
     ipcMain.handle('phom:request-channels', guarded(async (_e, cfg) => { ensurePhomSessions(); return phomSessions.requestChannels({ profileId: cfg && cfg.browserId != null ? cfg.browserId : null }); }));
     ipcMain.handle('phom:leave-all', guarded(() => { ensurePhomSessions(); return phomSessions.leaveAllTables(); }));
     ipcMain.handle('phom:session-state', () => (phomSessions ? phomSessions.snapshot() : null));
-    // PHASE-2 — read the monotonic discovery/sync milestone timeline (telemetry for latency inspection).
     // TEST D — record the game client's own frames while the player acts by hand (e.g. clicks a table), then
     // write them to a file (secrets redacted) so the real protocol can be read instead of guessed.
     ipcMain.handle('phom:frames-record-start', (_e, cfg) => {
@@ -1625,11 +1559,6 @@ else {
     ipcMain.handle('phom:frames-record-status', () => ({ ok: true, ...frameRecorder.status() }));
     ipcMain.handle('phom:frames-record-stop', () => stopAndSaveCapture());
     ipcMain.handle('phom:frames-open-folder', (_e, p) => { try { if (p) electronShell.showItemInFolder(String(p)); return { ok: true }; } catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: String(e && e.message || e) } }; } });
-    // PHASE-3 · PART B — observe-only native-JOIN experiment (A→B→C, same stake, no room forcing).
-    // Authorized+licensed only; observes server matchmaking from ps[], never changes production flow.
-    // PHASE-4 — HOST ROOM ANCHOR test (A→room→B/C). Authorized+licensed; observe-only, does not touch
-    // the production discovery flow. A native-joins, is confirmed in ps[], its room is bound, then B/C
-    // join THAT exact room id and are confirmed co-seated.
     // §auto — the Phỏm tool's TỰ ĐỘNG checkbox. ON forms the group (finder = browserId, KEY; the others READY /
     // NOT_READY) unless one exists, then rejoins kicked members and takes another table when one is lost. OFF stops it.
     ipcMain.handle('phom:auto-set', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setAuto(!!(cfg && cfg.on), { creatorId: cfg && cfg.browserId, stake: cfg && cfg.stake != null ? Number(cfg.stake) : null }); }));

@@ -12,7 +12,6 @@ const EventEmitter = require('node:events');
 //   - deps.openProfile(slot,cfg)         -> opens a BrowserRun (custom Chromium)
 //   - deps.getRunClient(runId)           -> that run's OWN CDP client
 //   - deps.applyAgentToClient(client,a)  -> applies that browser's agent (web/mobile UA)
-//   - deps.testProxy(proxyRef)           -> proxy observed-IP tester
 //   - deps.hostSession                   -> HostSessionManager (game orchestration)
 //   - deps.closeRun(runId)               -> teardown one owned run
 //
@@ -32,7 +31,6 @@ class PhomClusterCdpManager extends EventEmitter {
     this._openProfile = deps.openProfile || (async () => ({ ok: false, error: { code: 'PHOM_CLUSTER_NO_OPENER', message: 'no openProfile' } }));
     this._getRunClient = deps.getRunClient || (() => null);
     this._applyAgentToClient = deps.applyAgentToClient || (async () => ({ applied: [], unsupported: [] }));
-    this._testProxy = deps.testProxy || (async () => ({ state: 'NOT_CONFIGURED' }));
     this._closeRun = deps.closeRun || (async () => {});
     this._host = deps.hostSession || null;
     this._runInfo = deps.getRunInfo || (() => null); // (runId) -> { pid, port, userDataDir }
@@ -56,7 +54,6 @@ class PhomClusterCdpManager extends EventEmitter {
     if (this._cluster && !this._cluster.stopped) {
       const openRuns = SLOTS.filter((s) => this._cluster.slots.get(s).profileId).length;
       if (openRuns > 0) {
-        this._cluster.orchestrationStopped = false; // re-arm orchestration on reuse
         this._emit();
         return { ok: true, reused: true, clusterSessionId: this._cluster.clusterSessionId, hostSlot: this._cluster.hostSlot };
       }
@@ -72,12 +69,11 @@ class PhomClusterCdpManager extends EventEmitter {
         gameUrl: p.gameUrl != null ? p.gameUrl : clusterGameUrl,
         label: p.label || `Profile ${s}`,
         proxyRef: p.proxyRef || null, agent: p.agent || null,
-        role, cdpConnected: false, agentApplied: null, proxyState: 'NOT_TESTED',
-        observedIp: null, error: null, lastSeq: -1, seen: new Set() });
+        role, cdpConnected: false, agentApplied: null, error: null, lastSeq: -1 });
     for (const s of SLOTS) slots.set(s, entry(s, bySlot.get(s), s === hostSlot ? 'HOST' : 'FOLLOWER'));
     const reserves = new Map();
     (Array.isArray(config.reserves) ? config.reserves : []).slice(0, RESERVES.length).forEach((p, i) => reserves.set(RESERVES[i], entry(RESERVES[i], p, 'RESERVE')));
-    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, reserves, stopped: false, orchestrationStopped: false };
+    this._cluster = { clusterSessionId: `PHOMCLU-${this._now()}`, clusterProfileId: config.clusterProfileId || null, hostSlot, selectedStake: config.selectedStake != null ? config.selectedStake : null, gameUrl: clusterGameUrl, slots, reserves, stopped: false };
     this._emit();
     return { ok: true, clusterSessionId: this._cluster.clusterSessionId, hostSlot };
   }
@@ -156,28 +152,6 @@ class PhomClusterCdpManager extends EventEmitter {
     return { ok: applied === 3, applied, results };
   }
 
-  // §8 testClusterProxies — fan-out proxy tests (per profile ref).
-  async testClusterProxies() {
-    if (!this._guard()) return { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE', message: 'no cluster' } };
-    const results = [];
-    for (const s of SLOTS) {
-      const slot = this._slot(s);
-      // Proxy optional: a slot with no proxyRef runs DIRECT — it is SKIPPED, never a
-      // test failure (§11).
-      if (!slot.proxyRef) { slot.proxyState = 'DIRECT'; results.push({ slot: s, state: 'DIRECT' }); continue; }
-      let r; try { r = await this._testProxy(slot.proxyRef); } catch (e) { r = { state: 'FAILED', error: { message: safe(e) } }; }
-      slot.proxyState = (r && r.state) || 'FAILED'; slot.observedIp = (r && r.observedIp) || null;
-      results.push({ slot: s, state: slot.proxyState, observedIp: slot.observedIp });
-    }
-    this._emit();
-    const pass = results.filter((r) => r.state === 'PASS').length;
-    const direct = results.filter((r) => r.state === 'DIRECT').length;
-    const failed = results.filter((r) => r.state !== 'PASS' && r.state !== 'DIRECT').length;
-    // ok when every CONFIGURED proxy passed; DIRECT slots are skipped, not failures.
-    return { ok: failed === 0, pass, direct, results };
-  }
-
-
   // §9 event envelope — normalize + validate one per-profile CDP frame. Old cluster /
   // wrong profile / duplicate / late-round events are rejected BEFORE any mutation.
   ingestEvent(profileId, meta = {}) {
@@ -185,11 +159,11 @@ class PhomClusterCdpManager extends EventEmitter {
     const slot = this._slotForRun(profileId);
     if (!slot) return { accepted: false, reason: 'PROFILE_NOT_IN_CLUSTER' };
     if (meta.clusterSessionId && meta.clusterSessionId !== this._cluster.clusterSessionId) return { accepted: false, reason: 'STALE_CLUSTER_SESSION' };
+    // seq is monotonic per capture: a frame at or below the last one seen is a duplicate or a late one. (3.2: the
+    // per-slot `seen` Set that kept EVERY frame key — ~15/s per browser, never pruned — is gone; this check alone
+    // already refused every duplicate.)
     const seq = Number.isFinite(meta.seq) ? meta.seq : null;
-    const key = meta.eventId || (seq != null ? `${slot.slot}:${seq}` : null);
-    if (key && slot.seen.has(key)) return { accepted: false, reason: 'DUPLICATE' };
-    if (seq != null && seq <= slot.lastSeq) return { accepted: false, reason: 'OUT_OF_ORDER' };
-    if (key) slot.seen.add(key);
+    if (seq != null && seq <= slot.lastSeq) return { accepted: false, reason: seq === slot.lastSeq ? 'DUPLICATE' : 'OUT_OF_ORDER' };
     if (seq != null) slot.lastSeq = seq;
     const envelope = {
       clusterSessionId: this._cluster.clusterSessionId, profileId, slot: slot.slot,
@@ -203,24 +177,6 @@ class PhomClusterCdpManager extends EventEmitter {
     // ~15 frames/s per browser). The Phỏm state that a frame does change is pushed by the host session, throttled.
     return { accepted: true, envelope, classified: cls };
   }
-
-  restoreClusterLayout() { return this._guard() ? { ok: true } : { ok: false, error: { code: 'PHOM_CLUSTER_NOT_ACTIVE' } }; }
-
-  async leaveCluster() { if (this._host && this._host.active()) { try { await this._host.leaveAllTables(); } catch { /* best effort */ } } this._emit(); return { ok: true }; }
-
-  // ORCHESTRATION-ONLY stop (DỪNG): cancels the HOST automation (search / join / ready /
-  // rejoin timers + subscriptions) and marks orchestration stopped. It NEVER touches the
-  // browsers — no closeRun, no kill, no BrowserRun teardown. Browser lifetime is a fully
-  // independent subsystem (§4/§5/§12). Idempotent.
-  stopOrchestration() {
-    if (!this._cluster) return { ok: true, orchestrationStopped: true, browsersClosed: false };
-    try { if (this._host && this._host.stop) this._host.stop(); } catch { /* ignore */ }
-    this._cluster.orchestrationStopped = true;
-    this._emit();
-    return { ok: true, orchestrationStopped: true, browsersClosed: false };
-  }
-
-  orchestrationStopped() { return !!(this._cluster && this._cluster.orchestrationStopped); }
 
   // §10 — ONE run's Chrome exited for real (routed here from the launcher's classified
   // exit). Mark ONLY that slot closed and record the HONEST reason — never blanket
@@ -254,7 +210,7 @@ class PhomClusterCdpManager extends EventEmitter {
     slot.proxyRef = p.proxyRef || null;
     slot.agent = p.agent || null;
     if (p.gameUrl != null) slot.gameUrl = p.gameUrl;
-    slot.proxyState = 'NOT_TESTED'; slot.observedIp = null; slot.agentApplied = null; slot.error = null;
+    slot.agentApplied = null; slot.error = null;
     this._emit();
     return { ok: true, slot: s, browserProfileId: slot.browserProfileId };
   }
@@ -279,7 +235,7 @@ class PhomClusterCdpManager extends EventEmitter {
     if (!SLOTS.includes(s) || !this._cluster.reserves.has(r)) return { ok: false, error: { code: 'PHOM_SLOT_UNKNOWN', message: 'unknown slot' } };
     const a = this._slot(s), b = this._slot(r);
     if (!b.profileId || b.browserClosed) return { ok: false, error: { code: 'PHOM_RESERVE_NOT_OPEN', message: 'Trình duyệt dự bị này đã tắt.' } };
-    const KEYS = ['profileId', 'browserProfileId', 'label', 'proxyRef', 'agent', 'gameUrl', 'browserClosed', 'exitReason', 'cdpConnected', 'agentApplied', 'proxyState', 'observedIp', 'error', 'lastSeq', 'seen'];
+    const KEYS = ['profileId', 'browserProfileId', 'label', 'proxyRef', 'agent', 'gameUrl', 'browserClosed', 'exitReason', 'cdpConnected', 'agentApplied', 'error', 'lastSeq'];
     for (const k of KEYS) { const t = a[k]; a[k] = b[k]; b[k] = t; }
     this._emit();
     return { ok: true, slot: s, reserve: r, playingRun: a.profileId, benchedRun: b.profileId && !b.browserClosed ? b.profileId : null };
@@ -319,7 +275,6 @@ class PhomClusterCdpManager extends EventEmitter {
         exitReason: slot.browserClosed ? (slot.exitReason || 'UNKNOWN_EXIT') : null,
         pid: info.pid != null ? info.pid : null, cdpPort: info.port != null ? info.port : null, userDataDir: info.userDataDir || null,
         cdpConnected: slot.cdpConnected, agentApplied: slot.agentApplied ? !!slot.agentApplied.ok : false,
-        proxyState: slot.proxyState, observedIp: slot.observedIp,
         agent: slot.agent || null,
         error: slot.error || null,
       };
@@ -329,10 +284,7 @@ class PhomClusterCdpManager extends EventEmitter {
     return {
       clusterSessionId: c.clusterSessionId, clusterProfileId: c.clusterProfileId || null, stopped: c.stopped,
       reserves,
-      // Two INDEPENDENT subsystems (§12): the browser cluster (OPEN while runs exist) and
-      // the orchestration (stopped by DỪNG without closing browsers).
       browserClusterState: c.stopped ? 'CLOSED' : 'OPEN',
-      orchestrationStopped: !!c.orchestrationStopped,
       openBrowserCount: SLOTS.filter((s) => c.slots.get(s).profileId && !c.slots.get(s).browserClosed).length,
       closedByUserCount: SLOTS.filter((s) => c.slots.get(s).browserClosed).length,
       hostProfileId: c.slots.get(c.hostSlot).profileId, hostSlot: c.hostSlot,
@@ -340,7 +292,6 @@ class PhomClusterCdpManager extends EventEmitter {
       profiles,
       connectedCount: SLOTS.filter((s) => c.slots.get(s).cdpConnected).length,
       agentAppliedCount: SLOTS.filter((s) => c.slots.get(s).agentApplied && c.slots.get(s).agentApplied.ok).length,
-      proxyPassCount: SLOTS.filter((s) => c.slots.get(s).proxyState === 'PASS').length,
       errors: SLOTS.map((s) => c.slots.get(s).error).filter(Boolean),
     };
   }
