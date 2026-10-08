@@ -26,9 +26,12 @@ const VERSION = 2;
 const MAX_NAME = 60;
 
 function genId() { return 'prof-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8); }
+// What the game shows for an account that has no display name ("_undefined", seen live 2026-10-09 on a fresh account
+// with "Hãy kích hoạt SĐT") is not a name: it never becomes a profile's account (nor its folder / Chromium name).
+const PLACEHOLDER_NAME = /^_?(undefined|null|unknown|user_unknown|none)$/i;
 function cleanName(name) {
   const s = String(name == null ? '' : name).replace(/[\u0000-\u001f]/g, '').trim();
-  return s ? s.slice(0, MAX_NAME) : null;
+  return s && !PLACEHOLDER_NAME.test(s) ? s.slice(0, MAX_NAME) : null;
 }
 function readJson(file) {
   try { return { json: JSON.parse(fs.readFileSync(file, 'utf8')) }; } catch (e) { return e && e.code === 'ENOENT' ? { missing: true } : { broken: true, error: e }; }

@@ -93,6 +93,18 @@ test('profile store: a broken file is never overwritten (and nothing is migrated
   assert.equal(existsSync(join(d, 'account-names.json')), true, 'the legacy files stay too');
 });
 
+test('profile store: the game\'s placeholder for an account without a name ("_undefined") is never kept as the account', () => {
+  const d = legacyProfileDir();
+  const s = openStore(d);
+  for (const junk of ['_undefined', 'undefined', 'null', 'USER_UNKNOWN', '  ']) assert.equal(s.setAccount('prof-b', junk), false, junk);
+  assert.equal(s.accountOf('prof-b'), 'baycao1003', 'the real name stays');
+  // one saved by an older build reads as no name
+  const raw = json(join(d, 'phom-device-profiles.json'));
+  raw.profiles.find((p) => p.id === 'prof-a').account = '_undefined';
+  writeFileSync(join(d, 'phom-device-profiles.json'), JSON.stringify(raw));
+  assert.equal(openStore(d).accountOf('prof-a'), null);
+});
+
 test('profile store: a fresh install writes nothing until something is saved', () => {
   const d = dir();
   const s = openStore(d);
