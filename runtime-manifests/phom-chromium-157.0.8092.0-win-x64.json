@@ -1,12 +1,12 @@
 {
   "schemaVersion": 1,
   "runtimeId": "phom-chromium",
-  "chromiumVersion": "149.0.7827.55",
+  "chromiumVersion": "157.0.8092.0",
   "platform": "win32",
   "architecture": "x64",
-  "archiveName": "phom-chromium-149.0.7827.55-win-x64.zip",
-  "archiveSha256": "sha256:b949175b946b8de3b36b8a286b92aacde57eba1558a78bc4ce3c681798bbc63e",
-  "archiveSize": 231860335,
+  "archiveName": "phom-chromium-157.0.8092.0-win-x64.zip",
+  "archiveSha256": "sha256:53cfc99aaee92344353669132f92447c5cea63119b92a82b2089b9916cfa9188",
+  "archiveSize": 206156869,
   "executableRelativePath": "chrome.exe",
   "requiredFiles": [
     "chrome.exe",
@@ -16,15 +16,14 @@
     "resources.pak",
     "chrome_100_percent.pak",
     "chrome_200_percent.pak",
-    "v8_context_snapshot.bin",
-    "snapshot_blob.bin"
+    "v8_context_snapshot.bin"
   ],
   "requiredDirectories": [
     "locales"
   ],
   "fileChecksums": {
-    "chrome.exe": "sha256:62f018964e7aab9a774a8aacc479c4fa123a87f13bf062d60a17a156a8fbfc96",
-    "chrome.dll": "sha256:04c3e31313fe6d7443f12fba5ce0c46616a73ca03fc211a968525d5423d277f4"
+    "chrome.exe": "sha256:65db1da7d1cb0cded7839663be484f62e3320347487ce658b76a58b939ae5384",
+    "chrome.dll": "sha256:912dcdb71a37d5de1fe1314ac096de9d84eb8993c5250fb4b00d6bb5eb5f9363"
   },
   "download": {
     "provider": "NOT_CONFIGURED",

@@ -97,14 +97,16 @@ test('tab / taskbar title: "[account] <page title>", kept when the game changes 
   assert.equal(page.document.title, '[vietanhcoo5365] Phỏm');
 });
 
-test('logo: one icon for the tool (exe + installer) and the bundled Chromium (branded copy staged BEFORE packaging → signed after)', () => {
+// 3.1.31 (user 2026-10-08 "không gắn logo, chỉ cần dùng được proxy và quản lý riêng"): the tool keeps its logo; the
+// bundled Chromium ships exactly as built — the files the runtime manifest was made from.
+test('logo: the tool (exe + installer) has the logo; the bundled Chromium ships unmodified from runtime/phom-chromium', () => {
   const cfg = JSON.parse(read('electron-builder.phom.json'));
   assert.equal(cfg.win.icon, 'build/phom-icon.ico');
   assert.equal(cfg.nsis.installerIcon, 'build/phom-icon.ico');
-  assert.equal(cfg.beforePack, 'scripts/phom-brand/before-pack.cjs');
-  assert.equal(cfg.afterPack, undefined, 'never after: chrome.exe is signed while the resources are copied');
-  assert.equal(cfg.extraResources[0].from, '.phom-brand/phom-chromium');
-  assert.ok(read('.gitignore').split(/\r?\n/).includes('.phom-brand/'), 'the staged copy is never committed');
+  assert.equal(cfg.beforePack, undefined, 'no branding step');
+  assert.equal(cfg.afterPack, undefined);
+  assert.equal(cfg.extraResources[0].from, 'runtime/phom-chromium');
+  assert.ok(read('.gitignore').split(/\r?\n/).includes('.phom-brand/'), 'a staged copy (brand:phom, still available) is never committed');
   const ico = readFileSync(new URL('build/phom-icon.ico', root));
   assert.equal(ico.readUInt16LE(2), 1, 'an icon file');
   const sizes = []; for (let k = 0; k < ico.readUInt16LE(4); k++) sizes.push(ico[6 + 16 * k] || 256);
@@ -124,16 +126,15 @@ function fakeRuntime(dir, exeBody = 'EXE') {
   writeFileSync(join(dir, 'runtime-manifest.json'), JSON.stringify(rt.generateManifest(dir).manifest));
   return rt;
 }
-test('runtime: dev takes the branded copy only when it passes the launch check; else (or STOCK=1) the stock runtime', () => {
+test('runtime: dev uses runtime/phom-chromium even when a branded copy is staged; packaged uses resources', () => {
   const proj = mkdtempSync(join(tmpdir(), 'proj-'));
   const stock = join(proj, 'runtime', 'phom-chromium'); const branded = join(proj, '.phom-brand', 'phom-chromium');
   mkdirSync(stock, { recursive: true }); mkdirSync(branded, { recursive: true });
   const rt = fakeRuntime(stock); fakeRuntime(branded, 'BRANDED-EXE');
-  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), branded);
-  assert.equal(rt.resolveRuntimeRoot({ env: { PHOM_CHROMIUM_STOCK: '1' }, projectRoot: proj }), stock);
-  writeFileSync(join(branded, 'chrome.exe'), 'CHANGED-AFTER-MANIFEST');      // the 3.1.25 situation
-  assert.equal(rt.validateRuntime(branded).error.code, 'PHOM_CHROMIUM_CHECKSUM_MISMATCH');
-  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), stock, 'a copy that would not launch is never used');
+  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), stock, 'dev runs what the installer ships');
+  writeFileSync(join(stock, 'chrome.exe'), 'CHANGED-AFTER-MANIFEST');        // the 3.1.25 situation is still caught
+  assert.equal(rt.validateRuntime(stock).error.code, 'PHOM_CHROMIUM_CHECKSUM_MISMATCH');
+  assert.equal(rt.resolveRuntimeRoot({ env: { PHOM_CHROMIUM_PATH: 'X:/c' }, projectRoot: proj }), 'X:/c');
   assert.equal(rt.resolveRuntimeRoot({ env: {}, isPackaged: true, resourcesPath: 'R' }).endsWith('phom-chromium'), true);
 });
 test('staging: new manifest for the branded files + the launch check, before anything is packaged; brand:phom for dev', () => {

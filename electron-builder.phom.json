@@ -30,7 +30,7 @@
   ],
   "extraResources": [
     {
-      "from": ".phom-brand/phom-chromium",
+      "from": "runtime/phom-chromium",
       "to": "phom-chromium",
       "filter": [
         "**/*"
@@ -39,7 +39,7 @@
   ],
   "extraMetadata": {
     "main": "desktop/phom-main.cjs",
-    "version": "3.1.30"
+    "version": "3.1.31"
   },
   "artifactName": "Phom-QA Setup ${version}.${ext}",
   "npmRebuild": false,
@@ -62,6 +62,5 @@
     "installerIcon": "build/phom-icon.ico",
     "uninstallerIcon": "build/phom-icon.ico",
     "installerHeaderIcon": "build/phom-icon.ico"
-  },
-  "beforePack": "scripts/phom-brand/before-pack.cjs"
+  }
 }

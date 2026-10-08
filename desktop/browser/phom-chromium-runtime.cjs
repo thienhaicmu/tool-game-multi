@@ -6,15 +6,16 @@ const crypto = require('node:crypto');
 const { spawnSync } = require('node:child_process');
 
 // ---------------------------------------------------------------------------
-// Pinned custom Chromium runtime resolution + validation (§4/§6). The Phỏm QA app
-// launches a project-owned Chromium build (v149.0.7827.55) — NEVER the system
-// Chrome. This module resolves the runtime root (dev vs packaged), validates the
+// Pinned Chromium runtime resolution + validation (§4/§6). The Phỏm QA app launches
+// the bundled Chromium — since 3.1.31 STOCK Chromium as Google builds it (snapshot
+// Win_x64 r1713742 = v157.0.8092.0, no project patches, no logo; user 2026-10-08) —
+// unless the user picks Google Chrome. This module resolves the runtime root (dev vs packaged), validates the
 // bundle is complete + the pinned version/arch, and checks the executable checksum
 // before every launch. The binaries live OUTSIDE Git (runtime/phom-chromium/ is
 // gitignored); a tracked runtime-manifest.json carries the version + checksums.
 // ---------------------------------------------------------------------------
 
-const EXPECTED_VERSION = '149.0.7827.55';
+const EXPECTED_VERSION = '157.0.8092.0';
 const ARCHITECTURE = 'x64';
 const EXECUTABLE = 'chrome.exe';
 
@@ -22,16 +23,17 @@ const EXECUTABLE = 'chrome.exe';
 const REQUIRED_FILES = Object.freeze([
   'chrome.exe', 'chrome.dll', 'chrome_elf.dll',
   'icudtl.dat', 'resources.pak', 'chrome_100_percent.pak', 'chrome_200_percent.pak',
-  'v8_context_snapshot.bin', 'snapshot_blob.bin',
+  'v8_context_snapshot.bin', // (snapshot_blob.bin is gone from current Chromium — 157 ships without it)
 ]);
 const REQUIRED_DIRECTORIES = Object.freeze(['locales']);
 
 function err(code, message, extra = {}) { return { ok: false, error: { code, message, ...extra } }; }
 function sha256(file) { return 'sha256:' + crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex'); }
 
-// Resolve the runtime ROOT. Dev: PHOM_CHROMIUM_PATH override, else the BRANDED copy the packaging staged
-// (.phom-brand/phom-chromium — `npm run brand:phom` or any dist:phom) when it passes the launch check, else the
-// project's runtime/phom-chromium. Packaged: <resources>/phom-chromium. No system-Chrome fallback.
+// Resolve the runtime ROOT. Dev: PHOM_CHROMIUM_PATH override, else the project's runtime/phom-chromium.
+// Packaged: <resources>/phom-chromium. No system-Chrome fallback.
+// Since 3.1.31 the bundled Chromium ships AS BUILT — no logo patched into chrome.exe/chrome.dll (user 2026-10-08: "không
+// gắn logo, chỉ cần dùng được proxy và quản lý riêng"); proxy and profiles are the tool's job, not the browser's.
 function resolveRuntimeRoot({ env = process.env, isPackaged = false, resourcesPath = null, projectRoot = null } = {}) {
   if (env.PHOM_CHROMIUM_PATH) return env.PHOM_CHROMIUM_PATH;
   if (isPackaged) {
@@ -39,8 +41,6 @@ function resolveRuntimeRoot({ env = process.env, isPackaged = false, resourcesPa
     return path.join(resourcesPath, 'phom-chromium');
   }
   const base = projectRoot || path.join(__dirname, '..', '..');
-  const branded = path.join(base, '.phom-brand', 'phom-chromium');
-  if (env.PHOM_CHROMIUM_STOCK !== '1' && fs.existsSync(path.join(branded, 'runtime-manifest.json')) && validateRuntime(branded).ok) return branded;
   return path.join(base, 'runtime', 'phom-chromium');
 }
 
