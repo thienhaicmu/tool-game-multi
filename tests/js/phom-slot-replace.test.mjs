@@ -184,7 +184,7 @@ test('wiring: swap IPC moves the windows (reserve → behind the tool) and swaps
   assert.match(main, /ipcMain\.handle\('phom:slot-swap'/);
   assert.match(main, /async function swapSlot[\s\S]*?phomSessions\.swapRuns\(oldRun, res\.playingRun\)[\s\S]*?windows\(\)\.move\(res\.playingRun, windows\(\)\.rectFor\(s\)\)[\s\S]*?windows\(\)\.move\(res\.benchedRun, windows\(\)\.rectFor\(r\)\)[\s\S]*?shell\.moveTop\(\)/);
   assert.match(read('desktop/phom-preload.cjs'), /swapSlot: \(slot, reserve\) => ipcRenderer\.invoke\('phom:slot-swap'/);
-  const ui = read('ui-phom/phom-qa.js');
+  const ui = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n');
   assert.match(ui, /function reserveCard\(r\)[\s\S]*?onclick: \(\) => onSwapSlot\(slot, r\.slot\)/, 'a reserve card puts itself into P1/P2/P3 (→1/→2/→3)');
   assert.match(ui, /api\.swapSlot\(slot, reserve\)/);
 });
@@ -204,7 +204,7 @@ test('a PLAYING browser closed from its own window is replaced by the first open
   assert.match(main, /async function closeBrowserRun[\s\S]*?toolClosingRuns\.add\(rid\);[\s\S]*?runManager\.closeRun\(rid\)/);
   assert.match(main, /const RESERVE_SLOTS = \['D', 'E'\]/);
   // the tool window follows: cards re-bound, the notice shown
-  const ui = read('ui-phom/phom-qa.js');
+  const ui = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n');
   assert.match(ui, /\/\^SLOT_AUTO_\/\.test\(n\.event\)[\s\S]*?bindSlotsFromCluster\(\); syncSelectionFromCluster\(\);/);
   assert.match(ui, /case 'SLOT_AUTO_REPLACED':/);
 });
@@ -215,7 +215,7 @@ test('wiring: IPC phom:slot-replace → replaceSlot (close, reassign, open, repl
   assert.match(main, /phomCluster\.reassignSlot\(s,/);
   assert.match(main, /phomSessions\.replaceRun\(oldRun, newRun\)/);
   assert.match(read('desktop/phom-preload.cjs'), /replaceSlot: \(slot, profileId\) => ipcRenderer\.invoke\('phom:slot-replace'/);
-  const ui = read('ui-phom/phom-qa.js');
+  const ui = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n');
   assert.match(ui, /else if \(s\.chromiumClosed\) extra = closedSlotActions\(slot\)/);
   assert.match(ui, /function closedSlotActions[\s\S]*?onSwapSlot\(slot, r\.slot\)[\s\S]*?'Mở lại'[\s\S]*?'Profile khác…'/, 'closed slot: ←P4/←P5, Mở lại, another profile');
   assert.match(ui, /api\.replaceSlot\(slot,/);
@@ -274,7 +274,7 @@ test('TỰ ĐỘNG only ever works with the playing accounts', () => {
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /function reserveViewFor[\s\S]*?reserve: true, reserveLabel: label/);
   assert.match(main, /\.\.\.reserveViewFor\(runId\)/);
-  assert.match(read('ui-phom/phom-qa.js'), /for \(const r of openReserves\(\)\) if \(r\.profileId && !runIds\.includes\(r\.profileId\)\) runIds\.push\(r\.profileId\)/);
+  assert.match(['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n'), /for \(const r of openReserves\(\)\) if \(r\.profileId && !runIds\.includes\(r\.profileId\)\) runIds\.push\(r\.profileId\)/);
 });
 
 test('with a reserve open the tool stays above it (P4/P5 open where the tool is); none → a normal window again', () => {
@@ -320,5 +320,5 @@ test('N4: the cluster reopens ONLY that closed reserve; main re-adds it to the s
   assert.equal(mgr.getClusterSnapshot().reserves.D.browserState, 'OPEN');
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /async function reopenReserve[\s\S]*?phomCluster\.reopenReserve\(r\)[\s\S]*?phomSessions\.addRun\(rs\.profileId\)/);
-  assert.match(read('ui-phom/phom-qa.js'), /onclick: \(\) => onReopenReserve\(r\.slot\)/);
+  assert.match(['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n'), /onclick: \(\) => onReopenReserve\(r\.slot\)/);
 });

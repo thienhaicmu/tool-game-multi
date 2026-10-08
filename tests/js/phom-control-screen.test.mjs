@@ -10,7 +10,7 @@ import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
-const js = read('ui-phom/phom-qa.js');
+const js = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n');
 const css = read('ui-phom/phom-qa.css');
 const preload = read('desktop/phom-preload.cjs');
 const main = read('desktop/phom-main.cjs');
@@ -119,7 +119,7 @@ test('group events reach the screen as one plain-Vietnamese line (never a raw co
   const t = fn('noticeText');
   for (const ev of ['KEY_SEATED', 'TABLE_FOUND', 'JOINED', 'READY_SENT', 'FOURTH_READY', 'KICKED', 'TABLE_LOST', 'GROUP_DISSOLVED']) assert.ok(t.includes(ev), ev);
   // the 4th player readied: three bell strikes in the tool window, then the line says who does what
-  assert.match(read('ui-phom/phom-qa.js'), /if \(n && n\.event === 'FOURTH_READY'\) ringBell\(4\);/); // 4 rings (user 2026-10-05)
+  assert.match(['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n'), /if \(n && n\.event === 'FOURTH_READY'\) ringBell\(4\);/); // 4 rings (user 2026-10-05)
   assert.match(fn('ringBell'), /createOscillator/);
   assert.match(t, /default: return '';/); // an unknown event is never shown as a code
 });

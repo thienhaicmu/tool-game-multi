@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
-const js = read('ui-phom/phom-qa.js');
+const js = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n');
 const css = read('ui-phom/phom-qa.css');
 const sel = read('ui-phom/profile-selection.js');
 function fn(name) { const s = js.indexOf('function ' + name + '('); if (s < 0) return ''; const rest = js.slice(s + 1); const m = rest.indexOf('\n  function '); return rest.slice(0, m > 0 ? m : 4000); }

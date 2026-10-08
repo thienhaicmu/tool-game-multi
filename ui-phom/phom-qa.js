@@ -50,47 +50,10 @@
   const manualEntering = {};    // runId → VÀO GAME in flight
   const manualEnterError = {};  // runId → why VÀO GAME failed (retryable)
   const manualEnterTimers = {};
-
-  // ---------- DOM helpers ----------
-  function el(tag, attrs, ...kids) {
-    const n = document.createElement(tag);
-    if (attrs) for (const k of Object.keys(attrs)) {
-      if (k === 'class') n.className = attrs[k];
-      else if (k.startsWith('on') && typeof attrs[k] === 'function') n.addEventListener(k.slice(2), attrs[k]);
-      else if (attrs[k] != null && attrs[k] !== false) n.setAttribute(k, attrs[k]);
-    }
-    for (const kid of kids) { if (kid == null || kid === false) continue; n.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid); }
-    return n;
-  }
-  const $ = (id) => document.getElementById(id);
-  const ICON_PATHS = {
-    refresh: '<path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/><path d="M3 21v-5h5"/>',
-    power: '<path d="M12 2v10"/><path d="M18.4 6.6a9 9 0 1 1-12.8 0"/>',
-    edit: '<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>',
-    trash: '<path d="M3 6h18"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>',
-    plus: '<path d="M12 5v14"/><path d="M5 12h14"/>',
-    play: '<path d="m7 4 13 8-13 8Z"/>',
-    monitor: '<rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8"/><path d="M12 17v4"/>',
-    copy: '<rect x="8" y="8" width="14" height="14" rx="2"/><path d="M4 16a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2"/>',
-    rec: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3" fill="currentColor"/>',
-    layout: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M12 3v18"/><path d="M3 12h18"/>',
-    folder: '<path d="M3 6a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/>',
-    grid: '<rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/>',
-  };
-  function icon(name) {
-    const span = document.createElement('span');
-    span.innerHTML = `<svg class="lucide" viewBox="0 0 24 24" aria-hidden="true">${ICON_PATHS[name] || ''}</svg>`;
-    return span.firstChild;
-  }
-  // icon-only button — always with a tooltip + aria-label
-  function iconButton(name, title, onClick, variant) {
-    return el('button', { class: 'icon-btn' + (variant ? ' ' + variant : ''), title, 'aria-label': title, onclick: onClick }, icon(name));
-  }
-  const playerLabel = (b) => { const m = /^(?:B|P|Player\s+)(\d+)$/i.exec(String(b == null ? '' : b)); return m ? 'P' + m[1] : String(b == null ? '' : b); };
-  const money = (n) => (n == null || !Number.isFinite(Number(n)) ? '' : Number(n).toLocaleString('vi-VN'));
-  function errText(res) { const e = res && res.error; return e ? `${e.code}: ${e.message}` : 'Thao tác thất bại.'; }
-  function note(msg, warn) { const n = $('phq-note'); if (n) { n.textContent = msg || ''; n.className = 'note ' + (warn ? 'warn' : 'ok'); } }
-  function noteText() { const n = $('phq-note'); return n ? n.textContent : ''; }
+  // the pure parts, loaded before this file (ui-kit.js · ui-cards.js · ui-notices.js)
+  const { el, $, icon, iconButton, playerLabel, money, errText, note, noteText, openDialog, ringBell } = window.PhomUI;
+  const { remainingPanel } = window.PhomUI;
+  const { ROLE_VIEW, noticeText: noticeLine } = window.PhomUI;
 
   // ---------- license ----------
   async function boot() {
@@ -225,75 +188,13 @@
       coSeat && coSeat.result, coSeat && coSeat.seatedCount, sharedRid, browsers, cards, slots, remainingCount(), noteText()].join('|');
   }
 
-  // ---------- group notices (docs/phom-kich-ban.md) — one plain-Vietnamese line, never a raw code ----------
-  const ROLE_VIEW = { KEY: ['KEY', 'role-key', 'Acc Dò Key — chủ bàn, KHÔNG tự bấm Bắt đầu'], READY: ['SẴN SÀNG', 'role-ready', 'Vào bàn trước → luôn sẵn sàng'], NOT_READY: ['CHƯA SS', 'role-wait', 'Vào bàn sau → không sẵn sàng, tự ReJoin'] };
-  function roleLabel(role) { const v = ROLE_VIEW[role]; return v ? v[0] : role; }
   function playerLabelOf(runId) {
     const b = runId != null ? manualBrowserById(runId) : null;
     if (b && b.browserIndex) return 'P' + b.browserIndex;
     const i = SLOTS.findIndex((s) => runId != null && String(assign[s].runId) === String(runId)); // before login the slot still knows
     return i >= 0 ? 'P' + (i + 1) : 'Một acc';
   }
-  function noticeText(n) {
-    if (!n || !n.event) return '';
-    const who = playerLabelOf(n.id);
-    switch (n.event) {
-      case 'KEY_SEATED': return who + ' là KEY (chủ bàn) — các acc khác bấm Tạo / Vào.';
-      case 'TABLE_FOUND': return 'Số bàn ' + n.rid + ' — đã điền vào ô SS của mọi trình duyệt.';
-      case 'READY_SENT': return who + ' đã sẵn sàng.';
-      case 'FOURTH_READY': return '🔔 Người thứ 4' + (n.name ? ' (' + n.name + ')' : '') + ' đã sẵn sàng — tool tự cho ' + (n.notReadyId ? playerLabelOf(n.notReadyId) + ' sẵn sàng và ' : '') + playerLabelOf(n.keyId) + ' (KEY) bắt đầu ván.';
-      case 'FULL_READY': return 'Bàn đủ 4 người — ' + who + ' đã tự sẵn sàng.';
-      case 'ROUND_START_SENT': return who + ' (KEY) đã bắt đầu ván.';
-      case 'SCAN_FAILED': return who + ' chưa dò ra bàn KEY: ' + errText({ error: n.error }) + '.';
-      case 'GROUP_FORMED': return 'Cả nhóm đã vào bàn ' + n.rid + '.';
-      case 'JOINED': return who + (n.rejoin ? ' đã vào lại bàn' : ' đã vào bàn') +(n.role ? ' · ' + roleLabel(n.role) : '') + '.';
-      case 'JOIN_FAILED': return who + ' vào bàn không được: ' + errText({ error: n.error }) + '.';
-      case 'FIND_FAILED': return 'Tìm bàn không được: ' + errText({ error: n.error }) + '.';
-      case 'LEAVE_FAILED': return who + ' chưa rời được bàn: ' + errText({ error: n.error }) + '.';
-      case 'KICKED': return who + ' bị đá khỏi bàn' + (n.message ? ' (' + n.message + ')' : '') + (n.auto ? ' — đang tự vào lại…' : ' — bấm ReJoin để vào lại.');
-      case 'TABLE_LOST': return 'Bàn ' + n.rid + ' không còn' + (n.auto ? ' — đang dò bàn khác…' : ' — bấm Dò Key để vào bàn khác.');
-      case 'REGROUP': return 'Chủ bàn ' + n.rid + ' không còn là acc của mình — cả nhóm rời bàn, đang dò bàn khác…';
-      case 'RULE_BROKEN_OUT': return 'Chủ bàn ' + n.rid + ' không còn là acc của mình — cả nhóm đã rời bàn. Bấm Dò Key để tìm bàn mới.';
-      case 'KEY_CHANGED': return 'KEY mất bàn — ' + who + ' thành chủ bàn, là KEY mới (giữ bàn ' + n.rid + ').';
-      case 'NOT_READY_RESET': return (n.reason === 'SS_LEFT' ? 'Acc SẴN SÀNG rời bàn' : 'Người lạ rời bàn') + ' — acc CHƯA SS vào lại để về chưa sẵn sàng.';
-      case 'LOOP_GUARD': return n.what === 'REGROUP'
-        ? 'Đã lập lại nhóm ' + n.max + ' lần trong ' + Math.round(n.windowSec / 60) + ' phút (chủ bàn toàn người lạ) — TỰ ĐỘNG đã tắt để không lặp mãi.'
-        : (n.id ? playerLabelOf(n.id) + ': ' : '') + (n.what === 'SEAT_FREE' ? 'đã thử vào lại bàn ' : 'đã rời rồi vào lại bàn ') + n.max + ' lần trong ' + n.windowSec + ' giây — tool tạm dừng việc này để không lặp mãi.';
-      case 'BROWSER_MEMORY_RUNAWAY': return 'Trình duyệt ' + (n.slot ? ({ A: 'P1', B: 'P2', C: 'P3', D: 'P4', E: 'P5' }[n.slot] || n.slot) + ' ' : '') + 'dùng ' + Math.round((n.mb || 0) / 1024 * 10) / 10 + ' GB RAM — tool đã đóng nó để máy không bị đơ. Mở lại trình duyệt đó.';
-      case 'GROUP_DISSOLVED': return n.reason === 'KEY_REPLACED' ? 'Acc KEY đã được thay — nhóm bị hủy, bấm Dò Key để lập bàn mới.' : (n.reason === 'KEY_KICKED' || n.reason === 'HOST_CHANGED') ? 'Nhóm đã rời bàn ' + n.rid + ' (chủ bàn không còn là acc của mình) — bấm Dò Key để tìm bàn mới.' : 'Đã thoát bàn tất cả.';
-      case 'MEMBER_REPLACED': return who + ' thay acc cũ, nhận vai ' + roleLabel(n.role) + ' — vào game xong sẽ tự vào bàn' + (n.rid != null ? ' ' + n.rid : '') + '.';
-      case 'REPLACE_TIMEOUT': return who + ' chưa vào game sau 2 phút — đăng nhập rồi bấm Tạo / Vào.';
-      case 'SLOT_AUTO_REPLACED': return 'Trình duyệt P' + (SLOTS.indexOf(n.slot) + 1) + ' bị tắt — đã tự thay bằng ' + (n.label || 'trình duyệt dự bị') + '.';
-      case 'SLOT_AUTO_REPLACE_FAILED': return 'Trình duyệt P' + (SLOTS.indexOf(n.slot) + 1) + ' bị tắt — chưa thay được bằng dự bị: ' + errText({ error: n.error }) + '.';
-      case 'AUTO_OFF': return 'Đã tắt tự động.';
-      default: return '';
-    }
-  }
-  // 🔔 the 4th player is ready: three bell strikes in the tool window (WebAudio, nothing to ship)
-  function ringBell(times = 4) {
-    try {
-      const AC = window.AudioContext || window.webkitAudioContext; if (!AC) return;
-      const ctx = ringBell.ctx || (ringBell.ctx = new AC());
-      if (ctx.state === 'suspended') ctx.resume().catch(() => {});
-      // A ringing bell (user 2026-10-05: "vang vang"): the inharmonic partials of a real bell, each decaying on its
-      // own (the low hum lasts longest), a short echo for the ring, and a compressor so it is loud but never clips.
-      const out = ctx.createDynamicsCompressor(); out.threshold.value = -14; out.ratio.value = 4; out.connect(ctx.destination);
-      const echo = ctx.createDelay(1); echo.delayTime.value = 0.22;
-      const fb = ctx.createGain(); fb.gain.value = 0.32;
-      echo.connect(fb); fb.connect(echo); echo.connect(out);
-      const BASE = 660;
-      const PARTIALS = [[0.5, 0.30, 2.8], [1, 0.42, 2.4], [1.19, 0.20, 1.8], [1.56, 0.16, 1.4], [2, 0.22, 1.2], [2.74, 0.10, 0.9], [3.76, 0.06, 0.7]];
-      for (let i = 0; i < times; i++) {
-        const t = ctx.currentTime + i * 0.85;
-        for (const [ratio, g, dur] of PARTIALS) {
-          const o = ctx.createOscillator(); const v = ctx.createGain();
-          o.type = 'sine'; o.frequency.value = BASE * ratio;
-          v.gain.setValueAtTime(0.0001, t); v.gain.exponentialRampToValueAtTime(g, t + 0.008); v.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-          o.connect(v); v.connect(out); v.connect(echo); o.start(t); o.stop(t + dur + 0.05);
-        }
-      }
-    } catch { /* no sound device — the notice still shows */ }
-  }
+  const noticeText = (n) => noticeLine(n, playerLabelOf);
 
   // ================= PROFILE tab =================
   function renderSetup(r) {
@@ -452,20 +353,6 @@
   async function refreshBrowserRuntime() { try { const r = await api.browserRuntimeGet(); if (r && r.ok) browserRuntimeInfo = r; } catch { /* keep last */ } }
 
   // a modal card (Esc / click outside closes)
-  function openDialog(title, sub) {
-    document.querySelectorAll('.overlay').forEach((n) => n.remove());
-    const overlay = el('div', { class: 'overlay' });
-    const close = () => overlay.remove();
-    const body = el('div', { class: 'dialog-body' });
-    overlay.appendChild(el('div', { class: 'dialog', role: 'dialog', 'aria-label': title },
-      el('div', { class: 'dialog-h' }, el('div', null, el('b', null, title), sub ? el('div', { class: 'muted' }, sub) : null), el('button', { class: 'btn ghost', onclick: close, 'aria-label': 'Đóng' }, '✕')),
-      body));
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) close(); });
-    overlay.addEventListener('keydown', (e) => { if (e.key === 'Escape') close(); });
-    document.body.appendChild(overlay);
-    return { overlay, body, close };
-  }
-
   // BỐ CỤC — swap the windows' places DIRECTLY: a 2×2 picture of the screen, click one window then another and the
   // two windows trade places at once on the screen (their P numbers stay). Saved; launches and Xếp cửa sổ follow it.
   async function openLayoutDialog() {
@@ -683,78 +570,17 @@
     follow.checked = safeFollowTurn;
     tabs.appendChild(el('label', { class: 'follow', for: 'phq-follow', title: 'Tự mở tab của acc đang tới lượt' }, follow, 'Theo lượt'));
     // each account's tab: its LỌC BÀI (left) + the cards not seen anywhere yet (right, big, sorted / by phỏm)
-    return el('section', { class: 'safe-panel' }, tabs, el('div', { class: 'safe-split' }, safeCardsFor(safeTab), remainingPanel(unseenCards())));
+    return el('section', { class: 'safe-panel' }, tabs, el('div', { class: 'safe-split' }, safeCardsFor(safeTab), remainingPanel(unseenCards(), remMode, setRemMode)));
   }
   function setRemMode(m) { remMode = m; try { localStorage.setItem('phq-rem-mode', m); } catch { /* ignore */ } renderApp(); }
 
   // ---- CÒN LẠI: the unseen cards (the card observer: 52 − our three hands − every discard − every laid meld) ----
   let remMode = 'PHOM';
   try { const v = localStorage.getItem('phq-rem-mode'); if (v === 'ORDER' || v === 'PHOM') remMode = v; } catch { /* per-viewer convenience only */ }
-  const SUIT_ORDER = ['♠', '♣', '♦', '♥'];
-  const rankOfCode = (code) => Math.floor(Number(code) / 4);   // 0 = A … 12 = K (card-codec)
-  const suitOfCode = (code) => Number(code) % 4;
   function unseenCards() {
     const obs = cardsSnap && cardsSnap.remaining;
     if (!obs || !obs.knownOutCount || !Array.isArray(obs.cards)) return null; // no round seen yet → nothing honest to show
     return obs.cards.slice().sort((a, b) => a.code - b.code); // small → big (A … K), suit order within a rank
-  }
-  // Possible PHỎM among the unseen cards: SETS (3–4 of one rank) and RUNS (3+ consecutive of one suit), each sorted
-  // small → big; a card in no possible phỏm is LẺ. A card may sit in a set AND a run (both are possible).
-  function groupByPhom(cards) {
-    const byRank = new Map(), bySuit = new Map();
-    for (const c of cards) {
-      const r = rankOfCode(c.code), s = suitOfCode(c.code);
-      (byRank.get(r) || byRank.set(r, []).get(r)).push(c);
-      (bySuit.get(s) || bySuit.set(s, []).get(s)).push(c);
-    }
-    const sets = [...byRank.entries()].filter(([, cs]) => cs.length >= 3).sort((a, b) => a[0] - b[0]).map(([, cs]) => cs);
-    const runs = [];
-    for (const s of [0, 1, 2, 3]) {
-      const cs = (bySuit.get(s) || []).slice().sort((a, b) => rankOfCode(a.code) - rankOfCode(b.code));
-      let cur = [];
-      for (const c of cs) {
-        if (cur.length && rankOfCode(c.code) !== rankOfCode(cur[cur.length - 1].code) + 1) { if (cur.length >= 3) runs.push(cur); cur = []; }
-        cur.push(c);
-      }
-      if (cur.length >= 3) runs.push(cur);
-    }
-    const inPhom = new Set([].concat(...sets, ...runs).map((c) => c.code));
-    return { sets, runs, loose: cards.filter((c) => !inPhom.has(c.code)) };
-  }
-  // kind: 'set' / 'run' / 'both' (a card that can be in a phỏm of either kind) / 'loose' — drives the highlight
-  function bigCard(c, kind) {
-    const tip = (c.label || '') + (kind === 'set' ? ' · trong phỏm ngang' : kind === 'run' ? ' · trong phỏm dọc' : kind === 'both' ? ' · trong phỏm ngang và dọc' : kind === 'loose' ? ' · lá lẻ' : '');
-    return el('span', { class: 'card-face big ' + (c.color === 'red' ? 'red' : 'black') + (kind ? ' k-' + kind : ''), title: tip }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?'));
-  }
-  function remainingPanel(cards) {
-    const box = el('div', { class: 'rem' });
-    const mode = (m, label, tip) => el('button', { class: 'seg' + (remMode === m ? ' active' : ''), title: tip, onclick: () => setRemMode(m) }, label);
-    box.appendChild(el('div', { class: 'rem-h' },
-      el('span', { class: 'rem-title', title: 'Lá chưa xuất hiện — đang ở tay acc lạ hoặc còn trong nọc' }, '🂠 Còn lại' + (cards ? ' · ' + cards.length + ' lá' : '')),
-      el('span', { class: 'spacer' }),
-      el('span', { class: 'segs', role: 'group', 'aria-label': 'Cách xếp' }, mode('PHOM', 'Theo phỏm', 'Nhóm thành phỏm ngang / dọc có thể có, rồi lá lẻ'), mode('ORDER', 'Thứ tự', 'Tất cả từ bé tới lớn (A → K)'))));
-    if (!cards) { box.appendChild(el('div', { class: 'safe-empty' }, 'Chưa có ván — vào bàn và chia bài để xem lá còn lại')); return box; }
-    if (!cards.length) { box.appendChild(el('div', { class: 'safe-empty' }, 'Không còn lá nào chưa xuất hiện')); return box; }
-    const g = groupByPhom(cards);
-    // which possible phỏm each card belongs to — the highlight in BOTH views
-    const inSet = new Set([].concat(...g.sets).map((x) => x.code)), inRun = new Set([].concat(...g.runs).map((x) => x.code));
-    const kindOf = (c) => (inSet.has(c.code) && inRun.has(c.code) ? 'both' : inSet.has(c.code) ? 'set' : inRun.has(c.code) ? 'run' : 'loose');
-    const row = (cs, kind) => el('div', { class: 'cards big' }, ...cs.map((c) => bigCard(c, kind || kindOf(c))));
-    if (remMode === 'ORDER') {
-      box.appendChild(row(cards));
-      box.appendChild(el('div', { class: 'rem-legend' }, el('span', { class: 'lg lg-set' }, 'phỏm ngang'), el('span', { class: 'lg lg-run' }, 'phỏm dọc'), el('span', { class: 'lg lg-loose' }, 'lá lẻ (mờ)')));
-      return box;
-    }
-    // each possible phỏm in its own tinted frame (sets purple, runs blue), then the loose cards
-    const phom = (cs, kind, title) => el('div', { class: 'phom-box pb-' + kind, title }, row(cs, kind));
-    const section = (title, cls, groups, kind, tip) => el('div', { class: 'rem-sec ' + cls, title: tip },
-      el('div', { class: 'g-label' }, title + ' (' + groups.length + ')'),
-      el('div', { class: 'rem-groups' }, ...groups.map((cs) => phom(cs, kind, cs.map((x) => x.label).join(' ')))));
-    if (g.sets.length) box.appendChild(section('Phỏm ngang', 'g-set', g.sets, 'set', '3–4 lá cùng số chưa xuất hiện'));
-    if (g.runs.length) box.appendChild(section('Phỏm dọc', 'g-run', g.runs, 'run', '3+ lá cùng chất liền nhau chưa xuất hiện'));
-    if (g.loose.length) box.appendChild(el('div', { class: 'rem-sec g-loose', title: 'Không nằm trong phỏm nào có thể có' }, el('div', { class: 'g-label' }, 'Lá lẻ (' + g.loose.length + ')'), row(g.loose, 'loose')));
-    if (!g.sets.length && !g.runs.length) box.appendChild(el('div', { class: 'muted rem-note' }, 'Không còn phỏm nào có thể có trong các lá chưa xuất hiện.'));
-    return box;
   }
   function setFollow(on) { safeFollowTurn = !!on; try { localStorage.setItem('phq-safe-follow', on ? '1' : '0'); } catch { /* ignore */ } }
 

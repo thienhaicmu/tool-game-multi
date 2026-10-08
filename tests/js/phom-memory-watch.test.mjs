@@ -63,7 +63,7 @@ test('wiring: the memory-watch feature samples every run by its profile dir, clo
   const feature = readFileSync(new URL('../../desktop/phom/features/memory-watch.cjs', import.meta.url), 'utf8');
   assert.match(feature, /attach\(\) \{ start\(\); \}/, 'sampling starts with the first browser');
   assert.match(feature, /killWaitMs = 4000/);
-  const ui = readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
+  const ui = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => readFileSync(new URL('../../ui-phom/' + n + '.js', import.meta.url), 'utf8')).join('\n');
   assert.match(ui, /case 'BROWSER_MEMORY_RUNAWAY':/);
   assert.match(ui, /case 'LOOP_GUARD':/);
 });

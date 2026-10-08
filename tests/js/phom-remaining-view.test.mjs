@@ -4,7 +4,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-const ui = readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
+import vm from 'node:vm';
+const ui = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => readFileSync(new URL('../../ui-phom/' + n + '.js', import.meta.url), 'utf8')).join('\n');
 const css = readFileSync(new URL('../../ui-phom/phom-qa.css', import.meta.url), 'utf8');
 const grab = (name) => ui.slice(ui.indexOf('function ' + name + '('), ui.indexOf('\n  }\n', ui.indexOf('function ' + name + '(')) + 4);
 const groupByPhom = new Function(
@@ -31,12 +32,13 @@ test('a gap breaks a run; two of a rank is not a set; a card can be in a set AND
 });
 
 test('wiring: inside each account tab (no separate tab), big cards, Theo phỏm / Thứ tự, phỏm frames + highlight', () => {
-  assert.match(grab('safePanel'), /el\('div', \{ class: 'safe-split' \}, safeCardsFor\(safeTab\), remainingPanel\(unseenCards\(\)\)\)/);
+  assert.match(grab('safePanel'), /el\('div', \{ class: 'safe-split' \}, safeCardsFor\(safeTab\), remainingPanel\(unseenCards\(\), remMode, setRemMode\)\)/);
   assert.equal(/'REM'|rem-tab/.test(ui), false, 'no separate CÒN LẠI tab');
   assert.match(grab('unseenCards'), /if \(!obs \|\| !obs\.knownOutCount/, 'nothing before a round was seen');
   assert.match(grab('unseenCards'), /sort\(\(a, b\) => a\.code - b\.code\)/, 'small → big');
   const rp = grab('remainingPanel');
-  assert.match(rp, /mode\('PHOM', 'Theo phỏm'/); assert.match(rp, /mode\('ORDER', 'Thứ tự'/);
+  assert.match(rp, /seg\('PHOM', 'Theo phỏm'/); assert.match(rp, /seg\('ORDER', 'Thứ tự'/);
+  assert.match(rp, /function remainingPanel\(cards, mode, onMode\)/, 'pure (ui-cards.js): the mode comes in');
   assert.match(rp, /class: 'phom-box pb-' \+ kind/, 'each phỏm in its own frame');
   assert.match(rp, /const kindOf = \(c\) =>/, 'the order view highlights phỏm cards too');
   for (const k of ['.pb-set', '.pb-run', '.card-face.big.k-set', '.card-face.big.k-run', '.card-face.big.k-loose']) assert.ok(css.includes(k), k);
@@ -46,4 +48,27 @@ test('wiring: inside each account tab (no separate tab), big cards, Theo phỏm 
 test('remaining after the three hands counts the PLAYING browsers only (a reserve sits elsewhere)', () => {
   const coord = readFileSync(new URL('../../desktop/protocol/phom/host-table-coordinator.cjs', import.meta.url), 'utf8');
   assert.match(coord, /remainingCards\(opts = \{\}\) \{[\s\S]*?\.slice\(0, 3\)\.map\(\(rec\)/);
+});
+
+// 3.2 phase 4b — the tool window's pure parts load before phom-qa.js and export on window.PhomUI
+test('ui split: index.html loads ui-kit → ui-cards → ui-notices before phom-qa.js; each part exports what phom-qa imports', () => {
+  const html = readFileSync(new URL('../../ui-phom/index.html', import.meta.url), 'utf8');
+  const order = ['ui-kit.js', 'ui-cards.js', 'ui-notices.js', 'phom-qa.js'].map((f) => html.indexOf('<script src="' + f + '">'));
+  assert.ok(order.every((i) => i > 0)); assert.deepEqual([...order].sort((a, b) => a - b), order);
+  const read = (f) => readFileSync(new URL('../../ui-phom/' + f, import.meta.url), 'utf8');
+  assert.match(read('ui-kit.js'), /Object\.assign\(UI, \{ el, \$, icon, iconButton, playerLabel, money, errText, note, noteText, openDialog, ringBell \}\);/);
+  assert.match(read('ui-cards.js'), /Object\.assign\(UI, \{ groupByPhom, bigCard, remainingPanel \}\);/);
+  assert.match(read('ui-notices.js'), /Object\.assign\(UI, \{ ROLE_VIEW, roleLabel, noticeText \}\);/);
+  const qa = read('phom-qa.js');
+  assert.match(qa, /const \{ el, \$, icon, iconButton, playerLabel, money, errText, note, noteText, openDialog, ringBell \} = window\.PhomUI;/);
+  assert.match(qa, /const noticeText = \(n\) => noticeLine\(n, playerLabelOf\);/);
+});
+
+test('ui split: the notice lines run for real (pure) — who the line is about comes from the screen', () => {
+  const ctx = { window: {} };
+  vm.createContext(ctx);
+  for (const f of ['ui-kit.js', 'ui-notices.js']) vm.runInContext(readFileSync(new URL('../../ui-phom/' + f, import.meta.url), 'utf8'), ctx);
+  const line = ctx.window.PhomUI.noticeText({ event: 'KEY_SEATED', id: 'BR-1' }, () => 'P2');
+  assert.equal(line, 'P2 là KEY (chủ bàn) — các acc khác bấm Tạo / Vào.');
+  assert.equal(ctx.window.PhomUI.noticeText({ event: 'NOPE' }, () => 'P1'), '');
 });

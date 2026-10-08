@@ -9,7 +9,8 @@ const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 
 const mainSrc = read('desktop/phom-main.cjs');
 const preloadSrc = read('desktop/phom-preload.cjs');
-const rendererSrc = read('ui-phom/phom-qa.js');
+// every script of the tool window (3.2: the pure parts live in ui-kit / ui-cards / ui-notices)
+const rendererSrc = ['ui-kit', 'ui-cards', 'ui-notices', 'profile-selection', 'bulk-proxy', 'phom-qa'].map((n) => read('ui-phom/' + n + '.js')).join('\n');
 const cssSrc = read('ui-phom/phom-qa.css');
 const htmlSrc = read('ui-phom/index.html');
 const launcherSrc = read('desktop/browser/chrome-launcher.cjs');
