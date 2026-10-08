@@ -24,13 +24,13 @@ const fs = require('node:fs');
 const { redactDiagnostic } = require('./protocol/phom/diagnostic-redaction.cjs');
 
 const { ChromeRuntime } = require('./browser/chrome-runtime.cjs');
-const { lifecycleLog } = require('./browser/chrome-launcher.cjs');
 const phomChromium = require('./browser/phom-chromium-runtime.cjs');
 const browserRuntimeResolver = require('./browser/browser-runtime-resolver.cjs');
 const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
 const chromiumProfileName = require('./browser/chromium-profile-name.cjs');
 const { createSessionRegistry } = require('./phom/core/session-registry.cjs');
 const { createFeatureSet } = require('./phom/core/feature-set.cjs');
+const { createLogger } = require('./phom/core/logger.cjs');
 const { createMemoryWatchFeature } = require('./phom/features/memory-watch.cjs');
 const { createCaptureFeature } = require('./phom/features/capture.cjs');
 const { createBrowserAgentFeature, applyAgent } = require('./phom/features/browser-agent.cjs');
@@ -169,49 +169,9 @@ else {
       return { ok: false, error: { code: 'PHOM_CAPTURE_WRITE_FAILED', message: String(e && e.message || e) } };
     }
   }
-  // ALWAYS-ON co-seat wire log → userData/phom-captures/coseat.jsonl. One JSON line per JOIN request/response +
-  // resulting table membership + room code, so "who landed at which table with which code" can be read directly
-  // from a file (no Test D recorder, no env var). Truncated once per app launch, and size-capped so it can't grow
-  // without bound. Room codes ARE kept here (this is the co-seat evidence); it carries no login credential.
-  let _coseatInit = false;
-  function coseatLogPath() { return path.join(app.getPath('userData'), 'phom-captures', 'coseat.jsonl'); }
-  function _archiveCoseat(dir, reason) {
-    try { const p = coseatLogPath(); if (fs.existsSync(p)) { const arch = path.join(dir, 'coseat-' + new Date().toISOString().replace(/[:.]/g, '-') + '.jsonl'); fs.renameSync(p, arch); } } catch { /* best effort */ }
-    try { fs.writeFileSync(coseatLogPath(), '# SESSION ' + (reason || '') + ' ' + new Date().toISOString() + '\n'
-        // Every line goes through redactDiagnostic (appendCoseatLog): passwords / tokens / cookies are masked, and the
-        // few server frames kept verbatim (a refused join, a kick) are dropped when they could hold a secret. It still
-        // names accounts, tables and money — share it only with whoever debugs the tool.
-        + '# Nhật ký chẩn đoán Phỏm QA — mật khẩu/token đã được che; vẫn có tên acc, số bàn, tiền: chỉ gửi cho người hỗ trợ.\n', 'utf8'); } catch { /* best effort */ }
-  }
-  // §ws-log — the capture is ALWAYS ON and takes EVERY non-heartbeat frame of all three browsers, so it used
-  // to do one BLOCKING fs.appendFileSync per frame on the Electron main process — the same thread that serves
-  // CDP, IPC and the header pushes. Batch instead: queue the lines and write them in ONE call at most every
-  // COSEAT_FLUSH_MS. Same bytes, same rotation, same ordering; the per-frame stall is gone. A crash can lose
-  // at most one flush interval, which is the right trade for a diagnostic log.
-  const COSEAT_FLUSH_MS = 250;
-  const COSEAT_MAX_QUEUE = 2000; // a burst flushes immediately rather than growing without bound
-  let _coseatQueue = [];
-  let _coseatFlushTimer = null;
-  function _coseatFlush() {
-    if (_coseatFlushTimer) { try { clearTimeout(_coseatFlushTimer); } catch { /* ignore */ } _coseatFlushTimer = null; }
-    if (!_coseatQueue.length) return;
-    const batch = _coseatQueue; _coseatQueue = [];
-    try {
-      const dir = path.join(app.getPath('userData'), 'phom-captures'); fs.mkdirSync(dir, { recursive: true });
-      const p = coseatLogPath();
-      // NEVER overwrite: on the first write of a run ARCHIVE the previous session's log (rename by time) so
-      // history is kept; and ROTATE (archive) when it grows large instead of dropping frames.
-      if (!_coseatInit) { _archiveCoseat(dir, 'start'); _coseatInit = true; }
-      else { try { if (fs.statSync(p).size > 60 * 1024 * 1024) _archiveCoseat(dir, 'rotate'); } catch { /* file may not exist yet */ } }
-      fs.appendFileSync(p, batch.join('\n') + '\n', 'utf8');
-    } catch { /* never throw from logging */ }
-  }
-  function appendCoseatLog(entry) {
-    let line; try { line = JSON.stringify(redactDiagnostic(entry)); } catch { return; }
-    _coseatQueue.push(line);
-    if (_coseatQueue.length >= COSEAT_MAX_QUEUE) _coseatFlush();
-    else if (!_coseatFlushTimer) _coseatFlushTimer = setTimeout(_coseatFlush, COSEAT_FLUSH_MS);
-  }
+  // ---- the ONE diagnostic log (desktop/phom/core/logger.cjs) → userData/phom-captures/coseat.jsonl ----
+  // the coordinator's wire events, the group's decisions and the browser steps that explain a stuck browser; redacted.
+  const log = createLogger({ dir: () => path.join(app.getPath('userData'), 'phom-captures'), redact: redactDiagnostic });
   // Resolve + validate the pinned custom Chromium runtime once (dev vs packaged). No
   // system-Chrome fallback: an invalid runtime blocks browser launches with a typed error.
   var _chromiumRuntime = null;
@@ -239,7 +199,7 @@ else {
     // and never treat it as an orchestration teardown (§10).
     onRunExit: (runId, record) => {
       let closed = null;
-      try { lifecycleLog('MAIN_ON_RUN_EXIT', { runId, reason: record && record.reason }); if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) closed = phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ }
+      try { log.trace('MAIN_ON_RUN_EXIT', { runId, reason: record && record.reason }); if (runManager) runManager.disconnectRun(runManager.get(runId)); phomSessions.routeDisconnect(runId); if (phomCluster && phomCluster.markRunClosed) closed = phomCluster.markRunClosed(runId, record && record.reason); } catch { /* best effort */ }
       // N4 — a closed RESERVE leaves the Phỏm session (no dead member); MỞ LẠI on its card adds it back
       try { if (closed && closed.ok && RESERVE_SLOTS.includes(closed.slot) && phomSessions) phomSessions.removeRun(runId); } catch { /* best effort */ }
       autoReplaceFromReserve(runId, closed);
@@ -260,7 +220,7 @@ else {
     if (!reserve) return;
     swapSlot(closed.slot, reserve)
       .then((res) => {
-        lifecycleLog('SLOT_AUTO_REPLACED', { slot: closed.slot, reserve, closedRun: rid, ok: !!(res && res.ok) });
+        log.trace('SLOT_AUTO_REPLACED', { slot: closed.slot, reserve, closedRun: rid, ok: !!(res && res.ok) });
         send('phom:notice', res && res.ok
           ? { event: 'SLOT_AUTO_REPLACED', slot: closed.slot, reserve, label: res.label || null }
           : { event: 'SLOT_AUTO_REPLACE_FAILED', slot: closed.slot, error: res && res.error });
@@ -326,7 +286,7 @@ else {
     phomSessions.on('notice', (n) => send('phom:notice', n));
     // the group's own decisions (roles, ready / start, why the full-table step waits) go to coseat.jsonl too — without
     // them a "acc 3 did not ready" report could not be explained from the log (2026-10-05)
-    phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') appendCoseatLog(l); else if (l && l.tag === 'PHOM-GROUP') appendCoseatLog({ at: Date.now(), ...l }); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} });
+    phomSessions.on('log', (l) => { try { if (l && l.tag === 'PHOM-COSEAT') log.file(l); else if (l && l.tag === 'PHOM-GROUP') log.file({ at: Date.now(), ...l }); } catch {} try { if (process.env.PHOM_LIFECYCLE_LOG === '1') console.log(`[${l.tag}] ${l.event}`, JSON.stringify(l)); } catch {} });
     return phomSessions;
   }
 
@@ -494,7 +454,7 @@ else {
   async function phomEnterGame(runId) {
     const client = runClientFor(String(runId));
     if (!client || !client.Runtime) return { ok: false, error: { code: 'PHOM_ENTRY_NO_CLIENT', message: `no CDP client for run ${runId}` } };
-    const diag = (f) => { try { lifecycleLog('PHOM_ENTER_GAME', { runId: String(runId), gameId: PHOM_GAME_ID, ...f }); } catch { /* ignore */ } };
+    const diag = (f) => { try { log.trace('PHOM_ENTER_GAME', { runId: String(runId), gameId: PHOM_GAME_ID, ...f }); } catch { /* ignore */ } };
     const r = await runEnterGameViaSite(client, undefined, PHOM_GAME_ID, diag);
     if (r && r.ok) return { ok: true, gameId: PHOM_GAME_ID };
     return { ok: false, gameId: PHOM_GAME_ID, error: (r && r.error) || { code: 'ENTRY_SITE_SEAM_UNAVAILABLE' } };
@@ -520,17 +480,13 @@ else {
     return { runtimeKind: (run && run.browserKind) || null, cdp: cdp ? 'CONNECTED' : 'DISCONNECTED', header };
   }
 
-  // Structured header lifecycle log (§24) — one line per step so an intermittent failure is diagnosable.
-  // Gated behind PHOM_HEADER_LOG / PHOM_LIFECYCLE_LOG. NEVER logs cookies/tokens/secrets.
-  // The few steps that explain "the browser opened but never got into the game" always go to coseat.jsonl.
-  const ALWAYS_LOGGED = new Set(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE', 'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY', 'feature-error', 'feature-off-unknown']);
+  // A browser step: noted on its session (the last steps, attached to a memory alarm) and logged (logger.run decides
+  // which steps always reach coseat.jsonl; all of them with PHOM_HEADER_LOG=1). NEVER logs cookies/tokens/secrets.
   function headerLog(event, data = {}) {
     // the tool's last steps for each browser (event names + time only) — attached to a memory alarm so the log says
     // what happened right before a browser blew up
     if (data && data.runId != null) sessions.note(data.runId, event);
-    if (ALWAYS_LOGGED.has(event)) { try { appendCoseatLog({ tag: 'PHOM-RUN', event, at: new Date().toISOString(), ...data }); } catch { /* best effort */ } }
-    if (process.env.PHOM_HEADER_LOG !== '1' && process.env.PHOM_LIFECYCLE_LOG !== '1') return;
-    try { lifecycleLog('PHOM_HEADER', { event, ...data }); } catch { /* best effort */ }
+    log.run(event, data);
   }
 
   // The group's số bàn (SS), the same value the Tool window shows. Null until Tạo found the KEY's table.
@@ -871,7 +827,7 @@ else {
     try { await phomCluster.applyClusterAgents(); } catch { /* the WEB agent applies nothing anyway */ }
     let replaced = false;
     if (phomSessions && oldRun && String(oldRun) !== String(newRun)) replaced = !!phomSessions.replaceRun(oldRun, newRun).replaced;
-    lifecycleLog('SLOT_REPLACED', { slot: s, oldRun, newRun, deviceProfileId: after.deviceProfileId, replacedInSession: replaced });
+    log.trace('SLOT_REPLACED', { slot: s, oldRun, newRun, deviceProfileId: after.deviceProfileId, replacedInSession: replaced });
     pushHeaderStates();
     return { ok: true, slot: s, runId: newRun, deviceProfileId: after.deviceProfileId, label: after.label };
   }
@@ -890,7 +846,7 @@ else {
     phomCluster.connectClusterCdp();
     if (phomSessions) phomSessions.addRun(rs.profileId);
     _reserveMap = null;
-    lifecycleLog('RESERVE_REOPENED', { reserve: r, runId: rs.profileId });
+    log.trace('RESERVE_REOPENED', { reserve: r, runId: rs.profileId });
     pushHeaderStates();
     return { ok: true, reserve: r, runId: rs.profileId };
   }
@@ -907,7 +863,7 @@ else {
     // 1. the browser leaving the slot gives its seat back first (it stays open as a reserve, so it would keep it)
     if (oldRun && before.browserState === 'OPEN' && phomSessions) {
       const lv = await phomSessions.leaveNow(oldRun);
-      lifecycleLog('SLOT_SWAP_LEAVE', { slot: s, run: oldRun, ok: !!(lv && lv.ok) });
+      log.trace('SLOT_SWAP_LEAVE', { slot: s, run: oldRun, ok: !!(lv && lv.ok) });
     }
     // 2. swap the cluster places, 3. the new browser takes the old one's place + role in the Phỏm session (main below)
     const res = phomCluster.swapSlot(s, r);
@@ -926,7 +882,7 @@ else {
     if (res.benchedRun) await windows().move(res.benchedRun, windows().rectFor(r));
     try { if (shell && !shell.isDestroyed()) shell.moveTop(); } catch { /* the tool stays where it is */ }
     const after = phomCluster.getClusterSnapshot().profiles[s];
-    lifecycleLog('SLOT_SWAPPED', { slot: s, reserve: r, playingRun: res.playingRun, benchedRun: res.benchedRun, replacedInSession: replaced });
+    log.trace('SLOT_SWAPPED', { slot: s, reserve: r, playingRun: res.playingRun, benchedRun: res.benchedRun, replacedInSession: replaced });
     pushHeaderStates();
     return { ok: true, slot: s, runId: res.playingRun, deviceProfileId: after.deviceProfileId, label: after.label };
   }
@@ -1283,7 +1239,7 @@ else {
     ipcMain.handle('phom:cluster-connect', guarded(() => ensureCluster().connectClusterCdp()));
     ipcMain.handle('phom:cluster-apply-agents', guarded(() => ensureCluster().applyClusterAgents()));
     // ĐÓNG 3 TRÌNH DUYỆT = EXPLICIT browser close (the ONLY app path that closes the runs).
-    ipcMain.handle('phom:cluster-stop', guarded(async () => { lifecycleLog('IPC_CLUSTER_STOP', {}); return ensureCluster().stopCluster(); }));
+    ipcMain.handle('phom:cluster-stop', guarded(async () => { log.trace('IPC_CLUSTER_STOP', {}); return ensureCluster().stopCluster(); }));
     ipcMain.handle('phom:cluster-snapshot', () => (phomCluster ? phomCluster.getClusterSnapshot() : null));
 
     // 2×2 workspace layout controls (§9/§21).
@@ -1306,9 +1262,9 @@ else {
     windows().start();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
-  app.on('window-all-closed', () => { lifecycleLog('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });
-  app.on('before-quit', () => { lifecycleLog('APP_BEFORE_QUIT', { stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') }); });
-  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); _coseatFlush(); try { if (_memoryFeature) _memoryFeature.stop(); } catch { /* gone */ } }); // §ws-log — never lose the last batch
+  app.on('window-all-closed', () => { log.trace('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });
+  app.on('before-quit', () => { log.trace('APP_BEFORE_QUIT', { stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') }); });
+  app.on('will-quit', () => { log.trace('APP_WILL_QUIT', {}); log.flush(); try { if (_memoryFeature) _memoryFeature.stop(); } catch { /* gone */ } }); // §ws-log — never lose the last batch
 }
 
 module.exports = { PRODUCT_NAME, GAME_PRODUCT };

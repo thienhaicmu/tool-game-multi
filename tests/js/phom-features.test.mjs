@@ -160,7 +160,8 @@ test('wiring: main runs every browser feature through ONE set, in order (send ho
   assert.match(main, /features\(\)\.push\(\{ run, session: sessions\.get\(rid\), view, browser:/);
   assert.match(main, /features\(\)\.documentReplaced\(\{ run: runManager && runManager\.get\(rid\), session: sessions\.get\(rid\), url: String\(url\) \}\);/);
   // a feature that throws is never silent: it always reaches coseat.jsonl
-  assert.match(main, /const ALWAYS_LOGGED = new Set\(\[[^\]]*'feature-error'/);
+  assert.ok(require('../../desktop/phom/core/logger.cjs').ALWAYS_RUN_EVENTS.includes('feature-error'));
+  assert.match(main, /function headerLog\(event, data = \{\}\) \{[\s\S]*?log\.run\(event, data\);/);
   assert.match(main, /features\(\)\.registerIpc\(\(channel, fn, opts\) => ipcMain\.handle\(channel, opts && opts\.guarded \? guarded\(fn\) : fn\)\);/);
   assert.match(main, /runManager\.on\('run-closed', \(s\) => \{ if \(s && s\.id != null\) dropRunSession\(s\.id\); \}\);/);
   assert.match(main, /autoReplaceFromReserve\(runId, closed\);\s*dropRunSession\(runId\);/);

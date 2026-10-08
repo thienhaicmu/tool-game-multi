@@ -573,7 +573,7 @@ test('wiring: stale ready dropped on t:2 / kick / fresh join; group log + READY_
   assert.match(coord, /cls\.accepted === true && meta\.direction !== 'send' && rec\.ctx\.uid\(\) != null\) this\._unready/);
   assert.match(coord, /this\._log\('READY_SEEN'/);
   const main = readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
-  assert.match(main, /else if \(l && l\.tag === 'PHOM-GROUP'\) appendCoseatLog\(\{ at: Date\.now\(\), \.\.\.l \}\)/);
+  assert.match(main, /else if \(l && l\.tag === 'PHOM-GROUP'\) log\.file\(\{ at: Date\.now\(\), \.\.\.l \}\)/);
 });
 
 // user rule 2026-10-05: the stranger leaves while CHƯA SS waits its 1–2 s, or before the KEY's start goes out
