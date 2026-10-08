@@ -29,7 +29,15 @@ const phomChromium = require('./browser/phom-chromium-runtime.cjs');
 const browserRuntimeResolver = require('./browser/browser-runtime-resolver.cjs');
 const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
 const chromiumProfileName = require('./browser/chromium-profile-name.cjs');
-const browserMemoryWatch = require('./browser/browser-memory-watch.cjs');
+const { createSessionRegistry } = require('./phom/core/session-registry.cjs');
+const { createFeatureSet } = require('./phom/core/feature-set.cjs');
+const { createMemoryWatchFeature } = require('./phom/features/memory-watch.cjs');
+const { createCaptureFeature } = require('./phom/features/capture.cjs');
+const { createBrowserAgentFeature, applyAgent } = require('./phom/features/browser-agent.cjs');
+const { createWsHookFeature } = require('./phom/features/ws-hook.cjs');
+const { createAnDanhFeature } = require('./phom/features/an-danh.cjs');
+const { createDocNavFeature } = require('./phom/features/doc-nav.cjs');
+const { createProxyAuthFeature } = require('./phom/features/proxy-auth.cjs');
 const windowLock = require('./protocol/phom/window-lock.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -95,6 +103,8 @@ else {
   var proxySecretStore = null;
   var deviceProfilesStore = null; // PHASE-6.3.1 flexible N-profile store
   var phomSessions = null;
+  // 3.2 core — one session object per open browser (desktop/phom/core) + the features that act on browsers.
+  const sessions = createSessionRegistry();
   // Lọc Bài: one analyzer PER account, so each P1/P2/P3 column is computed (and memoised) on its own — every one of
   // them from the SAME shared observation, i.e. with the cards of all three accounts known.
   const slotAnalyzers = { B1: createSafeCardAnalyzer(), B2: createSafeCardAnalyzer(), B3: createSafeCardAnalyzer() };
@@ -217,6 +227,7 @@ else {
       // N4 — a closed RESERVE leaves the Phỏm session (no dead member); MỞ LẠI on its card adds it back
       try { if (closed && closed.ok && RESERVE_SLOTS.includes(closed.slot) && phomSessions) phomSessions.removeRun(runId); } catch { /* best effort */ }
       autoReplaceFromReserve(runId, closed);
+      dropRunSession(runId);
     },
   });
   // Runs the TOOL is closing (⏻, Thay profile, Đóng tất cả) — their exit is the user's own choice in the tool, so no
@@ -266,6 +277,7 @@ else {
       createTargetManager: (endpoint, run) => chromeRuntime.targetManager(run, endpoint),
       buildSubsystem: () => ({}), // Phom uses the coordinator, not a per-run Aviator subsystem
     });
+    runManager.on('run-closed', (s) => { if (s && s.id != null) dropRunSession(s.id); }); // the tool closed it
     return runManager;
   }
 
@@ -571,7 +583,6 @@ else {
   const headerDomPresent = Object.create(null); // runId -> true when the PAGE confirmed #__phom_header exists
   const headerLastPushed = Object.create(null); // runId -> last pushed state JSON (skip unchanged evaluates)
   const headerKeys = Object.create(null); // runId -> Set of secrets its bar was booted with (N3)
-  let anDanhOn = false; // the tool's ẨN DANH switch — default OFF (the game's own default is ON)
   const headerEnterStartedAt = Object.create(null); // runId -> monotonic ms at ENTER_GAME accept (latency)
   const headerEnterTimer = Object.create(null);     // runId -> bounded ENTERING timeout handle (§10 not-stuck)
   // PHASE 6.3.6 — the USER-selected FINDER (room anchor), by Player index 1/2/3; null = none chosen yet (every
@@ -649,11 +660,10 @@ else {
   // Gated behind PHOM_HEADER_LOG / PHOM_LIFECYCLE_LOG. NEVER logs cookies/tokens/secrets.
   // The few steps that explain "the browser opened but never got into the game" always go to coseat.jsonl.
   const ALWAYS_LOGGED = new Set(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE', 'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY']);
-  // The last steps the tool took with each browser (event names + time only) — attached to a memory alarm so the log
-  // says what happened right before a browser blew up.
-  const recentRunEvents = Object.create(null);
   function headerLog(event, data = {}) {
-    if (data && data.runId != null) { const k = String(data.runId); const a = recentRunEvents[k] || (recentRunEvents[k] = []); a.push(event + '@' + new Date().toISOString().slice(11, 19)); if (a.length > 20) a.shift(); }
+    // the tool's last steps for each browser (event names + time only) — attached to a memory alarm so the log says
+    // what happened right before a browser blew up
+    if (data && data.runId != null) sessions.note(data.runId, event);
     if (ALWAYS_LOGGED.has(event)) { try { appendCoseatLog({ tag: 'PHOM-RUN', event, at: new Date().toISOString(), ...data }); } catch { /* best effort */ } }
     if (process.env.PHOM_HEADER_LOG !== '1' && process.env.PHOM_LIFECYCLE_LOG !== '1') return;
     try { lifecycleLog('PHOM_HEADER', { event, ...data }); } catch { /* best effort */ }
@@ -739,39 +749,14 @@ else {
   function browserStateFor(runId, browsers, sharedRid) {
     return deriveBrowserState(headerViewFor(runId, browsers, sharedRid));
   }
-  // A browser whose game frames stopped arriving is reported as such after this long (and re-hooked, see
-  // maybeRehookCapture) instead of silently reading "CHƯA VÀO GAME".
+  // A browser whose game frames stopped arriving is reported as such after this long (and re-hooked by the capture
+  // feature) instead of silently reading "CHƯA VÀO GAME".
   const HEADER_STALE_MS = 20000;
-  // A browser whose game frames stopped arriving lost its capture hook (the page reloaded / the game swapped the
-  // target it runs in). Re-enable the CDP network events and re-inject the send hook on that run's CURRENT session
-  // instead of leaving the tool blind — at most once every 30s per browser, and only while its Chromium is open.
-  const _lastRehookAt = Object.create(null);
-  function maybeRehookCapture(browsers) {
-    const now = nowMs();
-    for (const b of (browsers || [])) {
-      if (!b || b.profileId == null || b.lastFrameAt == null) continue;
-      if (now - Number(b.lastFrameAt) <= HEADER_STALE_MS) continue;
-      const rid = String(b.profileId);
-      if (_lastRehookAt[rid] && now - _lastRehookAt[rid] < 30000) continue;
-      const run = runManager && runManager.get(rid);
-      if (!run || run.status === RUN_STATUS.CLOSED) continue;
-      const targets = runManager.targetsForRun(rid) || [];
-      for (const t of targets) {
-        const sess = run.targetManager && run.targetManager.getSession(t);
-        if (!sess || !sess.client) continue;
-        _lastRehookAt[rid] = now;
-        headerLog('capture-rehook', { runId: rid, targetId: t, staleSec: Math.round((now - Number(b.lastFrameAt)) / 1000) });
-        try { attachCapture(sess.client, { cdpTargetId: t }); } catch { /* best effort */ }
-        try { wsReplay.injectSession(sess.client, undefined).catch(() => {}); } catch { /* best effort */ }
-      }
-    }
-  }
   // Recompute + push the header state into every open Chromium (best-effort). Called after every session
   // update and after every header action so the bars stay live without a Tool screen.
   function pushHeaderStates() {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
-    maybeRehookCapture(browsers); // a browser whose frames stopped gets its hook re-installed (§data-stale)
     const sharedRid = headerSharedRid();
     for (const run of runManager.list()) {
       if (run.status === RUN_STATUS.CLOSED) continue;
@@ -779,6 +764,8 @@ else {
       if (!client) continue;
       const view = headerViewFor(run.id, browsers, sharedRid);
       const rid = String(run.id);
+      // 3.2 features' push hook (capture re-hooks a browser whose frames stopped — §data-stale)
+      features().push({ run: { id: rid, slot: run.slot, closed: false }, session: sessions.get(rid), view, browser: browsers.find((x) => x && String(x.profileId) === rid) || null });
       maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
       rememberLoginOrigin(run, browsers.find((x) => x && String(x.profileId) === rid));
       rememberAccountName(run, browsers.find((x) => x && String(x.profileId) === rid));
@@ -950,37 +937,51 @@ else {
     catch (e) { toolClosingRuns.delete(rid); return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
   }
 
-  // MEMORY WATCH (2026-10-08) — a logged-in browser's MAIN process was seen growing ~200 MB/s to 15 GB and froze the
-  // machine. Each browser the tool opened is sampled every 5 s: past 1.5 GB it is logged once (with the tool's last
-  // steps for it), past 3 GB it is closed — gracefully first, its main process killed if it does not go within 4 s.
-  // PHOM_MEMORY_WATCH=0 turns it off.
-  let memWatch = null;
-  function ensureMemoryWatch() {
-    if (memWatch || process.env.PHOM_MEMORY_WATCH === '0') return;
-    // the Chromium root is a prefix of the Chrome one (browser-profiles / browser-profiles-chrome): one marker covers both
-    memWatch = browserMemoryWatch.createMemoryWatch({ marker: profilesRootFor('chromium'), onSample: onMemorySample, log: headerLog });
-    memWatch.start();
+  // ---- 3.2 features: what the tool does to a browser, one module each (desktop/phom/features) ----
+  // Built on first use (they reference functions declared further down). PHOM_FEATURES_OFF=<id,…> switches any off.
+  let _features = null; let _memoryFeature = null; let _anDanhFeature = null;
+  function features() {
+    if (_features) return _features;
+    _memoryFeature = createMemoryWatchFeature({
+      // the Chromium root is a prefix of the Chrome one (browser-profiles / browser-profiles-chrome): one marker covers both
+      marker: () => profilesRootFor('chromium'),
+      runs: () => (runManager ? runManager.list().map((s) => runManager.get(s.id)).filter(Boolean).map((r) => ({ id: r.id, slot: r.slot, profileDir: r.profileDir, profileLabel: r.profileLabel, browserKind: r.browserKind, closed: r.status === RUN_STATUS.CLOSED })) : []),
+      closeRun: (rid) => closeBrowserRun(rid),
+      log: headerLog,
+      notice: (n) => send('phom:notice', n),
+      sessions,
+    });
+    // every attached target of a run with its own client (the capture re-hook re-arms them all)
+    const runTargets = (rid) => (runManager ? runManager.targetsForRun(rid) : []).map((t) => { const run = runManager.get(rid); const sess = run && run.targetManager && run.targetManager.getSession(t); return { targetId: t, client: sess && sess.client }; });
+    _anDanhFeature = createAnDanhFeature({
+      anDanh,
+      pageClients: () => (runManager ? runManager.list() : []).filter((r) => r.status !== RUN_STATUS.CLOSED).map((r) => ({ runId: r.id, client: runClientFor(r.id) })).filter((x) => x.client),
+      log: headerLog,
+    });
+    _features = createFeatureSet({
+      log: headerLog,
+      // ORDER MATTERS: the send hook before the game opens its socket; header + an-danh new-document scripts before
+      // proxy-auth lets a proxied page navigate to the game.
+      features: [
+        createCaptureFeature({ capture, targetsOf: runTargets, injectSendHook: (client) => wsReplay.injectSession(client, undefined), log: headerLog, now: nowMs }),
+        createBrowserAgentFeature({ browserAgent, notify: (p) => send('phom:agent-applied', p) }),
+        createWsHookFeature({ injectSendHook: (client) => wsReplay.injectSession(client, undefined) }),
+        _anDanhFeature,
+        createDocNavFeature({ onDocument: (rid, url) => onRunDocumentReplaced(rid, url) }),
+        { id: 'header', attach: (a) => attachHeader(a) },
+        createProxyAuthFeature({ bindProxyAuth, resolvePassword: (id) => (proxyConfigStore ? proxyConfigStore.resolvePassword(id) : null), log: headerLog, onAuthFailure: (run, code) => send('phom:proxy-auth', { runId: run.id, code }) }),
+        _memoryFeature,
+      ],
+    });
+    return _features;
   }
-  function onMemorySample(byDir) {
-    if (!runManager) return;
-    for (const s of runManager.list()) {
-      const run = runManager.get(s.id);
-      if (!run || !run.profileDir || run.status === RUN_STATUS.CLOSED) continue;
-      const e = byDir.get(browserMemoryWatch.normDir(run.profileDir));
-      const verdict = browserMemoryWatch.judge(e);
-      if (!verdict) continue;
-      const rid = String(run.id);
-      const info = { runId: rid, slotId: run.slot || null, profile: run.profileLabel || null, kind: run.browserKind || null, mainMb: e.mainMb, rendererMb: e.rendererMb, recent: (recentRunEvents[rid] || []).slice() };
-      if (verdict === 'HIGH' && !run._memWarned) { run._memWarned = true; headerLog('BROWSER_MEMORY_HIGH', info); }
-      if (verdict === 'RUNAWAY' && !run._memKilled) {
-        run._memKilled = true;
-        headerLog('BROWSER_MEMORY_RUNAWAY', info);
-        send('phom:notice', { event: 'BROWSER_MEMORY_RUNAWAY', slot: run.slot || null, mb: e.mainMb });
-        const pid = e.mainPid;
-        Promise.race([closeBrowserRun(rid), new Promise((r) => setTimeout(r, 4000))])
-          .finally(() => { if (pid) { try { process.kill(pid); } catch { /* already gone */ } } });
-      }
-    }
+  // A browser is gone (closed by the tool or by the user): its features let go, its session is dropped.
+  function dropRunSession(runId) {
+    const rid = String(runId);
+    const s = sessions.peek(rid);
+    if (!s) return;
+    try { features().closed({ run: runManager && runManager.get(rid), session: s }); } catch { /* best effort */ }
+    sessions.drop(rid);
   }
 
   // THAY PROFILE / MỞ LẠI one slot (A/B/C = P1/P2/P3): an open browser is closed first; with a profileId the slot is
@@ -1204,63 +1205,30 @@ else {
     } catch { /* never break capture */ }
   });
 
+  // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG) and route its
+  // clicks to the coordinator. The boot carries this run's IDENTITY (slot/profile/run) so every action is
+  // self-labelled. On a re-attach (transient CDP drop → poll re-adds the target with a NEW client) this runs again →
+  // header + binding are reinstalled and the state re-pushed (§11 reattach). It must run BEFORE proxy-auth: its
+  // new-document script has to be registered before the proxied page navigates to the game.
+  function attachHeader({ run, client }) {
+    // N3 — a fresh secret per attach; every key issued to this run stays valid (a page booted by an earlier attach
+    // keeps working), any other caller is refused in phomHeaderAction.
+    const headerKey = crypto.randomBytes(16).toString('hex');
+    (headerKeys[String(run.id)] || (headerKeys[String(run.id)] = new Set())).add(headerKey);
+    const boot = gameHeader.bootScript({ nonce: headerKey, slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' });
+    return headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
+      .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); });
+  }
+
   async function connectRunEndpoint(run, endpoint) {
     const manager = runManager.setTargetManager(run, endpoint);
     if (!manager) return { ok: false, error: { code: 'RUN_CLOSED', message: 'run closed' } };
     manager.on('attached', ({ target, client }) => {
       runManager.registerTarget(target.cdpTargetId, run);
       if (!run.selectedTargetId) run.selectedTargetId = target.cdpTargetId;
-      // DIAG (dev only, 2026-10-08): the logged-in browser's MAIN process grows ~200 MB/s with the tool idle. Each
-      // switch leaves one page-side feature out so the culprit can be named on the real app.
-      const diagOff = (k) => process.env['PHOM_DIAG_NO_' + k] === '1';
-      if (diagOff('CAPTURE')) headerLog('diag-off', { what: 'CAPTURE' }); else
-      attachCapture(client, target);
-      // Apply this run's browser AGENT (a mobile user-agent string, or nothing for the web
-       // agent) on the run's OWN client. No viewport/scale/touch emulation: the window is the
-       // viewport, which is what stopped the game from lagging.
-      if (run.browserAgent) applyBrowserAgent(client, run.browserAgent, run).catch(() => {});
-      // Ensure the WS send-hook is present before the game opens its socket.
-      if (!diagOff('WSHOOK')) wsReplay.injectSession(client, undefined).catch(() => {});
-      // ẨN DANH switch (default OFF) — this document now + every later one (reload / VÀO GAME).
-      if ((!target.type || target.type === 'PAGE') && !diagOff('ANDANH')) anDanh.applyAnDanh(client, anDanhOn).catch(() => {});
-      // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG)
-      // and route its clicks to the coordinator. The boot carries this run's IDENTITY (slot/profile/run)
-      // so every action is self-labelled. Best-effort; a CDP hiccup never blocks attach. On a re-attach
-      // (transient CDP drop → poll re-adds the target with a NEW client) this runs again → header + binding
-      // are reinstalled and the state re-pushed (§11 reattach). (§6.3.2 / §6.3.2.2)
       headerLog('cdp-attach', { runId: run.id, slotId: run.slot, targetId: target.cdpTargetId });
-      // N3 — a fresh secret per attach; every key issued to this run stays valid (a page booted by an earlier attach
-      // keeps working), any other caller is refused in phomHeaderAction.
-      const headerKey = crypto.randomBytes(16).toString('hex');
-      (headerKeys[String(run.id)] || (headerKeys[String(run.id)] = new Set())).add(headerKey);
-      const boot = gameHeader.bootScript({ nonce: headerKey, slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' });
-      // §54 — a new top-level document on this run's PAGE resets its Phỏm state (see onRunDocumentReplaced).
-      if ((!target.type || target.type === 'PAGE') && client.Page && !client.__phomDocNav) {
-        client.__phomDocNav = true;
-        client.Page.enable().catch(() => {});
-        client.Page.frameNavigated((p) => { if (p && p.frame && !p.frame.parentId) onRunDocumentReplaced(run.id, p.frame.url); });
-      }
-      if (!diagOff('HEADER')) headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
-        .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); }).catch(() => {});
-      // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).
-      if (run.proxy && run.proxy.requiresAuth) {
-        bindProxyAuth(client, {
-          runProxy: run.proxy,
-          username: run.proxyUsername || null,
-          resolvePassword: () => proxyConfigStore && run.proxy ? proxyConfigStore.resolvePassword(run.proxy.id) : null,
-          onAuthFailure: (code) => { headerLog('PROXY_AUTH_FAILED', { runId: run.id, slotId: run.slot, code }); send('phom:proxy-auth', { runId: run.id, code }); },
-        }).then((detach) => {
-          run._detachProxyAuth = detach;
-          // §52 — the proxy challenge is now answered by the tool, so the page may finally leave about:blank.
-          // Only the PAGE target navigates, and only once (a re-attach must never reload the game).
-          const pending = run._pendingNavigateUrl;
-          if (pending && (!target.type || target.type === 'PAGE')) {
-            run._pendingNavigateUrl = null;
-            headerLog('PROXY_NAVIGATE', { runId: run.id, slotId: run.slot, watchdog: false });
-            client.Page.navigate({ url: pending }).catch(() => {});
-          }
-        }).catch(() => {});
-      }
+      // 3.2 — every feature that acts on a browser, in order (desktop/phom/features; see features())
+      features().attach({ run, target, client, session: sessions.get(run.id) });
     });
     manager.on('target-removed', (id) => {
       runManager.unregisterTarget(id);
@@ -1287,36 +1255,12 @@ else {
   // the WEB agent overrides nothing. A user-agent override survives navigation, so there is no
   // re-apply listener — and there is no metrics/touch emulation at all, which is what used to
   // render the Cocos canvas at 2–3× the pixels and synthesise a touch event per mouse move.
+  // The cluster's "apply agents" fan-out uses the same agent code as the browser-agent feature.
   async function applyBrowserAgent(client, agent, run) {
-    if (!client || !client.Emulation) return { applied: [], unsupported: ['Emulation'] };
-    const cmds = browserAgent.emulationCommands(agent);
-    const applied = [], unsupported = [];
-    for (const c of cmds) {
-      const short = c.method.split('.')[1];
-      try { await client.Emulation[short](c.params); applied.push(short); } catch { unsupported.push(short); }
-    }
-    if (run) { run._agentApplied = applied; run._agentUnsupported = unsupported; }
-    try { send('phom:agent-applied', { runId: run && run.id, applied, unsupported, agent: browserAgent.publicSnapshot(agent) }); } catch {}
-    return { applied, unsupported };
-  }
-
-  // Only the game's WebSocket is of interest, so only the WebSocket events are subscribed:
-  // the HTTP request/response/loadingFinished/loadingFailed events were a Cocos game's worth of
-  // per-asset traffic crossing CDP for nothing (capture.on('request') ignores everything that is
-  // not a WS frame). Network.enable's buffers are kept small for the same reason — the tool never
-  // reads a response body, so Chromium must not retain them.
-  function attachCapture(client, target) {
-    const { Network } = client;
-    client.__phomCaptureTid = target.cdpTargetId; // the listeners read the CURRENT target of this client
-    Network.enable({ maxTotalBufferSize: 1048576, maxResourceBufferSize: 262144, maxPostDataSize: 0 }).catch(() => { Network.enable().catch(() => {}); });
-    // Listeners once per client: a re-hook only re-enables Network. Registering them again on every re-hook made each
-    // WS frame be handled N times (N growing every 30s while a browser read as stale) — the game lagged more and more.
-    if (client.__phomCaptureAttached) return;
-    client.__phomCaptureAttached = true;
-    Network.webSocketCreated((p, sid) => capture.onWebSocketCreated(client.__phomCaptureTid, p, sid));
-    Network.webSocketFrameSent((p, sid) => capture.onWebSocketFrameSent(client.__phomCaptureTid, p, sid));
-    Network.webSocketFrameReceived((p, sid) => capture.onWebSocketFrameReceived(client.__phomCaptureTid, p, sid));
-    Network.webSocketClosed((p, sid) => capture.onWebSocketClosed(client.__phomCaptureTid, p, sid));
+    const r = await applyAgent(browserAgent, client, agent);
+    if (run) { run._agentApplied = r.applied; run._agentUnsupported = r.unsupported; }
+    try { send('phom:agent-applied', { runId: run && run.id, applied: r.applied, unsupported: r.unsupported, agent: browserAgent.publicSnapshot(agent) }); } catch { /* best effort */ }
+    return r;
   }
 
   // §4/§6 — open ONE profile's browser with its resolved proxy (no direct fallback)
@@ -1324,7 +1268,7 @@ else {
   // native 2×2 window size). The device belongs to the slot (browser profile), so the
   // same device is reapplied every time this slot's browser is (re)opened.
   async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username, agent: agentArg, profileId }) {
-    ensureRunManager(); ensurePhomSessions(); ensureStores(); ensureMemoryWatch();
+    ensureRunManager(); ensurePhomSessions(); ensureStores();
     // PHASE 6.3.2.2 — resolve the browser runtime (custom Chromium OR Google Chrome) per the saved
     // preference. AUTO prefers custom Chromium; if it is unavailable it falls back to Chrome (logged).
     const rt = chromiumRuntime();
@@ -1566,19 +1510,8 @@ else {
     ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); saveStake(cfg && cfg.stake); return phomSessions.setStake(cfg && cfg.stake); }));
     ipcMain.handle('phom:stake-get', () => ({ ok: true, stake: savedStake() }));
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
-    // ẨN DANH switch (default OFF) — forced into every open browser now and into every one opened later.
-    ipcMain.handle('phom:an-danh-get', () => ({ ok: true, on: anDanhOn }));
-    ipcMain.handle('phom:an-danh-set', guarded(async (_e, cfg) => {
-      anDanhOn = !!(cfg && cfg.on);
-      const results = {};
-      for (const run of (runManager ? runManager.list() : [])) {
-        if (run.status === RUN_STATUS.CLOSED) continue;
-        const client = runClientFor(run.id);
-        if (client) results[run.id] = await anDanh.applyAnDanh(client, anDanhOn);
-      }
-      headerLog('AN_DANH_SET', { on: anDanhOn, results });
-      return { ok: true, on: anDanhOn, results };
-    }));
+    // 3.2 — each feature registers its own channels (an-danh: phom:an-danh-get / phom:an-danh-set)
+    features().registerIpc((channel, fn, opts) => ipcMain.handle(channel, opts && opts.guarded ? guarded(fn) : fn));
     ipcMain.handle('phom:ui-snapshot', () => phomUiSnapshot());
     // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
     // saved preference + what each option currently resolves to (so SETUP can show availability).
@@ -1639,7 +1572,7 @@ else {
   });
   app.on('window-all-closed', () => { lifecycleLog('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', () => { lifecycleLog('APP_BEFORE_QUIT', { stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') }); });
-  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); _coseatFlush(); try { if (memWatch) memWatch.stop(); } catch { /* gone */ } }); // §ws-log — never lose the last batch
+  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); _coseatFlush(); try { if (_memoryFeature) _memoryFeature.stop(); } catch { /* gone */ } }); // §ws-log — never lose the last batch
 }
 
 module.exports = { PRODUCT_NAME, GAME_PRODUCT };

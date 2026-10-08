@@ -120,7 +120,9 @@ test('REAL-05: VÀO while seated LEAVES first — a JOIN sent while seated would
 test('REAL-10: a new top-level document resets the browser (header back to VÀO GAME), about:blank excluded', () => {
   const main = readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
   assert.match(main, /function onRunDocumentReplaced\(runId, url\)/);
-  assert.match(main, /client\.Page\.frameNavigated\(\(p\) => \{ if \(p && p\.frame && !p\.frame\.parentId\) onRunDocumentReplaced\(run\.id, p\.frame\.url\); \}\);/);
+  // the top-frame navigation is the doc-nav feature (behaviour: phom-features.test.mjs)
+  assert.match(main, /createDocNavFeature\(\{ onDocument: \(rid, url\) => onRunDocumentReplaced\(rid, url\) \}\)/);
+  assert.match(readFileSync(new URL('../../desktop/phom/features/doc-nav.cjs', import.meta.url), 'utf8'), /if \(p && p\.frame && !p\.frame\.parentId\) onDocument\(run\.id, p\.frame\.url\);/);
   const body = main.slice(main.indexOf('function onRunDocumentReplaced('), main.indexOf('async function closeBrowserRun('));
   assert.match(body, /\^about:/);
   assert.match(body, /phomSessions\.resetBrowser\(rid\)/);

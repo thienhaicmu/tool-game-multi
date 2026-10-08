@@ -79,11 +79,13 @@ test('applyAnDanh replaces the new-document script so a reload gets the current 
 });
 
 test('wiring: main defaults OFF, applies on attach, IPC get/set; preload + tool switch', () => {
+  // 3.2: the switch is the an-danh FEATURE (default off, attach, IPC) — behaviour in phom-features.test.mjs
   const main = read('desktop/phom-main.cjs');
-  assert.match(main, /let anDanhOn = false/);
-  assert.match(main, /anDanh\.applyAnDanh\(client, anDanhOn\)/);
-  assert.match(main, /'phom:an-danh-set'/);
-  assert.match(main, /'phom:an-danh-get'/);
+  assert.match(main, /_anDanhFeature = createAnDanhFeature\(\{/);
+  assert.match(main, /features\(\)\.registerIpc\(/);
+  const feature = read('desktop/phom/features/an-danh.cjs');
+  assert.match(feature, /handle\('phom:an-danh-get'/);
+  assert.match(feature, /handle\('phom:an-danh-set'/);
   const pre = read('desktop/phom-preload.cjs');
   assert.match(pre, /setAnDanh:/);
   const ui = read('ui-phom/phom-qa.js');

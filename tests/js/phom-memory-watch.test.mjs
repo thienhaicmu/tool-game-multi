@@ -50,17 +50,18 @@ test('sampler: ONE long-lived PowerShell loop (not a process per sample), only c
   assert.equal(W.createMemoryWatch({ marker: 'X', spawn: fake, platform: 'linux' }).start(), false, 'Windows only');
 });
 
-test('wiring: started with the first browser, sampled per run profile dir, HIGH logged once, RUNAWAY logged + closed (kill after 4 s), stopped on quit', () => {
+// 3.2: the memory-watch FEATURE (started by the first attach; off with PHOM_FEATURES_OFF=memory-watch). Its decisions
+// (HIGH once, RUNAWAY close + kill, closed runs skipped) are tested in phom-features.test.mjs; this checks the wiring.
+test('wiring: the memory-watch feature samples every run by its profile dir, closes through the tool, stops on quit', () => {
   const main = readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
-  assert.match(main, /ensureRunManager\(\); ensurePhomSessions\(\); ensureStores\(\); ensureMemoryWatch\(\);/);
-  assert.match(main, /process\.env\.PHOM_MEMORY_WATCH === '0'/);
-  assert.match(main, /marker: profilesRootFor\('chromium'\)/, 'a prefix of both profile roots (Chromium and Chrome)');
-  assert.match(main, /byDir\.get\(browserMemoryWatch\.normDir\(run\.profileDir\)\)/);
-  assert.match(main, /if \(verdict === 'HIGH' && !run\._memWarned\) \{ run\._memWarned = true; headerLog\('BROWSER_MEMORY_HIGH', info\); \}/);
-  assert.match(main, /headerLog\('BROWSER_MEMORY_RUNAWAY', info\);/);
-  assert.match(main, /Promise\.race\(\[closeBrowserRun\(rid\), new Promise\(\(r\) => setTimeout\(r, 4000\)\)\]\)/);
+  assert.match(main, /_memoryFeature = createMemoryWatchFeature\(\{/);
+  assert.match(main, /marker: \(\) => profilesRootFor\('chromium'\)/, 'a prefix of both profile roots (Chromium and Chrome)');
+  assert.match(main, /closeRun: \(rid\) => closeBrowserRun\(rid\)/);
   assert.match(main, /'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY'\]\)/, 'both always reach coseat.jsonl');
-  assert.match(main, /if \(memWatch\) memWatch\.stop\(\);/);
+  assert.match(main, /if \(_memoryFeature\) _memoryFeature\.stop\(\);/);
+  const feature = readFileSync(new URL('../../desktop/phom/features/memory-watch.cjs', import.meta.url), 'utf8');
+  assert.match(feature, /attach\(\) \{ start\(\); \}/, 'sampling starts with the first browser');
+  assert.match(feature, /killWaitMs = 4000/);
   const ui = readFileSync(new URL('../../ui-phom/phom-qa.js', import.meta.url), 'utf8');
   assert.match(ui, /case 'BROWSER_MEMORY_RUNAWAY':/);
   assert.match(ui, /case 'LOOP_GUARD':/);

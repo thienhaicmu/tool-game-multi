@@ -18,6 +18,7 @@
     "desktop/browser-run/phom-device-profiles-store.cjs",
     "desktop/cdp/**/*",
     "desktop/protocol/phom/**/*",
+    "desktop/phom/**/*",
     "desktop/protocol/cocos-lobby-entry.cjs",
     "desktop/protocol/aviator-entry-descriptor.cjs",
     "desktop/protocol/numeric.cjs",

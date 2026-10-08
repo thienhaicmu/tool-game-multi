@@ -26,8 +26,8 @@ test('stale really locks the bar — which is why liveness must not depend on ta
 });
 
 test('a re-hook re-enables Network but never registers the WS listeners twice on one client', () => {
-  const main = readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
-  const fn = main.slice(main.indexOf('function attachCapture('), main.indexOf('function attachCapture(') + 1500);
+  // the capture feature (behaviour incl. "subscribed once per client": phom-features.test.mjs)
+  const fn = readFileSync(new URL('../../desktop/phom/features/capture.cjs', import.meta.url), 'utf8');
   const guard = fn.indexOf('if (client.__phomCaptureAttached) return;');
   assert.ok(guard > fn.indexOf('Network.enable(') && guard < fn.indexOf('Network.webSocketFrameReceived('));
   assert.match(fn, /Network\.webSocketFrameReceived\(\(p, sid\) => capture\.onWebSocketFrameReceived\(client\.__phomCaptureTid, p, sid\)\)/);

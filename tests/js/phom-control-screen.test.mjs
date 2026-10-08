@@ -103,9 +103,9 @@ test('bar: frames stopped arriving → MẤT DỮ LIỆU + TẢI LẠI (never a 
   assert.equal(s.canAct, false, 'no table actions while the tool is blind');
   // main: the freshness comes from the coordinator's lastFrameAt, and a stale run gets its capture re-installed
   assert.match(main, /dataStale: !!\(opened && b\.lastFrameAt != null && \(nowMs\(\) - Number\(b\.lastFrameAt\)\) > HEADER_STALE_MS\)/);
-  assert.match(main, /function maybeRehookCapture\(browsers\)/);
-  assert.match(main, /maybeRehookCapture\(browsers\);/);
-  assert.match(main, /attachCapture\(sess\.client, \{ cdpTargetId: t \}\)/);
+  // the re-hook is the capture feature's push hook (behaviour: phom-features.test.mjs)
+  assert.match(main, /createCaptureFeature\(\{ capture, targetsOf: runTargets/);
+  assert.match(main, /features\(\)\.push\(\{ run:/);
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
   assert.match(coord, /lastFrameAt: c\.lastFrameAt\b/);
 });

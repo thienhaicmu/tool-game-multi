@@ -27,7 +27,7 @@ test('per-frame update/hands are COALESCED (leading+trailing throttle), not sent
 });
 
 test('header push DEDUPES per browser — an unchanged state skips the CDP evaluate (kills the storm)', () => {
-  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('function pushHeaderStates(') + 2200);
+  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('const BROADCAST_MS'));
   assert.match(fn, /const json = JSON\.stringify\(gameHeader\.deriveHeaderState\(view\)\)/);
   assert.match(fn, /if \(headerLastPushed\[rid\] === json\) continue;/);
   assert.match(fn, /headerLastPushed\[rid\] = json;/);
@@ -57,22 +57,23 @@ test('no device-metrics / touch emulation is applied to a browser any more', () 
   for (const forbidden of ['setDeviceMetricsOverride', 'setTouchEmulationEnabled', 'setEmitTouchEventsForMouse']) {
     assert.equal(main.includes(forbidden), false, forbidden + ' is what made the game lag');
   }
-  // the agent applies the user agent and nothing else
-  assert.match(main, /async function applyBrowserAgent\(client, agent, run\)/);
-  assert.match(main, /browserAgent\.emulationCommands\(agent\)/);
+  // the agent applies the user agent and nothing else — the browser-agent feature (behaviour: phom-features.test.mjs)
+  assert.match(read('desktop/phom/features/browser-agent.cjs'), /browserAgent\.emulationCommands\(agent\)/);
+  assert.match(main, /const r = await applyAgent\(browserAgent, client, agent\);/, 'the cluster fan-out uses the same code');
   const agentSrc = read('desktop/browser-run/browser-agent.cjs');
   assert.match(agentSrc, /method: 'Emulation\.setUserAgentOverride'/);
 });
 
 test('capture subscribes to the WebSocket events ONLY, with bounded Network buffers', () => {
-  const fn = main.slice(main.indexOf('function attachCapture('), main.indexOf('function attachCapture(') + 1200);
+  const fn = read('desktop/phom/features/capture.cjs'); // the capture feature (behaviour: phom-features.test.mjs)
   for (const ws of ['webSocketCreated', 'webSocketFrameSent', 'webSocketFrameReceived', 'webSocketClosed']) {
     assert.ok(fn.includes(ws), 'WS event ' + ws + ' is still routed');
   }
   for (const http of ['requestWillBeSent', 'responseReceived', 'loadingFinished', 'loadingFailed']) {
     assert.equal(fn.includes(http), false, http + ' is pure overhead for Phỏm');
   }
-  assert.match(fn, /Network\.enable\(\{ maxTotalBufferSize: \d+, maxResourceBufferSize: \d+, maxPostDataSize: 0 \}\)/);
+  assert.match(fn, /NETWORK_BUFFERS = Object\.freeze\(\{ maxTotalBufferSize: \d+, maxResourceBufferSize: \d+, maxPostDataSize: 0 \}\)/);
+  assert.match(fn, /Network\.enable\(\{ \.\.\.NETWORK_BUFFERS \}\)/);
   assert.match(fn, /\.catch\(\(\) => \{ Network\.enable\(\)/, 'an older Chromium still gets a plain enable');
 });
 

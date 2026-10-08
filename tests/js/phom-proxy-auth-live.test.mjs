@@ -179,8 +179,10 @@ test('§52 wiring: auth-first launch, navigate after binding, page target only, 
   const main = fs.readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
   assert.match(main, /const authFirst = !!\(gate\.runProxy && gate\.runProxy\.requiresAuth\);/);
   assert.match(main, /run\.launcher\.open\(authFirst \? 'about:blank' : String\(url \|\| ''\)\)/);
-  assert.match(main, /if \(pending && \(!target\.type \|\| target\.type === 'PAGE'\)\) \{/);
-  assert.match(main, /run\._pendingNavigateUrl = null;\s*headerLog\('PROXY_NAVIGATE', \{ runId: run\.id, slotId: run\.slot, watchdog: false \}\);\s*client\.Page\.navigate\(\{ url: pending \}\)/);
+  // the bind + navigate-once is the proxy-auth feature (behaviour: phom-features.test.mjs)
+  const feature = fs.readFileSync(new URL('../../desktop/phom/features/proxy-auth.cjs', import.meta.url), 'utf8');
+  assert.match(feature, /if \(pending && isPage\(target\)\) \{/);
+  assert.match(feature, /run\._pendingNavigateUrl = null;\s*log\('PROXY_NAVIGATE', \{ runId: run\.id, slotId: run\.slot, watchdog: false \}\);\s*client\.Page\.navigate\(\{ url: pending \}\)/);
   // …and never left on about:blank: a watchdog loads the game if the bind never ran
   assert.match(main, /if \(authFirst\) \{[\s\S]*?PROXY_NAVIGATE_WATCHDOG_MS = 12000[\s\S]*?if \(!pending \|\| run\.status === RUN_STATUS\.CLOSED\) return;/);
   const handler = fs.readFileSync(new URL('../../desktop/browser-run/proxy-auth-handler.cjs', import.meta.url), 'utf8');
