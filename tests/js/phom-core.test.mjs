@@ -10,7 +10,7 @@ const { createFeatureSet, parseOff } = require('../../desktop/phom/core/feature-
 test('a browser session is created on first use, has one namespace per feature, and is the same object after', () => {
   const reg = createSessionRegistry();
   const s = reg.get('BR-1');
-  assert.deepEqual(Object.keys(s).sort(), ['capture', 'enter', 'header', 'memory', 'origin', 'recent', 'runId']);
+  assert.deepEqual(Object.keys(s).sort(), ['capture', 'enter', 'header', 'memory', 'origin', 'recent', 'runId', 'window']);
   assert.equal(reg.get('BR-1'), s);
   assert.equal(reg.peek('BR-2'), null, 'peek never creates');
   assert.equal(reg.size(), 1);

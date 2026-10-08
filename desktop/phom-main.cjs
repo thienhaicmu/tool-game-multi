@@ -41,7 +41,7 @@ const { createProxyAuthFeature } = require('./phom/features/proxy-auth.cjs');
 const { createEnterGameFeature } = require('./phom/features/enter-game.cjs');
 const { createLoginOriginFeature } = require('./phom/features/login-origin.cjs');
 const { createHeaderFeature } = require('./phom/features/header.cjs');
-const windowLock = require('./protocol/phom/window-lock.cjs');
+const { createWindowFramesFeature } = require('./phom/features/window-frames.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -456,8 +456,6 @@ else {
   // tool is on (P1 TL · P2 TR · P3 BL · tool BR, reserves behind the tool), whatever the number of monitors. With 2+
   // monitors the old per-monitor layout made a browser fill a whole screen.
   function clusterFourWindowArrangement() { return arrangeClusterWindows([currentWorkArea()], { gap: 8 }); }
-  // The window of a slot: A/B/C = the three playing places; a RESERVE browser (D/E, not playing) sits exactly where
-  // the Phỏm tool is, behind it.
   // MỨC CƯỢC — the last stake the user picked is remembered across restarts (stake.json), not picked again each time.
   function stakePath() { return path.join(phomRoot(), 'stake.json'); }
   function savedStake() { try { const v = Number(JSON.parse(fs.readFileSync(stakePath(), 'utf8')).stake); return Number.isFinite(v) && v > 0 ? v : null; } catch { return null; } }
@@ -465,8 +463,8 @@ else {
     const v = Number(stake);
     try { ensureDir(phomRoot()); fs.writeFileSync(stakePath(), JSON.stringify({ stake: Number.isFinite(v) && v > 0 ? v : null }, null, 2), 'utf8'); } catch { /* best effort */ }
   }
-  // The quarter each window takes follows the user's LAYOUT (window-layout.cjs; default P2|P3 over P1|Tool), saved in
-  // window-layout.json. A reserve (D/E) sits in the tool's quarter, behind it.
+  // The user's LAYOUT (window-layout.cjs; default P2|P3 over P1|Tool), saved in window-layout.json — the window-frames
+  // feature places every window by it.
   function windowLayoutPath() { return path.join(phomRoot(), 'window-layout.json'); }
   let _windowLayout = null;
   function currentWindowLayout() {
@@ -480,81 +478,14 @@ else {
     try { ensureDir(phomRoot()); fs.writeFileSync(windowLayoutPath(), JSON.stringify(_windowLayout, null, 2), 'utf8'); } catch { /* best effort */ }
     return _windowLayout;
   }
-  function windowRectForSlot(slot) {
-    const item = { A: 'A', B: 'B', C: 'C', D: 'D', E: 'E' }[slot] || 'TOOL';
-    let r = null;
-    try { r = windowLayout.rectForItem(item, clusterFourWindowArrangement(), currentWindowLayout()); } catch { r = null; }
-    return r || gridRectForSlot(item === 'B' || item === 'C' ? item : 'A');
-  }
-  // Move a RUNNING browser's window (CDP Browser.setWindowBounds through its own page client). Best effort.
-  async function moveRunWindow(runId, rect) {
-    const client = runClientFor(runId);
-    if (!client || !client.Browser || !rect) return false;
-    try {
-      const { windowId } = await client.Browser.getWindowForTarget({});
-      await client.Browser.setWindowBounds({ windowId, bounds: { windowState: 'normal' } }).catch(() => {});
-      await client.Browser.setWindowBounds({ windowId, bounds: { left: Math.round(rect.x), top: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) } });
-      return true;
-    } catch { return false; }
-  }
-  // KHÓA KHUNG (user 2026-10-06): every open browser is kept in its standard frame — maximized / full screen / resized /
-  // moved → put back (window-lock.cjs). One CDP call per open browser every 1.5 s; PHOM_WINDOW_LOCK=0 turns it off.
-  const _lockAccepted = {}; // runId → { rect, bounds } Chromium really took for that rect
-  let _lockBusy = false;
-  async function enforceWindowFrames() {
-    if (_lockBusy || process.env.PHOM_WINDOW_LOCK === '0') return;
+  // Every OPEN browser with its window place: A/B/C = the three playing places, D/E = the reserves (behind the tool).
+  function openRunSlots() {
     const snap = phomCluster && phomCluster.active() ? phomCluster.getClusterSnapshot() : null;
-    if (!snap) return;
-    _lockBusy = true;
-    try {
-      const open = [];
-      for (const s of SLOTS_ABC) { const p = snap.profiles[s]; if (p && p.profileId && p.browserState === 'OPEN') open.push([p.profileId, s]); }
-      for (const r of RESERVE_SLOTS) { const p = snap.reserves && snap.reserves[r]; if (p && p.profileId && p.browserState === 'OPEN') open.push([p.profileId, r]); }
-      for (const [runId, slot] of open) {
-        const client = runClientFor(runId);
-        if (!client || !client.Browser) continue;
-        let rect = null; try { rect = windowRectForSlot(slot); } catch { rect = null; }
-        if (!rect) continue;
-        try {
-          const { windowId, bounds } = await client.Browser.getWindowForTarget({});
-          const why = windowLock.reframeReason(bounds, rect, _lockAccepted[runId]);
-          if (!why) continue;
-          await moveRunWindow(runId, rect);
-          const after = await client.Browser.getWindowBounds({ windowId }).catch(() => null);
-          if (after && after.bounds) _lockAccepted[runId] = { rect: windowLock.toBounds(rect), bounds: after.bounds };
-          headerLog('window-reframed', { runId, slotId: slot, reason: why });
-        } catch { /* the browser may be closing */ }
-      }
-    } finally { _lockBusy = false; }
-  }
-  function startWindowLock() {
-    const t = setInterval(() => { enforceWindowFrames().catch(() => {}); }, windowLock.CHECK_MS);
-    if (t && t.unref) t.unref();
-  }
-  // Re-tile all owned session runs into the 2×2 grid + place the control window BR.
-  function restoreLayout() {
-    try {
-      const wa = currentWorkArea();
-      // The Tool is the 4th quarter (bottom-right) of the 2×2 grid on its own monitor. Falls back to the
-      // bottom-right quadrant if the arrangement is unavailable.
-      let control = null;
-      try { control = windowLayout.rectForItem('TOOL', clusterFourWindowArrangement(), currentWindowLayout()); } catch { control = null; }
-      if (!control) control = toolWindowBounds(wa, { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight });
-      if (shell && !shell.isDestroyed() && control) shell.setBounds({ x: Math.round(control.x), y: Math.round(control.y), width: Math.round(control.width), height: Math.round(control.height) });
-      // XẾP CỬA SỔ also puts every OPEN browser back into its quarter (P1/P2/P3) or behind the tool (P4/P5) — no
-      // reopen needed to fix windows that were moved or opened full-size.
-      try {
-        const snap = phomCluster && phomCluster.active() ? phomCluster.getClusterSnapshot() : null;
-        if (snap) {
-          for (const s of SLOTS_ABC) { const p = snap.profiles[s]; if (p && p.profileId && p.browserState === 'OPEN') moveRunWindow(p.profileId, windowRectForSlot(s)).catch(() => {}); }
-          for (const r of RESERVE_SLOTS) { const p = snap.reserves && snap.reserves[r]; if (p && p.profileId && p.browserState === 'OPEN') moveRunWindow(p.profileId, windowRectForSlot(r)).catch(() => {}); }
-        }
-      } catch { /* best effort */ }
-      // reserve browsers (4th/5th profile) open at the tool's place — keep the tool in front of them
-      if (shell && !shell.isDestroyed()) shell.moveTop();
-      // Only our own runs are moved (through each run's own CDP client); no other window is touched.
-    } catch { /* best effort */ }
-    return { ok: true };
+    const out = [];
+    if (!snap) return out;
+    for (const s of SLOTS_ABC) { const p = snap.profiles[s]; if (p && p.profileId && p.browserState === 'OPEN') out.push([p.profileId, s]); }
+    for (const r of RESERVE_SLOTS) { const p = snap.reserves && snap.reserves[r]; if (p && p.profileId && p.browserState === 'OPEN') out.push([p.profileId, r]); }
+    return out;
   }
 
   // ---- VÀO GAME PHỎM — trigger the VERIFIED entry action id `vgcg_8` (§1-§5) ---------------
@@ -817,11 +748,24 @@ else {
 
   // ---- 3.2 features: what the tool does to a browser, one module each (desktop/phom/features) ----
   // Built on first use (they reference functions declared further down). PHOM_FEATURES_OFF=<id,…> switches any off.
-  let _features = null; let _memoryFeature = null; let _anDanhFeature = null; let _enterFeature = null; let _headerFeature = null;
+  let _features = null; let _memoryFeature = null; let _anDanhFeature = null; let _enterFeature = null; let _headerFeature = null; let _windowFeature = null;
   const enterFeature = () => (features(), _enterFeature);
   const headerFeature = () => (features(), _headerFeature);
+  const windows = () => (features(), _windowFeature);
   function features() {
     if (_features) return _features;
+    _windowFeature = createWindowFramesFeature({
+      sessions,
+      layout: { get: currentWindowLayout, set: setWindowLayout, defaults: windowLayout.DEFAULT_LAYOUT },
+      rectForItem: (item, layout) => windowLayout.rectForItem(item, clusterFourWindowArrangement(), layout),
+      fallbackRect: gridRectForSlot,
+      toolFallback: () => toolWindowBounds(currentWorkArea(), { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight }),
+      openRuns: openRunSlots,
+      clientFor: runClientFor,
+      tool: () => shell,
+      lockOn: () => features().enabled('window-frames'), // PHOM_FEATURES_OFF=window-frames stops KHÓA KHUNG
+      log: headerLog,
+    });
     _enterFeature = createEnterGameFeature({
       sessions,
       enter: (rid) => phomEnterGame(rid),
@@ -893,6 +837,7 @@ else {
         _headerFeature,
         createProxyAuthFeature({ bindProxyAuth, resolvePassword: (id) => (proxyConfigStore ? proxyConfigStore.resolvePassword(id) : null), log: headerLog, onAuthFailure: (run, code) => send('phom:proxy-auth', { runId: run.id, code }) }),
         _memoryFeature,
+        _windowFeature,
       ],
     });
     return _features;
@@ -992,8 +937,8 @@ else {
     if (phomSessions && oldRun && String(oldRun) !== String(res.playingRun)) replaced = !!phomSessions.swapRuns(oldRun, res.playingRun).replaced;
     // N4 — the slot's browser was already CLOSED: it moved to the reserve position dead — drop it from the session
     if (phomSessions && oldRun && !res.benchedRun) phomSessions.removeRun(oldRun);
-    await moveRunWindow(res.playingRun, windowRectForSlot(s));
-    if (res.benchedRun) await moveRunWindow(res.benchedRun, windowRectForSlot(r));
+    await windows().move(res.playingRun, windows().rectFor(s));
+    if (res.benchedRun) await windows().move(res.benchedRun, windows().rectFor(r));
     try { if (shell && !shell.isDestroyed()) shell.moveTop(); } catch { /* the tool stays where it is */ }
     const after = phomCluster.getClusterSnapshot().profiles[s];
     lifecycleLog('SLOT_SWAPPED', { slot: s, reserve: r, playingRun: res.playingRun, benchedRun: res.benchedRun, replacedInSession: replaced });
@@ -1148,7 +1093,7 @@ else {
     // the page's viewport is simply that window minus the browser chrome — nothing is emulated or scaled.
     const slotIndex = { A: 1, B: 2, C: 3 }[slot] || 1;
     let windowRect;
-    try { windowRect = windowRectForSlot(slot); } catch { windowRect = gridRectForSlot(slotIndex === 1 ? 'A' : slot); }
+    try { windowRect = windows().rectFor(slot); } catch { windowRect = gridRectForSlot(slotIndex === 1 ? 'A' : slot); }
     // The executable goes INTO createRun: the launcher is built inside it and reads run.chromeExecutable once. Setting
     // it afterwards (as before 3.1.30) was too late — "Chrome" silently launched the custom Chromium, and without the
     // sandbox ACL step that Chrome skips, so on a fresh machine no window appeared while the tool said it opened.
@@ -1351,9 +1296,7 @@ else {
       try { const j = ensureRoundJournal(); j.flush('OPEN_FOLDER'); fs.mkdirSync(j.dir(), { recursive: true }); const err = await electronShell.openPath(j.dir()); return err ? { ok: false, error: { code: 'OPEN_FAILED', message: err } } : { ok: true, dir: j.dir() }; }
       catch (e) { return { ok: false, error: { code: 'OPEN_FAILED', message: safeMsg(e) } }; }
     });
-    // BỐ CỤC — which quarter each window takes (P1/P2/P3/Tool); set = save + arrange at once
-    ipcMain.handle('phom:layout-get', () => ({ ok: true, layout: currentWindowLayout(), defaultLayout: { ...windowLayout.DEFAULT_LAYOUT } }));
-    ipcMain.handle('phom:layout-set', guarded((_e, cfg) => { const layout = setWindowLayout(cfg && cfg.layout); restoreLayout(); return { ok: true, layout }; }));
+    // BỐ CỤC / XẾP CỬA SỔ (phom:layout-get/-set, phom:restore-layout) — the window-frames feature
     ipcMain.handle('phom:reserve-reopen', guarded(async (_e, cfg) => reopenReserve(cfg && cfg.reserve)));
     ipcMain.handle('phom:slot-swap', guarded(async (_e, cfg) => swapSlot(cfg && cfg.slot, cfg && cfg.reserve)));
     ipcMain.handle('phom:slot-replace', guarded(async (_e, cfg) => replaceSlot(cfg && cfg.slot, cfg && cfg.profileId ? String(cfg.profileId) : null)));
@@ -1364,7 +1307,6 @@ else {
     ipcMain.handle('phom:cluster-snapshot', () => (phomCluster ? phomCluster.getClusterSnapshot() : null));
 
     // 2×2 workspace layout controls (§9/§21).
-    ipcMain.handle('phom:restore-layout', guarded(() => restoreLayout()));
     // VÀO GAME PHỎM — trigger the verified `vgcg_8` entry action via the site's own Cocos node.
     ipcMain.handle('phom:enter-game', guarded((_e, runId) => phomEnterGame(String(runId == null ? '' : runId))));
 
@@ -1381,7 +1323,7 @@ else {
     licenseGuard.initializeAsync().then((status) => { send('phom:license', { ...status, gameProduct: GAME_PRODUCT }); }).catch(() => {});
     registerIpc();
     createWindow();
-    startWindowLock();
+    windows().start();
     app.on('activate', () => { if (BrowserWindow.getAllWindows().length === 0) createWindow(); });
   });
   app.on('window-all-closed', () => { lifecycleLog('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });

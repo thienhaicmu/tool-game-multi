@@ -33,13 +33,83 @@ test('reframe: bounds Chromium really took for the frame are accepted — never 
   assert.notEqual(lock.reframeReason(took, { ...rect, x: 980 }, accepted), null, 'the layout changed: the new frame wins');
 });
 
-test('wiring: every 1.5 s each OPEN browser (P1–P3 + reserves) is checked and put back with the same move as XẾP CỬA SỔ', () => {
-  const main = read('desktop/phom-main.cjs');
-  assert.match(main, /async function enforceWindowFrames\(\) \{/);
-  assert.match(main, /process\.env\.PHOM_WINDOW_LOCK === '0'\) return;/);
-  assert.match(main, /const why = windowLock\.reframeReason\(bounds, rect, _lockAccepted\[runId\]\);\s*if \(!why\) continue;\s*await moveRunWindow\(runId, rect\);/);
-  assert.match(main, /createWindow\(\);\s*startWindowLock\(\);/);
+// ---- the window-frames feature, against fake browser windows (CDP Browser domain) ----
+const { createWindowFramesFeature } = require('../../desktop/phom/features/window-frames.cjs');
+const { createSessionRegistry } = require('../../desktop/phom/core/session-registry.cjs');
+function mkWindows({ lockOn = true, takes = null } = {}) {
+  const wins = {}; const logs = []; const tool = { bounds: null, top: 0, isDestroyed: () => false, setBounds(b) { this.bounds = b; }, moveTop() { this.top += 1; } };
+  const client = (rid) => ({ Browser: {
+    getWindowForTarget: async () => ({ windowId: rid, bounds: { ...wins[rid] } }),
+    getWindowBounds: async () => ({ bounds: { ...wins[rid] } }),
+    setWindowBounds: async ({ bounds }) => { const b = takes ? takes(bounds) : bounds; wins[rid] = { ...wins[rid], ...b, windowState: b.windowState || wins[rid].windowState }; },
+  } });
+  const rects = { A: { x: 0, y: 0, width: 900, height: 500 }, B: { x: 960, y: 0, width: 900, height: 500 }, D: { x: 960, y: 520, width: 900, height: 500 }, TOOL: { x: 960, y: 520, width: 900, height: 500 } };
+  let saved = { a: 1 };
+  const f = createWindowFramesFeature({
+    sessions: createSessionRegistry(),
+    layout: { get: () => saved, set: (l) => { saved = l; return l; }, defaults: { a: 1 } },
+    rectForItem: (item) => rects[item] || null,
+    fallbackRect: () => ({ x: 1, y: 1, width: 2, height: 2 }),
+    toolFallback: () => null,
+    openRuns: () => Object.keys(wins).map((rid) => [rid, rid === 'BR-1' ? 'A' : rid === 'BR-2' ? 'B' : 'D']),
+    clientFor: (rid) => (wins[rid] ? client(rid) : null),
+    tool: () => tool,
+    lockOn: () => lockOn,
+    log: (e, d) => logs.push([e, d]),
+  });
+  return { f, wins, logs, tool };
+}
+
+test('KHÓA KHUNG: a maximized / moved browser is put back into its frame; a minimized one is left alone; off = untouched', async () => {
+  const w = mkWindows();
+  w.wins['BR-1'] = { left: 0, top: 0, width: 1920, height: 1040, windowState: 'maximized' };
+  w.wins['BR-2'] = { left: 100, top: 100, width: 900, height: 500, windowState: 'normal' };
+  w.wins['BR-4'] = { left: 5, top: 5, width: 10, height: 10, windowState: 'minimized' };
+  await w.f.enforce();
+  assert.deepEqual(w.wins['BR-1'], { left: 0, top: 0, width: 900, height: 500, windowState: 'normal' });
+  assert.deepEqual([w.wins['BR-2'].left, w.wins['BR-2'].top], [960, 0]);
+  assert.equal(w.wins['BR-4'].width, 10, 'minimized: the user hid it');
+  assert.deepEqual(w.logs.map(([, d]) => d.reason), ['MAXIMIZED', 'MOVED']);
+  const off = mkWindows({ lockOn: false });
+  off.wins['BR-1'] = { left: 0, top: 0, width: 1920, height: 1040, windowState: 'maximized' };
+  await off.f.enforce();
+  assert.equal(off.wins['BR-1'].windowState, 'maximized', 'PHOM_FEATURES_OFF=window-frames');
   assert.equal(lock.CHECK_MS, 1500);
+});
+
+test('KHÓA KHUNG never fights Chromium: the bounds it really took for a rect become the reference', async () => {
+  const w = mkWindows({ takes: (b) => (b.width ? { ...b, width: b.width + 20 } : b) }); // e.g. a minimum width / DPI rounding
+  w.wins['BR-1'] = { left: 300, top: 300, width: 900, height: 500, windowState: 'normal' };
+  await w.f.enforce();
+  await w.f.enforce();
+  await w.f.enforce();
+  assert.equal(w.logs.length, 1, 'put back once, then accepted');
+});
+
+test('XẾP CỬA SỔ / layout IPC: the tool to its quarter, every open browser back, the tool in front of the reserves', async () => {
+  const w = mkWindows();
+  w.wins['BR-1'] = { left: 400, top: 400, width: 900, height: 500, windowState: 'normal' };
+  w.wins['BR-5'] = { left: 0, top: 0, width: 500, height: 300, windowState: 'normal' };
+  const ipc = {};
+  w.f.registerIpc((ch, fn, opts) => { ipc[ch] = { fn, guarded: !!(opts && opts.guarded) }; });
+  assert.deepEqual(Object.keys(ipc).sort(), ['phom:layout-get', 'phom:layout-set', 'phom:restore-layout']);
+  assert.equal(ipc['phom:layout-set'].guarded, true); assert.equal(ipc['phom:restore-layout'].guarded, true);
+  assert.deepEqual(ipc['phom:layout-get'].fn(), { ok: true, layout: { a: 1 }, defaultLayout: { a: 1 } });
+  const r = ipc['phom:layout-set'].fn(null, { layout: { a: 2 } });
+  assert.deepEqual(r, { ok: true, layout: { a: 2 } });
+  await new Promise((res) => setImmediate(res));
+  assert.deepEqual(w.tool.bounds, { x: 960, y: 520, width: 900, height: 500 });
+  assert.equal(w.tool.top, 1);
+  assert.deepEqual([w.wins['BR-1'].left, w.wins['BR-1'].top], [0, 0]);
+  assert.deepEqual([w.wins['BR-5'].left, w.wins['BR-5'].top], [960, 520], 'a reserve sits behind the tool');
+});
+
+test('wiring: main starts the lock with the tool window and builds window-frames as a feature', () => {
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /createWindow\(\);\s*windows\(\)\.start\(\);/);
+  assert.match(main, /lockOn: \(\) => features\(\)\.enabled\('window-frames'\),/);
+  assert.match(main, /openRuns: openRunSlots,/);
+  assert.equal(/PHOM_WINDOW_LOCK|enforceWindowFrames|_lockAccepted|moveRunWindow|windowRectForSlot|function restoreLayout/.test(main), false);
 });
 
 test('no bars over the page: the launch carries --disable-features=LaunchOnStartup (once) and the "no Google keys" env', async () => {

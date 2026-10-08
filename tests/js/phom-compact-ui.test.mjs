@@ -60,8 +60,11 @@ test('the header action router acts on ONE browser via the run-scoped coordinato
 test('the Tool is the 4th window of the deterministic cluster arrangement', () => {
   assert.match(main, /arrangeClusterWindows/);
   // each window's quarter comes from the user's layout (window-layout.cjs); a reserve sits where the tool is
-  assert.match(main, /function windowRectForSlot[\s\S]*?windowLayout\.rectForItem\(item, clusterFourWindowArrangement\(\), currentWindowLayout\(\)\)/);
-  assert.match(main, /control = windowLayout\.rectForItem\('TOOL', clusterFourWindowArrangement\(\), currentWindowLayout\(\)\)/);
+  // the window-frames feature (behaviour: phom-window-lock.test.mjs)
+  assert.match(main, /rectForItem: \(item, layout\) => windowLayout\.rectForItem\(item, clusterFourWindowArrangement\(\), layout\),/);
+  assert.match(main, /layout: \{ get: currentWindowLayout, set: setWindowLayout, defaults: windowLayout\.DEFAULT_LAYOUT \},/);
+  const wf = read('desktop/phom/features/window-frames.cjs');
+  assert.match(wf, /control = deps\.rectForItem\('TOOL', layout\.get\(\)\)/);
 });
 
 test('status line: số bàn (click = copy) · cược · cùng bàn · còn lại N lá — the remaining-card list itself is not shown', () => {
@@ -157,7 +160,10 @@ test('every game window is a QUARTER of the screen: the 2×2 grid on the tool\'s
   assert.equal(a.placement, 'GRID_2x2');
   for (const i of [1, 2, 3]) { assert.ok(a.slots[i].width <= 960 && a.slots[i].height <= 520, 'slot ' + i + ' is a quarter'); }
   // XẾP CỬA SỔ moves the open browsers back into their quarter / behind the tool
-  const r = main.slice(main.indexOf('function restoreLayout('), main.indexOf('function restoreLayout(') + 2400);
-  assert.match(r, /moveRunWindow\(p\.profileId, windowRectForSlot\(s\)\)/);
-  assert.match(r, /moveRunWindow\(p\.profileId, windowRectForSlot\(r\)\)/);
+  const wf = read('desktop/phom/features/window-frames.cjs');
+  const r = wf.slice(wf.indexOf('function arrange('), wf.indexOf('function arrange(') + 1400);
+  assert.match(r, /for \(const \[runId, slot\] of deps\.openRuns\(\)\) move\(runId, rectFor\(slot\)\)/);
+  const open = main.slice(main.indexOf('function openRunSlots('), main.indexOf('function openRunSlots(') + 700);
+  assert.match(open, /for \(const s of SLOTS_ABC\)/);
+  assert.match(open, /for \(const r of RESERVE_SLOTS\)/);
 });

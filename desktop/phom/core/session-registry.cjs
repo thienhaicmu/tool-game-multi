@@ -13,6 +13,7 @@
 //   session.capture     — the WS capture hook (last re-hook time)
 //   session.memory      — the memory watch (warned / killed)
 //   session.origin      — the login origin / account name followed into the profile
+//   session.window      — the frame lock (the bounds Chromium really took for its rect)
 //   session.recent      — the tool's last steps for this browser (event@time), for diagnostics
 // ---------------------------------------------------------------------------
 
@@ -26,6 +27,7 @@ function newSession(runId) {
     capture: { lastRehookAt: 0 },
     memory: { warned: false, killed: false },
     origin: { lastTopUrl: null, asked: false, saved: null },
+    window: { accepted: null },
     recent: [],
   };
 }

@@ -152,9 +152,9 @@ test('wiring: main runs every browser feature through ONE set, in order (send ho
   const start = main.indexOf('_features = createFeatureSet({');
   const block = main.slice(start, main.indexOf('return _features;', start));
   // enter-game before header on push: the bar shows the entering state the auto entry just set
-  const order = ['createCaptureFeature', 'createBrowserAgentFeature', 'createWsHookFeature', '_anDanhFeature', 'createDocNavFeature', '_enterFeature,', 'createLoginOriginFeature', '_headerFeature,', 'createProxyAuthFeature', '_memoryFeature'];
+  const order = ['createCaptureFeature', 'createBrowserAgentFeature', 'createWsHookFeature', '_anDanhFeature', 'createDocNavFeature', '_enterFeature,', 'createLoginOriginFeature', '_headerFeature,', 'createProxyAuthFeature', '_memoryFeature,', '_windowFeature,'];
   const at = order.map((k) => block.indexOf(k));
-  assert.ok(at.every((i) => i > 0), 'all ten present');
+  assert.ok(at.every((i) => i > 0), 'all eleven present');
   assert.deepEqual([...at].sort((a, b) => a - b), at, 'in this order');
   assert.match(main, /features\(\)\.attach\(\{ run, target, client, session: sessions\.get\(run\.id\) \}\);/);
   assert.match(main, /features\(\)\.push\(\{ run, session: sessions\.get\(rid\), view, browser:/);

@@ -31,9 +31,11 @@ test('placing an item swaps with the one already there — always one window per
 
 test('wiring: windows + tool follow the saved layout; IPC get/set saves and arranges; a Bố cục dialog in the footer', () => {
   const main = read('desktop/phom-main.cjs');
-  assert.match(main, /function windowRectForSlot\(slot\) \{[\s\S]*?windowLayout\.rectForItem\(item, clusterFourWindowArrangement\(\), currentWindowLayout\(\)\)/);
-  assert.match(main, /control = windowLayout\.rectForItem\('TOOL', clusterFourWindowArrangement\(\), currentWindowLayout\(\)\)/);
-  assert.match(main, /ipcMain\.handle\('phom:layout-set', guarded\(\(_e, cfg\) => \{ const layout = setWindowLayout\(cfg && cfg\.layout\); restoreLayout\(\);/);
+  // the window-frames feature places every window by the layout; its IPC is behaviour-tested in phom-window-lock.test.mjs
+  assert.match(main, /rectForItem: \(item, layout\) => windowLayout\.rectForItem\(item, clusterFourWindowArrangement\(\), layout\),/);
+  assert.match(main, /layout: \{ get: currentWindowLayout, set: setWindowLayout, defaults: windowLayout\.DEFAULT_LAYOUT \},/);
+  const wf = read('desktop/phom/features/window-frames.cjs');
+  assert.match(wf, /handle\('phom:layout-set', \(_e, cfg\) => \{ const l = layout\.set\(cfg && cfg\.layout\); arrange\(\); return \{ ok: true, layout: l \}; \}, \{ guarded: true \}\);/);
   assert.match(main, /path\.join\(phomRoot\(\), 'window-layout\.json'\)/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /iconButton\('layout', 'Đổi vị trí cửa sổ \(bấm 2 cửa sổ để đổi chỗ\)', \(\) => openLayoutDialog\(\)\)/);

@@ -182,7 +182,7 @@ test('LỌC BÀI follows the slot: the replaced account is no longer ours; the n
 test('wiring: swap IPC moves the windows (reserve → behind the tool) and swaps the session member', () => {
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /ipcMain\.handle\('phom:slot-swap'/);
-  assert.match(main, /async function swapSlot[\s\S]*?phomSessions\.swapRuns\(oldRun, res\.playingRun\)[\s\S]*?moveRunWindow\(res\.playingRun, windowRectForSlot\(s\)\)[\s\S]*?moveRunWindow\(res\.benchedRun, windowRectForSlot\(r\)\)[\s\S]*?shell\.moveTop\(\)/);
+  assert.match(main, /async function swapSlot[\s\S]*?phomSessions\.swapRuns\(oldRun, res\.playingRun\)[\s\S]*?windows\(\)\.move\(res\.playingRun, windows\(\)\.rectFor\(s\)\)[\s\S]*?windows\(\)\.move\(res\.benchedRun, windows\(\)\.rectFor\(r\)\)[\s\S]*?shell\.moveTop\(\)/);
   assert.match(read('desktop/phom-preload.cjs'), /swapSlot: \(slot, reserve\) => ipcRenderer\.invoke\('phom:slot-swap'/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /function reserveCard\(r\)[\s\S]*?onclick: \(\) => onSwapSlot\(slot, r\.slot\)/, 'a reserve card puts itself into P1/P2/P3 (→1/→2/→3)');
