@@ -48,13 +48,16 @@ test('missing payload identity does not false-reject (bound runId is authoritati
 const main = read('desktop/phom-main.cjs');
 
 test('the router uses the pure guard, tracks last accepted actionId, and keeps the dead-session guard', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
-  assert.match(r, /evaluateHeaderAction\(\{ payload: payload \|\| \{\}, boundRunId: rid, runProfileId: runRec && runRec\.profileId, busy: !!headerActionBusy\[rid\], lastActionId: headerLastActionId\[rid\] \|\| null \}\)/);
+  // 3.2 — the router is the header feature's action() (behaviour: phom-header-feature.test.mjs)
+  const mod = read('desktop/phom/features/header.cjs');
+  const r = mod.slice(mod.indexOf('async function action('), mod.indexOf('function attach('));
+  assert.match(r, /deps\.evaluateHeaderAction\(\{ payload, boundRunId: rid, runProfileId: run && run\.profileId, busy: !!s\.header\.busy, lastActionId: s\.header\.lastActionId \|\| null \}\)/);
   assert.match(r, /if \(!guard\.ok\)/);
-  assert.match(r, /headerLastActionId\[rid\] = actionId/);
-  assert.match(r, /if \(!runClientFor\(rid\)\)/);            // §26 closed browser → no CDP action
+  assert.match(r, /s\.header\.lastActionId = actionId/);
+  assert.match(r, /if \(!deps\.clientFor\(rid\)\)/);         // §26 closed browser → no CDP action
   assert.match(r, /PHOM_HEADER_NO_CLIENT/);
-  assert.match(r, /finally \{ if \(!exempt\) delete headerActionBusy\[rid\]; \}/); // single-flight always released by the op that took it
+  assert.match(r, /finally \{ if \(!exempt\) s\.header\.busy = false; \}/); // single-flight always released by the op that took it
+  assert.match(main, /evaluateHeaderAction,\s*isBusyExempt: headerActionGuard\.isBusyExempt,/);
 });
 
 test('reopen yields a FRESH run identity (new runId) → an old header click is rejected as stale', () => {

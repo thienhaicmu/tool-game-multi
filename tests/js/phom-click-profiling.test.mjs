@@ -29,16 +29,19 @@ test('main passes the click-profiling gate and it is OFF unless the env flag is 
 });
 
 test('main-side handler duration (M1→M4) is measured with a monotonic clock for EVERY action', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
-  assert.match(r, /const _t0 = nowMs\(\);/);
-  assert.match(r, /headerLog\('action-done',[\s\S]*?elapsedMs: Math\.round\(nowMs\(\) - _t0\)/);
+  // 3.2 — the header / enter-game features, on main's monotonic clock (nowMs)
+  const mod = read('desktop/phom/features/header.cjs');
+  const r = mod.slice(mod.indexOf('async function action('), mod.indexOf('function attach('));
+  assert.match(r, /const t0 = now\(\);/);
+  assert.match(r, /log\('action-done',[\s\S]*?elapsedMs: Math\.round\(now\(\) - t0\)/);
+  assert.match(main, /createHeaderFeature\(\{[\s\S]*?now: nowMs,/);
   // ENTER_GAME already reports click→ENTERED evidence latency (from 6.3.2.6)
-  assert.match(main, /ENTER_GAME_EVIDENCE'[\s\S]*?elapsedMs: Math\.round\(nowMs\(\) - headerEnterStartedAt\[rid\]\)/);
+  assert.match(read('desktop/phom/features/enter-game.cjs'), /ENTER_GAME_EVIDENCE'[\s\S]*?elapsedMs: Math\.round\(now\(\) - startedAt\)/);
 });
 
 test('profiling did NOT reintroduce a per-frame CDP verify or a fix (dedupe + narrow observer intact)', () => {
   // dedupe still gates the only per-push evaluate
-  assert.match(main, /if \(headerLastPushed\[rid\] === json\) continue;/);
+  assert.match(read('desktop/phom/features/header.cjs'), /if \(session\.header\.lastPushed === json\) return;/);
   // observer stays narrow (no subtree:true) — profiling didn't touch it
   const src = gh.bootScript();
   assert.equal(/subtree: true/.test(src), false);

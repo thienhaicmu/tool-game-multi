@@ -378,14 +378,14 @@ test('AUTO-ENTER: the login identity push (cmd 100) marks the browser logged in;
 });
 
 test('AUTO-ENTER (main): fires VÀO GAME once a browser is logged in and not in Phỏm, once per page, bounded', () => {
-  const main = readMain();
-  const fn = main.slice(main.indexOf('function maybeAutoEnter('), main.indexOf('// Per-browser RUNTIME status'));
+  // 3.2 — the enter-game feature (behaviour: phom-header-feature.test.mjs AUTO-ENTER)
+  const fn = readFileSync(new URL('../../desktop/phom/features/enter-game.cjs', import.meta.url), 'utf8');
   assert.match(fn, /if \(!b \|\| !b\.loggedIn \|\| !view\.opened \|\| view\.dataStale\) return;/);
   assert.match(fn, /if \(view\.inGame\) \{ if \(!st\.done\)/, 'reaching Phỏm ends it');
-  assert.match(fn, /st\.tries >= AUTO_ENTER_MAX_TRIES/, 'bounded');
-  assert.match(fn, /startEnterGame\(rid, \{ source: 'auto'/, 'the same path as the VÀO GAME button');
-  assert.match(main, /resetAutoEnter\(rid\); \/\/ a new page = a new login/);
-  assert.match(main, /maybeAutoEnter\(rid, view, browsers\.find/);
+  assert.match(fn, /st\.tries >= AUTO_MAX_TRIES/, 'bounded');
+  assert.match(fn, /start\(rid, \{ source: 'auto'/, 'the same path as the VÀO GAME button');
+  assert.match(fn, /documentReplaced\(\{ session \}\) \{ clearAuto\(session\); \}/, 'a new page = a new login');
+  assert.match(readMain(), /ENTER_GAME: \(rid, p, ctx\) => _enterFeature\.start\(rid, \{ source: 'header'/);
 });
 
 test('AUTO = MANUAL: TỰ ĐỘNG presses Dò Key → Tạo → Vào and switches ReJoin on for the seated members; unticking switches those off', async () => {

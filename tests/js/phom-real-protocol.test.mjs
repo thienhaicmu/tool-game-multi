@@ -126,7 +126,11 @@ test('REAL-10: a new top-level document resets the browser (header back to VÀO 
   const body = main.slice(main.indexOf('function onRunDocumentReplaced('), main.indexOf('async function closeBrowserRun('));
   assert.match(body, /\^about:/);
   assert.match(body, /phomSessions\.resetBrowser\(rid\)/);
-  assert.match(body, /delete headerLastPushed\[rid\]/);
-  assert.equal(/headerEntering/.test(body), false, 'a VÀO GAME in flight is not cancelled by its own navigation');
+  assert.match(body, /features\(\)\.documentReplaced\(\{ run: /);
+  const headerMod = readFileSync(new URL('../../desktop/phom/features/header.cjs', import.meta.url), 'utf8');
+  assert.match(headerMod, /documentReplaced\(\{ session \}\) \{ forget\(session\); \}/, 'the bar is filled again');
+  // a VÀO GAME in flight is not cancelled by its own navigation: enter-game only re-arms the auto entry
+  const enterMod = readFileSync(new URL('../../desktop/phom/features/enter-game.cjs', import.meta.url), 'utf8');
+  assert.match(enterMod, /documentReplaced\(\{ session \}\) \{ clearAuto\(session\); \}/);
 });
 

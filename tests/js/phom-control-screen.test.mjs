@@ -105,7 +105,7 @@ test('bar: frames stopped arriving → MẤT DỮ LIỆU + TẢI LẠI (never a 
   assert.match(main, /dataStale: !!\(opened && b\.lastFrameAt != null && \(nowMs\(\) - Number\(b\.lastFrameAt\)\) > HEADER_STALE_MS\)/);
   // the re-hook is the capture feature's push hook (behaviour: phom-features.test.mjs)
   assert.match(main, /createCaptureFeature\(\{ capture, targetsOf: runTargets/);
-  assert.match(main, /features\(\)\.push\(\{ run:/);
+  assert.match(main, /features\(\)\.push\(\{ run, session: sessions\.get\(rid\), view, browser:/);
   const coord = read('desktop/protocol/phom/host-table-coordinator.cjs');
   assert.match(coord, /lastFrameAt: c\.lastFrameAt\b/);
 });

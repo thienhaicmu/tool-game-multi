@@ -26,25 +26,31 @@ test('per-frame update/hands are COALESCED (leading+trailing throttle), not sent
   assert.match(sb, /setTimeout\(\(\) => \{[\s\S]*?_sessPending[\s\S]*?\}, BROADCAST_MS\)/); // trailing latest
 });
 
+// 3.2 — the header / enter-game features (behaviour: phom-header-feature.test.mjs)
+const headerMod = read('desktop/phom/features/header.cjs');
+const enterMod = read('desktop/phom/features/enter-game.cjs');
 test('header push DEDUPES per browser — an unchanged state skips the CDP evaluate (kills the storm)', () => {
-  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('const BROADCAST_MS'));
-  assert.match(fn, /const json = JSON\.stringify\(gameHeader\.deriveHeaderState\(view\)\)/);
-  assert.match(fn, /if \(headerLastPushed\[rid\] === json\) continue;/);
-  assert.match(fn, /headerLastPushed\[rid\] = json;/);
+  const fn = headerMod.slice(headerMod.indexOf('function push('), headerMod.indexOf('function forget('));
+  assert.match(fn, /const json = JSON\.stringify\(deps\.deriveHeaderState\(view\)\);/);
+  assert.match(fn, /if \(session\.header\.lastPushed === json\) return;/);
+  assert.match(fn, /session\.header\.lastPushed = json;/);
+  assert.match(main, /deriveHeaderState: gameHeader\.deriveHeaderState,/);
 });
 
 test('click→ENTERED latency is instrumented with a monotonic clock (T6 start → evidence)', () => {
   assert.match(main, /const nowMs = \(\) =>/);
-  assert.match(main, /headerEnterStartedAt\[rid\] = nowMs\(\); \/\/ T6/);
-  assert.match(main, /ENTER_GAME_START'/);
-  assert.match(main, /ENTER_GAME_EVIDENCE'[\s\S]*?elapsedMs: Math\.round\(nowMs\(\) - headerEnterStartedAt\[rid\]\)/);
+  assert.match(main, /createEnterGameFeature\(\{[\s\S]*?now: nowMs,/);
+  assert.match(enterMod, /s\.enter\.startedAt = now\(\); \/\/ T6/);
+  assert.match(enterMod, /ENTER_GAME_START'/);
+  assert.match(enterMod, /ENTER_GAME_EVIDENCE'[\s\S]*?elapsedMs: Math\.round\(now\(\) - startedAt\)/);
 });
 
 test('caches are cleared on CDP detach AND on reload so a fresh document is always re-pushed (no stale skip)', () => {
   // detach
-  assert.match(main, /delete headerLastPushed\[String\(run\.id\)\]; delete headerEnterStartedAt\[String\(run\.id\)\]/);
+  assert.match(main, /headerFeature\(\)\.detached\(run\.id\); enterFeature\(\)\.detached\(run\.id\);/);
   // reload reset (reloadWebRun.resetPhom, shared by the header ⟳ button)
-  assert.match(main, /resetPhom = \(\) =>[\s\S]*?delete headerLastPushed\[rid\]; delete headerEnterStartedAt\[rid\]/);
+  assert.match(main, /resetPhom = \(\) =>[\s\S]*?enterFeature\(\)\.reset\(rid\); headerFeature\(\)\.reset\(rid\);/);
+  assert.match(headerMod, /s\.header\.lastPushed = null;/);
 });
 
 // 2026-10-02 — the game itself lagged, not just the tool. Two causes, both removed:

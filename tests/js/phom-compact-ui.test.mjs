@@ -41,20 +41,20 @@ test('the in-Chromium header owns VÀO GAME with a real ENTERING + failure state
   assert.match(gh, /ENTER_GAME/);
   assert.match(gh, /entering[\s\S]*?ĐANG VÀO GAME/);
   assert.match(gh, /error:/);
-  assert.match(main, /headerEntering/);
-  assert.match(main, /if \(view\.inGame\) \{[\s\S]*?delete headerEntering\[rid\]/);
+  const enterMod = read('desktop/phom/features/enter-game.cjs');
+  assert.match(main, /entering: opened && gameHeader\.enteringActive\(\{ \.\.\.enterFeature\(\)\.pending\(runId\)/);
+  assert.match(enterMod, /if \(view && view\.inGame\) \{[\s\S]*?session\.enter\.entering = false;/);
 });
 
 test('the header action router acts on ONE browser via the run-scoped coordinator API (no cross-browser)', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
-  assert.match(r, /ENTER_GAME'[\s\S]*?startEnterGame\(rid,/);
-  const enter = main.slice(main.indexOf('async function startEnterGame('), main.indexOf('function maybeAutoEnter('));
-  assert.match(enter, /phomEnterGame\(rid\)/, 'one browser, the one the click came from');
+  const r = main.slice(main.indexOf('routes: {'), main.indexOf('deriveHeaderState: gameHeader.deriveHeaderState'));
+  assert.match(r, /ENTER_GAME: \(rid, p, ctx\) => _enterFeature\.start\(rid,/);
+  assert.match(main, /enter: \(rid\) => phomEnterGame\(rid\),/, 'one browser, the one the click came from');
   assert.match(r, /rejoinTable\(rid\)/);
   assert.match(r, /leaveTable\(rid\)/);
-  assert.match(r, /findTable\(rid, \{ stake, force \}\)/); // force = the 2nd Dò Key within 5s (rule D2)
+  assert.match(r, /findTable\(rid, \{ stake: sess\(\)\.selectedStake\(\), force: ctx\.force \}\)/); // force = the 2nd Dò Key within 5s (rule D2)
   assert.equal(/findAndJoinGroup|createTable/.test(r), false);
-  assert.match(r, /joinTable\(rid, joinRid\)/);
+  assert.match(r, /joinTable\(rid, p\.rid != null \? Number\(p\.rid\) : null\)/);
 });
 
 test('the Tool is the 4th window of the deterministic cluster arrangement', () => {

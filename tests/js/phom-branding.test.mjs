@@ -59,8 +59,9 @@ test('wiring: the name is written right before each launch; the account is learn
   const j = main.indexOf('runManager.createRun(', i);
   assert.ok(i > 0 && j > i);
   assert.match(main.slice(i, j), /chromiumProfileName\.applyProfileName\(profileDir, profileName\)/);
-  assert.match(main, /rememberAccountName\(run, browsers\.find/);
-  assert.match(main, /b\.username === 'USER_UNKNOWN'\) return;/);
+  // the login-origin feature learns it on every push (behaviour: phom-login-origin.test.mjs)
+  assert.match(main, /accountNames: \(\) => accountNames\(\)/);
+  assert.match(read('desktop/phom/features/login-origin.cjs'), /b\.username === 'USER_UNKNOWN'\) return;/);
 });
 
 // Minimal page: anything the bar draws is accepted; document.title and the <head> observer are real.

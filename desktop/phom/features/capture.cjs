@@ -32,7 +32,7 @@ function createCaptureFeature({ capture, targetsOf, injectSendHook, log = () => 
     attach({ client, target }) { hook(capture, client, target.cdpTargetId); },
     // browser = this run's manual snapshot row ({ lastFrameAt }); session.capture.lastRehookAt throttles
     push({ run, session, browser }) {
-      if (!run || run.closed || !browser || browser.lastFrameAt == null) return;
+      if (!run || run.closed || run.status === 'CLOSED' || !browser || browser.lastFrameAt == null) return;
       const t = now();
       if (t - Number(browser.lastFrameAt) <= STALE_MS) return;
       if (session.capture.lastRehookAt && t - session.capture.lastRehookAt < REHOOK_EVERY_MS) return;

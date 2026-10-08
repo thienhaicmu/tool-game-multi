@@ -151,15 +151,21 @@ test('wiring: main runs every browser feature through ONE set, in order (send ho
   const main = readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
   const start = main.indexOf('_features = createFeatureSet({');
   const block = main.slice(start, main.indexOf('return _features;', start));
-  const order = ['createCaptureFeature', 'createBrowserAgentFeature', 'createWsHookFeature', '_anDanhFeature', 'createDocNavFeature', "id: 'header'", 'createProxyAuthFeature', '_memoryFeature'];
+  // enter-game before header on push: the bar shows the entering state the auto entry just set
+  const order = ['createCaptureFeature', 'createBrowserAgentFeature', 'createWsHookFeature', '_anDanhFeature', 'createDocNavFeature', '_enterFeature,', 'createLoginOriginFeature', '_headerFeature,', 'createProxyAuthFeature', '_memoryFeature'];
   const at = order.map((k) => block.indexOf(k));
-  assert.ok(at.every((i) => i > 0), 'all eight present');
+  assert.ok(at.every((i) => i > 0), 'all ten present');
   assert.deepEqual([...at].sort((a, b) => a - b), at, 'in this order');
   assert.match(main, /features\(\)\.attach\(\{ run, target, client, session: sessions\.get\(run\.id\) \}\);/);
-  assert.match(main, /features\(\)\.push\(\{ run: \{ id: rid, slot: run\.slot, closed: false \}, session: sessions\.get\(rid\), view, browser:/);
+  assert.match(main, /features\(\)\.push\(\{ run, session: sessions\.get\(rid\), view, browser:/);
+  assert.match(main, /features\(\)\.documentReplaced\(\{ run: runManager && runManager\.get\(rid\), session: sessions\.get\(rid\), url: String\(url\) \}\);/);
+  // a feature that throws is never silent: it always reaches coseat.jsonl
+  assert.match(main, /const ALWAYS_LOGGED = new Set\(\[[^\]]*'feature-error'/);
   assert.match(main, /features\(\)\.registerIpc\(\(channel, fn, opts\) => ipcMain\.handle\(channel, opts && opts\.guarded \? guarded\(fn\) : fn\)\);/);
   assert.match(main, /runManager\.on\('run-closed', \(s\) => \{ if \(s && s\.id != null\) dropRunSession\(s\.id\); \}\);/);
   assert.match(main, /autoReplaceFromReserve\(runId, closed\);\s*dropRunSession\(runId\);/);
   // the old per-run maps of the moved features are gone
-  for (const gone of ['anDanhOn', 'attachCapture', 'maybeRehookCapture', '_lastRehookAt', 'recentRunEvents', 'PHOM_DIAG_NO_']) assert.equal(main.includes(gone), false, gone);
+  for (const gone of ['anDanhOn', 'attachCapture', 'maybeRehookCapture', '_lastRehookAt', 'recentRunEvents', 'PHOM_DIAG_NO_',
+    'headerEntering', 'headerActionBusy', 'headerKeys', 'headerLastPushed', 'headerDomPresent', 'maybeAutoEnter', 'startEnterGame',
+    'rememberLoginOrigin', 'rememberAccountName', 'phomHeaderAction', 'attachHeader', 'settleHeaderError', 'lastTopUrl']) assert.equal(main.includes(gone), false, gone);
 });

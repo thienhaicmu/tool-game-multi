@@ -175,44 +175,49 @@ test('verifyPresent reflects whether the bar + binding exist in the page', async
 // ---- main-process wiring (source-level) ----
 const main = read('desktop/phom-main.cjs');
 
+// 3.2 — the header is a feature module (desktop/phom/features/header.cjs); its behaviour: phom-header-feature.test.mjs
+const headerMod = read('desktop/phom/features/header.cjs');
+const enterMod = read('desktop/phom/features/enter-game.cjs');
 test('main installs the header on attach with per-run identity + logging, routes clicks to the coordinator', () => {
-  assert.match(main, /gameHeader\.bootScript\(\{ nonce: headerKey, slotId: run\.slot \|\| null, profileId: run\.profileId \|\| null, runId: run\.id, observerLog: process\.env\.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process\.env\.PHOM_CLICK_LOG === '1' \|\| process\.env\.PHOM_HEADER_LOG === '1' \}\)/);
-  assert.match(main, /headerBridge\.installHeader\(client, \{ runId: run\.id, slotId: run\.slot \|\| null, boot, onAction: \(rid, payload\) => phomHeaderAction\(rid, payload\), log: headerLog \}\)/);
+  assert.match(main, /bootScript: \(o\) => gameHeader\.bootScript\(\{ \.\.\.o, observerLog: process\.env\.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process\.env\.PHOM_CLICK_LOG === '1' \|\| process\.env\.PHOM_HEADER_LOG === '1' \}\)/);
+  assert.match(main, /installHeader: headerBridge\.installHeader,/);
+  assert.match(headerMod, /deps\.bootScript\(\{ nonce: key, slotId: run\.slot \|\| null, profileId: run\.profileId \|\| null, runId: run\.id \}\)/);
+  assert.match(headerMod, /deps\.installHeader\(client, \{ runId: run\.id, slotId: run\.slot \|\| null, boot, onAction: \(rid, payload\) => action\(rid, payload\), log \}\)/);
 });
 
 // PHASE 6.3.2.2 / 6.3.2.3 — reliability guards in the action router (single-flight via the pure guard,
 // identity cross-check, and dead-session guard). PHOM_HEADER_BUSY now lives in header-action-guard.cjs.
 test('router has a per-browser single-flight + identity guard and a dead-session guard', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('function liveRunCount('));
-  assert.match(r, /evaluateHeaderAction\(/);             // pure single-flight + identity guard
-  assert.match(r, /busy: !!headerActionBusy\[rid\]/);    // one op per browser
-  assert.match(r, /if \(!runClientFor\(rid\)\)/);        // never route into a dead CDP session
+  const r = headerMod.slice(headerMod.indexOf('async function action('), headerMod.indexOf('function attach('));
+  assert.match(r, /deps\.evaluateHeaderAction\(/);       // pure single-flight + identity guard
+  assert.match(r, /busy: !!s\.header\.busy/);            // one op per browser
+  assert.match(r, /if \(!deps\.clientFor\(rid\)\)/);     // never route into a dead CDP session
   assert.match(r, /PHOM_HEADER_NO_CLIENT/);
   // §34 — an escape action (HỦY / ⟳ / ⏻ / ↑) runs ALONGSIDE the long op it escapes, so it neither takes nor
   // releases the flag; every other action still releases it unconditionally.
-  assert.match(r, /if \(!exempt\) headerActionBusy\[rid\] = true;/);
-  assert.match(r, /finally \{ if \(!exempt\) delete headerActionBusy\[rid\]; \}/);
+  assert.match(r, /if \(!exempt\) s\.header\.busy = true;/);
+  assert.match(r, /finally \{ if \(!exempt\) s\.header\.busy = false; \}/);
   const guard = read('desktop/protocol/phom/header-action-guard.cjs');
   assert.match(guard, /PHOM_HEADER_BUSY/);
   assert.match(guard, /STALE_RUN/); assert.match(guard, /STALE_PROFILE/); assert.match(guard, /DUPLICATE_ACTION_ID/);
 });
 
 test('main tracks header readiness + exposes read-only runtime/CDP/header status for Screen 2', () => {
-  assert.match(main, /const headerReady = Object\.create\(null\)/);
   assert.match(main, /function browserRuntimeStatus\(runId\)/);
   // §6.3.2.7 — HEADER is READY only when the page CONFIRMED the DOM present; RECOVERING when binding up but
   // DOM missing; never a stale READY.
-  assert.match(main, /header = headerDomPresent\[rid\] \? 'READY' : 'RECOVERING'/);
-  assert.match(main, /const headerDomPresent = Object\.create\(null\)/);
+  assert.match(main, /const bar = headerFeature\(\)\.status\(rid\);/);
+  assert.match(main, /if \(cdp && bar\.ready\) header = bar\.domPresent \? 'READY' : 'RECOVERING';/);
+  assert.match(headerMod, /return \{ ready: !!\(s && s\.header\.ready\), domPresent: !!\(s && s\.header\.domPresent\) \};/);
   // the manual snapshot merges it per browser
   assert.match(main, /Object\.assign\(b, browserRuntimeStatus\(b\.profileId\)\)/);
 });
 
 test('main pushes header state on session updates via a coalesced broadcast (no Tool screen needed)', () => {
-  // §6.3.2.6 lag fix — the per-frame storm is throttled; pushHeaderStates dedupes unchanged states.
+  // §6.3.2.6 lag fix — the per-frame storm is throttled; the header feature dedupes unchanged states.
   assert.match(main, /phomSessions\.on\('update', \(snap\) => \{ scheduleSessionBroadcast\(snap\); \}\)/);
   assert.match(main, /function scheduleSessionBroadcast\(snap\)/);
-  assert.match(main, /if \(headerLastPushed\[rid\] === json\) continue;/); // per-run dedupe skips the CDP evaluate
+  assert.match(headerMod, /if \(session\.header\.lastPushed === json\) return;/); // per-run dedupe skips the CDP evaluate
 });
 
 test('the shared số bàn = the group\'s (Tạo found it); header and Tool window read the same value', () => {
@@ -261,18 +266,16 @@ test('STATE-05 enteringActive is BOUNDED: within window active, past window reve
 });
 
 test('STATE-06/09 a fresh ENTER re-arms the bounded timeout, and ↻ WEB reset clears the ENTERING transient', () => {
-  // ↻ WEB reload path (reloadWebRun.resetPhom, shared by the header ⟳ button) resets entering + cancels the timer.
-  assert.match(main, /delete headerEntering\[rid\]; clearHeaderEnterTimer\(rid\); delete headerError\[rid\]/);
+  // ↻ WEB reload path (reloadWebRun.resetPhom, shared by the header ⟳ button) resets entering + the bar.
+  assert.match(main, /enterFeature\(\)\.reset\(rid\); headerFeature\(\)\.reset\(rid\); pushHeaderStates\(\);/);
   // a fresh ENTER cancels any prior timer before re-arming (no leaked/overlapping timers).
-  assert.match(main, /function armEnterTimeout\(rid\) \{\s*clearHeaderEnterTimer\(rid\);\s*headerEnterTimer\[rid\] = setTimeout\(/);
-  assert.match(main, /headerEntering\[rid\] = true;\s*armEnterTimeout\(rid\);/);
+  assert.match(enterMod, /s\.enter\.entering = true;\s*clearTimer\(s\);[^\n]*\n(\s*\/\/[^\n]*\n)*\s*s\.enter\.timer = setTimeout\(/);
 });
 
 test('STATE-07 pending flag is main-side + guarded (late/stale ENTER cannot resurrect a newer state)', () => {
-  // headerEntering is keyed by rid and only set inside the single-flight guarded ENTER branch; the pure
-  // enteringActive gate + inGame evidence always win, so an old ENTER cannot override newer authoritative state.
-  assert.match(main, /const headerEntering = Object\.create\(null\)/);
-  assert.match(main, /gameHeader\.enteringActive\(\{ pending: !!headerEntering\[String\(runId\)\]/);
+  // the entering flag lives in the run's session; the pure enteringActive gate + inGame evidence always win,
+  // so an old ENTER cannot override newer authoritative state.
+  assert.match(main, /gameHeader\.enteringActive\(\{ \.\.\.enterFeature\(\)\.pending\(runId\), inGame, now: nowMs\(\) \}\)/);
 });
 
 test('STATE-08 transport/CDP/header health is NOT treated as IN_GAME', () => {
@@ -284,14 +287,13 @@ test('STATE-08 transport/CDP/header health is NOT treated as IN_GAME', () => {
 });
 
 test('main: bounded ENTERING timeout is armed on ENTER and cancelled on authoritative evidence / failure', () => {
-  assert.match(main, /const headerEnterTimer = Object\.create\(null\)/);
-  assert.match(main, /function clearHeaderEnterTimer\(rid\)/);
-  // armed on ENTER accept, and the callback reverts the header (delete entering + re-push) if still pending.
-  assert.match(main, /if \(headerEntering\[rid\]\) \{ delete headerEntering\[rid\]; delete headerEnterStartedAt\[rid\];[\s\S]*?pushHeaderStates\(\); \}/);
+  assert.match(main, /timeoutMs: gameHeader\.ENTER_GAME_TIMEOUT_MS,/);
+  // armed on ENTER accept, and the callback reverts the header (entering off + re-push) if still pending.
+  assert.match(enterMod, /if \(s\.enter\.entering\) \{ s\.enter\.entering = false; s\.enter\.startedAt = null; log\('ENTER_GAME_TIMEOUT'[\s\S]*?refresh\(\); \}/);
   // cancelled the instant authoritative in-game evidence arrives.
-  assert.match(main, /delete headerEntering\[rid\]; clearHeaderEnterTimer\(rid\);/);
+  assert.match(enterMod, /session\.enter\.entering = false; clearTimer\(session\);/);
   // cancelled on an immediate ENTER send failure.
-  assert.match(main, /delete headerEntering\[rid\]; delete headerEnterStartedAt\[rid\]; clearHeaderEnterTimer\(rid\); \}/);
+  assert.match(enterMod, /if \(!res \|\| res\.ok === false\) stopEntering\(s\);/);
 });
 
 // ---- PHASE 6.3.6 — USER-SELECTED FINDER (room anchor), never defaulted to Player 1 ----
@@ -337,8 +339,9 @@ test('BC: the bar has NO stake picker (the Phỏm tool owns it) and the Dò Key 
 
 test('BC: the header router handles only what the bar sends; TẢI LẠI reuses the tool window\'s reload', () => {
   assert.match(main, /async function reloadWebRun\(runId\)/);
-  assert.match(main, /action === 'RELOAD'\) \{[\s\S]*?res = await reloadWebRun\(rid\);/);
-  assert.equal(/action === 'STOP'|action === 'FOCUS'|action === 'NEW_TABLE'|action === 'CAPTURE_/.test(main), false);
+  assert.match(main, /RELOAD: \(rid\) => reloadWebRun\(rid\),/);
+  const routes = main.slice(main.indexOf('routes: {'), main.indexOf('deriveHeaderState: gameHeader.deriveHeaderState'));
+  assert.deepEqual([...routes.matchAll(/^\s+([A-Z_]+): /gm)].map((m) => m[1]), ['ENTER_GAME', 'FIND_TABLE', 'SCAN_TABLE', 'JOIN_CODE', 'CANCEL_FIND', 'REJOIN', 'LEAVE', 'RELOAD']);
   // the tool window keeps reload / close per browser
   assert.match(main, /ipcMain\.handle\('phom:reload-web', guarded\(async \(_e, cfg\) => reloadWebRun\(cfg && cfg\.browserId\)\)\)/);
   assert.match(main, /ipcMain\.handle\('phom:close-browser', guarded\(async \(_e, cfg\) => closeBrowserRun\(cfg && cfg\.browserId\)\)\)/);

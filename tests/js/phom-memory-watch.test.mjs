@@ -57,7 +57,7 @@ test('wiring: the memory-watch feature samples every run by its profile dir, clo
   assert.match(main, /_memoryFeature = createMemoryWatchFeature\(\{/);
   assert.match(main, /marker: \(\) => profilesRootFor\('chromium'\)/, 'a prefix of both profile roots (Chromium and Chrome)');
   assert.match(main, /closeRun: \(rid\) => closeBrowserRun\(rid\)/);
-  assert.match(main, /'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY'\]\)/, 'both always reach coseat.jsonl');
+  assert.match(main, /'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY'[,\]]/, 'both always reach coseat.jsonl');
   assert.match(main, /if \(_memoryFeature\) _memoryFeature\.stop\(\);/);
   const feature = readFileSync(new URL('../../desktop/phom/features/memory-watch.cjs', import.meta.url), 'utf8');
   assert.match(feature, /attach\(\) \{ start\(\); \}/, 'sampling starts with the first browser');

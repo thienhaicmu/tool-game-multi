@@ -59,8 +59,9 @@ test('a RESERVE (P4/P5) has the same state and the same bar buttons, only marked
 test('wiring: main derives the state once per browser for the bar AND the tool cards; a stale error clears on a state change', () => {
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /b\.state = browserStateFor\(b\.profileId, browsers, shared\)/);
-  assert.match(main, /settleHeaderError\(rid, deriveBrowserState\(view\)\.code\)/);
-  assert.match(main, /function settleHeaderError[\s\S]*?if \(headerErrorState\[rid\] !== code\) \{ delete headerError\[rid\]/);
+  // the header feature settles a stale error by the browser-state code (behaviour: phom-header-feature.test.mjs)
+  assert.match(main, /stateCode: \(view\) => deriveBrowserState\(view\)\.code,/);
+  assert.match(read('desktop/phom/features/header.cjs'), /if \(s\.header\.errorState !== code\) \{ s\.header\.error = null; s\.header\.errorState = null; \}/);
   assert.match(read('ui-phom/phom-qa.js'), /b\.state && b\.state\.label \? \[b\.state\.label/);
 });
 
@@ -73,7 +74,9 @@ test('rule D1: with TỰ ĐỘNG on the bar locks its table buttons, shows TỰ 
   for (const a of ['JOIN_CODE', 'REJOIN', 'SCAN_TABLE', 'FIND_TABLE', 'LEAVE']) assert.ok(boot.includes("emit('" + a + "'"), a);
   assert.equal((boot.match(/LOCK \|\|/g) || []).length >= 4, true, 'Vào, ReJoin, Tạo, Thoát disabled while locked');
   const main = read('desktop/phom-main.cjs');
-  assert.match(main, /HEADER_TABLE_ACTIONS\.has\(action\) && phomSessions && phomSessions\.active\(\) && phomSessions\.autoActive\(\)/);
-  assert.match(main, /code: 'PHOM_AUTO_ACTIVE'/);
-  assert.match(main, /const force = headerFindConfirm\[rid\] != null && nowMs\(\) <= headerFindConfirm\[rid\]/);
+  assert.match(main, /tableActions: HEADER_TABLE_ACTIONS,\s*autoActive: \(\) => !!\(phomSessions && phomSessions\.active\(\) && phomSessions\.autoActive\(\)\),/);
+  const mod = read('desktop/phom/features/header.cjs');
+  assert.match(mod, /if \(deps\.tableActions\.has\(act\) && deps\.autoActive\(\)\)/);
+  assert.match(mod, /code: 'PHOM_AUTO_ACTIVE'/);
+  assert.match(mod, /const force = !!\(s\.header\.findConfirmUntil && now\(\) <= s\.header\.findConfirmUntil\);/);
 });

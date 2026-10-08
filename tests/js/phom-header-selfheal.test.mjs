@@ -10,6 +10,7 @@ const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
 const gh = require('../../desktop/protocol/phom/game-header.cjs');
 const main = read('desktop/phom-main.cjs');
+const mod = read('desktop/phom/features/header.cjs');
 
 // ---- page-side self-heal (bootScript) — NARROW observers, never the whole game DOM (§2/§3) ----
 test('bootScript uses NARROW childList observers (html + body, subtree:false) — not the whole game DOM', () => {
@@ -68,24 +69,28 @@ test('mount is idempotent (guarded) — repeated boot keeps exactly one header',
 
 // ---- main-side truth + resync (no storm) ----
 test('main records header DOM presence from the page signal and force-repushes state on (re)mount', () => {
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf('async function phomHeaderAction(') + 2200);
-  assert.match(r, /if \(action === '__HEADER_STATUS'\)/);
-  assert.match(r, /headerDomPresent\[rid\] = !!\(payload && payload\.present\)/);
-  assert.match(r, /delete headerLastPushed\[rid\];/); // force re-push so the fresh bar is re-filled
+  // 3.2 — the header feature (behaviour: phom-header-feature.test.mjs)
+  const r = mod.slice(mod.indexOf('async function action('), mod.indexOf('function attach('));
+  assert.match(r, /if \(act === '__HEADER_STATUS'\)/);
+  assert.match(r, /s\.header\.domPresent = !!payload\.present;/);
+  assert.match(r, /s\.header\.lastPushed = null;/); // force re-push so the fresh bar is re-filled
   assert.match(r, /return \{ ok: true, internal: true \}/);
 });
 
 test('Tool HEADER indicator is DOM-truthful: READY needs cdp+binding+DOM; RECOVERING when DOM missing', () => {
-  assert.match(main, /if \(cdp && headerReady\[rid\]\) header = headerDomPresent\[rid\] \? 'READY' : 'RECOVERING'/);
+  assert.match(main, /if \(cdp && bar\.ready\) header = bar\.domPresent \? 'READY' : 'RECOVERING';/);
   // presence is cleared on detach AND reload so the indicator can never stay a stale Sẵn sàng
-  assert.match(main, /headerDomPresent\[String\(run\.id\)\] = false/);        // detach
-  assert.match(main, /headerDomPresent\[rid\] = false/);                      // reload reset (reloadWebRun)
+  assert.match(main, /headerFeature\(\)\.detached\(run\.id\);/);              // detach
+  assert.match(main, /headerFeature\(\)\.reset\(rid\);/);                     // reload reset (reloadWebRun)
+  assert.match(mod, /function forget\(s, \{ clearError = true \} = \{\}\) \{ s\.header\.domPresent = false; s\.header\.lastPushed = null;/);
 });
 
 test('NO CDP-storm regression: header DOM is NOT verified per WS frame (event-driven signal only)', () => {
-  // pushHeaderStates still dedupes; the DOM-presence check lives in the page (__HEADER_STATUS), not a
-  // per-frame Runtime.evaluate. The only evaluate on push is the (deduped) render.
-  const fn = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('function pushHeaderStates(') + 2600);
-  assert.match(fn, /if \(headerLastPushed\[rid\] === json\) continue;/);
+  // the push dedupes; the DOM-presence check lives in the page (__HEADER_STATUS), not a per-frame
+  // Runtime.evaluate. The only evaluate on push is the (deduped) render.
+  const fn = mod.slice(mod.indexOf('function push('), mod.indexOf('function forget('));
+  assert.match(fn, /if \(session\.header\.lastPushed === json\) return;/);
   assert.equal(/verifyPresent|getElementById/.test(fn), false, 'no per-push DOM verify round-trip');
+  const p = main.slice(main.indexOf('function pushHeaderStates('), main.indexOf('function pushHeaderStates(') + 2600);
+  assert.equal(/verifyPresent|getElementById/.test(p), false);
 });

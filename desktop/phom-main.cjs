@@ -38,6 +38,9 @@ const { createWsHookFeature } = require('./phom/features/ws-hook.cjs');
 const { createAnDanhFeature } = require('./phom/features/an-danh.cjs');
 const { createDocNavFeature } = require('./phom/features/doc-nav.cjs');
 const { createProxyAuthFeature } = require('./phom/features/proxy-auth.cjs');
+const { createEnterGameFeature } = require('./phom/features/enter-game.cjs');
+const { createLoginOriginFeature } = require('./phom/features/login-origin.cjs');
+const { createHeaderFeature } = require('./phom/features/header.cjs');
 const windowLock = require('./protocol/phom/window-lock.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -569,79 +572,11 @@ else {
     return { ok: false, gameId: PHOM_GAME_ID, error: (r && r.error) || { code: 'ENTRY_SITE_SEAM_UNAVAILABLE' } };
   }
 
-  // ---- PHASE 6.3.2 — IN-CHROMIUM GAME HEADER bridge ---------------------------------------------
-  // Each managed Chromium gets a tool-owned control bar (game-header.cjs) injected via CDP. Button
-  // clicks arrive here through the window.__phomAction binding; we route them to the SAME manual APIs
-  // the (now read-only) Tool screen used, and push a freshly-derived state back into every page. Main is
-  // pure glue: the button decision lives in the pure deriveHeaderState; the coordinator remains the only
-  // source of business truth (find/join/leave semantics unchanged).
-  const headerEntering = Object.create(null); // runId -> true while VÀO GAME is in flight (transient)
-  const headerError = Object.create(null);    // runId -> last action error message (transient, per browser)
-  const headerActionBusy = Object.create(null); // runId -> true while ANY header op is in flight (dup guard)
-  const headerLastActionId = Object.create(null); // runId -> last ACCEPTED actionId (dedupes re-delivery)
-  const headerReady = Object.create(null);      // runId -> true once the header bridge installed (binding ready)
-  const headerDomPresent = Object.create(null); // runId -> true when the PAGE confirmed #__phom_header exists
-  const headerLastPushed = Object.create(null); // runId -> last pushed state JSON (skip unchanged evaluates)
-  const headerKeys = Object.create(null); // runId -> Set of secrets its bar was booted with (N3)
-  const headerEnterStartedAt = Object.create(null); // runId -> monotonic ms at ENTER_GAME accept (latency)
-  const headerEnterTimer = Object.create(null);     // runId -> bounded ENTERING timeout handle (§10 not-stuck)
-  // PHASE 6.3.6 — the USER-selected FINDER (room anchor), by Player index 1/2/3; null = none chosen yet (every
-  // browser may FIND). NEVER defaulted to Player 1. Independent of the analyzer's selected player.
-
+  // ---- IN-CHROMIUM GAME HEADER + VÀO GAME — the header, enter-game and login-origin features (desktop/phom/features).
+  // Main keeps only the glue: the per-browser VIEW (headerViewFor, from the coordinator's snapshot) and the routes
+  // the bar's buttons map to. The button decision lives in the pure deriveHeaderState; the coordinator stays the
+  // only source of business truth (find/join/leave semantics unchanged).
   const nowMs = () => { try { return require('node:perf_hooks').performance.now(); } catch { return Date.now(); } };
-  // PHASE 6.3.6 — cancel a run's bounded ENTERING timeout (evidence arrived / failed / reset / re-enter).
-  function clearHeaderEnterTimer(rid) { const t = headerEnterTimer[rid]; if (t) { try { clearTimeout(t); } catch { /* ignore */ } delete headerEnterTimer[rid]; } }
-  // PHASE 6.3.6 §10 — arm the BOUNDED ENTERING timeout. The tile click is INVOKED != ENTERED, so if no
-  // authoritative inGame evidence arrives within the window we clear the transient and re-push, reverting the
-  // header to NOT_IN_GAME ("VÀO GAME") instead of a permanent "ĐANG VÀO GAME…". Re-arming cancels any prior.
-  function armEnterTimeout(rid) {
-    clearHeaderEnterTimer(rid);
-    headerEnterTimer[rid] = setTimeout(() => {
-      delete headerEnterTimer[rid];
-      if (headerEntering[rid]) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; headerLog('ENTER_GAME_TIMEOUT', { runId: rid, elapsedMs: gameHeader.ENTER_GAME_TIMEOUT_MS }); pushHeaderStates(); }
-    }, gameHeader.ENTER_GAME_TIMEOUT_MS);
-  }
-
-  // VÀO GAME on one browser — the header button and the auto entry both come through here. Starts the click→ENTERED
-  // clock, shows ĐANG VÀO GAME, fires the vgcg_8 tile (INVOKED != ENTERED) and arms the bounded ENTERING timeout.
-  async function startEnterGame(rid, meta = {}) {
-    headerEnterStartedAt[rid] = nowMs(); // T6 — start the click→ENTERED latency clock (§2/§17)
-    headerEntering[rid] = true;
-    armEnterTimeout(rid); // §10 — bounded ENTERING (INVOKED != ENTERED): reverts to NOT_IN_GAME if no evidence
-    pushHeaderStates();
-    headerLog('ENTER_GAME_START', { runId: rid, ...meta, elapsedMs: 0 });
-    let res;
-    try { res = await phomEnterGame(rid); } catch (e) { res = { ok: false, error: { code: 'PHOM_ENTRY_FAILED', message: safeMsg(e) } }; }
-    if (!res || res.ok === false) { delete headerEntering[rid]; delete headerEnterStartedAt[rid]; clearHeaderEnterTimer(rid); }
-    headerLog(res && res.ok ? 'ENTER_GAME_ACTION_SENT' : 'ENTER_GAME_FAIL', { runId: rid, ...meta, ok: !!(res && res.ok), elapsedMs: Math.round(nowMs() - (headerEnterStartedAt[rid] != null ? headerEnterStartedAt[rid] : nowMs())) });
-    return res;
-  }
-
-  // §auto-enter — as soon as a browser has LOGGED IN (the server pushed the account's own identity, cmd 100, on its
-  // game socket) and is not in Phỏm yet, the tool presses VÀO GAME for it. Once per page load: when Phỏm is reached it
-  // stops for good (leaving Phỏm on purpose is not undone); a click that did not get in is retried a few times — the
-  // lobby scene may still be building right after login. PHOM_AUTO_ENTER=0 turns it off.
-  const AUTO_ENTER_SETTLE_MS = 1500;   // after login, let the lobby scene finish building
-  const AUTO_ENTER_NOT_READY_MS = 3000; // the tile did not resolve yet → look again soon
-  const AUTO_ENTER_MAX_TRIES = 5;
-  const autoEnterState = Object.create(null); // runId -> { tries, nextAt, done, timer }
-  function resetAutoEnter(rid) { const st = autoEnterState[rid]; if (st && st.timer) clearTimeout(st.timer); delete autoEnterState[rid]; }
-  function maybeAutoEnter(rid, view, b) {
-    if (process.env.PHOM_AUTO_ENTER === '0') return;
-    if (!b || !b.loggedIn || !view.opened || view.dataStale) return;
-    const st = autoEnterState[rid] || (autoEnterState[rid] = { tries: 0, nextAt: nowMs() + AUTO_ENTER_SETTLE_MS, done: false, timer: null });
-    if (view.inGame) { if (!st.done) { st.done = true; headerLog('AUTO_ENTER_DONE', { runId: rid, tries: st.tries }); } return; }
-    if (st.done || st.tries >= AUTO_ENTER_MAX_TRIES || headerEntering[rid] || headerActionBusy[rid]) return;
-    const wait = st.nextAt - nowMs();
-    if (wait > 0) { if (!st.timer) st.timer = setTimeout(() => { st.timer = null; pushHeaderStates(); }, wait + 20); return; }
-    st.tries += 1;
-    st.nextAt = Infinity; // nothing else fires until this attempt settles
-    headerActionBusy[rid] = true;
-    startEnterGame(rid, { source: 'auto', attempt: st.tries })
-      .then((res) => { st.nextAt = nowMs() + (res && res.ok ? gameHeader.ENTER_GAME_TIMEOUT_MS : AUTO_ENTER_NOT_READY_MS); })
-      .catch(() => { st.nextAt = nowMs() + AUTO_ENTER_NOT_READY_MS; })
-      .finally(() => { delete headerActionBusy[rid]; if (st.tries >= AUTO_ENTER_MAX_TRIES) headerLog('AUTO_ENTER_GAVE_UP', { runId: rid, tries: st.tries }); pushHeaderStates(); });
-  }
 
   // Per-browser RUNTIME status for the READ-ONLY Screen 2 (browser kind · CDP · header). No actions.
   // §2/§12 — HEADER distinguishes three facts: CDP connected, binding installed, and the header DOM actually
@@ -651,15 +586,16 @@ else {
     const rid = String(runId);
     const run = runManager && runManager.get(rid);
     const cdp = !!runClientFor(rid);
+    const bar = headerFeature().status(rid);
     let header = 'NOT_READY';
-    if (cdp && headerReady[rid]) header = headerDomPresent[rid] ? 'READY' : 'RECOVERING';
+    if (cdp && bar.ready) header = bar.domPresent ? 'READY' : 'RECOVERING';
     return { runtimeKind: (run && run.browserKind) || null, cdp: cdp ? 'CONNECTED' : 'DISCONNECTED', header };
   }
 
   // Structured header lifecycle log (§24) — one line per step so an intermittent failure is diagnosable.
   // Gated behind PHOM_HEADER_LOG / PHOM_LIFECYCLE_LOG. NEVER logs cookies/tokens/secrets.
   // The few steps that explain "the browser opened but never got into the game" always go to coseat.jsonl.
-  const ALWAYS_LOGGED = new Set(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE', 'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY']);
+  const ALWAYS_LOGGED = new Set(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE', 'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY', 'feature-error', 'feature-off-unknown']);
   function headerLog(event, data = {}) {
     // the tool's last steps for each browser (event names + time only) — attached to a memory alarm so the log says
     // what happened right before a browser blew up
@@ -692,7 +628,7 @@ else {
       players: Array.isArray(b.players) ? b.players : [], playerCount: b.playerCount || 0,
       // PHASE 6.3.6 — ENTERING is BOUNDED: shown only while pending + not authoritatively inGame + within the
       // timeout window since the click. A fired-but-never-entered click reverts to NOT_IN_GAME (never stuck).
-      entering: opened && gameHeader.enteringActive({ pending: !!headerEntering[String(runId)], inGame, startedAt: headerEnterStartedAt[String(runId)] != null ? headerEnterStartedAt[String(runId)] : null, now: nowMs() }),
+      entering: opened && gameHeader.enteringActive({ ...enterFeature().pending(runId), inGame, now: nowMs() }),
       manualState: b.manualState || null,
       // live search progress ("ĐANG DÒ BÀN KEY 12s · lần 6") so a long search never looks like a hang
       searchElapsedSec: b.searchElapsedSec || 0,
@@ -716,7 +652,7 @@ else {
       // TỰ ĐỘNG on: the bar says so (and, GĐ3, locks its table buttons)
       auto: !!(phomSessions && phomSessions.active() && phomSessions.autoActive && phomSessions.autoActive()),
       autoBusy: phomSessions && phomSessions.active() && phomSessions.groupBusy ? (GROUP_BUSY_WORD[phomSessions.groupBusy()] || null) : null,
-      error: headerError[String(runId)] || null,
+      error: headerFeature().errorOf(runId),
     };
   }
   // Is this run a RESERVE (cluster slot D/E = P4/P5)? Read from the cluster snapshot — the one place that knows.
@@ -733,18 +669,9 @@ else {
     return label ? { reserve: true, reserveLabel: label } : { reserve: false };
   }
   // The bar's table buttons (locked while TỰ ĐỘNG runs, rule D1). VÀO GAME / TẢI LẠI stay usable.
-  const headerFindConfirm = Object.create(null); // runId -> until (ms): a Dò Key asked to confirm replacing the group
   const HEADER_TABLE_ACTIONS = new Set(['FIND_TABLE', 'SCAN_TABLE', 'JOIN_CODE', 'REJOIN', 'LEAVE', 'CANCEL_FIND']);
   // What the group is doing right now, in the words the TỰ ĐỘNG chip on every bar shows.
   const GROUP_BUSY_WORD = Object.freeze({ AUTO_ON: 'đang lập bàn', REGROUP: 'đang lập lại bàn', FIND: 'đang Dò Key', JOIN: 'đang vào bàn', REPLACE_JOIN: 'acc thay đang vào bàn', READY: 'sẵn sàng', START: 'đang bắt đầu ván', TABLE_LOST: 'mất bàn — lập lại', LEAVE: 'đang rời bàn', LEAVE_ALL: 'đang thoát tất cả' });
-  // GĐ2 — an error shown on a bar belongs to the state it happened in: once that browser's state changes (it got in,
-  // left, was kicked…) the old error is cleared instead of sticking until the next click.
-  const headerErrorState = Object.create(null); // runId -> state code when the error was set
-  function settleHeaderError(rid, code) {
-    if (headerError[rid] == null) { delete headerErrorState[rid]; return; }
-    if (headerErrorState[rid] == null) { headerErrorState[rid] = code; return; }
-    if (headerErrorState[rid] !== code) { delete headerError[rid]; delete headerErrorState[rid]; }
-  }
   // The ONE state of a browser (browser-state.cjs) — the same object the bar renders, for the tool window's cards.
   function browserStateFor(runId, browsers, sharedRid) {
     return deriveBrowserState(headerViewFor(runId, browsers, sharedRid));
@@ -758,33 +685,17 @@ else {
     if (!phomSessions || !runManager) return;
     let browsers = []; try { browsers = phomSessions.manualBrowserSnapshot() || []; } catch { browsers = []; }
     const sharedRid = headerSharedRid();
-    for (const run of runManager.list()) {
-      if (run.status === RUN_STATUS.CLOSED) continue;
-      const client = runClientFor(run.id);
-      if (!client) continue;
-      const view = headerViewFor(run.id, browsers, sharedRid);
-      const rid = String(run.id);
-      // 3.2 features' push hook (capture re-hooks a browser whose frames stopped — §data-stale)
-      features().push({ run: { id: rid, slot: run.slot, closed: false }, session: sessions.get(rid), view, browser: browsers.find((x) => x && String(x.profileId) === rid) || null });
-      maybeAutoEnter(rid, view, browsers.find((x) => x && String(x.profileId) === rid));
-      rememberLoginOrigin(run, browsers.find((x) => x && String(x.profileId) === rid));
-      rememberAccountName(run, browsers.find((x) => x && String(x.profileId) === rid));
-      if (view.inGame) {
-        // Real authoritative evidence (socketReady+connected+channelList) — clear the ENTERING transient
-        // and log the click→ENTERED latency once, then stop timing this run.
-        delete headerEntering[rid]; clearHeaderEnterTimer(rid); // §10 — evidence arrived → cancel the bounded timeout
-        if (headerEnterStartedAt[rid] != null) { headerLog('ENTER_GAME_EVIDENCE', { runId: rid, slotId: run.slot, elapsedMs: Math.round(nowMs() - headerEnterStartedAt[rid]) }); delete headerEnterStartedAt[rid]; }
-      }
-      // §5/§14 lag fix — the coordinator emits 'update' on EVERY observed WS frame; deriving is cheap but a
-      // CDP Runtime.evaluate per frame per browser is an evaluate STORM that saturates the client the click
-      // rides on. Skip the round-trip when this browser's derived state is byte-identical to the last push.
-      settleHeaderError(rid, deriveBrowserState(view).code); // a stale error goes once the state moved on
-      view.error = headerError[rid] || null;
-      const json = JSON.stringify(gameHeader.deriveHeaderState(view));
-      if (headerLastPushed[rid] === json) continue;
-      headerLastPushed[rid] = json;
-      // the tab title too, separately: a page still running an older bar has no title code in its render (2026-10-06)
-      client.Runtime.evaluate({ expression: `window.__phomHeaderRender && window.__phomHeaderRender(${json})` }).catch((e) => headerLog('push-error', { runId: rid, error: String(e && e.message || e) }));
+    for (const summary of runManager.list()) {
+      if (summary.status === RUN_STATUS.CLOSED) continue;
+      if (!runClientFor(summary.id)) continue;
+      const rid = String(summary.id);
+      const run = runManager.get(rid);
+      if (!run) continue;
+      const view = headerViewFor(rid, browsers, sharedRid);
+      // every feature's push, in order: capture re-hooks a browser whose frames stopped · enter-game (auto entry +
+      // evidence) · login-origin · header LAST (settles a stale error, pushes the bar only when its state changed —
+      // a CDP evaluate per WS frame per browser was the storm the clicks rode on)
+      features().push({ run, session: sessions.get(rid), view, browser: browsers.find((x) => x && String(x.profileId) === rid) || null });
     }
   }
 
@@ -851,7 +762,7 @@ else {
 
   // PHASE 6.3.8 — shared RELOAD / CLOSE run helpers, reused by BOTH the IPC handlers (phom:reload-web /
   // phom:close-browser) AND the in-Chromium header's ⟳/⏻ buttons. Pure extraction of the existing logic —
-  // no behavior change, no new IPC contract. The header routes RELOAD/STOP/FOCUS through phomHeaderAction.
+  // no behavior change, no new IPC contract. The header feature routes RELOAD through reloadWebRun.
   async function reloadWebRun(runId) {
     const rid = String(runId == null ? '' : runId);
     if (!rid || !runManager) return { ok: false, error: { code: 'PHOM_PROFILE_NOT_READY', message: 'no browser' } };
@@ -859,7 +770,7 @@ else {
     const run = runManager.get(rid);
     const url = run && run.launchUrl ? run.launchUrl : null;
     if (!client || !client.Page) return { ok: false, error: { code: 'PHOM_RELOAD_NO_CLIENT', message: 'Trang không còn hoạt động — hãy MỞ CHROMIUM.' } };
-    const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ } delete headerEntering[rid]; clearHeaderEnterTimer(rid); delete headerError[rid]; headerDomPresent[rid] = false; delete headerLastPushed[rid]; delete headerEnterStartedAt[rid]; pushHeaderStates(); };
+    const resetPhom = () => { try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ } enterFeature().reset(rid); headerFeature().reset(rid); pushHeaderStates(); };
     try { await client.Page.enable().catch(() => {}); await client.Page.reload({ ignoreCache: false }); resetPhom(); return { ok: true, action: 'RELOAD' }; }
     catch (e) { if (url) { try { await client.Page.navigate({ url }); resetPhom(); return { ok: true, action: 'NAVIGATE' }; } catch { /* fall through */ } } return { ok: false, error: { code: 'PHOM_RELOAD_FAILED', message: safeMsg(e) } }; }
   }
@@ -868,14 +779,10 @@ else {
   // state is reset — exactly what the tool's own ⟳ always did. A reload the USER did (F5) never went through
   // the tool, so the header kept showing the old state (in game / at a table) while the page sat at the web
   // lobby and never offered VÀO GAME. Runs at commit time, so no frame of the old document can re-bind the
-  // state afterwards. VÀO GAME in flight is kept: that navigation is the one it is waiting for.
-  // The game keeps its login in localStorage (token / user_token / isAutoLogin), which belongs to ONE origin — and
-  // the site moves between mirror domains (v.hitclub.tienda → .guitars …). A profile whose saved Game URL is another
-  // mirror opens where no token is stored, so every reopen asked for a login (found 2026-10-05: tokens under
-  // .guitars, all profiles saved as .tienda). Once an account is LOGGED IN, the origin it is on becomes the profile's
-  // Game URL, so the next open lands where the login is. Only the origin is stored (no path/query); once per change.
+  // state afterwards. Each feature's documentReplaced does its part (enter-game re-arms the auto entry, login-origin
+  // notes where the game is, header forgets the old bar).
   // The game account playing in each browser profile (user 2026-10-06): it becomes that profile's Chromium name on the
-  // next launch (Chromium only takes a new name while it is closed).
+  // next launch (Chromium only takes a new name while it is closed) — written by the login-origin feature.
   let _accountNames = null;
   function accountNames() {
     if (!_accountNames) _accountNames = chromiumProfileName.createAccountNameStore(path.join(phomRoot(), 'account-names.json'));
@@ -886,40 +793,11 @@ else {
     if (!_profileFolders) _profileFolders = chromiumProfileName.createFolderMapStore(path.join(phomRoot(), 'profile-folders.json'));
     return _profileFolders;
   }
-  function rememberAccountName(run, b) {
-    if (!run || !b || !run.profileId || !b.username || b.username === 'USER_UNKNOWN') return;
-    try { if (accountNames().set(run.profileId, b.username)) headerLog('account-name', { runId: run.id, profileId: run.profileId }); } catch { /* best effort */ }
-  }
-  function rememberLoginOrigin(run, b) {
-    if (!run || !b || !b.loggedIn || !deviceProfilesStore) return;
-    if (!run.lastTopUrl) {
-      // the page loaded before the tool attached (no navigation seen): ask it once where it is
-      const client = runClientFor(run.id);
-      if (client && !run._originAsked) {
-        run._originAsked = true;
-        client.Runtime.evaluate({ expression: 'location.href', returnByValue: true })
-          .then((r) => { const v = r && r.result && r.result.value; if (typeof v === 'string') run.lastTopUrl = v; else run._originAsked = false; })
-          .catch(() => { run._originAsked = false; });
-      }
-      return;
-    }
-    let origin; try { const u = new URL(run.lastTopUrl); if (!/^https?:$/.test(u.protocol)) return; origin = u.origin + '/'; } catch { return; }
-    if (run._loginOriginSaved === origin) return;
-    run._loginOriginSaved = origin;
-    const pid = run.profileId != null ? String(run.profileId) : null;
-    const p = pid ? deviceProfilesStore.get(pid) : null;
-    if (!p) return;
-    let savedOrigin = null; try { savedOrigin = p.gameUrl ? new URL(p.gameUrl).origin + '/' : null; } catch { savedOrigin = null; }
-    if (savedOrigin === origin) return;
-    try { deviceProfilesStore.update(pid, { gameUrl: origin }); headerLog('GAME_URL_FOLLOWS_LOGIN', { runId: run.id, from: savedOrigin, to: origin }); } catch { /* best effort */ }
-  }
   function onRunDocumentReplaced(runId, url) {
     const rid = String(runId);
     if (!url || /^about:/i.test(url)) return; // the proxy-auth launch page, not the game
-    { const run = runManager && runManager.get(rid); if (run) run.lastTopUrl = String(url); } // where the game really is (login origin)
     try { if (phomSessions && phomSessions.resetBrowser) phomSessions.resetBrowser(rid); } catch { /* best effort */ }
-    resetAutoEnter(rid); // a new page = a new login → auto VÀO GAME again
-    delete headerError[rid]; headerDomPresent[rid] = false; delete headerLastPushed[rid];
+    features().documentReplaced({ run: runManager && runManager.get(rid), session: sessions.get(rid), url: String(url) });
     headerLog('DOCUMENT_REPLACED', { runId: rid });
     pushHeaderStates();
   }
@@ -939,9 +817,50 @@ else {
 
   // ---- 3.2 features: what the tool does to a browser, one module each (desktop/phom/features) ----
   // Built on first use (they reference functions declared further down). PHOM_FEATURES_OFF=<id,…> switches any off.
-  let _features = null; let _memoryFeature = null; let _anDanhFeature = null;
+  let _features = null; let _memoryFeature = null; let _anDanhFeature = null; let _enterFeature = null; let _headerFeature = null;
+  const enterFeature = () => (features(), _enterFeature);
+  const headerFeature = () => (features(), _headerFeature);
   function features() {
     if (_features) return _features;
+    _enterFeature = createEnterGameFeature({
+      sessions,
+      enter: (rid) => phomEnterGame(rid),
+      timeoutMs: gameHeader.ENTER_GAME_TIMEOUT_MS,
+      autoEnabled: () => process.env.PHOM_AUTO_ENTER !== '0', // PHOM_AUTO_ENTER=0 → only the bar's VÀO GAME enters
+      log: headerLog,
+      refresh: () => pushHeaderStates(),
+      now: nowMs,
+    });
+    // Route ONE bar click to the coordinator's manual API (the stake comes from the Phỏm tool's picker — never invented).
+    const sess = () => ensurePhomSessions();
+    _headerFeature = createHeaderFeature({
+      sessions,
+      bootScript: (o) => gameHeader.bootScript({ ...o, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' }),
+      installHeader: headerBridge.installHeader,
+      clientFor: runClientFor,
+      runOf: (rid) => runManager && runManager.get(rid),
+      evaluateHeaderAction,
+      isBusyExempt: headerActionGuard.isBusyExempt,
+      tableActions: HEADER_TABLE_ACTIONS,
+      autoActive: () => !!(phomSessions && phomSessions.active() && phomSessions.autoActive()),
+      routes: {
+        ENTER_GAME: (rid, p, ctx) => _enterFeature.start(rid, { source: 'header', slotId: p.slotId, actionId: ctx.actionId }),
+        // T1 — DÒ KEY: this browser sits alone at an empty public table and becomes KEY (rule D2: force = confirmed)
+        FIND_TABLE: (rid, p, ctx) => sess().findTable(rid, { stake: sess().selectedStake(), force: ctx.force }),
+        SCAN_TABLE: (rid) => sess().scanTable(rid),                                            // T2a — TẠO
+        JOIN_CODE: (rid, p) => sess().joinTable(rid, p.rid != null ? Number(p.rid) : null),  // VÀO SỐ BÀN (no password)
+        CANCEL_FIND: (rid) => sess().cancelFind(rid),                                          // §34 — DỪNG (busy-exempt)
+        REJOIN: (rid) => sess().rejoinTable(rid),
+        LEAVE: (rid) => sess().leaveTable(rid),
+        RELOAD: (rid) => reloadWebRun(rid),                                                    // TẢI LẠI WEB = the tool's ⟳
+      },
+      deriveHeaderState: gameHeader.deriveHeaderState,
+      stateCode: (view) => deriveBrowserState(view).code,
+      log: headerLog,
+      refresh: () => pushHeaderStates(),
+      now: nowMs,
+      newKey: () => crypto.randomBytes(16).toString('hex'),
+    });
     _memoryFeature = createMemoryWatchFeature({
       // the Chromium root is a prefix of the Chrome one (browser-profiles / browser-profiles-chrome): one marker covers both
       marker: () => profilesRootFor('chromium'),
@@ -961,14 +880,17 @@ else {
     _features = createFeatureSet({
       log: headerLog,
       // ORDER MATTERS: the send hook before the game opens its socket; header + an-danh new-document scripts before
-      // proxy-auth lets a proxied page navigate to the game.
+      // proxy-auth lets a proxied page navigate to the game; on push, enter-game before header (the bar shows the
+      // entering state the auto entry just set).
       features: [
         createCaptureFeature({ capture, targetsOf: runTargets, injectSendHook: (client) => wsReplay.injectSession(client, undefined), log: headerLog, now: nowMs }),
         createBrowserAgentFeature({ browserAgent, notify: (p) => send('phom:agent-applied', p) }),
         createWsHookFeature({ injectSendHook: (client) => wsReplay.injectSession(client, undefined) }),
         _anDanhFeature,
         createDocNavFeature({ onDocument: (rid, url) => onRunDocumentReplaced(rid, url) }),
-        { id: 'header', attach: (a) => attachHeader(a) },
+        _enterFeature,
+        createLoginOriginFeature({ profiles: () => deviceProfilesStore, accountNames: () => accountNames(), clientFor: runClientFor, log: headerLog }),
+        _headerFeature,
         createProxyAuthFeature({ bindProxyAuth, resolvePassword: (id) => (proxyConfigStore ? proxyConfigStore.resolvePassword(id) : null), log: headerLog, onAuthFailure: (run, code) => send('phom:proxy-auth', { runId: run.id, code }) }),
         _memoryFeature,
       ],
@@ -1079,99 +1001,6 @@ else {
     return { ok: true, slot: s, runId: res.playingRun, deviceProfileId: after.deviceProfileId, label: after.label };
   }
 
-  // Route ONE header button click (from the in-page binding) to the coordinator's manual API. The action
-  // set mirrors the old Tool controls exactly; stake comes from the page's bet picker (server options).
-  async function phomHeaderAction(runId, payload) {
-    const rid = String(runId == null ? '' : runId);
-    const action = payload && payload.action;
-    const actionId = (payload && payload.actionId) || null;
-    // N3 — only our own bar may act: the message must carry a key this run was given (a page script cannot know it)
-    const keys = headerKeys[rid];
-    if (!keys || !payload || typeof payload.key !== 'string' || !keys.has(payload.key)) {
-      headerLog('action-rejected', { runId: rid, action, reason: 'BAD_KEY' });
-      return { ok: false, error: { code: 'PHOM_HEADER_FORGED', message: 'Lệnh không đến từ thanh của tool — bỏ qua.' } };
-    }
-    // §3/§8/§12 — INTERNAL: the page reports its real header DOM presence (on mount/remount, NOT per frame).
-    // Record it (drives the honest Tool indicator) and force a state re-push so the freshly (re)mounted bar
-    // gets its current content. This is the ONLY header-DOM signal — never a per-WS-frame CDP verify (§11).
-    if (action === '__HEADER_STATUS') {
-      headerDomPresent[rid] = !!(payload && payload.present);
-      headerLog('HEADER_DOM_PRESENT', { runId: rid, slotId: payload && payload.slotId, present: headerDomPresent[rid] });
-      delete headerLastPushed[rid]; // force the next push (re-fill the fresh bar)
-      pushHeaderStates();
-      return { ok: true, internal: true };
-    }
-    headerLog('action-route', { runId: rid, slotId: payload && payload.slotId, action, actionId });
-    // §A2/§A8 — single-flight + IDENTITY guard (pure). Rejects a click that belongs to a stale run/profile
-    // (e.g. fired by an OLD header after reopen), a re-delivered duplicate actionId, or a second op while
-    // one is already running. The bound runId is authoritative; the payload identity is the cross-check.
-    const runRec = runManager && runManager.get(rid);
-    const guard = evaluateHeaderAction({ payload: payload || {}, boundRunId: rid, runProfileId: runRec && runRec.profileId, busy: !!headerActionBusy[rid], lastActionId: headerLastActionId[rid] || null });
-    if (!guard.ok) { headerLog('action-rejected', { runId: rid, action, actionId, reason: guard.reason }); return { ok: false, busy: guard.reason === 'DUPLICATE_ACTION', error: { code: guard.code, message: guard.message } }; }
-    // Rule D1 — while TỰ ĐỘNG drives the table the bar's table buttons are locked; a click that still arrives (an old bar
-    // not repainted yet) is refused here too, so a manual press never runs alongside the automation.
-    if (HEADER_TABLE_ACTIONS.has(action) && phomSessions && phomSessions.active() && phomSessions.autoActive()) {
-      headerLog('action-rejected', { runId: rid, action, actionId, reason: 'AUTO_ACTIVE' });
-      return { ok: false, error: { code: 'PHOM_AUTO_ACTIVE', message: 'Đang TỰ ĐỘNG — bỏ tích ô Tự động ở tool Phỏm để bấm tay.' } };
-    }
-    // §12 — never route into a dead CDP session (page crashed / target closed).
-    if (!runClientFor(rid)) { headerLog('action-no-client', { runId: rid, action, actionId }); headerError[rid] = 'Chromium mất kết nối — MỞ lại trình duyệt.'; pushHeaderStates(); return { ok: false, error: { code: 'PHOM_HEADER_NO_CLIENT', message: 'no live CDP client' } }; }
-    // §34 — a busy-exempt action (HỦY / ⟳ / ⏻ / ↑) runs ALONGSIDE the long operation it is meant to escape, so
-    // it must not take or clear the single-flight flag: doing so would release the flag that the still-running
-    // TÌM BÀN owns and let a second table operation stack on top of it.
-    const exempt = headerActionGuard.isBusyExempt(action);
-    if (!exempt) headerActionBusy[rid] = true;
-    if (actionId != null) headerLastActionId[rid] = actionId;
-    delete headerError[rid];
-    const _t0 = nowMs(); // 6.3.2.10 — main-side handler duration (M1→M4) for ALL actions
-    let res = { ok: true };
-    try {
-      if (action === 'ENTER_GAME') {
-        res = await startEnterGame(rid, { source: 'header', slotId: payload && payload.slotId, actionId });
-      } else if (action === 'FIND_TABLE') {
-        // T1 — DÒ KEY at the stake chosen in the Phỏm tool (the bar has no picker; it never invents a stake): this
-        // browser sits alone at an empty public table and becomes KEY.
-        ensurePhomSessions();
-        const stake = phomSessions.selectedStake();
-        // Rule D2 — a second Dò Key on this bar within 5s confirms "huỷ nhóm cũ"
-        const force = headerFindConfirm[rid] != null && nowMs() <= headerFindConfirm[rid];
-        delete headerFindConfirm[rid];
-        res = await phomSessions.findTable(rid, { stake, force });
-        if (res && res.needsConfirm) headerFindConfirm[rid] = nowMs() + 5000;
-      } else if (action === 'SCAN_TABLE') {
-        // T2a — TẠO: find the KEY's table (its số bàn) and sit there; the số bàn then fills every bar's SS.
-        ensurePhomSessions();
-        res = await phomSessions.scanTable(rid);
-      } else if (action === 'JOIN_CODE') {
-        // §create — VÀO SỐ BÀN typed/picked in the header (no password is ever sent — §no-password).
-        ensurePhomSessions();
-        const joinRid = payload && payload.rid != null ? Number(payload.rid) : null;
-        res = await phomSessions.joinTable(rid, joinRid);
-      } else if (action === 'CANCEL_FIND') {
-        // §34 — DỪNG: stop the DÒ KEY / TẠO this browser is running. Runs alongside it (exempt from single-flight);
-        // the coordinator's search generation is what actually ends it.
-        ensurePhomSessions();
-        res = await phomSessions.cancelFind(rid);
-      } else if (action === 'REJOIN') {
-        ensurePhomSessions();
-        res = await phomSessions.rejoinTable(rid);
-      } else if (action === 'LEAVE') {
-        ensurePhomSessions();
-        res = await phomSessions.leaveTable(rid);
-      } else if (action === 'RELOAD') {
-        // TẢI LẠI WEB (shown when the frames stopped) — the same reload as the tool window's ⟳.
-        res = await reloadWebRun(rid);
-      } else {
-        res = { ok: false, error: { code: 'PHOM_HEADER_UNKNOWN_ACTION', message: `unknown action ${action}` } };
-      }
-    } catch (e) { res = { ok: false, error: { code: 'PHOM_HEADER_ACTION_FAILED', message: safeMsg(e) } }; }
-    finally { if (!exempt) delete headerActionBusy[rid]; }
-    if (res && res.ok === false) headerError[rid] = (res.error && (res.error.message || res.error.code)) || 'LỖI';
-    headerLog('action-done', { runId: rid, action, actionId, ok: !!(res && res.ok), error: res && res.error && res.error.code, elapsedMs: Math.round(nowMs() - _t0) });
-    pushHeaderStates();
-    return res;
-  }
-
   // ---- per-run capture attach + phom frame routing (mirrors Control's seam) ----
   capture.on('request', (req) => {
     if (!req || !req.isWebSocket || !req.wsDirection || !runManager) return;
@@ -1205,21 +1034,6 @@ else {
     } catch { /* never break capture */ }
   });
 
-  // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG) and route its
-  // clicks to the coordinator. The boot carries this run's IDENTITY (slot/profile/run) so every action is
-  // self-labelled. On a re-attach (transient CDP drop → poll re-adds the target with a NEW client) this runs again →
-  // header + binding are reinstalled and the state re-pushed (§11 reattach). It must run BEFORE proxy-auth: its
-  // new-document script has to be registered before the proxied page navigates to the game.
-  function attachHeader({ run, client }) {
-    // N3 — a fresh secret per attach; every key issued to this run stays valid (a page booted by an earlier attach
-    // keeps working), any other caller is refused in phomHeaderAction.
-    const headerKey = crypto.randomBytes(16).toString('hex');
-    (headerKeys[String(run.id)] || (headerKeys[String(run.id)] = new Set())).add(headerKey);
-    const boot = gameHeader.bootScript({ nonce: headerKey, slotId: run.slot || null, profileId: run.profileId || null, runId: run.id, observerLog: process.env.PHOM_HEADER_OBSERVER_LOG === '1', clickLog: process.env.PHOM_CLICK_LOG === '1' || process.env.PHOM_HEADER_LOG === '1' });
-    return headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
-      .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); });
-  }
-
   async function connectRunEndpoint(run, endpoint) {
     const manager = runManager.setTargetManager(run, endpoint);
     if (!manager) return { ok: false, error: { code: 'RUN_CLOSED', message: 'run closed' } };
@@ -1236,7 +1050,7 @@ else {
       // §11/§12 — the CDP session for this run's page is gone (transient drop or real close). Mark the
       // header NOT READY so Screen 2 reflects it and no action is routed into a dead session. If the OS
       // window is still alive, the 1.5s target poll re-attaches → installHeader re-runs on the new client.
-      if (!runManager.targetsForRun(run.id).length) { headerReady[String(run.id)] = false; headerDomPresent[String(run.id)] = false; delete headerLastPushed[String(run.id)]; delete headerEnterStartedAt[String(run.id)]; headerLog('cdp-detached', { runId: run.id }); runManager.disconnectRun(run); try { phomSessions.routeDisconnect(run.id); } catch { /* best effort */ } pushHeaderStates(); }
+      if (!runManager.targetsForRun(run.id).length) { headerFeature().detached(run.id); enterFeature().detached(run.id); headerLog('cdp-detached', { runId: run.id }); runManager.disconnectRun(run); try { phomSessions.routeDisconnect(run.id); } catch { /* best effort */ } pushHeaderStates(); }
     });
     if (!manager.start) return { ok: true };
     try { await manager.start(); return { ok: true }; }

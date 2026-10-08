@@ -53,11 +53,13 @@ test('N3: the bar carries a per-run secret only its closure knows, takes the bin
 });
 
 test('N3: main gives each attach a fresh random key, keeps every issued key for the run, refuses any other caller first', () => {
+  // 3.2 — the header feature owns the keys (behaviour: phom-header-feature.test.mjs "header N3")
   const main = read('desktop/phom-main.cjs');
-  assert.match(main, /const headerKey = crypto\.randomBytes\(16\)\.toString\('hex'\);/);
-  assert.match(main, /\(headerKeys\[String\(run\.id\)\] \|\| \(headerKeys\[String\(run\.id\)\] = new Set\(\)\)\)\.add\(headerKey\)/);
-  const r = main.slice(main.indexOf('async function phomHeaderAction('), main.indexOf("if (action === '__HEADER_STATUS')"));
-  assert.match(r, /!keys\.has\(payload\.key\)/, 'checked before anything else, the DOM-status signal included');
+  const mod = read('desktop/phom/features/header.cjs');
+  assert.match(main, /newKey: \(\) => crypto\.randomBytes\(16\)\.toString\('hex'\),/);
+  assert.match(mod, /const key = deps\.newKey\(\);\s*s\.header\.keys\.add\(key\);/);
+  const r = mod.slice(mod.indexOf('async function action('), mod.indexOf("if (act === '__HEADER_STATUS')"));
+  assert.match(r, /!s\.header\.keys\.has\(payload\.key\)/, 'checked before anything else, the DOM-status signal included');
   assert.match(r, /code: 'PHOM_HEADER_FORGED'/);
   assert.match(read('desktop/protocol/phom/phom-header-bridge.cjs'), /window\.__phomHeaderInstalled === true/, 'presence no longer needs the (now private) binding');
 });
