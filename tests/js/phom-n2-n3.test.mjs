@@ -24,12 +24,21 @@ async function openCluster() {
   return { mgr, routed };
 }
 
-test('N2: 1000 game frames route to the session but never emit a cluster update', async () => {
-  const { mgr, routed } = await openCluster();
+test('N2: 1000 game frames are accepted for the session but never emit a cluster update', async () => {
+  const { mgr } = await openCluster();
   let updates = 0; mgr.on('update', () => updates++);
-  for (let i = 0; i < 1000; i++) mgr.ingestEvent('BR-' + ((i % 3) + 1), { raw: '[5,{}]', seq: i });
-  assert.equal(routed.length, 1000, 'every frame still reaches the Phỏm session');
+  let accepted = 0;
+  for (let i = 0; i < 1000; i++) if (mgr.acceptFrame('BR-' + ((i % 3) + 1), { raw: '[5,{}]', seq: i }).accepted) accepted++;
+  assert.equal(accepted, 1000, 'every frame still goes on to the Phỏm session (main routes it)');
   assert.equal(updates, 0, 'no snapshot + IPC per frame');
+});
+
+test('ONE frame path: main gates a frame by the cluster, then always routes it to the Phỏm session itself', () => {
+  const main = read('desktop/phom-main.cjs');
+  const h = main.slice(main.indexOf("capture.on('request', (req) => {"), main.indexOf("capture.on('websocket-closed'"));
+  assert.match(h, /if \(phomCluster && phomCluster\.active\(\) && !phomCluster\.acceptFrame\(run\.id, \{[^\n]*\}\)\.accepted\) return;\s*ensurePhomSessions\(\)\.routeFrame\(run, req\);/);
+  assert.equal((h.match(/routeFrame\(/g) || []).length, 1, 'one route call');
+  assert.doesNotMatch(read('desktop/protocol/phom/phom-cluster-cdp-manager.cjs'), /routeFrame\(/, 'the cluster never routes');
 });
 
 test('N2: a real change is announced once; an unchanged snapshot is not re-sent', async () => {

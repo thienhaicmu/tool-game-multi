@@ -71,3 +71,23 @@ test('the installer ships the whole desktop/phom tree', () => {
   const cfg = JSON.parse(readFileSync(new URL('../../electron-builder.phom.json', import.meta.url), 'utf8'));
   assert.ok(cfg.files.includes('desktop/phom/**/*'));
 });
+
+// ---- 3.2 phase 3: the coordinator and the table group are each ONE class split over files by concern ----
+test('mixin: a part\'s methods land on the class (this = the instance); a method defined twice is refused at load', () => {
+  const { mixin } = require('../../desktop/protocol/phom/mixin.cjs');
+  class Core { constructor() { this.n = 1; } base() { return this.n; } }
+  class Part { plus() { return this.base() + 1; } }
+  mixin(Core, Part);
+  assert.equal(new Core().plus(), 2);
+  class Clash { base() { return 0; } }
+  assert.throws(() => mixin(Core, Clash), /defined twice/);
+});
+
+test('the coordinator and the table group carry every part (and the installer ships them)', () => {
+  const { HostTableCoordinator } = require('../../desktop/protocol/phom/host-table-coordinator.cjs');
+  const { TableGroup } = require('../../desktop/protocol/phom/table-group.cjs');
+  for (const m of ['ingest', 'snapshot', 'joinTable', 'leaveTable', 'sendTableReady', 'findKeyTable', 'scanForKeyTable', 'cancelSearch']) assert.equal(typeof HostTableCoordinator.prototype[m], 'function', m);
+  for (const m of ['pace', '_enqueue', 'findTable', 'scanTable', 'joinTable', 'rejoin', 'leave', 'setAuto', '_regroup', 'replaceMember', '_onSeats', '_readyCheck', '_onRoundEnd']) assert.equal(typeof TableGroup.prototype[m], 'function', m);
+  const cfg = JSON.parse(readFileSync(new URL('../../electron-builder.phom.json', import.meta.url), 'utf8'));
+  assert.ok(cfg.files.includes('desktop/protocol/phom/**/*'));
+});

@@ -120,15 +120,15 @@ test('event envelope rejects wrong-cluster / wrong-profile / duplicate / out-of-
   const { mgr, dev } = makeManager({ hostSession });
   baseCluster(mgr, dev);
   await mgr.openCluster();
-  assert.equal(mgr.ingestEvent('BR-Z', { seq: 1 }).accepted, false); // wrong profile
-  assert.equal(mgr.ingestEvent('BR-A', { seq: 1, clusterSessionId: 'OTHER' }).accepted, false); // stale cluster
-  assert.equal(mgr.ingestEvent('BR-A', { seq: 5, raw: 'x' }).accepted, true);
-  assert.equal(mgr.ingestEvent('BR-A', { seq: 5, raw: 'x' }).accepted, false); // duplicate seq
-  assert.equal(mgr.ingestEvent('BR-A', { seq: 3, raw: 'y' }).accepted, false); // out of order
-  assert.equal(mgr.ingestEvent('BR-A', { seq: 6, raw: 'z' }).accepted, true);
-  // only BR-A routed, and the envelope carries the cluster/profile identity
-  assert.deepEqual([...new Set(routed)], ['BR-A']);
-  const env = mgr.ingestEvent('BR-B', { seq: 1, raw: 'b', targetId: 'T-B' }).envelope;
+  assert.equal(mgr.acceptFrame('BR-Z', { seq: 1 }).accepted, false); // wrong profile
+  assert.equal(mgr.acceptFrame('BR-A', { seq: 1, clusterSessionId: 'OTHER' }).accepted, false); // stale cluster
+  assert.equal(mgr.acceptFrame('BR-A', { seq: 5, raw: 'x' }).accepted, true);
+  assert.equal(mgr.acceptFrame('BR-A', { seq: 5, raw: 'x' }).accepted, false); // duplicate seq
+  assert.equal(mgr.acceptFrame('BR-A', { seq: 3, raw: 'y' }).accepted, false); // out of order
+  assert.equal(mgr.acceptFrame('BR-A', { seq: 6, raw: 'z' }).accepted, true);
+  // 3.2 — the cluster only gates: main routes an accepted frame (ONE frame path), the cluster never does
+  assert.deepEqual(routed, []);
+  const env = mgr.acceptFrame('BR-B', { seq: 1, raw: 'b', targetId: 'T-B' }).envelope;
   assert.equal(env.slot, 'B');
   assert.equal(env.clusterSessionId, mgr.clusterSessionId());
 });

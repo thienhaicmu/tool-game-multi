@@ -940,14 +940,11 @@ else {
     // when no session has been started. Passive and cheap when idle; never allowed to break capture.
     try { if (frameRecorder.isRecording()) frameRecorder.record(run.id, { raw: req.body && req.body.raw, direction: req.wsDirection, url: req.url, label: run.profileLabel || null }); } catch { /* never break capture */ }
     try {
-      // When a cluster is active, frames flow through the cluster envelope (validation +
-      // aggregate), which routes to the host session; otherwise route directly.
-      if (phomCluster && phomCluster.active()) {
-        phomCluster.ingestEvent(run.id, { raw: req.body && req.body.raw, direction: req.wsDirection, seq: req.seq, targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url });
-      } else {
-        // no session yet → the manager keeps the frames (the login identity above all) for when one starts
-        ensurePhomSessions().routeFrame(run, req);
-      }
+      // ONE frame path (3.2): an active cluster only gates the frame (a browser not in it, a duplicate or late seq is
+      // dropped); every accepted frame goes to the Phỏm session — which keeps a run's frames (the login identity
+      // above all) until a session covers it.
+      if (phomCluster && phomCluster.active() && !phomCluster.acceptFrame(run.id, { raw: req.body && req.body.raw, direction: req.wsDirection, seq: req.seq, targetId: req.targetId, cdpSessionId: req.cdpSessionId, url: req.url }).accepted) return;
+      ensurePhomSessions().routeFrame(run, req);
     } catch { /* never break capture */ }
   });
 

@@ -152,9 +152,10 @@ class PhomClusterCdpManager extends EventEmitter {
     return { ok: applied === 3, applied, results };
   }
 
-  // §9 event envelope — normalize + validate one per-profile CDP frame. Old cluster /
-  // wrong profile / duplicate / late-round events are rejected BEFORE any mutation.
-  ingestEvent(profileId, meta = {}) {
+  // §9 event envelope — normalize + validate one per-profile CDP frame. Old cluster / wrong profile / duplicate /
+  // late events are rejected BEFORE any mutation. The cluster only GATES a frame: main routes an accepted one to the
+  // Phỏm session itself — ONE frame path whether a cluster is active or not (3.2).
+  acceptFrame(profileId, meta = {}) {
     if (!this._guard()) return { accepted: false, reason: 'CLUSTER_INACTIVE' };
     const slot = this._slotForRun(profileId);
     if (!slot) return { accepted: false, reason: 'PROFILE_NOT_IN_CLUSTER' };
@@ -170,12 +171,9 @@ class PhomClusterCdpManager extends EventEmitter {
       browserRunId: profileId, targetId: meta.targetId || null, cdpSessionId: meta.cdpSessionId || null,
       roundIdentity: meta.roundIdentity || null, sequence: seq, receivedAt: this._now(), frame: meta.raw != null ? meta.raw : null,
     };
-    // Route to the host session (updates ONLY this profile's state), then recompute aggregate.
-    let cls = null;
-    try { if (this._host) cls = this._host.routeFrame({ id: profileId }, { isWebSocket: true, wsDirection: meta.direction || 'recv', seq, targetId: meta.targetId, cdpSessionId: meta.cdpSessionId, url: meta.url, body: { raw: meta.raw } }); } catch { /* isolation: never throw across profiles */ }
     // N2 — a game frame never changes the CLUSTER (browsers/slots/proxies): no snapshot + IPC per frame (it was
     // ~15 frames/s per browser). The Phỏm state that a frame does change is pushed by the host session, throttled.
-    return { accepted: true, envelope, classified: cls };
+    return { accepted: true, envelope };
   }
 
   // §10 — ONE run's Chrome exited for real (routed here from the launcher's classified

@@ -552,8 +552,7 @@ test('TẠO fast path: a stranger alone at the newest table is left at once, the
   const joins = sim.sent.B2.filter((j) => j[0] === 8).map((j) => j[2]);
   assert.deepEqual(joins, [stranger.rid, keyRoom.rid]);
   assert.ok(sim.sent.B2.some((j) => j[0] === 4), 'left the stranger\'s table');
-  const src = readFileSync(new URL('../../desktop/protocol/phom/host-table-coordinator.cjs', import.meta.url), 'utf8');
-  assert.match(src, /const LIST_CANDIDATE_MAX = 6;/);
+  assert.equal(require('../../desktop/protocol/phom/coordinator-search.cjs').LIST_CANDIDATE_MAX, 6);
 });
 
 test('TẠO: the game client own (armed) join already proves the refusal → the tool sends NO second wrong-password probe', async () => {
@@ -924,7 +923,9 @@ test('LOOP GUARD: the budget refuses past its ceiling and says so once (LOOP_GUA
   assert.equal(notices[0].what, 'NOT_READY_RESET'); assert.equal(notices[0].id, 'B3');
 });
 test('LOOP GUARD: TỰ ĐỘNG re-forms a stranger-hosted table at most 3 times in 5 minutes, then switches TỰ ĐỘNG off', () => {
-  const src = readFileSync(new URL('../../desktop/protocol/phom/table-group.cjs', import.meta.url), 'utf8');
+  // 3.2 — TỰ ĐỘNG lives in table-group-auto.cjs, the ceilings in table-group-constants.cjs
+  const src = readFileSync(new URL('../../desktop/protocol/phom/table-group-auto.cjs', import.meta.url), 'utf8');
   assert.match(src, /if \(this\._budget\('REGROUP', REGROUP_MAX, REGROUP_WINDOW_MS\)\) return this\._regroup\(reason\);\s*this\.setAuto\(false\);/);
-  assert.match(src, /const REGROUP_MAX = 3;/); assert.match(src, /const REGROUP_WINDOW_MS = 5 \* 60000;/);
+  const k = require('../../desktop/protocol/phom/table-group-constants.cjs');
+  assert.equal(k.REGROUP_MAX, 3); assert.equal(k.REGROUP_WINDOW_MS, 5 * 60000);
 });
