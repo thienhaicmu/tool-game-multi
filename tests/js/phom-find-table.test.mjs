@@ -859,3 +859,72 @@ test('B4 e2e (manual): the KEY is kicked, no cmd 203 seen — the seat list (C f
   await until(() => notices.some((n) => n.event === 'KEY_CHANGED'));
   assert.equal(notices.find((n) => n.event === 'KEY_CHANGED').id, 'B2');
 });
+
+// ---- LOOP GUARD (2026-10-08): "tool đơ / full RAM" since 3.1.23 ------------------------------------------------------
+// The full-table rules ran again on EVERY seat frame. When the server reports CHƯA SS ready again after it sits down
+// (the game's own auto-ready, a stale r:true), 3.1.23/3.1.24 made it leave + sit down without end: 9 cycles in 1.2 s in
+// this sim, each one reloading the game's table scene in that browser. A departure now triggers ONE reset.
+const seatFramesFor = async (sim, room, ms) => { for (let t = 0; t < ms; t += 30) { await tick(); if (t % 150 === 0) sim.broadcast(room); } };
+test('LOOP GUARD: the stranger leaves, the server readies CHƯA SS on every sit → ONE leave + sit again, not a loop', async () => {
+  const { sim, group, coord } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  await group.findTable('B1', {}); await group.scanTable('B2'); await group.joinTable('B3', group.rid());
+  const room = groupRoom(sim, group);
+  const baseSeat = sim.seat;
+  sim.seat = (id, r) => { baseSeat(id, r); if (id === 'B3') sim.readyBroadcast(r, sim.uids.B3); };   // ready on every sit
+  strangerSits(sim, room); strangerReadies(sim, room);
+  await until(() => sim.readyFrames.includes('B3'));
+  const l0 = op(sim, 'B3', 4).length, j0 = op(sim, 'B3', 8).length;
+  strangerLeaves(sim, room);
+  await seatFramesFor(sim, room, 1500);
+  assert.equal(op(sim, 'B3', 4).length - l0, 1, 'left once');
+  assert.equal(op(sim, 'B3', 8).length - j0, 1, 'sat down again once');
+  assert.ok(room.seats.includes('1_3'));
+  assert.equal(coord.isReady('B3'), true, 'the server says ready again — it stays, no second reset for the same departure');
+});
+
+test('LOOP GUARD: SẴN SÀNG left and never comes back → CHƯA SS resets ONCE (3.1.24 SS_LEFT re-fired on every frame)', async () => {
+  const { sim, group } = mkGroup({ scan: [] });
+  group.setStake(20000);
+  await group.findTable('B1', {}); await group.scanTable('B2'); await group.joinTable('B3', group.rid());
+  const room = groupRoom(sim, group);
+  const baseSeat = sim.seat;
+  sim.seat = (id, r) => { baseSeat(id, r); if (id === 'B3') sim.readyBroadcast(r, sim.uids.B3); };
+  strangerSits(sim, room); strangerReadies(sim, room);
+  await until(() => sim.readyFrames.includes('B3'));
+  const l0 = op(sim, 'B3', 4).length;
+  // SẴN SÀNG leaves for good (t:2 to everyone at the table) — the stranger stays
+  room.seats = room.seats.filter((u) => u !== '1_2');
+  for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u) || bid === 'B2') sim.feed(bid, JSON.stringify([5, { p: { uid: '1_2', mT: false, dn: 'B2', id: 0 }, t: 2, cmd: 200 }]));
+  sim.feed('B2', '[4,true,1,-1,0,""]');
+  await seatFramesFor(sim, room, 1500);
+  assert.ok(op(sim, 'B3', 4).length - l0 <= 1, `CHƯA SS left ${op(sim, 'B3', 4).length - l0} times — at most once`);
+});
+
+test('LOOP GUARD: a free seat whose join keeps being refused is NOT asked again on every seat frame (B2 backoff)', async () => {
+  const { sim, group, coord } = await formedOn('auto');
+  const room = sim.rooms.get(group.rid());
+  let tries = 0;
+  const realJoin = coord.joinTable.bind(coord);
+  coord.joinTable = async (id, rid, o) => { if (id === 'B3') { tries++; return { ok: false, error: { code: 'PHOM_JOIN_REFUSED', message: 'refused' } }; } return realJoin(id, rid, o); };
+  room.seats = room.seats.filter((u) => u !== '1_3');                                    // CHƯA SS out, a seat is free
+  for (const [bid, u] of Object.entries(sim.uids)) if (room.seats.includes(u) || bid === 'B3') sim.feed(bid, JSON.stringify([5, { p: { uid: '1_3', mT: false, dn: 'B3', id: 0 }, t: 2, cmd: 200 }]));
+  sim.feed('B3', '[4,true,1,-1,0,""]');
+  await seatFramesFor(sim, room, 2500);
+  assert.ok(tries >= 1, 'it did try to come back');
+  assert.ok(tries <= 2, `asked ${tries} times in 2.5 s — refused joins wait before the next try`);
+});
+
+test('LOOP GUARD: the budget refuses past its ceiling and says so once (LOOP_GUARD notice)', () => {
+  const { group } = mkGroup({ scan: [] });
+  const notices = []; group.on('notice', (n) => notices.push(n));
+  const got = [1, 2, 3, 4, 5].map(() => group._budget('NOT_READY_RESET:B3', 3, 60000));
+  assert.deepEqual(got, [true, true, true, false, false]);
+  assert.equal(notices.filter((n) => n.event === 'LOOP_GUARD').length, 1);
+  assert.equal(notices[0].what, 'NOT_READY_RESET'); assert.equal(notices[0].id, 'B3');
+});
+test('LOOP GUARD: TỰ ĐỘNG re-forms a stranger-hosted table at most 3 times in 5 minutes, then switches TỰ ĐỘNG off', () => {
+  const src = readFileSync(new URL('../../desktop/protocol/phom/table-group.cjs', import.meta.url), 'utf8');
+  assert.match(src, /if \(this\._budget\('REGROUP', REGROUP_MAX, REGROUP_WINDOW_MS\)\) return this\._regroup\(reason\);\s*this\.setAuto\(false\);/);
+  assert.match(src, /const REGROUP_MAX = 3;/); assert.match(src, /const REGROUP_WINDOW_MS = 5 \* 60000;/);
+});

@@ -37,6 +37,12 @@ const REJOIN_DELAY_MS = 500;
 // THAY ACC — how often (and how long) the group checks whether the replacement browser is in the game yet.
 const REPLACE_POLL_MS = 1000;
 const REPLACE_WAIT_MS = 120000;
+// LOOP GUARD ceilings (2026-10-08) — automatic leave/join the group does by itself (see _budget)
+const RESET_MAX_PER_MIN = 3;          // CHƯA SS leave + sit again (stranger / SẴN SÀNG left)
+const SEAT_FREE_MAX_PER_MIN = 3;      // B2 — back to a free seat
+const SEAT_FREE_BACKOFF_MS = 30000;   // after a refused B2 join
+const REGROUP_MAX = 3;                // B4 — TỰ ĐỘNG re-forms the group …
+const REGROUP_WINDOW_MS = 5 * 60000;  // … per 5 minutes, then TỰ ĐỘNG switches off
 // what an account is busy with, in the words of a "đợi xong" refusal
 const ACT_WORD = Object.freeze({ FIND: 'Dò Key', SCAN: 'Tạo (dò bàn KEY)', JOIN: 'vào bàn', REJOIN: 'vào lại bàn', LEAVE: 'rời bàn' });
 
@@ -147,6 +153,23 @@ class TableGroup extends EventEmitter {
   }
   _emit() { this.emit('update', this.snapshot()); }
   _event(name, data = {}) { this._log(name, data); this.emit('notice', { event: name, ...data }); }
+  // LOOP GUARD (2026-10-08): every automatic leave / join the group makes on its own has a hard ceiling per window. The
+  // full-table rules (3.1.23 NOT_READY_RESET, 3.1.24 SS_LEFT / SEAT_FREE / REGROUP) ran again on EVERY seat frame and
+  // could leave + sit down without end — each table join reloads the game's table scene in that browser. Over the
+  // ceiling the action is skipped and announced once (LOOP_GUARD) instead of repeated.
+  _budget(key, max, windowMs) {
+    const now = this._now();
+    if (!this._budgets) this._budgets = new Map();
+    const b = this._budgets.get(key) || { at: [], warned: false };
+    b.at = b.at.filter((t) => now - t < windowMs);
+    if (b.at.length >= max) {
+      if (!b.warned) { b.warned = true; this._event('LOOP_GUARD', { what: key.split(':')[0], id: key.split(':')[1] || null, max, windowSec: Math.round(windowMs / 1000) }); }
+      this._budgets.set(key, b);
+      return false;
+    }
+    b.at.push(now); b.warned = false; this._budgets.set(key, b);
+    return true;
+  }
 
   // ---- T1 / A1 building blocks ------------------------------------------------
   // T1 — DÒ KEY: this browser sits ALONE at an empty public table of the stake and becomes KEY. The table's số bàn
@@ -432,6 +455,7 @@ class TableGroup extends EventEmitter {
       if (this._group !== g) return;
       if (!res.ok) {
         if (res.superseded || res.cancelled) return;
+        if (why === 'SEAT_FREE') (g.seatFreeBlockUntil || (g.seatFreeBlockUntil = new Map())).set(id, this._now() + SEAT_FREE_BACKOFF_MS);
         this._event('JOIN_FAILED', { id, rid: g.rid, error: res.error, why });
         if (this._isMissingRoom(res)) this._enqueue('TABLE_LOST', (gen) => this._onTableLost(gen));
         return;
@@ -464,7 +488,12 @@ class TableGroup extends EventEmitter {
     const here = this._orderedIds().filter((id) => this._atGroupTable(id));
     const host = here.find((id) => this._coord.isTableHost(id));
     if (host) { if (host !== g.creatorId) this._adoptKey(g, host, reason); return; }
-    if (this._auto) return this._regroup(reason);
+    // TỰ ĐỘNG re-forms the group — a few times; a table whose host keeps being a stranger would otherwise make the
+    // whole group leave and search forever. Over the ceiling TỰ ĐỘNG switches off and the MANUAL rule applies.
+    if (this._auto) {
+      if (this._budget('REGROUP', REGROUP_MAX, REGROUP_WINDOW_MS)) return this._regroup(reason);
+      this.setAuto(false);
+    }
     if (!here.length) { this._group = null; this._event('GROUP_DISSOLVED', { reason, rid: g.rid }); this._emit(); return; }
     return this._outAll(g, reason);
   }
@@ -697,6 +726,15 @@ class TableGroup extends EventEmitter {
     const ss = [...g.roles.entries()].find(([, role]) => role === ROLE.READY);
     if (!this._atGroupTable(key) || typeof this._coord.tablePlayerCount !== 'function') return this._fullWait(g, 'KEY_NOT_SEATED');
     const players = this._coord.tablePlayerCount(key);
+    // EDGES, not levels (2026-10-08): "the stranger LEFT" / "SẴN SÀNG LEFT" are things that HAPPEN — seen once, when a
+    // stranger was there before and is gone now (SẴN SÀNG was seated and is not). Read as a state on every seat frame
+    // they re-fired after each re-sit (the game's own auto-ready, a stale r:true) and CHƯA SS left + sat down without end.
+    const strangerHere = typeof this._coord.strangerSeated === 'function' ? this._coord.strangerSeated(key) : true;
+    const ssIn = !!(ss && this._atGroupTable(ss[0]));
+    if (g.prevStrangerHere === true && !strangerHere) g.resetWanted = 'STRANGER_LEFT';
+    if (g.prevSsIn === true && !ssIn) g.resetWanted = 'SS_LEFT';
+    if ((g.resetWanted === 'STRANGER_LEFT' && strangerHere) || (g.resetWanted === 'SS_LEFT' && ssIn)) g.resetWanted = null; // undone meanwhile
+    g.prevStrangerHere = strangerHere; g.prevSsIn = ssIn;
     if (players < 4) {
       g.fullReadySent = false; g.fullStartSent = false; g.startRetried = false;
       // user rule 2026-10-05: the stranger LEFT before the round → CHƯA SS goes back to "not ready" and waits for the
@@ -705,14 +743,20 @@ class TableGroup extends EventEmitter {
       // ("Bạn thoát vì không bắt đầu", captures test-D 2026-09-21): a ready CHƯA SS left alone with the group would
       // cost the KEY its table. B1 (user 2026-10-06, choice b): the same when SẴN SÀNG is the one who left — CHƯA SS
       // goes back to not ready and the group waits for SẴN SÀNG to come back.
-      const ssOut = !!(ss && !this._atGroupTable(ss[0]));
-      const strangerHere = typeof this._coord.strangerSeated === 'function' ? this._coord.strangerSeated(key) : true;
-      if (nr && this._atGroupTable(nr[0]) && this._coord.isReady(nr[0]) && (ssOut || !strangerHere)) this._resetNotReady(g, nr[0], ssOut ? 'SS_LEFT' : 'STRANGER_LEFT');
+      // Once per departure (resetWanted is consumed here), and never more than RESET_MAX times a minute.
+      if (g.resetWanted && nr && this._atGroupTable(nr[0]) && this._coord.isReady(nr[0])) {
+        const why = g.resetWanted; g.resetWanted = null;
+        if (this._budget('NOT_READY_RESET:' + nr[0], RESET_MAX_PER_MIN, 60000)) this._resetNotReady(g, nr[0], why);
+      }
       // B2 (2026-10-06): a member who is not at the table while a seat is free (lost its seat to a stranger, or left)
-      // comes back — when TỰ ĐỘNG or its ReJoin is on, like after a kick
+      // comes back — when TỰ ĐỘNG or its ReJoin is on, like after a kick. A refused join waits SEAT_FREE_BACKOFF_MS
+      // before the next try, and the tries are capped — a full / refusing table was asked again on every seat frame.
+      const now = this._now();
       for (const [id, role] of g.roles) {
         if (role === ROLE.KEY || this._atGroupTable(id) || (g.resetPending && id === (nr && nr[0]))) continue;
-        if (this._auto || g.rejoinOn.has(id)) this._rejoinSoon(g, id, 'SEAT_FREE');
+        if (!(this._auto || g.rejoinOn.has(id)) || g.rejoinPending.has(id)) continue;
+        if (g.seatFreeBlockUntil && (g.seatFreeBlockUntil.get(id) || 0) > now) continue;
+        if (this._budget('SEAT_FREE:' + id, SEAT_FREE_MAX_PER_MIN, 60000)) this._rejoinSoon(g, id, 'SEAT_FREE');
       }
       return this._fullWait(g, 'PLAYERS_' + players);
     }

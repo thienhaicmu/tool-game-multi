@@ -72,5 +72,5 @@ test('the prepared project runtime validates (skipped if not prepared)', (t) => 
   if (!fs.existsSync(path.join(root, 'chrome.exe'))) return t.skip('runtime/phom-chromium not prepared on this machine');
   const v = rt.validateRuntime(root);
   assert.equal(v.ok, true, v.ok ? '' : `${v.error && v.error.code}`);
-  assert.equal(v.version, '157.0.8092.0');
+  assert.equal(v.version, '149.0.7827.55');
 });

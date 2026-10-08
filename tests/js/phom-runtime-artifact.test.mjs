@@ -116,6 +116,6 @@ test('the tracked artifact manifest validates on win32-x64 (skipped elsewhere)',
   const m = JSON.parse(fs.readFileSync(new URL(file, dir), 'utf8'));
   const r = art.validateArtifactManifest(m, { platform: 'win32', arch: 'x64' });
   assert.equal(r.ok, true);
-  assert.equal(m.chromiumVersion, '157.0.8092.0');
+  assert.equal(m.chromiumVersion, '149.0.7827.55');
   assert.match(m.archiveSha256, /^sha256:[0-9a-f]{64}$/);
 });

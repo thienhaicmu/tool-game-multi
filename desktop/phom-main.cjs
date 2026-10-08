@@ -29,6 +29,7 @@ const phomChromium = require('./browser/phom-chromium-runtime.cjs');
 const browserRuntimeResolver = require('./browser/browser-runtime-resolver.cjs');
 const { resolveSandboxPolicy, DIAGNOSTIC_ENV } = require('./browser/chromium-sandbox-policy.cjs');
 const chromiumProfileName = require('./browser/chromium-profile-name.cjs');
+const browserMemoryWatch = require('./browser/browser-memory-watch.cjs');
 const windowLock = require('./protocol/phom/window-lock.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -712,8 +713,12 @@ else {
   // Structured header lifecycle log (§24) — one line per step so an intermittent failure is diagnosable.
   // Gated behind PHOM_HEADER_LOG / PHOM_LIFECYCLE_LOG. NEVER logs cookies/tokens/secrets.
   // The few steps that explain "the browser opened but never got into the game" always go to coseat.jsonl.
-  const ALWAYS_LOGGED = new Set(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE']);
+  const ALWAYS_LOGGED = new Set(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE', 'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY']);
+  // The last steps the tool took with each browser (event names + time only) — attached to a memory alarm so the log
+  // says what happened right before a browser blew up.
+  const recentRunEvents = Object.create(null);
   function headerLog(event, data = {}) {
+    if (data && data.runId != null) { const k = String(data.runId); const a = recentRunEvents[k] || (recentRunEvents[k] = []); a.push(event + '@' + new Date().toISOString().slice(11, 19)); if (a.length > 20) a.shift(); }
     if (ALWAYS_LOGGED.has(event)) { try { appendCoseatLog({ tag: 'PHOM-RUN', event, at: new Date().toISOString(), ...data }); } catch { /* best effort */ } }
     if (process.env.PHOM_HEADER_LOG !== '1' && process.env.PHOM_LIFECYCLE_LOG !== '1') return;
     try { lifecycleLog('PHOM_HEADER', { event, ...data }); } catch { /* best effort */ }
@@ -857,7 +862,7 @@ else {
       if (headerLastPushed[rid] === json) continue;
       headerLastPushed[rid] = json;
       // the tab title too, separately: a page still running an older bar has no title code in its render (2026-10-06)
-      client.Runtime.evaluate({ expression: `window.__phomHeaderRender && window.__phomHeaderRender(${json}); window.__phomSetTitle && window.__phomSetTitle(${JSON.stringify(view.account || null)})` }).catch((e) => headerLog('push-error', { runId: rid, error: String(e && e.message || e) }));
+      client.Runtime.evaluate({ expression: `window.__phomHeaderRender && window.__phomHeaderRender(${json})` }).catch((e) => headerLog('push-error', { runId: rid, error: String(e && e.message || e) }));
     }
   }
 
@@ -1008,6 +1013,39 @@ else {
       return { ok: true };
     }
     catch (e) { toolClosingRuns.delete(rid); return { ok: false, error: { code: 'PHOM_CLOSE_FAILED', message: safeMsg(e) } }; }
+  }
+
+  // MEMORY WATCH (2026-10-08) — a logged-in browser's MAIN process was seen growing ~200 MB/s to 15 GB and froze the
+  // machine. Each browser the tool opened is sampled every 5 s: past 1.5 GB it is logged once (with the tool's last
+  // steps for it), past 3 GB it is closed — gracefully first, its main process killed if it does not go within 4 s.
+  // PHOM_MEMORY_WATCH=0 turns it off.
+  let memWatch = null;
+  function ensureMemoryWatch() {
+    if (memWatch || process.env.PHOM_MEMORY_WATCH === '0') return;
+    // the Chromium root is a prefix of the Chrome one (browser-profiles / browser-profiles-chrome): one marker covers both
+    memWatch = browserMemoryWatch.createMemoryWatch({ marker: profilesRootFor('chromium'), onSample: onMemorySample, log: headerLog });
+    memWatch.start();
+  }
+  function onMemorySample(byDir) {
+    if (!runManager) return;
+    for (const s of runManager.list()) {
+      const run = runManager.get(s.id);
+      if (!run || !run.profileDir || run.status === RUN_STATUS.CLOSED) continue;
+      const e = byDir.get(browserMemoryWatch.normDir(run.profileDir));
+      const verdict = browserMemoryWatch.judge(e);
+      if (!verdict) continue;
+      const rid = String(run.id);
+      const info = { runId: rid, slotId: run.slot || null, profile: run.profileLabel || null, kind: run.browserKind || null, mainMb: e.mainMb, rendererMb: e.rendererMb, recent: (recentRunEvents[rid] || []).slice() };
+      if (verdict === 'HIGH' && !run._memWarned) { run._memWarned = true; headerLog('BROWSER_MEMORY_HIGH', info); }
+      if (verdict === 'RUNAWAY' && !run._memKilled) {
+        run._memKilled = true;
+        headerLog('BROWSER_MEMORY_RUNAWAY', info);
+        send('phom:notice', { event: 'BROWSER_MEMORY_RUNAWAY', slot: run.slot || null, mb: e.mainMb });
+        const pid = e.mainPid;
+        Promise.race([closeBrowserRun(rid), new Promise((r) => setTimeout(r, 4000))])
+          .finally(() => { if (pid) { try { process.kill(pid); } catch { /* already gone */ } } });
+      }
+    }
   }
 
   // THAY PROFILE / MỞ LẠI one slot (A/B/C = P1/P2/P3): an open browser is closed first; with a profileId the slot is
@@ -1237,15 +1275,19 @@ else {
     manager.on('attached', ({ target, client }) => {
       runManager.registerTarget(target.cdpTargetId, run);
       if (!run.selectedTargetId) run.selectedTargetId = target.cdpTargetId;
+      // DIAG (dev only, 2026-10-08): the logged-in browser's MAIN process grows ~200 MB/s with the tool idle. Each
+      // switch leaves one page-side feature out so the culprit can be named on the real app.
+      const diagOff = (k) => process.env['PHOM_DIAG_NO_' + k] === '1';
+      if (diagOff('CAPTURE')) headerLog('diag-off', { what: 'CAPTURE' }); else
       attachCapture(client, target);
       // Apply this run's browser AGENT (a mobile user-agent string, or nothing for the web
        // agent) on the run's OWN client. No viewport/scale/touch emulation: the window is the
        // viewport, which is what stopped the game from lagging.
       if (run.browserAgent) applyBrowserAgent(client, run.browserAgent, run).catch(() => {});
       // Ensure the WS send-hook is present before the game opens its socket.
-      wsReplay.injectSession(client, undefined).catch(() => {});
+      if (!diagOff('WSHOOK')) wsReplay.injectSession(client, undefined).catch(() => {});
       // ẨN DANH switch (default OFF) — this document now + every later one (reload / VÀO GAME).
-      if (!target.type || target.type === 'PAGE') anDanh.applyAnDanh(client, anDanhOn).catch(() => {});
+      if ((!target.type || target.type === 'PAGE') && !diagOff('ANDANH')) anDanh.applyAnDanh(client, anDanhOn).catch(() => {});
       // Inject the tool-owned in-page GAME HEADER (VÀO GAME / TÌM BÀN / VÀO BÀN / REJOIN / THOÁT PHÒNG)
       // and route its clicks to the coordinator. The boot carries this run's IDENTITY (slot/profile/run)
       // so every action is self-labelled. Best-effort; a CDP hiccup never blocks attach. On a re-attach
@@ -1263,7 +1305,7 @@ else {
         client.Page.enable().catch(() => {});
         client.Page.frameNavigated((p) => { if (p && p.frame && !p.frame.parentId) onRunDocumentReplaced(run.id, p.frame.url); });
       }
-      headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
+      if (!diagOff('HEADER')) headerBridge.installHeader(client, { runId: run.id, slotId: run.slot || null, boot, onAction: (rid, payload) => phomHeaderAction(rid, payload), log: headerLog })
         .then((r) => { headerReady[String(run.id)] = !!(r && r.ok); pushHeaderStates(); }).catch(() => {});
       // Bind proxy auth on the run's OWN client when its proxy requires it (unverified).
       if (run.proxy && run.proxy.requiresAuth) {
@@ -1347,7 +1389,7 @@ else {
   // native 2×2 window size). The device belongs to the slot (browser profile), so the
   // same device is reapplied every time this slot's browser is (re)opened.
   async function openProfile({ slot, profileKey, url, proxyRef, proxyRequired, label, username, agent: agentArg, profileId }) {
-    ensureRunManager(); ensurePhomSessions(); ensureStores();
+    ensureRunManager(); ensurePhomSessions(); ensureStores(); ensureMemoryWatch();
     // PHASE 6.3.2.2 — resolve the browser runtime (custom Chromium OR Google Chrome) per the saved
     // preference. AUTO prefers custom Chromium; if it is unavailable it falls back to Chrome (logged).
     const rt = chromiumRuntime();
@@ -1668,7 +1710,7 @@ else {
   });
   app.on('window-all-closed', () => { lifecycleLog('APP_WINDOW_ALL_CLOSED', {}); if (process.platform !== 'darwin') app.quit(); });
   app.on('before-quit', () => { lifecycleLog('APP_BEFORE_QUIT', { stack: (new Error().stack || '').split('\n').slice(1, 6).join(' | ') }); });
-  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); _coseatFlush(); }); // §ws-log — never lose the last batch
+  app.on('will-quit', () => { lifecycleLog('APP_WILL_QUIT', {}); _coseatFlush(); try { if (memWatch) memWatch.stop(); } catch { /* gone */ } }); // §ws-log — never lose the last batch
 }
 
 module.exports = { PRODUCT_NAME, GAME_PRODUCT };

@@ -256,6 +256,10 @@
       case 'RULE_BROKEN_OUT': return 'Chủ bàn ' + n.rid + ' không còn là acc của mình — cả nhóm đã rời bàn. Bấm Dò Key để tìm bàn mới.';
       case 'KEY_CHANGED': return 'KEY mất bàn — ' + who + ' thành chủ bàn, là KEY mới (giữ bàn ' + n.rid + ').';
       case 'NOT_READY_RESET': return (n.reason === 'SS_LEFT' ? 'Acc SẴN SÀNG rời bàn' : 'Người lạ rời bàn') + ' — acc CHƯA SS vào lại để về chưa sẵn sàng.';
+      case 'LOOP_GUARD': return n.what === 'REGROUP'
+        ? 'Đã lập lại nhóm ' + n.max + ' lần trong ' + Math.round(n.windowSec / 60) + ' phút (chủ bàn toàn người lạ) — TỰ ĐỘNG đã tắt để không lặp mãi.'
+        : (n.id ? playerLabelOf(n.id) + ': ' : '') + (n.what === 'SEAT_FREE' ? 'đã thử vào lại bàn ' : 'đã rời rồi vào lại bàn ') + n.max + ' lần trong ' + n.windowSec + ' giây — tool tạm dừng việc này để không lặp mãi.';
+      case 'BROWSER_MEMORY_RUNAWAY': return 'Trình duyệt ' + (n.slot ? ({ A: 'P1', B: 'P2', C: 'P3', D: 'P4', E: 'P5' }[n.slot] || n.slot) + ' ' : '') + 'dùng ' + Math.round((n.mb || 0) / 1024 * 10) / 10 + ' GB RAM — tool đã đóng nó để máy không bị đơ. Mở lại trình duyệt đó.';
       case 'GROUP_DISSOLVED': return n.reason === 'KEY_REPLACED' ? 'Acc KEY đã được thay — nhóm bị hủy, bấm Dò Key để lập bàn mới.' : (n.reason === 'KEY_KICKED' || n.reason === 'HOST_CHANGED') ? 'Nhóm đã rời bàn ' + n.rid + ' (chủ bàn không còn là acc của mình) — bấm Dò Key để tìm bàn mới.' : 'Đã thoát bàn tất cả.';
       case 'MEMBER_REPLACED': return who + ' thay acc cũ, nhận vai ' + roleLabel(n.role) + ' — vào game xong sẽ tự vào bàn' + (n.rid != null ? ' ' + n.rid : '') + '.';
       case 'REPLACE_TIMEOUT': return who + ' chưa vào game sau 2 phút — đăng nhập rồi bấm Tạo / Vào.';
@@ -1143,7 +1147,7 @@
   if (api.onUi) api.onUi((snap) => { applyUiSnapshot(snap); if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
   if (api.onNotice) api.onNotice(async (n) => {
     if (n && n.event === 'FOURTH_READY') ringBell(4);
-    const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST/.test(n.event));
+    const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST|LOOP_GUARD|RUNAWAY/.test(n.event));
     // a reserve was swapped in by itself (a playing browser was closed from its window): the cards follow at once
     if (n && /^SLOT_AUTO_/.test(n.event)) {
       try { clusterSnap = await api.clusterSnapshot(); } catch {}

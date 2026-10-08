@@ -81,32 +81,33 @@ function fakePage() {
   return { window, document };
 }
 
-test('tab / taskbar title: "[account] <page title>", kept when the game changes its title, unknown account = untouched', () => {
+// 3.1.32 (user 2026-10-08 "Đổi tiêu đề tab bỏ"): right after VÀO GAME a browser's main process grew ~200 MB/s with the
+// tool idle; re-writing the title whenever the game wrote its own was the prime suspect. The tool never touches it.
+test('tab title: the tool NEVER writes it — not on render, not when the game changes it, no title setter, no push', () => {
   const page = fakePage();
   const ctx = vm.createContext({ window: page.window, document: page.document, MutationObserver: page.window.MutationObserver, performance: { now: () => 0 }, console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {}, requestAnimationFrame: () => 0, navigator: {}, location: { href: 'https://v.hitclub.guitars/' } });
-  vm.runInContext(gh.bootScript({ slotId: 'B1' }), ctx);
-  const render = page.window.__phomHeaderRender;
-  assert.equal(typeof render, 'function');
-  render(gh.deriveHeaderState({ opened: true, inGame: false }));      // not logged in yet: the browser's place P1
-  assert.equal(page.document.title, '[P1] Hit Club');
-  render(gh.deriveHeaderState({ opened: true, inGame: true, account: 'vietanhcoo5365' }));
-  assert.equal(page.document.title, '[vietanhcoo5365] Hit Club', 'the account replaces P1 once known');
-  render(gh.deriveHeaderState({ opened: true, inGame: true, account: 'vietanhcoo5365' }));
-  assert.equal(page.document.title, '[vietanhcoo5365] Hit Club', 'never prefixed twice');
+  vm.runInContext(gh.bootScript({ slotId: 'A' }), ctx);
+  page.window.__phomHeaderRender(gh.deriveHeaderState({ opened: true, inGame: false }));
+  page.window.__phomHeaderRender(gh.deriveHeaderState({ opened: true, inGame: true, account: 'vietanhcoo5365' }));
+  assert.equal(page.document.title, 'Hit Club');
   page.document.title = 'Phỏm';                                      // the game sets its own title
-  assert.equal(page.document.title, '[vietanhcoo5365] Phỏm');
+  assert.equal(page.document.title, 'Phỏm', 'left as the game set it');
+  assert.equal(page.window.__phomSetTitle, undefined);
+  const src = gh.bootScript();
+  assert.equal(/document\.title\s*=/.test(src), false);
+  assert.equal(/__phomSetTitle|setTitleAccount|applyTitle/.test(src), false);
+  assert.equal(/__phomSetTitle/.test(read('desktop/phom-main.cjs')), false, 'main pushes no title');
 });
 
-// 3.1.31 (user 2026-10-08 "không gắn logo, chỉ cần dùng được proxy và quản lý riêng"): the tool keeps its logo; the
-// bundled Chromium ships exactly as built — the files the runtime manifest was made from.
-test('logo: the tool (exe + installer) has the logo; the bundled Chromium ships unmodified from runtime/phom-chromium', () => {
+// 3.1.32 (user 2026-10-08 "dùng bản chromium custom … có logo game phỏm"): the owned Chromium again, branded.
+test('logo: one icon for the tool (exe + installer) and the bundled Chromium (branded copy staged BEFORE packaging → signed after)', () => {
   const cfg = JSON.parse(read('electron-builder.phom.json'));
   assert.equal(cfg.win.icon, 'build/phom-icon.ico');
   assert.equal(cfg.nsis.installerIcon, 'build/phom-icon.ico');
-  assert.equal(cfg.beforePack, undefined, 'no branding step');
-  assert.equal(cfg.afterPack, undefined);
-  assert.equal(cfg.extraResources[0].from, 'runtime/phom-chromium');
-  assert.ok(read('.gitignore').split(/\r?\n/).includes('.phom-brand/'), 'a staged copy (brand:phom, still available) is never committed');
+  assert.equal(cfg.beforePack, 'scripts/phom-brand/before-pack.cjs');
+  assert.equal(cfg.afterPack, undefined, 'never after: chrome.exe is signed while the resources are copied');
+  assert.equal(cfg.extraResources[0].from, '.phom-brand/phom-chromium');
+  assert.ok(read('.gitignore').split(/\r?\n/).includes('.phom-brand/'), 'the staged copy is never committed');
   const ico = readFileSync(new URL('build/phom-icon.ico', root));
   assert.equal(ico.readUInt16LE(2), 1, 'an icon file');
   const sizes = []; for (let k = 0; k < ico.readUInt16LE(4); k++) sizes.push(ico[6 + 16 * k] || 256);
@@ -126,15 +127,16 @@ function fakeRuntime(dir, exeBody = 'EXE') {
   writeFileSync(join(dir, 'runtime-manifest.json'), JSON.stringify(rt.generateManifest(dir).manifest));
   return rt;
 }
-test('runtime: dev uses runtime/phom-chromium even when a branded copy is staged; packaged uses resources', () => {
+test('runtime: dev takes the branded copy only when it passes the launch check; else (or STOCK=1) the stock runtime', () => {
   const proj = mkdtempSync(join(tmpdir(), 'proj-'));
   const stock = join(proj, 'runtime', 'phom-chromium'); const branded = join(proj, '.phom-brand', 'phom-chromium');
   mkdirSync(stock, { recursive: true }); mkdirSync(branded, { recursive: true });
   const rt = fakeRuntime(stock); fakeRuntime(branded, 'BRANDED-EXE');
-  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), stock, 'dev runs what the installer ships');
-  writeFileSync(join(stock, 'chrome.exe'), 'CHANGED-AFTER-MANIFEST');        // the 3.1.25 situation is still caught
-  assert.equal(rt.validateRuntime(stock).error.code, 'PHOM_CHROMIUM_CHECKSUM_MISMATCH');
-  assert.equal(rt.resolveRuntimeRoot({ env: { PHOM_CHROMIUM_PATH: 'X:/c' }, projectRoot: proj }), 'X:/c');
+  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), branded);
+  assert.equal(rt.resolveRuntimeRoot({ env: { PHOM_CHROMIUM_STOCK: '1' }, projectRoot: proj }), stock);
+  writeFileSync(join(branded, 'chrome.exe'), 'CHANGED-AFTER-MANIFEST');      // the 3.1.25 situation
+  assert.equal(rt.validateRuntime(branded).error.code, 'PHOM_CHROMIUM_CHECKSUM_MISMATCH');
+  assert.equal(rt.resolveRuntimeRoot({ env: {}, projectRoot: proj }), stock, 'a copy that would not launch is never used');
   assert.equal(rt.resolveRuntimeRoot({ env: {}, isPackaged: true, resourcesPath: 'R' }).endsWith('phom-chromium'), true);
 });
 test('staging: new manifest for the branded files + the launch check, before anything is packaged; brand:phom for dev', () => {
@@ -144,36 +146,6 @@ test('staging: new manifest for the branded files + the launch check, before any
   assert.match(src, /if \(!after\.ok\) throw new Error/);
   assert.equal(JSON.parse(read('package.json')).scripts['brand:phom'], 'node scripts/phom-brand/before-pack.cjs');
   assert.match(read('desktop/phom-main.cjs'), /const devIcon = app\.isPackaged \? null : path\.join\(__dirname, '\.\.', 'build', 'phom-icon\.png'\);/);
-});
-
-test('tab title before the login: A/B/C → [P1]/[P2]/[P3], reserves D/E → [P4]/[P5]; no slot → untouched', () => {
-  for (const [slot, want] of [['A', '[P1] Hit Club'], ['C', '[P3] Hit Club'], ['E', '[P5] Hit Club'], [null, 'Hit Club']]) {
-    const page = fakePage();
-    const ctx = vm.createContext({ window: page.window, document: page.document, MutationObserver: page.window.MutationObserver, performance: { now: () => 0 }, console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {}, requestAnimationFrame: () => 0, navigator: {}, location: { href: 'https://v.hitclub.guitars/' } });
-    vm.runInContext(gh.bootScript({ slotId: slot }), ctx);
-    page.window.__phomHeaderRender(gh.deriveHeaderState({ opened: true }));
-    assert.equal(page.document.title, want, String(slot));
-  }
-});
-
-// live 2026-10-06: the browsers stayed open while the tool restarted — the page still ran the OLDER bar, so the new boot
-// stopped at the install-once guard and the title code never ran. The title setter is installed before that guard, and
-// main calls it with every header push.
-test('tab title also on a page that still runs an OLDER bar (browser kept open across a tool restart)', () => {
-  const page = fakePage();
-  page.window.__phomHeaderInstalled = true;                            // the old bar is there
-  page.window.__phomHeaderRender = () => {};                            // …with its old render (no title code)
-  const ctx = vm.createContext({ window: page.window, document: page.document, MutationObserver: page.window.MutationObserver, performance: { now: () => 0 }, console, setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {}, requestAnimationFrame: () => 0, navigator: {}, location: { href: 'https://v.hitclub.guitars/' } });
-  vm.runInContext(gh.bootScript({ slotId: 'C' }), ctx);
-  assert.equal(typeof page.window.__phomSetTitle, 'function', 'installed although the bar was already there');
-  page.window.__phomSetTitle(null);
-  assert.equal(page.document.title, '[P3] Hit Club');
-  page.window.__phomSetTitle('baycao1003');
-  assert.equal(page.document.title, '[baycao1003] Hit Club');
-  const main = read('desktop/phom-main.cjs');
-  assert.match(main, /window\.__phomHeaderRender\(\$\{json\}\); window\.__phomSetTitle && window\.__phomSetTitle\(\$\{JSON\.stringify\(view\.account \|\| null\)\}\)/);
-  const src = gh.bootScript();
-  assert.ok(src.indexOf('window.__phomSetTitle = setTitleAccount') < src.indexOf('if (window.__phomHeaderInstalled)'), 'before the install-once guard');
 });
 
 // ---- the cookie FOLDER carries the same name (user 2026-10-06 "làm cho đồng bộ") ----

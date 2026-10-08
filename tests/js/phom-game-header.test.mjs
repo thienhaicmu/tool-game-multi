@@ -63,11 +63,9 @@ test('bootScript is idempotent, exposes the render hook + binding, and uses THO�
   assert.match(src, /id = '__phom_header'/);             // its OWN element, namespaced
   assert.match(src, /z-index:2147483647/);               // overlay on top
   assert.match(src, /emit\('FIND_TABLE'\)/); // the stake is the Phỏm tool's; the bar never invents one
-  // no game-DOM/canvas mutation beyond its own bar + a body margin offset for the bar — and (user 2026-10-06) the
-  // "[account] " prefix of the page title, written in ONE place only
+  // no game-DOM/canvas mutation beyond its own bar + a body margin offset for the bar — and (3.1.32) never the page title
   assert.equal(/innerHTML|canvas/.test(src), false);
-  assert.equal((src.match(/document\.title\s*=/g) || []).length, 1, 'the title is written once, in applyTitle');
-  assert.match(src, /function applyTitle\(\)\{[^]*?document\.title = pre \+ base;/);
+  assert.equal(/document\.title\s*=/.test(src), false, 'the tab title is the game\'s own');
 });
 
 // PHASE 6.3.2.2 — self-healing + identity.

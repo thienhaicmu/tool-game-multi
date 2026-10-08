@@ -86,39 +86,9 @@ function bootScript(opts = {}) {
   const CLICKLOG = ${clickLog};
   // PROFILING (gated) — a single-clock page timer: stamp at click, report at the next render.
   const CLK = (window.performance && performance.now) ? function(){ return performance.now(); } : function(){ return Date.now(); };
-  // The game account in the tab / taskbar / Alt+Tab title — "[acc] <page title>" (user 2026-10-06: Chromium shows no
-  // profile name on its toolbar, tested on 149). Kept when the game changes its own title. String ops only (no regex).
-  // Observers stay NARROW (no subtree): the <title> element's own children (setting the title replaces its text) and
-  // the <head>'s direct children (the game swapping the whole <title>).
-  var __titleAcc = null, __titleObs = null, __titleEl = null;
-  function watchTitle(){ try {
-    if (!__titleObs) return;
-    var el = document.querySelector && document.querySelector('title');
-    if (el && el !== __titleEl) { __titleEl = el; __titleObs.observe(el, { childList: true, subtree: false }); }
-  } catch(e){} }
-  function applyTitle(){ try {
-    if (!__titleAcc) return;
-    var pre = '[' + __titleAcc + '] ';
-    var t = document.title || '';
-    var base = (t.charAt(0) === '[' && t.indexOf('] ') > 0) ? t.slice(t.indexOf('] ') + 2) : t;
-    if (t !== pre + base) document.title = pre + base;
-    watchTitle();
-  } catch(e){} }
-  // Before the login the browser's place in the tool — P1..P3 (P4/P5 = reserves D/E) — then the account (user 2026-10-06).
-  var TITLE_SLOT = (function(){ var sid=String(ID.slotId||'').toUpperCase(); var n={A:1,B:2,C:3,D:4,E:5,B1:1,B2:2,B3:3}[sid]; return n ? 'P' + n : null; })();
-  function setTitleAccount(acc){ try {
-    var a = (acc && acc !== '—') ? String(acc) : TITLE_SLOT;
-    if (!a || a === __titleAcc) return;
-    __titleAcc = a;
-    if (!__titleObs && window.MutationObserver) {
-      __titleObs = new MutationObserver(applyTitle);
-      if (document.head) __titleObs.observe(document.head, { childList: true, subtree: false });
-    }
-    applyTitle();
-  } catch(e){} }
-  // Installed on EVERY boot, before the install-once guard: a page that still runs an OLDER bar (the browser stayed
-  // open while the tool restarted — live 2026-10-06) gets it too; main calls it with every header push.
-  window.__phomSetTitle = setTitleAccount;
+  // (3.1.25–3.1.31 wrote "[P1] / [account]" into the tab title and re-wrote it whenever the game changed its own title.
+  // Removed in 3.1.32 — user 2026-10-08: right after VÀO GAME a browser's main process grew ~200 MB/s with the tool idle;
+  // a title tug-of-war with the game's own title code is the prime suspect. The bar never touches document.title.)
   // Idempotent + SELF-HEALING: the boot already ran but the game wiped the bar (SPA body swap) → re-mount it.
   if (window.__phomHeaderInstalled) { if (!document.getElementById('__phom_header') && window.__phomHeaderMount) window.__phomHeaderMount(); return; }
   window.__phomHeaderInstalled = true;
@@ -292,7 +262,7 @@ function bootScript(opts = {}) {
   }
   function applyOptimistic(action){ try { __optAction = action; paint(optState(action)); } catch(e){} }
   // AUTHORITATIVE render from main ALWAYS wins: store it, clear any optimistic overlay, paint it.
-  window.__phomHeaderRender = function(state){ try { __authState = state; __optAction = null; paint(state); } catch(e){} setTitleAccount(state && state.account); };
+  window.__phomHeaderRender = function(state){ try { __authState = state; __optAction = null; paint(state); } catch(e){} };
 })();`;
 }
 
