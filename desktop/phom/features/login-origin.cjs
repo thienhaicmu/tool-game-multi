@@ -8,17 +8,19 @@
 //  · the account name is remembered for the profile (it becomes the Chromium profile name on the next launch).
 //
 // state: session.origin = { lastTopUrl, asked, saved }
-// deps:  { profiles: { get(id), update(id, patch) }, accountNames: { set(id, name) → changed }, clientFor(rid), log }
+// deps:  { profiles() → { get(id), update(id, patch), setAccount(id, name) → changed } (the profile store), clientFor(rid), log }
 // ---------------------------------------------------------------------------
 
 function originOf(url) {
   try { const u = new URL(url); return /^https?:$/.test(u.protocol) ? u.origin + '/' : null; } catch { return null; }
 }
 
-function createLoginOriginFeature({ profiles, accountNames, clientFor, log = () => {} }) {
+function createLoginOriginFeature({ profiles, clientFor, log = () => {} }) {
   function rememberAccount(run, b) {
     if (!run || !b || !run.profileId || !b.username || b.username === 'USER_UNKNOWN') return;
-    try { if (accountNames().set(run.profileId, b.username)) log('account-name', { runId: run.id, profileId: run.profileId }); } catch { /* best effort */ }
+    const store = profiles();
+    if (!store) return;
+    try { if (store.setAccount(run.profileId, b.username)) log('account-name', { runId: run.id, profileId: run.profileId }); } catch { /* best effort */ }
   }
   function rememberOrigin(run, session, b) {
     const o = session.origin;

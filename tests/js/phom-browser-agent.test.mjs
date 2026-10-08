@@ -12,7 +12,7 @@ import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
 const ba = require('../../desktop/browser-run/browser-agent.cjs');
-const { PhomDeviceProfilesStore } = require('../../desktop/browser-run/phom-device-profiles-store.cjs');
+const { PhomProfileStore } = require('../../desktop/phom/stores/profile-store.cjs');
 const { parseFlexibleProxy, normalizeProxyConfig, publicSnapshot } = require('../../desktop/browser-run/proxy-config.cjs');
 
 // ---- the agent model ----
@@ -78,7 +78,7 @@ test('a profile saved with the OLD device object is migrated: its UA decides the
   };
   const { writeFileSync } = require('node:fs');
   writeFileSync(fp, JSON.stringify(legacy), 'utf8');
-  const store = new PhomDeviceProfilesStore({ filePath: fp });
+  const store = new PhomProfileStore({ filePath: fp });
   assert.equal(store.agentFor('prof-1'), 'MOBILE');
   assert.equal(store.agentFor('prof-2'), 'WEB');
   const pub = store.getPublic('prof-1');
@@ -95,7 +95,7 @@ test('a profile saved with the OLD device object is migrated: its UA decides the
 test('create / update / reload — the profile id (and its Chromium user-data-dir) never changes', () => {
   const dir = mkdtempSync(join(tmpdir(), 'phom-agent2-'));
   const fp = join(dir, 'profiles.json');
-  const s1 = new PhomDeviceProfilesStore({ filePath: fp });
+  const s1 = new PhomProfileStore({ filePath: fp });
   const made = s1.create({ name: 'P1', agent: 'MOBILE', gameUrl: 'https://g/' });
   assert.equal(made.ok, true);
   const id = made.profile.id;
@@ -103,7 +103,7 @@ test('create / update / reload — the profile id (and its Chromium user-data-di
   s1.update(id, { name: 'P1 renamed' });
   assert.equal(s1.getPublic(id).id, id);
   assert.equal(s1.getPublic(id).agent, 'MOBILE', 'a name edit keeps the agent');
-  const s2 = new PhomDeviceProfilesStore({ filePath: fp });
+  const s2 = new PhomProfileStore({ filePath: fp });
   assert.equal(s2.getPublic(id).name, 'P1 renamed');
   assert.equal(s2.agentFor(id), 'MOBILE');
   assert.equal(/password|token|cookie|secret/i.test(readFileSync(fp, 'utf8')), false);

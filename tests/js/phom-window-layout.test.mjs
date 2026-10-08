@@ -33,10 +33,11 @@ test('wiring: windows + tool follow the saved layout; IPC get/set saves and arra
   const main = read('desktop/phom-main.cjs');
   // the window-frames feature places every window by the layout; its IPC is behaviour-tested in phom-window-lock.test.mjs
   assert.match(main, /rectForItem: \(item, layout\) => windowLayout\.rectForItem\(item, clusterFourWindowArrangement\(\), layout\),/);
-  assert.match(main, /layout: \{ get: currentWindowLayout, set: setWindowLayout, defaults: windowLayout\.DEFAULT_LAYOUT \},/);
+  assert.match(main, /layout: \{ get: \(\) => settings\(\)\.get\('windowLayout'\), set: \(l\) => settings\(\)\.set\('windowLayout', l\), defaults: windowLayout\.DEFAULT_LAYOUT \},/);
   const wf = read('desktop/phom/features/window-frames.cjs');
   assert.match(wf, /handle\('phom:layout-set', \(_e, cfg\) => \{ const l = layout\.set\(cfg && cfg\.layout\); arrange\(\); return \{ ok: true, layout: l \}; \}, \{ guarded: true \}\);/);
-  assert.match(main, /path\.join\(phomRoot\(\), 'window-layout\.json'\)/);
+  // saved in the settings store; window-layout.json is only read once by its migration
+  assert.match(main, /windowLayout: \{ default: \{ \.\.\.windowLayout\.DEFAULT_LAYOUT \}, normalize: windowLayout\.normalizeLayout, legacy: \{ file: path\.join\(phomRoot\(\), 'window-layout\.json'\) \} \},/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /iconButton\('layout', 'Đổi vị trí cửa sổ \(bấm 2 cửa sổ để đổi chỗ\)', \(\) => openLayoutDialog\(\)\)/);
   // click one window then another: they trade quarters and the windows move at once (no separate apply step)
@@ -48,9 +49,10 @@ test('wiring: windows + tool follow the saved layout; IPC get/set saves and arra
 
 test('MỨC CƯỢC is remembered: saved on every pick, applied when a session starts, kept in the picker before the server list', () => {
   const main = read('desktop/phom-main.cjs');
-  assert.match(main, /ipcMain\.handle\('phom:set-stake', guarded\(\(_e, cfg\) => \{ ensurePhomSessions\(\); saveStake\(cfg && cfg\.stake\);/);
-  assert.match(main, /const saved = savedStake\(\); if \(r && r\.ok !== false && saved != null\) phomSessions\.setStake\(saved\);/);
-  assert.match(main, /path\.join\(phomRoot\(\), 'stake\.json'\)/);
+  assert.match(main, /ipcMain\.handle\('phom:set-stake', guarded\(\(_e, cfg\) => \{ ensurePhomSessions\(\); settings\(\)\.set\('stake', cfg && cfg\.stake\);/);
+  assert.match(main, /const saved = settings\(\)\.get\('stake'\); if \(r && r\.ok !== false && saved != null\) phomSessions\.setStake\(saved\);/);
+  // the settings store (behaviour: phom-stores.test.mjs); stake.json is only read once by its migration
+  assert.match(main, /stake: \{ default: null, normalize: [^\n]*legacy: \{ file: path\.join\(phomRoot\(\), 'stake\.json'\), pick: \(j\) => j\.stake \} \},/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /const st = await api\.getStake\(\); if \(st && st\.stake != null\) autoStake = String\(st\.stake\);/);
   assert.equal(/if \(autoStake && !stakes\.includes\(Number\(autoStake\)\)\) autoStake = '';/.test(ui), false, 'never dropped while the list is loading');

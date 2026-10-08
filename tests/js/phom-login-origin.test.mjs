@@ -11,12 +11,12 @@ const { createSessionRegistry } = require('../../desktop/phom/core/session-regis
 const main = readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
 
 function load({ saved = 'https://v.hitclub.tienda/', href = null } = {}) {
-  const store = { p: { id: 'prof-1', gameUrl: saved }, updates: [], get(id) { return id === 'prof-1' ? this.p : null; }, update(id, patch) { this.updates.push(patch); Object.assign(this.p, patch); return { ok: true }; } };
-  const names = { set: [], store: { set(id, name) { names.set.push([id, name]); return true; } } };
+  const names = { set: [] };
+  const store = { p: { id: 'prof-1', gameUrl: saved }, updates: [], get(id) { return id === 'prof-1' ? this.p : null; }, update(id, patch) { this.updates.push(patch); Object.assign(this.p, patch); return { ok: true }; }, setAccount(id, name) { names.set.push([id, name]); return true; } };
   const logs = [];
   const client = { Runtime: { evaluate: async () => ({ result: { value: href } }) } };
   const sessions = createSessionRegistry();
-  const f = createLoginOriginFeature({ profiles: () => store, accountNames: () => names.store, clientFor: () => client, log: (e, d) => logs.push([e, d]) });
+  const f = createLoginOriginFeature({ profiles: () => store, clientFor: () => client, log: (e, d) => logs.push([e, d]) });
   const run = { id: 'BR-1', profileId: 'prof-1' };
   const push = (b) => f.push({ run, session: sessions.get('BR-1'), browser: b });
   const nav = (url) => f.documentReplaced({ run, session: sessions.get('BR-1'), url });
@@ -68,7 +68,7 @@ test('the account name playing in a profile is remembered (never USER_UNKNOWN)',
   assert.deepEqual(names.set, [['prof-1', 'acc01']]);
 });
 
-test('wiring: login-origin is one of main\'s features, reading the profile + account-name stores', () => {
-  assert.match(main, /createLoginOriginFeature\(\{ profiles: \(\) => deviceProfilesStore, accountNames: \(\) => accountNames\(\)/);
+test('wiring: login-origin is one of main\'s features, writing to the ONE profile store', () => {
+  assert.match(main, /createLoginOriginFeature\(\{ profiles: \(\) => deviceProfilesStore, clientFor: runClientFor/);
   assert.match(main, /features\(\)\.documentReplaced\(\{ run: [^}]*session: sessions\.get\(rid\), url: String\(url\) \}\)/);
 });

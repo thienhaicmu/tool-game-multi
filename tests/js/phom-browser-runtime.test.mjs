@@ -113,8 +113,9 @@ test('createRun({ chromeExecutable }) — the launcher spawns THAT executable, n
 });
 
 test('browser runtime preference is persisted + exposed over IPC; preload bridges it', () => {
-  assert.match(main, /function browserRuntimePref\(\)/);
-  assert.match(main, /function setBrowserRuntimePref\(/);
+  // the settings store's browserRuntime key (behaviour: phom-stores.test.mjs)
+  assert.match(main, /browserRuntime: \{ default: 'CUSTOM_CHROMIUM', normalize: browserRuntimeResolver\.normalizePreference,/);
+  assert.match(main, /preference: settings\(\)\.set\('browserRuntime', cfg && cfg\.preference\)/);
   assert.match(main, /'phom:browser-runtime-get'/);
   assert.match(main, /'phom:browser-runtime-set'/);
   assert.match(preload, /browserRuntimeGet:/);

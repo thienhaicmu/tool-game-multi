@@ -11,7 +11,7 @@ const preload = read('desktop/phom-preload.cjs');
 const js = read('ui-phom/phom-qa.js');
 
 test('main exposes flexible profile CRUD IPC backed by the new store', () => {
-  assert.match(main, /new PhomDeviceProfilesStore\(/);
+  assert.match(main, /new PhomProfileStore\(/);
   for (const ch of ['phom:profiles-list', 'phom:profile-create', 'phom:profile-update-x', 'phom:profile-delete-x', 'phom:profile-set-proxy', 'phom:open-selected']) {
     assert.ok(main.includes(ch), `IPC ${ch} present`);
   }

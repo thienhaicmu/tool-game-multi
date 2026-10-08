@@ -8,12 +8,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 const require = createRequire(import.meta.url);
-const { PhomDeviceProfilesStore } = require('../../desktop/browser-run/phom-device-profiles-store.cjs');
+const { PhomProfileStore } = require('../../desktop/phom/stores/profile-store.cjs');
 
 function tmpFile() { const d = mkdtempSync(join(tmpdir(), 'phq-prof-')); return join(d, 'profiles.json'); }
 
 test('create / get / list — assigns a stable id and exposes the public snapshot', () => {
-  const s = new PhomDeviceProfilesStore({ filePath: tmpFile() });
+  const s = new PhomProfileStore({ filePath: tmpFile() });
   const r = s.create({ name: 'Player 1', agent: 'MOBILE', proxyRef: 'px1' });
   assert.equal(r.ok, true);
   const id = r.profile.id;
@@ -27,7 +27,7 @@ test('create / get / list — assigns a stable id and exposes the public snapsho
 });
 
 test('a profile created without an agent gets the default one', () => {
-  const s = new PhomDeviceProfilesStore({ filePath: tmpFile() });
+  const s = new PhomProfileStore({ filePath: tmpFile() });
   const r = s.create({ name: 'Default' });
   assert.equal(r.ok, true);
   assert.equal(r.profile.agent, 'WEB');
@@ -35,7 +35,7 @@ test('a profile created without an agent gets the default one', () => {
 });
 
 test('update patches name/proxy/agent but PRESERVES the id', () => {
-  const s = new PhomDeviceProfilesStore({ filePath: tmpFile() });
+  const s = new PhomProfileStore({ filePath: tmpFile() });
   const id = s.create({ name: 'A', agent: 'MOBILE' }).profile.id;
   const u = s.update(id, { name: 'A2', proxyRef: 'px2', agent: 'WEB' });
   assert.equal(u.ok, true);
@@ -47,7 +47,7 @@ test('update patches name/proxy/agent but PRESERVES the id', () => {
 });
 
 test('delete removes only that profile; other ids are unchanged', () => {
-  const s = new PhomDeviceProfilesStore({ filePath: tmpFile() });
+  const s = new PhomProfileStore({ filePath: tmpFile() });
   const a = s.create({ name: 'A' }).profile.id;
   const b = s.create({ name: 'B' }).profile.id;
   const c = s.create({ name: 'C' }).profile.id;
@@ -59,9 +59,9 @@ test('delete removes only that profile; other ids are unchanged', () => {
 
 test('persist + reload — profiles survive a restart', () => {
   const f = tmpFile();
-  const s1 = new PhomDeviceProfilesStore({ filePath: f });
+  const s1 = new PhomProfileStore({ filePath: f });
   const id = s1.create({ name: 'Keep', agent: 'WEB', proxyRef: 'pxK' }).profile.id;
-  const s2 = new PhomDeviceProfilesStore({ filePath: f }); // fresh instance loads from disk
+  const s2 = new PhomProfileStore({ filePath: f }); // fresh instance loads from disk
   const p = s2.getPublic(id);
   assert.ok(p, 'profile reloaded');
   assert.equal(p.name, 'Keep');
@@ -71,7 +71,7 @@ test('persist + reload — profiles survive a restart', () => {
 });
 
 test('setProxyRef binds/clears a proxy on a profile; profilesUsingProxy reports it', () => {
-  const s = new PhomDeviceProfilesStore({ filePath: tmpFile() });
+  const s = new PhomProfileStore({ filePath: tmpFile() });
   const id = s.create({ name: 'A' }).profile.id;
   assert.equal(s.setProxyRef(id, 'pxZ').ok, true);
   assert.deepEqual(s.profilesUsingProxy('pxZ'), [id]);
@@ -80,7 +80,7 @@ test('setProxyRef binds/clears a proxy on a profile; profilesUsingProxy reports 
 });
 
 test('an unknown agent is refused typed (no partial write)', () => {
-  const s = new PhomDeviceProfilesStore({ filePath: tmpFile() });
+  const s = new PhomProfileStore({ filePath: tmpFile() });
   const r = s.create({ name: 'Bad', agent: 'tablet' });
   assert.equal(r.ok, false);
   assert.equal(r.error.code, 'PHOM_AGENT_INVALID');
@@ -90,7 +90,7 @@ test('an unknown agent is refused typed (no partial write)', () => {
 // PHASE 6.3.2-fix — the game URL is remembered per profile (never re-typed each launch) and survives reload.
 test('gameUrl is persisted per profile (create + update) and reloads from disk', () => {
   const f = tmpFile();
-  let s = new PhomDeviceProfilesStore({ filePath: f });
+  let s = new PhomProfileStore({ filePath: f });
   const id = s.create({ name: 'HitClub', gameUrl: 'https://v.hitclub.tienda/' }).profile.id;
   assert.equal(s.getPublic(id).gameUrl, 'https://v.hitclub.tienda/');
   // blank gameUrl on create => null (not stored as empty string)
@@ -101,6 +101,6 @@ test('gameUrl is persisted per profile (create + update) and reloads from disk',
   assert.equal(s.update(id2, { name: 'Renamed' }).profile.gameUrl, 'https://x.example/room', 'gameUrl preserved when not in patch');
   assert.equal(s.update(id2, { gameUrl: '' }).profile.gameUrl, null, 'empty clears the URL');
   // reload from disk keeps the saved URL
-  s = new PhomDeviceProfilesStore({ filePath: f });
+  s = new PhomProfileStore({ filePath: f });
   assert.equal(s.getPublic(id).gameUrl, 'https://v.hitclub.tienda/');
 });

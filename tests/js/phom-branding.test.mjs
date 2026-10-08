@@ -10,6 +10,10 @@ import vm from 'node:vm';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const pn = require('../../desktop/browser/chromium-profile-name.cjs');
+const { PhomProfileStore } = require('../../desktop/phom/stores/profile-store.cjs');
+// 3.2 — account + folder live in the profile store (one file)
+const storeAt = (file) => new PhomProfileStore({ filePath: file });
+const folderMap = () => storeAt(join(mkdtempSync(join(tmpdir(), 'pf-')), 'profiles.json')).folders();
 const gh = require('../../desktop/protocol/phom/game-header.cjs');
 const root = new URL('../../', import.meta.url);
 const read = (rel) => readFileSync(new URL(rel, root), 'utf8');
@@ -43,24 +47,29 @@ test('profile name: an existing profile keeps every other setting (cookies untou
   assert.equal(existsSync(join(dir, 'Local State.phom-tmp')), false);
 });
 
-test('account names: remembered per profile key, saved to one file, junk ignored', () => {
-  const file = join(mkdtempSync(join(tmpdir(), 'an-')), 'account-names.json');
-  const s = pn.createAccountNameStore(file);
-  assert.equal(s.get('prof-1'), null);
-  assert.equal(s.set('prof-1', 'vietanhcoo5365'), true);
-  assert.equal(s.set('prof-1', 'vietanhcoo5365'), false, 'unchanged → not saved again');
-  assert.equal(s.set('prof-2', '   '), false);
-  assert.equal(pn.createAccountNameStore(file).get('prof-1'), 'vietanhcoo5365', 'read back from the file');
+test('account names: remembered per profile key in the profile store, junk ignored', () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'an-')), 'profiles.json');
+  const s = storeAt(file);
+  const id = s.create({ name: 'P1' }).profile.id;
+  assert.equal(s.accountOf(id), null);
+  assert.equal(s.setAccount(id, 'vietanhcoo5365'), true);
+  assert.equal(s.setAccount(id, 'vietanhcoo5365'), false, 'unchanged → not saved again');
+  assert.equal(s.setAccount('prof-2', '   '), false);
+  assert.equal(s.setAccount('slot-A', 'other01'), true, 'a run without a saved profile keeps it too');
+  assert.equal(storeAt(file).accountOf(id), 'vietanhcoo5365', 'read back from the file');
+  assert.equal(storeAt(file).accountOf('slot-A'), 'other01');
+  assert.equal(storeAt(file).getPublic(id).account, 'vietanhcoo5365');
 });
 
 test('wiring: the name is written right before each launch; the account is learned from the header state', () => {
   const main = read('desktop/phom-main.cjs');
-  const i = main.indexOf('const profileName = accountNames().get(udKey) || label || saved.name');
+  const i = main.indexOf('const profileName = deviceProfilesStore.accountOf(udKey) || label || saved.name');
   const j = main.indexOf('runManager.createRun(', i);
   assert.ok(i > 0 && j > i);
   assert.match(main.slice(i, j), /chromiumProfileName\.applyProfileName\(profileDir, profileName\)/);
   // the login-origin feature learns it on every push (behaviour: phom-login-origin.test.mjs)
-  assert.match(main, /accountNames: \(\) => accountNames\(\)/);
+  assert.match(main, /createLoginOriginFeature\(\{ profiles: \(\) => deviceProfilesStore, clientFor/);
+  assert.match(read('desktop/phom/features/login-origin.cjs'), /store\.setAccount\(run\.profileId, b\.username\)/);
   assert.match(read('desktop/phom/features/login-origin.cjs'), /b\.username === 'USER_UNKNOWN'\) return;/);
 });
 
@@ -157,7 +166,7 @@ function profilesRootWith(entries = {}) {
 }
 test('profile folder: the old id-named folder becomes "P1", then the account — cookies move with it', () => {
   const root = profilesRootWith({ 'prof-1': ['Cookies'] });
-  const map = pn.createFolderMapStore(join(root, '..', 'pf-' + Date.now() + '.json'));
+  const map = folderMap();
   const a = pn.resolveProfileDir({ root, key: 'prof-1', name: 'P1', map });
   assert.deepEqual([a.folder, a.renamedFrom], ['P1', 'prof-1']);
   assert.equal(readFileSync(join(root, 'P1', 'Default', 'Cookies'), 'utf8'), 'Cookies-DATA', 'the login is still there');
@@ -170,7 +179,7 @@ test('profile folder: the old id-named folder becomes "P1", then the account —
 });
 test('profile folder: a rename that is refused (files in use) keeps the folder — a launch is never blocked', () => {
   const root = profilesRootWith({ 'prof-1': ['Cookies'] });
-  const map = pn.createFolderMapStore(join(root, '..', 'pf-busy-' + Date.now() + '.json'));
+  const map = folderMap();
   const fsx = { ...require('node:fs'), renameSync: () => { const e = new Error('busy'); e.code = 'EBUSY'; throw e; } };
   const r = pn.resolveProfileDir({ root, key: 'prof-1', name: 'P1', map, fsx });
   assert.deepEqual([r.folder, r.renameError], ['prof-1', 'EBUSY']);
@@ -178,7 +187,7 @@ test('profile folder: a rename that is refused (files in use) keeps the folder �
 });
 test('profile folder: never two profiles in one folder; a folder that is not ours is never taken; unsafe characters dropped', () => {
   const root = profilesRootWith({ P3: ['Cookies'] });                // somebody else's folder named P3 (not in the map)
-  const map = pn.createFolderMapStore(join(root, '..', 'pf-c-' + Date.now() + '.json'));
+  const map = folderMap();
   const a = pn.resolveProfileDir({ root, key: 'prof-a', name: 'P3', map });
   assert.equal(a.folder, 'P3 (2)', 'the existing P3 folder is not ours');
   const b = pn.resolveProfileDir({ root, key: 'prof-b', name: 'P3', map });
@@ -191,13 +200,14 @@ test('profile folder: never two profiles in one folder; a folder that is not our
 });
 test('wiring: ONE name for the folder and the Chromium profile, resolved before each launch', () => {
   const main = read('desktop/phom-main.cjs');
-  const i = main.indexOf("const profileName = accountNames().get(udKey) || label || saved.name");
+  const i = main.indexOf("const profileName = deviceProfilesStore.accountOf(udKey) || label || saved.name");
   const j = main.indexOf('runManager.createRun(', i);
   assert.ok(i > 0 && j > i);
   const seg = main.slice(i, j);
-  assert.match(seg, /chromiumProfileName\.resolveProfileDir\(\{ root: profilesRoot, key: udKey \|\| slot \|\| 'X', name: profileName, map: profileFolders\(\) \}\)/);
+  assert.match(seg, /chromiumProfileName\.resolveProfileDir\(\{ root: profilesRoot, key: udKey \|\| slot \|\| 'X', name: profileName, map: deviceProfilesStore\.folders\(\) \}\)/);
   assert.match(seg, /chromiumProfileName\.applyProfileName\(profileDir, profileName\)/);
-  assert.match(main, /path\.join\(phomRoot\(\), 'profile-folders\.json'\)/);
+  // the pre-3.2 file is only read once, by the store's migration
+  assert.match(main, /folders: path\.join\(phomRoot\(\), 'profile-folders\.json'\)/);
 });
 
 // Switching the runtime must never hand one browser a profile another version wrote (an older Chrome refuses a profile
@@ -216,8 +226,8 @@ test('a profile created / renamed in the tool gets its Chromium profile at once 
   assert.match(main, /ipcMain\.handle\('phom:profile-update-x', guarded\(\(_e, id, patch\) => \{ ensureStores\(\); return syncBrowserProfile\(deviceProfilesStore\.update\(/);
   const fn = main.slice(main.indexOf('const syncBrowserProfile = (res) => {'), main.indexOf("ipcMain.handle('phom:profile-create'"));
   assert.match(fn, /profileInUse\(String\(p\.id\)\)\) return res;/);
-  assert.match(fn, /const name = accountNames\(\)\.get\(p\.id\) \|\| p\.name \|\| p\.id;/, 'the account wins over the tool name, as at launch');
-  assert.match(fn, /resolveProfileDir\(\{ root: profilesRootFor\(rtNow\.ok \? rtNow\.kind : 'chromium'\), key: String\(p\.id\), name, map: profileFolders\(\) \}\)/);
+  assert.match(fn, /const name = deviceProfilesStore\.accountOf\(p\.id\) \|\| p\.name \|\| p\.id;/, 'the account wins over the tool name, as at launch');
+  assert.match(fn, /resolveProfileDir\(\{ root: profilesRootFor\(rtNow\.ok \? rtNow\.kind : 'chromium'\), key: String\(p\.id\), name, map: deviceProfilesStore\.folders\(\) \}\)/);
   assert.match(fn, /applyProfileName\(pd\.dir, name\)/);
   // a close is graceful first (cookies flushed — an abrupt kill loses the newest ones, measured 2026-10-06)
   assert.match(read('desktop/browser-run/browser-run-manager.cjs'), /await run\.launcher\.closeGraceful\(\);/);

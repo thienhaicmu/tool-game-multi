@@ -62,7 +62,7 @@ test('the Tool is the 4th window of the deterministic cluster arrangement', () =
   // each window's quarter comes from the user's layout (window-layout.cjs); a reserve sits where the tool is
   // the window-frames feature (behaviour: phom-window-lock.test.mjs)
   assert.match(main, /rectForItem: \(item, layout\) => windowLayout\.rectForItem\(item, clusterFourWindowArrangement\(\), layout\),/);
-  assert.match(main, /layout: \{ get: currentWindowLayout, set: setWindowLayout, defaults: windowLayout\.DEFAULT_LAYOUT \},/);
+  assert.match(main, /layout: \{ get: \(\) => settings\(\)\.get\('windowLayout'\), set: \(l\) => settings\(\)\.set\('windowLayout', l\), defaults: windowLayout\.DEFAULT_LAYOUT \},/);
   const wf = read('desktop/phom/features/window-frames.cjs');
   assert.match(wf, /control = deps\.rectForItem\('TOOL', layout\.get\(\)\)/);
 });

@@ -53,7 +53,8 @@ const { createFrameRecorder } = require('./protocol/phom/frame-recorder.cjs');
 const { ProxyConfigStore } = require('./browser-run/proxy-config-store.cjs');
 const { ProxySecretStore } = require('./browser-run/proxy-secret-store.cjs');
 const { resolveLaunchProxy } = require('./browser-run/proxy-config.cjs');
-const { PhomDeviceProfilesStore } = require('./browser-run/phom-device-profiles-store.cjs');
+const { PhomProfileStore } = require('./phom/stores/profile-store.cjs');
+const { createSettingsStore } = require('./phom/stores/settings-store.cjs');
 const { runEnterGameViaSite } = require('./protocol/cocos-lobby-entry.cjs');
 const { GAME_ID: PHOM_GAME_ID } = require('./protocol/phom/phom-frame-classify.cjs');
 const browserAgent = require('./browser-run/browser-agent.cjs');
@@ -116,6 +117,32 @@ else {
 
   const phomRoot = () => path.join(PHOM_USERDATA, 'phom');
   const ensureDir = (d) => { try { fs.mkdirSync(d, { recursive: true }); } catch { /* best effort */ } };
+  // where a store copies the files it takes over (3.2 migration), once per day at most
+  const backupDir = () => path.join(phomRoot(), 'backup-3.2-' + new Date().toISOString().slice(0, 10));
+
+  // ---- SETTINGS (desktop/phom/stores/settings-store.cjs) — the tool's own choices in phom-settings.json ----
+  // Each key declares its default, how a value is cleaned, and the pre-3.2 file it is taken over from once.
+  let _settings = null;
+  function settings() {
+    if (_settings) return _settings;
+    const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+    _settings = createSettingsStore({
+      file: path.join(phomRoot(), 'phom-settings.json'),
+      backupDir: backupDir(),
+      log: (e, d) => headerLog(e, d),
+      keys: {
+        // MỨC CƯỢC — the last stake the user picked, remembered across restarts
+        stake: { default: null, normalize: (v) => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null), legacy: { file: path.join(phomRoot(), 'stake.json'), pick: (j) => j.stake } },
+        // BỐ CỤC — which quarter each window takes (window-layout.cjs; default P2|P3 over P1|Tool)
+        windowLayout: { default: { ...windowLayout.DEFAULT_LAYOUT }, normalize: windowLayout.normalizeLayout, legacy: { file: path.join(phomRoot(), 'window-layout.json') } },
+        // the browser runtime (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME); nothing saved → the bundled Chromium (user 2026-10-05)
+        browserRuntime: { default: 'CUSTOM_CHROMIUM', normalize: browserRuntimeResolver.normalizePreference, legacy: { file: path.join(phomRoot(), 'browser-runtime.json'), pick: (j) => j.preference } },
+        // the tool window's last bounds (re-clamped to the current display on start)
+        toolWindow: { default: null, normalize: (v) => (v && typeof v === 'object' && num(v.x) != null && num(v.width) != null ? { x: num(v.x), y: num(v.y), width: num(v.width), height: num(v.height) } : null), legacy: { file: path.join(PHOM_USERDATA, 'window-state.json') } },
+      },
+    });
+    return _settings;
+  }
 
   // ---- capture + send seam (shared, target-keyed) ----
   // Only Phỏm frames get past the capture (phom-ws-filter), and none is retained: the tool never reads one back.
@@ -195,21 +222,7 @@ else {
   }
   // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME), persisted so the
   // choice survives restarts. AUTO uses the pinned custom Chromium and falls back to Google Chrome.
-  function browserRuntimeSettingPath() { return path.join(phomRoot(), 'browser-runtime.json'); }
-  // nothing saved yet → the bundled Chromium (user 2026-10-05)
-  const DEFAULT_BROWSER_RUNTIME = 'CUSTOM_CHROMIUM';
-  var _browserRuntimePref = null;
-  function browserRuntimePref() {
-    if (_browserRuntimePref) return _browserRuntimePref;
-    try { const j = JSON.parse(fs.readFileSync(browserRuntimeSettingPath(), 'utf8')); _browserRuntimePref = browserRuntimeResolver.normalizePreference(j && j.preference); }
-    catch { _browserRuntimePref = DEFAULT_BROWSER_RUNTIME; }
-    return _browserRuntimePref;
-  }
-  function setBrowserRuntimePref(p) {
-    _browserRuntimePref = browserRuntimeResolver.normalizePreference(p);
-    try { ensureDir(phomRoot()); fs.writeFileSync(browserRuntimeSettingPath(), JSON.stringify({ preference: _browserRuntimePref }, null, 2), 'utf8'); } catch { /* best effort */ }
-    return _browserRuntimePref;
-  }
+  // (saved in the settings store — key browserRuntime; nothing saved yet → the bundled Chromium, user 2026-10-05)
   // Google Chrome keeps its profiles apart from the bundled Chromium's, so switching the runtime never hands one
   // browser a profile another version wrote (an older Chrome refuses a profile from a newer version). Measured
   // 2026-10-07: 149 ↔ 154 both open each other's profile when the first browser has fully exited — the folder split is a
@@ -217,7 +230,7 @@ else {
   function profilesRootFor(kind) { return path.join(phomRoot(), kind === 'chrome' ? 'browser-profiles-chrome' : 'browser-profiles'); }
   // Resolve the executable for a launch given the current preference (custom Chromium result injected).
   function resolveBrowserRuntimeChoice() {
-    return browserRuntimeResolver.resolveBrowserRuntime({ preference: browserRuntimePref(), customChromium: chromiumRuntime(), env: process.env });
+    return browserRuntimeResolver.resolveBrowserRuntime({ preference: settings().get('browserRuntime'), customChromium: chromiumRuntime(), env: process.env });
   }
   const chromeRuntime = new ChromeRuntime({
     chromeExecutable: (() => { const r = chromiumRuntime(); return r && r.ok ? r.executable : null; })(),
@@ -269,7 +282,13 @@ else {
     // The ONE profile store (N profiles; add/edit/delete + selection). The old per-slot store (phom-profiles.json) is
     // gone (3.2): every open path passes proxy + agent explicitly, and its stale proxyRef once made a DIRECT slot
     // inherit a dead proxy.
-    deviceProfilesStore = new PhomDeviceProfilesStore({ filePath: path.join(phomRoot(), 'phom-device-profiles.json') });
+    // 3.2 — it also keeps each profile's account + folder name (account-names.json / profile-folders.json taken over once)
+    deviceProfilesStore = new PhomProfileStore({
+      filePath: path.join(phomRoot(), 'phom-device-profiles.json'),
+      legacy: { accountNames: path.join(phomRoot(), 'account-names.json'), folders: path.join(phomRoot(), 'profile-folders.json') },
+      backupDir: backupDir(),
+      log: headerLog,
+    });
   }
   function safeMsg(e) { return String((e && e.message) || e || '').slice(0, 200); }
 
@@ -456,28 +475,6 @@ else {
   // tool is on (P1 TL · P2 TR · P3 BL · tool BR, reserves behind the tool), whatever the number of monitors. With 2+
   // monitors the old per-monitor layout made a browser fill a whole screen.
   function clusterFourWindowArrangement() { return arrangeClusterWindows([currentWorkArea()], { gap: 8 }); }
-  // MỨC CƯỢC — the last stake the user picked is remembered across restarts (stake.json), not picked again each time.
-  function stakePath() { return path.join(phomRoot(), 'stake.json'); }
-  function savedStake() { try { const v = Number(JSON.parse(fs.readFileSync(stakePath(), 'utf8')).stake); return Number.isFinite(v) && v > 0 ? v : null; } catch { return null; } }
-  function saveStake(stake) {
-    const v = Number(stake);
-    try { ensureDir(phomRoot()); fs.writeFileSync(stakePath(), JSON.stringify({ stake: Number.isFinite(v) && v > 0 ? v : null }, null, 2), 'utf8'); } catch { /* best effort */ }
-  }
-  // The user's LAYOUT (window-layout.cjs; default P2|P3 over P1|Tool), saved in window-layout.json — the window-frames
-  // feature places every window by it.
-  function windowLayoutPath() { return path.join(phomRoot(), 'window-layout.json'); }
-  let _windowLayout = null;
-  function currentWindowLayout() {
-    if (_windowLayout) return _windowLayout;
-    try { _windowLayout = windowLayout.normalizeLayout(JSON.parse(fs.readFileSync(windowLayoutPath(), 'utf8'))); }
-    catch { _windowLayout = { ...windowLayout.DEFAULT_LAYOUT }; }
-    return _windowLayout;
-  }
-  function setWindowLayout(layout) {
-    _windowLayout = windowLayout.normalizeLayout(layout);
-    try { ensureDir(phomRoot()); fs.writeFileSync(windowLayoutPath(), JSON.stringify(_windowLayout, null, 2), 'utf8'); } catch { /* best effort */ }
-    return _windowLayout;
-  }
   // Every OPEN browser with its window place: A/B/C = the three playing places, D/E = the reserves (behind the tool).
   function openRunSlots() {
     const snap = phomCluster && phomCluster.active() ? phomCluster.getClusterSnapshot() : null;
@@ -712,18 +709,6 @@ else {
   // lobby and never offered VÀO GAME. Runs at commit time, so no frame of the old document can re-bind the
   // state afterwards. Each feature's documentReplaced does its part (enter-game re-arms the auto entry, login-origin
   // notes where the game is, header forgets the old bar).
-  // The game account playing in each browser profile (user 2026-10-06): it becomes that profile's Chromium name on the
-  // next launch (Chromium only takes a new name while it is closed) — written by the login-origin feature.
-  let _accountNames = null;
-  function accountNames() {
-    if (!_accountNames) _accountNames = chromiumProfileName.createAccountNameStore(path.join(phomRoot(), 'account-names.json'));
-    return _accountNames;
-  }
-  let _profileFolders = null;
-  function profileFolders() {
-    if (!_profileFolders) _profileFolders = chromiumProfileName.createFolderMapStore(path.join(phomRoot(), 'profile-folders.json'));
-    return _profileFolders;
-  }
   function onRunDocumentReplaced(runId, url) {
     const rid = String(runId);
     if (!url || /^about:/i.test(url)) return; // the proxy-auth launch page, not the game
@@ -756,7 +741,7 @@ else {
     if (_features) return _features;
     _windowFeature = createWindowFramesFeature({
       sessions,
-      layout: { get: currentWindowLayout, set: setWindowLayout, defaults: windowLayout.DEFAULT_LAYOUT },
+      layout: { get: () => settings().get('windowLayout'), set: (l) => settings().set('windowLayout', l), defaults: windowLayout.DEFAULT_LAYOUT },
       rectForItem: (item, layout) => windowLayout.rectForItem(item, clusterFourWindowArrangement(), layout),
       fallbackRect: gridRectForSlot,
       toolFallback: () => toolWindowBounds(currentWorkArea(), { minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight }),
@@ -833,7 +818,7 @@ else {
         _anDanhFeature,
         createDocNavFeature({ onDocument: (rid, url) => onRunDocumentReplaced(rid, url) }),
         _enterFeature,
-        createLoginOriginFeature({ profiles: () => deviceProfilesStore, accountNames: () => accountNames(), clientFor: runClientFor, log: headerLog }),
+        createLoginOriginFeature({ profiles: () => deviceProfilesStore, clientFor: runClientFor, log: headerLog }),
         _headerFeature,
         createProxyAuthFeature({ bindProxyAuth, resolvePassword: (id) => (proxyConfigStore ? proxyConfigStore.resolvePassword(id) : null), log: headerLog, onAuthFailure: (run, code) => send('phom:proxy-auth', { runId: run.id, code }) }),
         _memoryFeature,
@@ -1073,11 +1058,11 @@ else {
     // ONE name everywhere (user 2026-10-06 "làm cho đồng bộ"): the game account last seen in this profile, else the
     // tool's profile name — for the cookie FOLDER (browser-profiles/<name>, renamed while the browser is closed; the
     // profile id stays the key in profile-folders.json) and for the Chromium profile name. The tab shows it as well.
-    const profileName = accountNames().get(udKey) || label || saved.name || `Profile ${slot}`;
+    const profileName = deviceProfilesStore.accountOf(udKey) || label || saved.name || `Profile ${slot}`;
     const profilesRoot = profilesRootFor(rtChoice.kind);
     let profileDir = path.join(profilesRoot, udKey || slot || 'X');
     try {
-      const pd = chromiumProfileName.resolveProfileDir({ root: profilesRoot, key: udKey || slot || 'X', name: profileName, map: profileFolders() });
+      const pd = chromiumProfileName.resolveProfileDir({ root: profilesRoot, key: udKey || slot || 'X', name: profileName, map: deviceProfilesStore.folders() });
       profileDir = pd.dir;
       if (pd.renamedFrom || pd.renameError) headerLog('profile-folder', { slotId: slot, profileId: udKey, renamed: !!pd.renamedFrom, error: pd.renameError || null });
     } catch { /* never blocks a launch */ }
@@ -1085,7 +1070,7 @@ else {
     // Written now, while this profile's browser is closed (Chromium reads it at start, rewrites it at exit).
     try {
       const pn = chromiumProfileName.applyProfileName(profileDir, profileName);
-      if (pn.changed) headerLog('profile-name', { slotId: slot, profileId: udKey, fromAccount: !!accountNames().get(udKey) });
+      if (pn.changed) headerLog('profile-name', { slotId: slot, profileId: udKey, fromAccount: !!deviceProfilesStore.accountOf(udKey) });
     } catch { /* never blocks a launch */ }
     // PHASE-6 — DETERMINISTIC multi-monitor placement. Browser slot A/B/C ⇒ window 1/2/3 (stable, never
     // by launch/PID order). Each window FILLS its region of the live display topology (on one monitor:
@@ -1161,9 +1146,7 @@ else {
   }
 
   // ---- window ----
-  function windowStatePath() { return path.join(PHOM_USERDATA, 'window-state.json'); }
-  function loadWindowState() { try { return JSON.parse(fs.readFileSync(windowStatePath(), 'utf8')); } catch { return null; } }
-  function saveWindowState() { try { if (shell && !shell.isDestroyed() && !shell.isMinimized()) fs.writeFileSync(windowStatePath(), JSON.stringify(shell.getBounds()), 'utf8'); } catch { /* best effort */ } }
+  function saveWindowState() { try { if (shell && !shell.isDestroyed() && !shell.isMinimized()) settings().set('toolWindow', shell.getBounds()); } catch { /* best effort */ } }
   function fitToCurrentDisplay(saved) {
     const hasPos = saved && Number.isFinite(Number(saved.x)) && Number.isFinite(Number(saved.y));
     const display = hasPos ? screen.getDisplayMatching({ x: Math.round(saved.x), y: Math.round(saved.y), width: Math.round(saved.width), height: Math.round(saved.height) }) : screen.getPrimaryDisplay();
@@ -1176,7 +1159,7 @@ else {
     return normalizeWindowBounds({ saved, workArea: wa, defaults: { width: quarter.width, height: quarter.height, minWidth: WIN_DEFAULTS.minWidth, minHeight: WIN_DEFAULTS.minHeight } });
   }
   function createWindow() {
-    const bounds = fitToCurrentDisplay(loadWindowState());
+    const bounds = fitToCurrentDisplay(settings().get('toolWindow'));
     // dev runs electron.exe (its own icon): show the Phỏm QA logo on the window too — packaged, Phom QA.exe has it
     const devIcon = app.isPackaged ? null : path.join(__dirname, '..', 'build', 'phom-icon.png');
     shell = new BrowserWindow({
@@ -1208,9 +1191,9 @@ else {
     const syncBrowserProfile = (res) => {
       try {
         const p = res && res.ok && res.profile; if (!p || !p.id || profileInUse(String(p.id))) return res;
-        const name = accountNames().get(p.id) || p.name || p.id;
+        const name = deviceProfilesStore.accountOf(p.id) || p.name || p.id;
         const rtNow = resolveBrowserRuntimeChoice();
-        const pd = chromiumProfileName.resolveProfileDir({ root: profilesRootFor(rtNow.ok ? rtNow.kind : 'chromium'), key: String(p.id), name, map: profileFolders() });
+        const pd = chromiumProfileName.resolveProfileDir({ root: profilesRootFor(rtNow.ok ? rtNow.kind : 'chromium'), key: String(p.id), name, map: deviceProfilesStore.folders() });
         chromiumProfileName.applyProfileName(pd.dir, name);
         headerLog('profile-synced', { profileId: p.id, folder: pd.folder, renamed: !!pd.renamedFrom });
       } catch { /* the next launch syncs it anyway */ }
@@ -1244,7 +1227,7 @@ else {
       ensurePhomSessions();
       const r = phomSessions.startSession({ runIds: (cfg && cfg.runIds) || [], hostId: cfg && cfg.hostId, selectedStake: cfg && cfg.selectedStake });
       // the last stake the user picked is the session's stake from the start (bars + Dò Key / Tạo use it)
-      const saved = savedStake(); if (r && r.ok !== false && saved != null) phomSessions.setStake(saved);
+      const saved = settings().get('stake'); if (r && r.ok !== false && saved != null) phomSessions.setStake(saved);
       return r;
     }));
     // §13 — Find-Table stake source: request the server channel list + read the
@@ -1266,8 +1249,8 @@ else {
     // NOT_READY) unless one exists, then rejoins kicked members and takes another table when one is lost. OFF stops it.
     ipcMain.handle('phom:auto-set', guarded((_e, cfg) => { ensurePhomSessions(); return phomSessions.setAuto(!!(cfg && cfg.on), { creatorId: cfg && cfg.browserId, stake: cfg && cfg.stake != null ? Number(cfg.stake) : null }); }));
     // THE mức cược lives in the Phỏm tool; the in-page bars search at this stake (they have no picker of their own).
-    ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); saveStake(cfg && cfg.stake); return phomSessions.setStake(cfg && cfg.stake); }));
-    ipcMain.handle('phom:stake-get', () => ({ ok: true, stake: savedStake() }));
+    ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); settings().set('stake', cfg && cfg.stake); return phomSessions.setStake(cfg && cfg.stake); }));
+    ipcMain.handle('phom:stake-get', () => ({ ok: true, stake: settings().get('stake') }));
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
     // 3.2 — each feature registers its own channels (an-danh: phom:an-danh-get / phom:an-danh-set)
     features().registerIpc((channel, fn, opts) => ipcMain.handle(channel, opts && opts.guarded ? guarded(fn) : fn));
@@ -1277,9 +1260,9 @@ else {
     ipcMain.handle('phom:browser-runtime-get', () => {
       const custom = chromiumRuntime();
       const chrome = browserRuntimeResolver.resolveGoogleChrome({ env: process.env });
-      return { ok: true, preference: browserRuntimePref(), customAvailable: !!(custom && custom.ok), chromeAvailable: !!(chrome && chrome.ok), resolved: (() => { const r = resolveBrowserRuntimeChoice(); return r.ok ? { kind: r.kind, fellBack: !!r.fellBack } : { error: r.error }; })() };
+      return { ok: true, preference: settings().get('browserRuntime'), customAvailable: !!(custom && custom.ok), chromeAvailable: !!(chrome && chrome.ok), resolved: (() => { const r = resolveBrowserRuntimeChoice(); return r.ok ? { kind: r.kind, fellBack: !!r.fellBack } : { error: r.error }; })() };
     });
-    ipcMain.handle('phom:browser-runtime-set', guarded((_e, cfg) => ({ ok: true, preference: setBrowserRuntimePref(cfg && cfg.preference) })));
+    ipcMain.handle('phom:browser-runtime-set', guarded((_e, cfg) => ({ ok: true, preference: settings().set('browserRuntime', cfg && cfg.preference) })));
     // PHASE-6.2.2 — browser lifecycle, all scoped to ONE run (never touches the Tool or the other browsers).
     // ↻ WEB: reload the page in the SAME Chromium; if the page is gone, re-navigate to the game URL — never
     // launches a second Chromium OS window.
