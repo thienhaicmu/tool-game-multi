@@ -41,6 +41,7 @@ google-service-account.json
 !tools/license-generator/private/phom-ed25519-public.pem
 !tools/license-generator/private/wvpt-ed25519-private.pem
 !tools/license-generator/private/wvpt-ed25519-public.pem
+!tools/license-generator/private/google-service-account.json
 # Issued license assignments / generated license artifacts (seller-side, sensitive)
 tools/assign_*.json
 *.rar
