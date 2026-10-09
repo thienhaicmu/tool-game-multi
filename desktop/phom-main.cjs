@@ -776,8 +776,8 @@ else {
       const uid = phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null;
       return uid ? playHelp.checkPlay(phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
     }, manualBlocked: (rid) => ((_autoPlayFeature && (_autoPlayFeature.status()[rid] || {}).on) ? 'Acc này đang Tự đánh — tắt Tự đánh trước khi bấm tay' : null) });
-    // TỰ ĐÁNH — per account, switched on by the user, only while every player of the round is one of ours
-    // (docs/phom-danh-bai.md §7); every press goes through the play-actions feature above
+    // TỰ ĐÁNH — per account, switched on by the user; every press goes through the play-actions feature above
+    // and uses only that account's own hand plus public facts.
     _autoPlayFeature = createAutoPlayFeature({
       act: (rid, input) => (features().enabled('play-actions') ? _playFeature.act(rid, input) : { ok: false, error: { code: 'PHOM_FEATURE_OFF', message: 'Nút đánh bài đang tắt (PHOM_FEATURES_OFF)' } }),
       clientFor: runClientFor,

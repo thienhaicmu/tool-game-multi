@@ -2,10 +2,10 @@
 
 // ---------------------------------------------------------------------------
 // TỰ ĐÁNH (pure) — the next press for ONE account, following docs/phom-danh-bai.md turn by turn. User 2026-10-09:
-// switched on per account (P1/P2/P3) by the user, and ONLY at a table where every player of the round is one of the
-// tool's accounts — a player outside the tool in the round stops it (a table with real players stays manual).
+// switched on per account (P1/P2/P3) by the user. A round may include players outside the tool; choices still use
+// only this account's own hand plus public facts.
 //
-//   tableGuard(snap, toolUids)             every uid of the round (DEAL lpi) is one of the tool's accounts (P1–P3 or a reserve)?
+//   tableGuard(snap, toolUids)             the current round is known (DEAL lpi observed)
 //   nextStep(snap, uid, offered, avoid, toolUids) → { action, cards, why } | { wait, why } | { stop, code, message }
 //   stateKey(snap, uid)                    changes when something THIS account's step depends on changed
 //
@@ -22,13 +22,11 @@ const help = require('./phom-play-help.cjs');
 
 const labels = (cards) => (cards || []).map((x) => x.label).join(' ');
 
-// toolUids: the uids of every browser of the session (playing slots AND reserves) — a reserve is ours, never a stranger
+// toolUids is kept for API compatibility; auto-play no longer stops just because a round includes outside players.
 function tableGuard(snap, toolUids = []) {
-  const ours = new Set(Object.values((snap && snap.slotBinding) || {}).filter((u) => u != null).map(String).concat((toolUids || []).map(String)));
+  void toolUids;
   const players = ((snap && snap.roundPlayers) || []).map(String);
   if (!players.length) return { ok: false, code: 'AUTO_NO_ROUND', message: 'Chưa chia bài' };
-  const strangers = players.filter((u) => !ours.has(u));
-  if (strangers.length) return { ok: false, stop: true, code: 'AUTO_STRANGER', message: 'Có người chơi ngoài tool trong ván — đã tắt Tự đánh' };
   return { ok: true };
 }
 

@@ -2,8 +2,8 @@
 
 // ---------------------------------------------------------------------------
 // FEATURE auto-play — TỰ ĐÁNH, switched on per account by the user (docs/phom-danh-bai.md §7). Off by default; once it
-// turns itself off (a player outside the tool in the round, a press the game did not take, the page reloaded, the
-// browser closed) it stays off until the user switches it on again.
+// turns itself off (a press the game did not take, the page reloaded, the browser closed) it stays off until the user
+// switches it on again.
 //
 // Every tick, for each account switched on: read which buttons the game offers (read-only page script), choose the
 // step (protocol/phom/phom-auto-play.cjs nextStep — the doc's scenario, own hand + public facts only) and press it

@@ -759,8 +759,8 @@
       btn('BAO_U', 'Ù', 'Báo Ù (nút Ù của game — chỉ khi game hiện nút)', false),
       autoPlaySwitch(runId));
   }
-  // TỰ ĐÁNH for THIS account only (docs/phom-danh-bai.md §7): plays the scenario by itself while every player of the
-  // round is one of the tool's accounts; a player outside the tool switches it off. The line says what it does / why it stopped.
+  // TỰ ĐÁNH for THIS account only (docs/phom-danh-bai.md §7): plays the scenario by itself from that account's own
+  // hand plus public facts. The line says what it does / why it stopped.
   // A key without the "Cho dùng Tự đánh" right (Generator) shows the switch locked; main refuses it anyway.
   function autoPlaySwitch(runId) {
     const a = autoPlayByRun[runId] || {};
@@ -773,7 +773,7 @@
         box, el('span', { class: 'knob' }), 'Tự đánh'),
       el('span', { class: 'muted auto-play-msg off' }, 'Key chưa có quyền Tự đánh'));
     return el('span', { class: 'auto-play' },
-      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Chỉ chạy khi cả ván là acc của tool — có người ngoài thì tự tắt.' },
+      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Có người ngoài tool vẫn tiếp tục, quyết định chỉ dùng bài acc này và dữ liệu công khai.' },
         box, el('span', { class: 'knob' }), 'Tự đánh'),
       a.message ? el('span', { class: 'muted auto-play-msg' + (a.on ? '' : ' off') }, a.message) : null);
   }
