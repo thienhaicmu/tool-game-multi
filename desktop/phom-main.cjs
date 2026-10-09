@@ -783,6 +783,7 @@ else {
       clientFor: runClientFor,
       snapshot: () => (phomSessions && phomSessions.active() ? phomSessions.cardObserverSnapshot() : {}),
       uidOf: (rid) => (phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null),
+      toolUids: () => (phomSessions && phomSessions.active() ? phomSessions.toolUids() : []), // P1–P3 + reserves = ours
       log: headerLog,
       refresh: () => scheduleCardsBroadcast(true),
     });

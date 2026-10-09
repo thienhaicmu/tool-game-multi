@@ -2,7 +2,8 @@
 
 // ---------------------------------------------------------------------------
 // FEATURE auto-play — TỰ ĐÁNH, switched on per account by the user (docs/phom-danh-bai.md §7). Off by default; once it
-// turns itself off (a press the game did not take, the page reloaded, the browser closed) it stays off until the user switches it on again.
+// turns itself off (a player outside the tool in the round, a press the game did not take, the page reloaded, the
+// browser closed) it stays off until the user switches it on again.
 //
 // Every tick, for each account switched on: read which buttons the game offers (read-only page script), choose the
 // step (protocol/phom/phom-auto-play.cjs nextStep — the doc's scenario, own hand + public facts only) and press it
@@ -11,7 +12,7 @@
 // same step is not pressed twice until the table changed.
 //
 //  IPC: phom:auto-play { runId, on } → { ok, status }
-// deps: { act(rid, {action, cards}), clientFor(rid), snapshot(), uidOf(rid), log, refresh() }
+// deps: { act(rid, {action, cards}), clientFor(rid), snapshot(), uidOf(rid), toolUids() (slots + reserves), log, refresh() }
 // ---------------------------------------------------------------------------
 
 const { buildOfferedScript } = require('../../protocol/phom/play-actions.cjs');
@@ -19,7 +20,7 @@ const autoPlay = require('../../protocol/phom/phom-auto-play.cjs');
 
 const STOP_CODES = new Set(['PHOM_PLAY_PRECHECK', 'PHOM_PLAY_NOT_AT_TABLE', 'PHOM_PLAY_NO_CLIENT', 'PHOM_PLAY_NO_HANDLER', 'PHOM_PLAY_CARD_NOT_IN_HAND', 'PHOM_PLAY_PAGE_ERROR', 'PHOM_PLAY_FAILED', 'PHOM_PLAY_UNKNOWN', 'PHOM_PLAY_BAD_CARD', 'PHOM_PLAY_TOO_MANY', 'PHOM_PLAY_NO_CARD', 'PHOM_FEATURE_OFF']);
 
-function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, log = () => {}, refresh = () => {}, now = Date.now,
+function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () => [], log = () => {}, refresh = () => {}, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout, tickMs = 600, settleMs = 900, stallMs = 6000, waitStallMs = 12000 }) {
   const runs = new Map(); // rid → { on, message, pending, lastPress, waitSince, avoid, busy }
   let version = 0;        // bumps on every card-snapshot change
@@ -32,6 +33,8 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, log = () => {}
 
   function start(rid) {
     const s = st(rid);
+    const guard = autoPlay.tableGuard(snapshot(), toolUids());
+    if (guard.stop) return { ok: false, error: { code: guard.code, message: 'Có người chơi ngoài tool trong ván — Tự đánh chỉ chạy khi cả bàn là acc của tool' } };
     Object.assign(s, { on: true, pending: null, lastPress: null, waitSince: null, avoid: new Set(), avoidAt: -1, message: 'Đang chờ lượt' });
     log('auto-play', { runId: rid, on: true });
     refresh(); schedule();
@@ -58,7 +61,7 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, log = () => {}
     if (!probe || !probe.ok) return setMessage(s, 'Không đọc được nút của game');
     if (!probe.atTable) { s.pending = null; s.waitSince = null; return setMessage(s, 'Chưa ở bàn Phỏm'); }
     if (s.avoidAt !== version) { s.avoid = new Set(); s.avoidAt = version; }
-    const step = autoPlay.nextStep(snapshot(), uid, probe.offered, s.avoid);
+    const step = autoPlay.nextStep(snapshot(), uid, probe.offered, s.avoid, toolUids());
     const t = now();
     if (step.stop) return stop(rid, step.message, step.code);
     if (step.wait) {

@@ -2,10 +2,11 @@
 
 // ---------------------------------------------------------------------------
 // TỰ ĐÁNH (pure) — the next press for ONE account, following docs/phom-danh-bai.md turn by turn. User 2026-10-09:
-// switched on per account (P1/P2/P3) by the user; it plays whoever else is in the round (strangers included).
+// switched on per account (P1/P2/P3) by the user, and ONLY at a table where every player of the round is one of the
+// tool's accounts — a player outside the tool in the round stops it (a table with real players stays manual).
 //
-//   tableGuard(snap)                       the round is dealt (DEAL lpi known)?
-//   nextStep(snap, uid, offered, avoid)    → { action, cards, why } | { wait, why }
+//   tableGuard(snap, toolUids)             every uid of the round (DEAL lpi) is one of the tool's accounts (P1–P3 or a reserve)?
+//   nextStep(snap, uid, offered, avoid, toolUids) → { action, cards, why } | { wait, why } | { stop, code, message }
 //
 // offered = the game's buttons shown right now (play-actions buildOfferedScript); the step is one of them:
 //   Ù shown                                → BAO_U
@@ -20,16 +21,19 @@ const help = require('./phom-play-help.cjs');
 
 const labels = (cards) => (cards || []).map((x) => x.label).join(' ');
 
-// a player outside the tool in the round no longer stops it (user 2026-10-09: "bỏ" — it plays at a table with strangers too)
-function tableGuard(snap) {
+// toolUids: the uids of every browser of the session (playing slots AND reserves) — a reserve is ours, never a stranger
+function tableGuard(snap, toolUids = []) {
+  const ours = new Set(Object.values((snap && snap.slotBinding) || {}).filter((u) => u != null).map(String).concat((toolUids || []).map(String)));
   const players = ((snap && snap.roundPlayers) || []).map(String);
   if (!players.length) return { ok: false, code: 'AUTO_NO_ROUND', message: 'Chưa chia bài' };
+  const strangers = players.filter((u) => !ours.has(u));
+  if (strangers.length) return { ok: false, stop: true, code: 'AUTO_STRANGER', message: 'Có người chơi ngoài tool trong ván — đã tắt Tự đánh' };
   return { ok: true };
 }
 
-function nextStep(snap, uid, offered, avoid = new Set()) {
-  const g = tableGuard(snap);
-  if (!g.ok) return { wait: true, why: g.message };
+function nextStep(snap, uid, offered, avoid = new Set(), toolUids = []) {
+  const g = tableGuard(snap, toolUids);
+  if (!g.ok) return g.stop ? { stop: true, code: g.code, message: g.message } : { wait: true, why: g.message };
   const on = new Set(offered || []);
   if (!on.size) return { wait: true, why: 'Chưa tới lượt' };
   if (on.has('BAO_U')) return { action: 'BAO_U', cards: [], why: 'Ù' };

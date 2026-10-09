@@ -767,7 +767,7 @@
     const box = el('input', { type: 'checkbox', id, onchange: (e) => onAutoPlayToggle(runId, e.target.checked) });
     box.checked = !!a.on;
     return el('span', { class: 'auto-play' },
-      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Chạy cả khi trong ván có người ngoài tool.' },
+      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Chỉ chạy khi cả ván là acc của tool — có người ngoài thì tự tắt.' },
         box, el('span', { class: 'knob' }), 'Tự đánh'),
       a.message ? el('span', { class: 'muted auto-play-msg' + (a.on ? '' : ' off') }, a.message) : null);
   }

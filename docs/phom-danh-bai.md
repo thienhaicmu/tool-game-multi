@@ -20,7 +20,7 @@ Kịch bản **vào bàn** (Dò Key, Tạo, Vào, ReJoin…) nằm ở `docs/pho
 
 | Quy tắc | Nội dung |
 |---|---|
-| Người bấm | Người dùng bấm từng nước. **Tự đánh** (§7) bật riêng từng acc, chạy cả khi trong ván có người ngoài tool. |
+| Người bấm | Người dùng bấm từng nước. **Tự đánh** (§7) bật riêng từng acc và chỉ chạy khi cả ván là acc của tool . |
 | Nút = nút của game | Mỗi nút gọi đúng hàm xử lý nút của game (`PhomController.onBtn…`), chỉ khi game **đang hiện** nút đó (`activeInHierarchy` + `cc.Button.interactable`). Không gửi gói tin đánh bài tự chế. Chưa tới lượt → báo "Game chưa cho … lúc này". |
 | Ranh giới thông tin | Gợi ý **chỉ** dùng **bài trên tay của chính acc đó** + **thông tin công khai** (lá đã đánh, lá bị ăn, phỏm đã hạ, lá đã gửi, thứ tự lượt). `publicView()` xoá bài của mọi người khác — kể cả 2 acc còn lại của tool — trước khi tính. Vì vậy kết quả có thể khác **Lọc bài** (tab Phỏm), vốn dùng bài của cả 3 acc. |
 | Một tab = một acc | Tab P1/P2/P3. Tab tự nhảy theo acc **đang tới lượt** (trừ khi người dùng bấm chọn tab khác). |
@@ -146,10 +146,10 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | "Gửi" vào phỏm của **chính mình** lúc hạ: hiện tính như phỏm lớn hơn trong cách xếp | mở |
 | Ù khan, móm, đền… (tính tiền cuối ván): chưa tính | mở |
 | Bàn < 4 người: cách đếm lượt dựa trên số lá đã đánh — cần kiểm chứng | mở |
-| Tự đánh (§7) trong ván thật: đủ Đ1–Đ4, Ù, ván có người ngoài tool | **CHƯA** |
+| Tự đánh (§7) trong ván thật: đủ Đ1–Đ4, Ù, tự tắt khi có người ngoài tool | **CHƯA** |
 | Nút Hạ của game hiện lúc nào (chỉ lượt cuối?) — tự đánh đang dựa vào đếm lượt của tool | mở |
 
-**Ngoài phạm vi (đã quyết):** dùng bài kín của acc khác trong gợi ý tab Đánh bài.
+**Ngoài phạm vi (đã quyết):** tự đánh ở ván có người chơi ngoài tool; dùng bài kín của acc khác trong gợi ý tab Đánh bài.
 
 ## 7. Tự đánh (từng acc)
 
@@ -157,10 +157,10 @@ Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bậ
 
 | Quy tắc | Nội dung |
 |---|---|
-| Mọi bàn | Chạy khi ván đã chia bài (`roundPlayers` = `lpi` của gói 850), **kể cả khi có người ngoài tool** trong ván (user 2026-10-09: bỏ chặn người lạ). Công tắc gắn theo **trình duyệt**: sau ĐỔI, tab P1 là trình duyệt dự bị (công tắc riêng, tắt sẵn). |
+| Chỉ bàn toàn acc tool | Chỉ chạy khi **mọi người chơi trong ván** (`roundPlayers` = `lpi` của gói 850) là acc của tool: P1/P2/P3 **và acc dự bị** (P4/P5) của phiên (`toolUids`). Có người ngoài tool trong ván ⇒ không bật được; đang chạy thì **tự tắt** trước khi bấm . Công tắc gắn theo **trình duyệt**: sau ĐỔI, tab P1 là trình duyệt dự bị (công tắc riêng, tắt sẵn). |
 | Đúng kịch bản | Nước đi = gợi ý của tab (§2), cùng ranh giới thông tin (bài của chính acc + công khai): Ù nếu game hiện nút Ù → **Ăn** nếu lá vừa đánh ghép được phỏm, không thì **Bốc** → lượt 1–3 **Đánh** lá "Nên đánh" → lượt cuối **① Hạ** bộ trong Gợi ý lượt hạ → **② Gửi** các lá gửi được **ngay** (gửi nối tiếp ở lần bấm sau) → **③ Đánh** lá còn lại an toàn nhất. Móm (không có phỏm) ⇒ chỉ đánh. |
 | Bấm như người | Đọc nút game đang hiện (chỉ đọc), rồi bấm qua đúng đường của nút trên tool (`checkPlay`, một thao tác một lúc). Một nước chỉ bấm khi đã giữ nguyên ≥ 0,9 giây (chờ bàn cập nhật) và không bấm lại cùng một nước khi bàn chưa đổi. |
-| Tự tắt | `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · bấm xong 6 giây bàn không đổi (riêng **Ăn** bị từ chối thì chuyển sang **Bốc**) · game hiện nút nhưng 12 giây không có nước hợp lệ (ví dụ có phỏm cần hạ mà game chưa hiện nút Hạ) · trang tải lại · đóng trình duyệt. Tắt rồi thì **không tự bật lại** — lý do hiện cạnh công tắc. |
+| Tự tắt | Có người ngoài tool · `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · bấm xong 6 giây bàn không đổi (riêng **Ăn** bị từ chối thì chuyển sang **Bốc**) · game hiện nút nhưng 12 giây không có nước hợp lệ (ví dụ có phỏm cần hạ mà game chưa hiện nút Hạ) · trang tải lại · đóng trình duyệt. Tắt rồi thì **không tự bật lại** — lý do hiện cạnh công tắc. |
 | Tắt tính năng | `PHOM_FEATURES_OFF=auto-play` (hoặc `play-actions`, vì tự đánh bấm qua đó). |
 
 ## 6. Lịch sử
