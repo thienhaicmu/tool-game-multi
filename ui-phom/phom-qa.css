@@ -231,7 +231,7 @@ button.stat:disabled { opacity: 1; }
 .card-face[role="button"] { cursor: pointer; }
 .card-face.picked { transform: translateY(-6px); border: 2px solid var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .2); }
 .lg-phom::before { background: #8b5cf6; }
-/* safety of each hand card (own hand + public facts only): green = chắc chắn, amber = có thể, red = có thể bị ăn */
+/* safety of each hand card */
 .card-face.big.t-safe { border-color: var(--good); box-shadow: inset 0 -3px 0 var(--good); }
 .card-face.big.t-likely { border-color: #d97706; box-shadow: inset 0 -3px 0 #d97706; }
 .card-face.big.t-risk { border-color: #dc2626; box-shadow: inset 0 -3px 0 #dc2626; }
@@ -272,6 +272,9 @@ button.stat:disabled { opacity: 1; }
 /* TỰ ĐÁNH — the switch at the end of the bar + what it is doing / why it stopped */
 .play-bar .auto-play { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .play-bar .auto-play .switch { height: 30px; }
+.auto-strategy { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; padding: 2px 6px; border-left: 1px solid var(--line); }
+.auto-strategy-item { font-size: 11.5px; white-space: nowrap; }
+.auto-strategy-item input { accent-color: var(--primary); }
 .auto-play-msg { font-size: 12px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .auto-play-msg.off { color: var(--warn, #b45309); }
 .safe-tab .auto-dot { font-size: 11px; font-weight: 800; color: var(--primary); border: 1px solid var(--info-line); background: var(--info-bg); border-radius: 999px; padding: 0 6px; }

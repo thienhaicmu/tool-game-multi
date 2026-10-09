@@ -54,7 +54,8 @@
   let playTab = 'B1';
   let playPinned = false;
   let playPick = { runId: null, codes: [] };
-  let playBySlot = {}; // main's ĐÁNH BÀI help per slot (own hand + public facts only)
+  let autoPlayStrategy = { lowMoney: false, twoPhomCaU: false, blockThirdEat: true };
+  let playBySlot = {};
   const playBusy = {}; // runId → a play action in flight
   let autoPlayByRun = {}; // TỰ ĐÁNH per runId from main: { on, message }
   // the pure parts, loaded before this file (ui-kit.js · ui-cards.js · ui-notices.js)
@@ -186,7 +187,7 @@
   }
   function renderKey() {
     // ĐÁNH BÀI: the table, every account's help and TỰ ĐÁNH status (the doc: the help is recomputed on every change)
-    if (uiState === UI.CONTROL && activeTab === 'PLAY') return uiState + '|PLAY|' + manualBrowsers.length + '|' + (cardsSnap && cardsSnap.currentTurnUid) + '|' + JSON.stringify(playBySlot) + '|' + JSON.stringify(autoPlayByRun);
+    if (uiState === UI.CONTROL && activeTab === 'PLAY') return uiState + '|PLAY|' + manualBrowsers.length + '|' + (cardsSnap && cardsSnap.currentTurnUid) + '|' + JSON.stringify(playBySlot) + '|' + JSON.stringify(autoPlayByRun) + '|' + JSON.stringify(autoPlayStrategy);
     if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + manualBrowsers.length;
     const g = manualGroup;
     const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.money, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.lastError && b.lastError.code].join(',')).join(';');
@@ -683,7 +684,7 @@
       for (const [uid, p] of Object.entries((cardsSnap && cardsSnap.players) || {})) for (const m of (p.melds || [])) laid.push(el('span', { class: 'laid', title: 'Phỏm của ' + nameOfUid(uid) }, labels(m.cardsView || []) + ' · ' + nameOfUid(uid)));
       if (laid.length) table.appendChild(el('span', { class: 'laid-list' }, ...laid));
       body.appendChild(table);
-      // ---- BÀI TRÊN TAY: safety of every card (own hand + public facts only), the card to play, points ----
+      // ---- BÀI TRÊN TAY: safety of every card, the card to play, points ----
       const tierOf = new Map(((help && help.ranking) || []).map((x) => [x.code, x]));
       const rec = help && help.recommended;
       body.appendChild(el('div', { class: 'play-h' },
@@ -757,10 +758,33 @@
       btn('HA', n ? 'Hạ ' + n + ' lá' : 'Hạ', n ? 'Hạ phỏm các lá đã chọn' : 'Hạ phỏm — các lá đang chọn trong game', false),
       btn('GUI', n ? 'Gửi ' + n + ' lá' : 'Gửi', n ? 'Gửi các lá đã chọn' : 'Gửi bài — các lá đang chọn trong game', false),
       btn('BAO_U', 'Ù', 'Báo Ù (nút Ù của game — chỉ khi game hiện nút)', false),
+      strategyControls(),
       autoPlaySwitch(runId));
   }
-  // TỰ ĐÁNH for THIS account only (docs/phom-danh-bai.md §7): plays the scenario by itself from that account's own
-  // hand plus public facts. The line says what it does / why it stopped.
+  function strategyControls() {
+    const cur = autoPlayStrategy || {};
+    const item = (key, label, tip) => {
+      const id = 'phq-auto-strategy-' + key;
+      const box = el('input', { type: 'checkbox', id, onchange: (e) => setAutoPlayStrategy({ [key]: e.target.checked }) });
+      box.checked = key === 'blockThirdEat' ? cur[key] !== false : cur[key] === true;
+      return el('label', { class: 'check auto-strategy-item', for: id, title: tip }, box, label);
+    };
+    return el('span', { class: 'auto-strategy', role: 'group', 'aria-label': 'Ká»‹ch báº£n Tá»± Ä‘Ã¡nh' },
+      item('lowMoney', 'NuÃ´i Ã­t tiá»n', 'Tá»± Ä‘Ã¡nh lÃ¡ cho acc káº¿ tiáº¿p Äƒn khi acc Ä‘Ã³ Ä‘ang Ã­t tiá»n nháº¥t'),
+      item('twoPhomCaU', 'Æ¯u tiÃªn 2 phá»m + cáº¡ Ã¹', 'Æ¯u tiÃªn Ä‘Ã¡nh lÃ¡ giÃºp acc káº¿ tiáº¿p cÃ³ 2 phá»m vÃ  cáº¡ Ã¹'),
+      item('blockThirdEat', 'Cháº·n Äƒn láº§n 3', 'KhÃ´ng chá»§ Ä‘á»™ng cho má»™t acc Äƒn láº§n thá»© 3, trá»« tÃ¬nh huá»‘ng cáº¡ Ã¹'));
+  }
+  async function setAutoPlayStrategy(patch) {
+    if (!api.setAutoPlayStrategy) return;
+    const next = { ...(autoPlayStrategy || {}), ...patch };
+    autoPlayStrategy = next;
+    renderApp();
+    let res; try { res = await api.setAutoPlayStrategy(next); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (res && res.ok) autoPlayStrategy = res.autoPlayStrategy || next;
+    else note((res && res.error && res.error.message) || errText(res), true);
+    renderApp();
+  }
+  // TỰ ĐÁNH for THIS account only (docs/phom-danh-bai.md §7). The line says what it does / why it stopped.
   // A key without the "Cho dùng Tự đánh" right (Generator) shows the switch locked; main refuses it anyway.
   function autoPlaySwitch(runId) {
     const a = autoPlayByRun[runId] || {};
@@ -773,7 +797,7 @@
         box, el('span', { class: 'knob' }), 'Tự đánh'),
       el('span', { class: 'muted auto-play-msg off' }, 'Key chưa có quyền Tự đánh'));
     return el('span', { class: 'auto-play' },
-      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Có người ngoài tool vẫn tiếp tục, quyết định chỉ dùng bài acc này và dữ liệu công khai.' },
+      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Có người ngoài tool vẫn tiếp tục.' },
         box, el('span', { class: 'knob' }), 'Tự đánh'),
       a.message ? el('span', { class: 'muted auto-play-msg' + (a.on ? '' : ' off') }, a.message) : null);
   }
@@ -1137,6 +1161,7 @@
     safeBySlot = snap.analyses || {};
     playBySlot = snap.play || {};
     autoPlayByRun = snap.autoPlay || {};
+    autoPlayStrategy = (snap.settings && snap.settings.autoPlayStrategy) || autoPlayStrategy;
     sharedRid = snap.sharedRid != null ? snap.sharedRid : null;
     reconcileEnterStates();
   }

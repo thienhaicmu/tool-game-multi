@@ -6,7 +6,7 @@
 // switches it on again.
 //
 // Every tick, for each account switched on: read which buttons the game offers (read-only page script), choose the
-// step (protocol/phom/phom-auto-play.cjs nextStep — the doc's scenario, own hand + public facts only) and press it
+// step (protocol/phom/phom-auto-play.cjs nextStep) and press it
 // through the play-actions feature — the same path as a click on the tool's button (precheck, one action at a time).
 // A step is pressed only after it stayed the same for settleMs (the card snapshot catches up with the buttons), and the
 // same step is not pressed twice until what THIS account's step depends on changed (phom-auto-play stateKey — another
@@ -15,7 +15,7 @@
 // Tự đánh" in the Generator): without it the switch is refused, and a run that loses it stops.
 //
 //  IPC: phom:auto-play { runId, on } → { ok, status }
-// deps: { act(rid, {action, cards}), clientFor(rid), snapshot(), uidOf(rid), toolUids() (slots + reserves), licensed(), log, refresh() }
+// deps: { act(rid, {action, cards}), clientFor(rid), snapshot(), uidOf(rid), toolUids() (slots + reserves), autoOptions(), licensed(), log, refresh() }
 // ---------------------------------------------------------------------------
 
 const { buildOfferedScript } = require('../../protocol/phom/play-actions.cjs');
@@ -26,7 +26,7 @@ const STOP_CODES = new Set(['PHOM_PLAY_PRECHECK', 'PHOM_PLAY_NOT_AT_TABLE', 'PHO
 
 const NOT_LICENSED = { code: 'PHOM_AUTO_PLAY_NOT_LICENSED', message: 'Key này chưa được cấp quyền Tự đánh — liên hệ admin để cấp key có tích "Cho dùng Tự đánh"' };
 
-function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () => [], licensed = () => true, log = () => {}, refresh = () => {}, now = Date.now,
+function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () => [], autoOptions = () => ({}), licensed = () => true, log = () => {}, refresh = () => {}, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout, tickMs = 600, settleMs = 900, stallMs = 6000, waitStallMs = 12000, evalTimeoutMs = 5000 }) {
   const runs = new Map(); // rid → { on, message, pending, lastPress, waitSince, avoid, avoidAt, busy }
   let timer = null;
@@ -68,7 +68,7 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
     const snap = snapshot();
     const state = autoPlay.stateKey(snap, uid);
     if (s.avoidAt !== state) { s.avoid = new Set(); s.avoidAt = state; }
-    const step = autoPlay.nextStep(snap, uid, probe.offered, s.avoid, toolUids());
+    const step = autoPlay.nextStep(snap, uid, probe.offered, s.avoid, toolUids(), autoOptions());
     const t = now();
     if (step.stop) return stop(rid, step.message, step.code);
     if (step.wait) {

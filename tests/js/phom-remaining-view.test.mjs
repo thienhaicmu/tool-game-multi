@@ -5,7 +5,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import vm from 'node:vm';
-const ui = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => readFileSync(new URL('../../ui-phom/' + n + '.js', import.meta.url), 'utf8')).join('\n');
+const ui = ['ui-kit', 'ui-cards', 'ui-notices', 'phom-qa'].map((n) => readFileSync(new URL('../../ui-phom/' + n + '.js', import.meta.url), 'utf8')).join('\n').replace(/\r\n/g, '\n');
 const css = readFileSync(new URL('../../ui-phom/phom-qa.css', import.meta.url), 'utf8');
 const grab = (name) => ui.slice(ui.indexOf('function ' + name + '('), ui.indexOf('\n  }\n', ui.indexOf('function ' + name + '(')) + 4);
 const groupByPhom = new Function(

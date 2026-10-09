@@ -20,7 +20,7 @@ Kịch bản **vào bàn** (Dò Key, Tạo, Vào, ReJoin…) nằm ở `docs/pho
 
 | Quy tắc | Nội dung |
 |---|---|
-| Người bấm | Người dùng bấm từng nước. **Tự đánh** (§7) bật riêng từng acc và chỉ chạy khi cả ván là acc của tool . |
+| Người bấm | Người dùng bấm từng nước. **Tự đánh** (§7) bật riêng từng acc; có người ngoài tool trong ván vẫn chạy. |
 | Nút = nút của game | Mỗi nút gọi đúng hàm xử lý nút của game (`PhomController.onBtn…`), chỉ khi game **đang hiện** nút đó (`activeInHierarchy` + `cc.Button.interactable`). Không gửi gói tin đánh bài tự chế. Chưa tới lượt → báo "Game chưa cho … lúc này". |
 | Ranh giới thông tin | Gợi ý **chỉ** dùng **bài trên tay của chính acc đó** + **thông tin công khai** (lá đã đánh, lá bị ăn, phỏm đã hạ, lá đã gửi, thứ tự lượt). `publicView()` xoá bài của mọi người khác — kể cả 2 acc còn lại của tool — trước khi tính. Vì vậy kết quả có thể khác **Lọc bài** (tab Phỏm), vốn dùng bài của cả 3 acc. |
 | Một tab = một acc | Tab P1/P2/P3. Tab tự nhảy theo acc **đang tới lượt** (trừ khi người dùng bấm chọn tab khác). |
@@ -146,18 +146,20 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | "Gửi" vào phỏm của **chính mình** lúc hạ: hiện tính như phỏm lớn hơn trong cách xếp | mở |
 | Ù khan, móm, đền… (tính tiền cuối ván): chưa tính | mở |
 | Bàn < 4 người: cách đếm lượt dựa trên số lá đã đánh — cần kiểm chứng | mở |
-| Tự đánh (§7) trong ván thật: đủ Đ1–Đ4, Ù, tự tắt khi có người ngoài tool | **CHƯA** |
+| Tự đánh (§7) trong ván thật: đủ Đ1–Đ4, Ù, tiếp tục khi có người ngoài tool | **CHƯA** |
 | Nút Hạ của game hiện lúc nào (chỉ lượt cuối?) — tự đánh đang dựa vào đếm lượt của tool | mở |
 ## 7. Tự đánh (từng acc)
+
+Ghi chú nâng cấp: kịch bản Tự đánh đã có các tùy chọn chiến thuật giống `meta-game`: **Nuôi ít tiền**, **Ưu tiên 2 phỏm + cạ ù**, và **Chặn ăn lần 3** (mặc định bật). Khi không bật hai nhánh chủ động, tự đánh giữ thứ tự an toàn mặc định; có người chơi ngoài tool trong ván vẫn tiếp tục chạy.
 
 Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bật riêng cho **từng acc** (P1/P2/P3). Mặc định tắt.
 
 | Quy tắc | Nội dung |
 |---|---|
 | Quyền key | Chỉ key PHOM có tích **"Cho dùng Tự đánh"** ở Generator (ký trong `features.autoRun`) mới bật được. Key ký trước khi có ô này ⇒ không có quyền (cấp key mới). Không có quyền ⇒ công tắc khoá + "Key chưa có quyền Tự đánh"; main cũng từ chối (`PHOM_AUTO_PLAY_NOT_LICENSED`); đang chạy mà mất quyền (đổi key) ⇒ tự tắt. Dev bypass: được dùng. |
-| Bấm như người | Đọc nút game đang hiện (chỉ đọc), rồi bấm qua đúng đường của nút trên tool (`checkPlay`, một thao tác một lúc). Một nước chỉ bấm khi đã giữ nguyên ≥ 0,9 giây (chờ bàn cập nhật) và không bấm lại cùng một nước khi **những gì nước đó phụ thuộc** chưa đổi (`stateKey`: bài/phỏm/lá đánh/lá gửi của chính acc + lá trên bàn + lá bị ăn — gói tin bài riêng của 2 acc kia không tính, nên không bấm lặp và không thử lại Ăn đã bị từ chối). |
+| Bấm như người | Đọc nút game đang hiện (chỉ đọc), rồi bấm qua đúng đường của nút trên tool (`checkPlay`, một thao tác một lúc). Nút Ù được ưu tiên khi game hiện. Một nước chỉ bấm khi đã giữ nguyên ≥ 0,9 giây (chờ bàn cập nhật) và không bấm lại cùng một nước khi **những gì nước đó phụ thuộc** chưa đổi (`stateKey`: bài/phỏm/lá đánh/lá gửi của chính acc + lá trên bàn + lá bị ăn — gói tin bài riêng của 2 acc kia không tính, nên không bấm lặp và không thử lại Ăn đã bị từ chối). |
 | 3 acc cùng bật | Mỗi lượt kiểm tra các acc **song song**; mỗi lần gọi trang có giới hạn 5 giây (một trình duyệt treo không giữ 2 acc còn lại, nút không bị kẹt "đang thực hiện"). Acc đang Tự đánh thì nút bấm tay trên tool của acc đó bị từ chối (`PHOM_PLAY_AUTO_ON`) — tắt Tự đánh trước khi bấm tay. |
-| Tự tắt | Có người ngoài tool · mất quyền key · trình duyệt không trả lời khi bấm · `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · bấm xong 6 giây bàn không đổi (riêng **Ăn** bị từ chối thì chuyển sang **Bốc**) · game hiện nút nhưng 12 giây không có nước hợp lệ (ví dụ có phỏm cần hạ mà game chưa hiện nút Hạ) · trang tải lại · đóng trình duyệt. Tắt rồi thì **không tự bật lại** — lý do hiện cạnh công tắc. |
+| Tự tắt | Mất quyền key · trình duyệt không trả lời khi bấm · `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · bấm xong 6 giây bàn không đổi (riêng **Ăn** bị từ chối thì chuyển sang **Bốc**) · game hiện nút nhưng 12 giây không có nước hợp lệ (ví dụ có phỏm cần hạ/gửi mà game chưa hiện nút) · trang tải lại · đóng trình duyệt. Tắt rồi thì **không tự bật lại** — lý do hiện cạnh công tắc. |
 | Tắt tính năng | `PHOM_FEATURES_OFF=auto-play` (hoặc `play-actions`, vì tự đánh bấm qua đó). |
 
 ## 6. Lịch sử

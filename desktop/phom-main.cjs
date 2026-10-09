@@ -129,6 +129,10 @@ else {
   function settings() {
     if (_settings) return _settings;
     const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
+    const autoPlayStrategy = (v) => {
+      const x = v && typeof v === 'object' ? v : {};
+      return { lowMoney: x.lowMoney === true, twoPhomCaU: x.twoPhomCaU === true, blockThirdEat: x.blockThirdEat !== false };
+    };
     _settings = createSettingsStore({
       file: path.join(phomRoot(), 'phom-settings.json'),
       backupDir: backupDir(),
@@ -140,6 +144,7 @@ else {
         windowLayout: { default: { ...windowLayout.DEFAULT_LAYOUT }, normalize: windowLayout.normalizeLayout, legacy: { file: path.join(phomRoot(), 'window-layout.json') } },
         // the browser runtime (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME); nothing saved → the bundled Chromium (user 2026-10-05)
         browserRuntime: { default: 'CUSTOM_CHROMIUM', normalize: browserRuntimeResolver.normalizePreference, legacy: { file: path.join(phomRoot(), 'browser-runtime.json'), pick: (j) => j.preference } },
+        autoPlayStrategy: { default: { lowMoney: false, twoPhomCaU: false, blockThirdEat: true }, normalize: autoPlayStrategy },
         // the tool window's last bounds (re-clamped to the current display on start)
         toolWindow: { default: null, normalize: (v) => (v && typeof v === 'object' && num(v.x) != null && num(v.width) != null ? { x: num(v.x), y: num(v.y), width: num(v.width), height: num(v.height) } : null), legacy: { file: path.join(PHOM_USERDATA, 'window-state.json') } },
       },
@@ -613,7 +618,8 @@ else {
   // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
   // reads or receives exactly one object.
   function phomUiSnapshot() {
-    if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {}, play: {}, autoPlay: {} };
+    const uiSettings = { autoPlayStrategy: settings().get('autoPlayStrategy') };
+    if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {}, play: {}, autoPlay: {}, settings: uiSettings };
     const browsers = phomSessions.manualBrowserSnapshot() || [];
     const shared = headerSharedRid();
     for (const b of browsers) {
@@ -634,6 +640,7 @@ else {
     return {
       ok: true, browsers, cards, analyses, play,
       autoPlay: _autoPlayFeature ? _autoPlayFeature.status() : {}, // TỰ ĐÁNH per runId: { on, message }
+      settings: uiSettings,
       remaining: phomSessions.remainingCards(),
       sharedRid: phomSessions.sharedRid(), sharedRidOwner: phomSessions.sharedRidOwner(),
       coSeat: phomSessions.coSeatStatus(), group: phomSessions.groupSnapshot(),
@@ -772,17 +779,26 @@ else {
     });
     // Bốc / Ăn / Đánh / Hạ / Gửi from the tool — the game's own button, only while the game offers it
     _playFeature = createPlayActionsFeature({ clientFor: runClientFor, log: headerLog, precheck: (rid, action, cards) => {
-      // picked cards checked against what the table shows (own hand + public facts only) — the game still decides
+      // picked cards checked against what the table shows; the game still decides
       const uid = phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null;
       return uid ? playHelp.checkPlay(phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
     }, manualBlocked: (rid) => ((_autoPlayFeature && (_autoPlayFeature.status()[rid] || {}).on) ? 'Acc này đang Tự đánh — tắt Tự đánh trước khi bấm tay' : null) });
     // TỰ ĐÁNH — per account, switched on by the user; every press goes through the play-actions feature above
-    // and uses only that account's own hand plus public facts.
     _autoPlayFeature = createAutoPlayFeature({
       act: (rid, input) => (features().enabled('play-actions') ? _playFeature.act(rid, input) : { ok: false, error: { code: 'PHOM_FEATURE_OFF', message: 'Nút đánh bài đang tắt (PHOM_FEATURES_OFF)' } }),
       clientFor: runClientFor,
       snapshot: () => (phomSessions && phomSessions.active() ? phomSessions.cardObserverSnapshot() : {}),
       uidOf: (rid) => (phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null),
+      autoOptions: () => {
+        const moneyByUid = {};
+        const browsers = phomSessions && phomSessions.active() ? (phomSessions.manualBrowserSnapshot() || []) : [];
+        for (const b of browsers) {
+          const uid = phomSessions.uidOf(b.profileId);
+          const money = Number(b.money);
+          if (uid != null && Number.isFinite(money)) moneyByUid[String(uid)] = money;
+        }
+        return { strategy: settings().get('autoPlayStrategy'), moneyByUid };
+      },
       licensed: autoPlayLicensed, // the key's "Cho dùng Tự đánh" (signed features.autoRun)
       log: headerLog,
       refresh: () => scheduleCardsBroadcast(true),
@@ -1239,6 +1255,11 @@ else {
     // THE mức cược lives in the Phỏm tool; the in-page bars search at this stake (they have no picker of their own).
     ipcMain.handle('phom:set-stake', guarded((_e, cfg) => { ensurePhomSessions(); settings().set('stake', cfg && cfg.stake); return phomSessions.setStake(cfg && cfg.stake); }));
     ipcMain.handle('phom:stake-get', () => ({ ok: true, stake: settings().get('stake') }));
+    ipcMain.handle('phom:auto-play-strategy-set', guarded((_e, cfg) => {
+      const strategy = settings().set('autoPlayStrategy', cfg && cfg.autoPlayStrategy);
+      sendUiAndJournal();
+      return { ok: true, autoPlayStrategy: strategy };
+    }));
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
     // 3.2 — each feature registers its own channels (an-danh: phom:an-danh-get / phom:an-danh-set)
     features().registerIpc((channel, fn, opts) => ipcMain.handle(channel, opts && opts.guarded ? guarded(fn) : fn));
