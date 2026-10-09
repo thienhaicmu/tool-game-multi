@@ -25,6 +25,7 @@ const { CdpError } = require('./cdp/errors.cjs');
 const { environmentGuardEnabled } = require('./protocol/environment-gate.cjs');
 const { InstanceManager } = require('./instance/instance-manager.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
+const { createDenylistGuard, createHttpsFetch, readUrlConfig } = require('./licensing/online-denylist.cjs');
 const { deriveFeatureKey } = require('./licensing/feature-key.cjs');
 const { install: installSealedLoader, SEALED_BASENAMES } = require('./protocol/sealed-loader.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
@@ -412,6 +413,7 @@ function createWindow() {
     licenseGuard.initializeAsync().then((status) => {
       ensureProtocolSubsystem(status);
       if (shell && !shell.isDestroyed()) shell.webContents.send('license-changed', status);
+      if (status && status.active) startOnlineRevoke(status);
     }).catch(() => {});
   }
   const bounds = fitToCurrentDisplay(resolveBounds(loadWindowState()));
@@ -1703,7 +1705,34 @@ async function connectRunEndpoint(run, { host = '127.0.0.1', port = 9222, runtim
 // while the license is still "checking" or has lapsed, status().active is false
 // and every gated call is refused.
 const LICENSE_OPEN_CHANNELS = new Set(['license-status', 'license-activate', 'license-refresh', 'copy-text', 'instance-info']);
-function licenseActive() { const s = licenseGuard && licenseGuard.status(); return Boolean(s && s.active); }
+let _onlineLocked = false;        // online revoke (shared GitHub denylist): makes the license inactive → IPC locked
+let _onlineGuard = null;
+function licenseActive() { if (_onlineLocked) return false; const s = licenseGuard && licenseGuard.status(); return Boolean(s && s.active); }
+// stop every browser's Auto (keep the windows). Used on online revoke / grace-elapsed.
+function stopAllAutoRuns(reason) {
+  try {
+    for (const summary of (runManager ? runManager.list() : [])) {
+      const run = runManager.get(summary.id);
+      if (!run) continue;
+      try { if (run.autoSequence && run.autoSequence.stop) run.autoSequence.stop(reason); } catch {}
+      try { if (run.autoRunner && run.autoRunner.isRunning && run.autoRunner.isRunning()) run.autoRunner.stop({ reason }); } catch {}
+    }
+  } catch { /* best effort */ }
+}
+function startOnlineRevoke(status) {
+  const url = readUrlConfig(path.join(__dirname, 'licensing', 'online-denylist.config.json'));
+  const licenseId = (status && status.payload && status.payload.licenseId) || (status && status.licenseId) || null;
+  if (!url || !licenseId || _onlineGuard) return;
+  _onlineGuard = createDenylistGuard({
+    url, licenseId, fetchImpl: createHttpsFetch(),
+    onChange: (d) => {
+      _onlineLocked = d.state === 'LOCKED';
+      if (_onlineLocked) stopAllAutoRuns('LICENSE_BLOCKED');
+      try { if (shell && !shell.isDestroyed()) shell.webContents.send('license-changed', { active: licenseActive(), revoked: _onlineLocked, onlineReason: d.reason || null }); } catch {}
+    },
+  });
+  _onlineGuard.start();
+}
 function handle(channel, fn) {
   if (LICENSE_OPEN_CHANNELS.has(channel)) { ipcMain.handle(channel, fn); return; }
   ipcMain.handle(channel, async (event, ...args) => {

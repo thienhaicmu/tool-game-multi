@@ -1,0 +1,4 @@
+{
+  "_comment": "Thu hồi online cho các sản phẩm cũ (Phỏm QA + Aviator Control). Dán link RAW của revoked.json trên GitHub (public) vào url. File dạng { \"revoked\": { \"<licenseId>\": \"lý do\" } }. Để trống = tắt kiểm tra online. App CHỈ đọc link này.",
+  "url": ""
+}

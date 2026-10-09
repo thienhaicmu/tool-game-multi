@@ -241,6 +241,8 @@ ipcMain.handle('key-revoke', (_event, input) => { const r = store().setStatus(St
 ipcMain.handle('key-restore', (_event, licenseId) => { const r = store().setStatus(String(licenseId || ''), 'ACTIVE'); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key.' } }; });
 ipcMain.handle('key-delete', (_event, licenseId) => { const r = store().remove(String(licenseId || '')); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key.' } }; });
 ipcMain.handle('store-open-folder', () => { try { require('electron').shell.openPath(store().dir); return { ok: true }; } catch (e) { return { ok: false, error: { message: e.message } }; } });
+// the denylist to paste into the GitHub revoked.json (online revoke) — every locally-revoked key → { licenseId: reason }
+ipcMain.handle('keys-denylist', () => { const revoked = {}; for (const k of store().list({ status: 'REVOKED' })) revoked[k.licenseId] = k.revokeReason || ''; return { json: JSON.stringify({ revoked }, null, 2), count: Object.keys(revoked).length }; });
 
 // Retry / explicit sync of an ALREADY-generated license — no regeneration. Same
 // licenseId => idempotent upsert => never a duplicate row.

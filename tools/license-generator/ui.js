@@ -294,6 +294,13 @@
   }
   async function doRevoke(licenseId) { const reason = window.prompt('Lý do thu hồi (ghi chú cục bộ):', ''); if (reason === null) return; const r = await api.keyRevoke({ licenseId, reason }); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
   async function doRestore(licenseId) { const r = await api.keyRestore(licenseId); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
+  // copy revoked.json (from locally-revoked keys) → paste into the GitHub file + commit (manual online revoke)
+  async function exportDenylist() {
+    let r; try { r = await api.keysDenylist(); } catch { r = null; }
+    if (!r || !r.json) return window.alert('Không xuất được danh sách.');
+    try { await api.copy(r.json); } catch {}
+    window.alert(`Đã chép revoked.json (${r.count} key bị khóa).\n\nDán đè vào file revoked.json trên GitHub rồi commit. Máy khách bị khóa trong ≤ 30 phút.`);
+  }
   async function doDelete(licenseId) { if (!window.confirm('Xóa key ' + licenseId + ' khỏi kho cục bộ? (không thu hồi ở máy khách)')) return; const r = await api.keyDelete(licenseId); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
   // GIA HẠN: prefill the create form from a key (same game/machine/customer), then switch to Tạo license
   function extendKey(k) {
@@ -325,6 +332,7 @@
   $('tab-inspect').onclick = () => showTab('inspect');
   $('u-q').addEventListener('input', () => { clearTimeout(userFilterTimer); userFilterTimer = setTimeout(loadUsers, 180); });
   $('u-status').addEventListener('change', loadUsers);
+  $('u-export').addEventListener('click', exportDenylist);
 
   (async () => {
     configs = await api.gameConfigs();

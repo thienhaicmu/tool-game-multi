@@ -63,6 +63,7 @@ const { GAME_ID: PHOM_GAME_ID } = require('./protocol/phom/phom-frame-classify.c
 const browserAgent = require('./browser-run/browser-agent.cjs');
 const { bindProxyAuth } = require('./browser-run/proxy-auth-handler.cjs');
 const { LicenseGuard } = require('./licensing/license-guard.cjs');
+const { createDenylistGuard, createHttpsFetch, readUrlConfig } = require('./licensing/online-denylist.cjs');
 const { resolveDevBypass, FORBIDDEN_CODE: DEV_BYPASS_FORBIDDEN } = require('./licensing/dev-bypass.cjs');
 const { rectForSlot, toolWindowBounds, arrangeClusterWindows } = require('./protocol/phom/grid-layout.cjs');
 const gameHeader = require('./protocol/phom/game-header.cjs');
@@ -102,6 +103,25 @@ else {
 
   var shell = null;
   var licenseGuard = null;
+  // online revoke (shared GitHub denylist). When locked: license goes inactive (autoPlay self-stops, IPC locked),
+  // TỰ ĐỘNG is turned off, and the renderer is told so it locks the buttons — the browser windows stay open.
+  let _onlineLocked = false;
+  let _onlineGuard = null;
+  function startOnlineRevoke(status) {
+    const url = readUrlConfig(path.join(__dirname, 'licensing', 'online-denylist.config.json'));
+    const licenseId = (status && status.payload && status.payload.licenseId) || (status && status.licenseId) || null;
+    if (!url || !licenseId || _onlineGuard) return;
+    _onlineGuard = createDenylistGuard({
+      url, licenseId, fetchImpl: createHttpsFetch(),
+      log: (e) => { try { log.file({ at: Date.now(), tag: 'PHOM-ONLINE', ...e }); } catch {} },
+      onChange: (d) => {
+        _onlineLocked = d.state === 'LOCKED';
+        if (_onlineLocked) { try { if (phomSessions && phomSessions.setAuto) phomSessions.setAuto(false); } catch {} }
+        try { send('phom:license', { active: licenseActive(), revoked: _onlineLocked, onlineReason: d.reason || null, gameProduct: GAME_PRODUCT }); } catch {}
+      },
+    });
+    _onlineGuard.start();
+  }
   // Development-only license bypass decision (§3). Computed once at startup from the
   // real packaged/env context; forbidden (and startup-blocking) in a packaged build.
   var devBypass = resolveDevBypass({ isPackaged: app.isPackaged, env: process.env });
@@ -1125,6 +1145,7 @@ else {
   }
   function licenseActive() {
     if (devBypass.forbidden) return false; // packaged + bypass flag → hard block
+    if (_onlineLocked && !devBypass.allowed) return false; // online revoke (denylist) — makes autoPlay self-stop + locks IPC
     const s = licenseGuard && licenseGuard.status();
     return Boolean(s && s.active);
   }
@@ -1312,7 +1333,7 @@ else {
     });
     licenseGuard = new LicenseGuard({ userDataPath: PHOM_USERDATA, safeStorage, expectedGameProduct: GAME_PRODUCT, devBypass: devBypass.allowed });
     licenseGuard.initialize();
-    licenseGuard.initializeAsync().then((status) => { send('phom:license', { ...status, gameProduct: GAME_PRODUCT }); }).catch(() => {});
+    licenseGuard.initializeAsync().then((status) => { send('phom:license', { ...status, gameProduct: GAME_PRODUCT }); if (status && status.active) startOnlineRevoke(status); }).catch(() => {});
     registerIpc();
     createWindow();
     windows().start();

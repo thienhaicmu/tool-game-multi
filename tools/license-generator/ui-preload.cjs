@@ -26,4 +26,5 @@ contextBridge.exposeInMainWorld('licenseGenerator', {
   keyRestore: licenseId => ipcRenderer.invoke('key-restore', licenseId),
   keyDelete: licenseId => ipcRenderer.invoke('key-delete', licenseId),
   storeOpenFolder: () => ipcRenderer.invoke('store-open-folder'),
+  keysDenylist: () => ipcRenderer.invoke('keys-denylist'),
 });
