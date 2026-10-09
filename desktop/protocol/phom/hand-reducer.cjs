@@ -186,6 +186,18 @@ function reduceHand(prev, event, ctx = {}) {
       return bump({ sourceCommand: 854, publicMelds: melds });
     }
 
+    case 'SEND': {
+      // 856 GỬI — this profile sent cards into laid phỏm: they leave its hand (the game removes them at once)
+      if (!sameUid(event.uid, profileUid)) return bump({ sourceCommand: 856 });
+      const sent = new Set((Array.isArray(event.aMs) ? event.aMs : []).map((a) => a && a.cs).filter(isValidCardCode));
+      if (!sent.size) return bump({ sourceCommand: 856 });
+      return withCards(
+        { ...state, revision: state.revision + 1, lastAppliedSeq: seq != null ? seq : state.lastAppliedSeq, updatedAt: now },
+        state.cardsRaw.filter((c) => !sent.has(c)),
+        { sourceCommand: 856 }
+      );
+    }
+
     case 'EAT': {
       // 853 — the eater's own session gets its new full hand (the eaten card included) + the server's phỏm.
       const eater = event.fP && event.fP.uid != null ? String(event.fP.uid) : null;

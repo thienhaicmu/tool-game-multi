@@ -103,7 +103,7 @@ class CardObserver {
     if (!p) {
       p = { uid: id, seat: null, name: null, controlled: false, slot: null,
         currentCards: [], currentCardsSource: null, currentCardsAt: null,
-        drawnHistory: [], discardedHistory: [], melds: [], serverMeldCards: [] };
+        drawnHistory: [], discardedHistory: [], melds: [], serverMeldCards: [], sentCards: [] };
       this._players.set(id, p);
     }
     return p;
@@ -147,7 +147,7 @@ class CardObserver {
     // Clear per-round CARD data; KEEP identity (uid/seat/name/controlled/slot) and slot binding.
     for (const p of this._players.values()) {
       p.currentCards = []; p.currentCardsSource = null; p.currentCardsAt = null;
-      p.drawnHistory = []; p.discardedHistory = []; p.melds = []; p.serverMeldCards = [];
+      p.drawnHistory = []; p.discardedHistory = []; p.melds = []; p.serverMeldCards = []; p.sentCards = [];
     }
     this._discardPile = [];
     this._observedDiscardEvents = [];
@@ -175,6 +175,7 @@ class CardObserver {
       case 'PLAY': this._onPlay(cls, now); break;
       case 'EAT': this._onEat(cls, input.slot, input.ownUid, now); break;
       case 'MELD': this._onMeld(cls, now); break;
+      case 'SEND': this._onSend(cls, now); break;
       case 'ROUND_END': this._onRoundEnd(cls, input.slot, input.ownUid, now); break;
       default: break; // non-card frames never mutate observation
     }
@@ -357,6 +358,27 @@ class CardObserver {
     }
   }
 
+  // 856 GỬI — PUBLIC: cls.uid sent each aMs[].cs into the laid phỏm aMs[].meid. The card joins that phỏm (whoever laid
+  // it), leaves the sender's hand (the game removes it from the hand at once) and is out of the unknown pool.
+  _onSend(cls, now) {
+    this._ensureRound(now);
+    const uid = cls.uid != null ? String(cls.uid) : null;
+    if (this._skipForeign('SEND', uid)) return;
+    for (const a of (Array.isArray(cls.aMs) ? cls.aMs : [])) {
+      const meid = a && a.meid != null ? a.meid : null;
+      for (const code of normalizeCards(a && a.cs)) {
+        const key = `SD:${this._roundSeq}:${uid}:${meid}:${code}`;
+        if (this._seenEvents.has(key)) { this._log('DEDUP', { kind: 'send' }); continue; }
+        this._seenEvents.add(key);
+        for (const p of this._players.values()) for (const m of p.melds) if (m.meid != null && String(m.meid) === String(meid) && !m.cards.includes(code)) m.cards.push(code);
+        if (uid != null) this._player(uid).sentCards.push(code);
+        this._removeFromHands(code);
+        this._setLedger(code, STATUS.MELDED, uid, 'SEND', now, key);
+        this._log('SEND_OBSERVED', {});
+      }
+    }
+  }
+
   _onRoundEnd(cls, slot, ownUid, now) {
     // 855 — the round closes; KEEP the observation (snapshot still shows the ended round). The next DEAL resets.
     // Another table's round end (none of its players are in ours) does not end ours.
@@ -417,6 +439,7 @@ class CardObserver {
         drawnHistory: clone(p.drawnHistory), drawnHistoryView: p.drawnHistory.map((e) => ({ ...e, view: decodeView(e.card) })),
         discardedHistory: clone(p.discardedHistory), discardedHistoryView: p.discardedHistory.map((e) => ({ ...e, view: decodeView(e.card) })),
         melds: p.melds.map((m) => ({ meid: m.meid, cards: m.cards.slice(), cardsView: m.cards.map(decodeView), source: m.source, observedAt: m.observedAt, evidenceKey: m.evidenceKey })),
+        sentCards: p.sentCards.slice(), // 856 — cards this player sent into laid phỏm (public)
         serverMeldCards: p.serverMeldCards.slice(), // §41 — this player's OWN phỏm as the server arranged it (own session only)
       };
     }

@@ -48,6 +48,9 @@ const CMD = Object.freeze({
   EAT: 853,
   MELD: 854,           // public meld laid down (mes[].cs)
   ROUND_END: 855,      // the round is over: ps[] = every player's leftover cards / points / money
+  // GỬI BÀI (game bundle: PhomCommand.GUI_BAI = 856, handled by guiBai(uid, aMs)): PUBLIC — uid sent each aMs[].cs
+  // into the laid phỏm aMs[].meid (the server picks the phỏm; the client sends only the cards).
+  SEND: 856,
 });
 
 // Wire opcodes.
@@ -66,15 +69,16 @@ const CMD_TYPE = Object.freeze({
   [CMD.EAT]: 'EAT',
   [CMD.MELD]: 'MELD',
   [CMD.ROUND_END]: 'ROUND_END',
+  [CMD.SEND]: 'SEND',
 });
 
 // Types that mutate a per-profile hand model (consumed by hand-reducer).
-const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'EAT', 'ROUND_END', 'MELD']));
+const HAND_EVENT_TYPES = Object.freeze(new Set(['DEAL', 'PLAY', 'DRAW', 'EAT', 'ROUND_END', 'MELD', 'SEND']));
 
 // A frame carries authoritative Phỏm SERVER evidence (used to bind the owning
 // game socket) when it is a recognised server push for this game.
 const SERVER_EVIDENCE_TYPES = Object.freeze(new Set([
-  'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'SEAT_UPDATE', 'DEAL', 'PLAY', 'DRAW', 'EAT', 'ROUND_END', 'MELD',
+  'CHANNEL_LIST', 'FIND_TABLE', 'TABLE_STATE', 'SEAT_UPDATE', 'DEAL', 'PLAY', 'DRAW', 'EAT', 'ROUND_END', 'MELD', 'SEND',
   'SELF_IDENTITY', 'ROOM_ASSIGNED',
 ]));
 
@@ -224,7 +228,7 @@ function classifyPhomFrame(raw) {
     // gold = free money, guaranteed_gold = money held at the table; their sum is the account's money (the `m` the
     // table shows, e.g. "gdufuud-453384").
     if (cmd === CMD.WALLET && payload && payload.As && typeof payload.As === 'object') return finalize(out, { type: 'WALLET', ...walletOf(payload.As) });
-    // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / EAT 853 / MELD 854 / ROUND_END 855).
+    // Recognised game-event pushes (DEAL 850 / PLAY 851 / DRAW 852 / EAT 853 / MELD 854 / ROUND_END 855 / SEND 856).
     if (cmd != null && CMD_TYPE[cmd]) return finalize(out, { type: CMD_TYPE[cmd] });
     return finalize(out, { type: 'UNKNOWN' });
   }
@@ -290,6 +294,7 @@ function finalize(out, extra) {
     tP: p.tP !== undefined ? p.tP : undefined,      // { uid } whose turn is next
     fP: p.fP !== undefined ? p.fP : undefined,      // { uid, dCs, lm } acting player
     mes: Array.isArray(p.mes) ? p.mes : undefined,  // public melds [{ meid, cs }]
+    aMs: Array.isArray(p.aMs) ? p.aMs : undefined,  // SEND 856 — cards sent into laid melds [{ cs, meid }]
     mX: p.mX !== undefined ? p.mX : undefined,
     m: p.m !== undefined ? p.m : undefined,
     mes_present: Array.isArray(p.mes),
