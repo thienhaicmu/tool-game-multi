@@ -6,18 +6,20 @@
 // same browser while one is still running is refused (no double send). Every press is logged.
 //  IPC: phom:play-action { runId, action, cards? } → { ok, code, message }
 //
-// deps: { clientFor(rid), log }
+// deps: { clientFor(rid), log, precheck?(rid, action, cards) → { ok, message } } — refuses picked cards the game would refuse
 // ---------------------------------------------------------------------------
 
 const { validatePlayAction, buildPlayActionScript } = require('../../protocol/phom/play-actions.cjs');
 
-function createPlayActionsFeature({ clientFor, log = () => {} }) {
+function createPlayActionsFeature({ clientFor, log = () => {}, precheck = () => ({ ok: true }) }) {
   const inFlight = new Set();
 
   async function act(runId, input = {}) {
     const rid = String(runId == null ? '' : runId);
     const v = validatePlayAction(input);
     if (!v.ok) return v;
+    let pre; try { pre = precheck(rid, v.action, v.cards) || { ok: true }; } catch { pre = { ok: true }; }
+    if (!pre.ok) return { ok: false, error: { code: 'PHOM_PLAY_PRECHECK', message: pre.message || 'Không hợp lệ' } };
     if (inFlight.has(rid)) return { ok: false, error: { code: 'PHOM_PLAY_BUSY', message: 'Đang thực hiện thao tác trước' } };
     const client = clientFor(rid);
     if (!client || !client.Runtime) return { ok: false, error: { code: 'PHOM_PLAY_NO_CLIENT', message: 'Trình duyệt này không còn kết nối' } };

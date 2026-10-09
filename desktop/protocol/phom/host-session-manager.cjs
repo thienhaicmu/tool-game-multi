@@ -189,6 +189,8 @@ class HostSessionManager extends EventEmitter {
   roomList(id) { const c = this._c(); return c ? c.roomList(id != null ? String(id) : null) : { rooms: [], at: null, ageSec: null }; }
   // The page reloaded — forget that browser's old document.
   resetBrowser(id) { this.forgetEarly(id); const c = this._c(); return c ? c.resetBrowser(String(id)) : false; }
+  // the game uid of one browser of the session (null before its login is seen)
+  uidOf(id) { const c = this._c(); return c ? c.uidOf(String(id)) : null; }
   remainingCards(opts) { const c = this._c(); return c ? c.remainingCards(opts) : { count: 0, codes: [], cards: [] }; }
   // The card-observation snapshot, or an empty/unknown shape when there is no active session (never fabricated).
   cardObserverSnapshot() { const c = this._c(); return c ? c.cardObserverSnapshot() : { players: {}, remaining: { count: 0, codes: [], cards: [] }, discardPile: [], capabilities: {} }; }

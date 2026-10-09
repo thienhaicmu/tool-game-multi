@@ -27,7 +27,7 @@ function page({ atTable = true, offered = ['btnRutBai', 'btnDanhBai'], interacta
 
 test('the five actions map to the game\'s own buttons and handlers', () => {
   assert.deepEqual(Object.fromEntries(Object.entries(ACTIONS).map(([k, v]) => [k, [v.btn, v.handler]])), {
-    BOC: ['btnRutBai', 'onBtnRutBai'], AN: ['btnAnBai', 'onBtnAnBai'], DANH: ['btnDanhBai', 'onBtnDanhBai'], HA: ['btnHaPhom', 'onBtnHaPhom'], GUI: ['btnGuiBai', 'onBtnGuiBai'],
+    BOC: ['btnRutBai', 'onBtnRutBai'], AN: ['btnAnBai', 'onBtnAnBai'], DANH: ['btnDanhBai', 'onBtnDanhBai'], HA: ['btnHaPhom', 'onBtnHaPhom'], GUI: ['btnGuiBai', 'onBtnGuiBai'], BAO_U: ['btnBaoU', 'onBtnBaoU'],
   });
 });
 
@@ -103,17 +103,17 @@ test('feature: one action in flight per browser; no client / feature off refused
 
 test('wiring: main builds the feature, the preload bridges it; ĐÁNH BÀI is its own tab (LỌC BÀI stays read-only)', () => {
   const main = read('desktop/phom-main.cjs');
-  assert.match(main, /createPlayActionsFeature\(\{ clientFor: runClientFor, log: headerLog \}\)/);
+  assert.match(main, /createPlayActionsFeature\(\{ clientFor: runClientFor, log: headerLog, precheck: /);
   assert.match(read('desktop/phom-preload.cjs'), /playAction: \(runId, action, cards\) => ipcRenderer\.invoke\('phom:play-action', \{ runId, action, cards: Array\.isArray\(cards\) \? cards : \[\] \}\)/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /tab\('SETUP', 'Profile'\), tab\('PHOM', 'Phỏm'\), tab\('PLAY', 'Đánh bài'\)/);
   assert.match(ui, /else if \(activeTab === 'PLAY'\) renderPlay\(content\);/);
   const bar = ui.slice(ui.indexOf('function playBar('), ui.indexOf('async function onPlayAction('));
-  for (const a of ['BOC', 'AN', 'DANH', 'HA', 'GUI']) assert.match(bar, new RegExp("btn\\('" + a + "', "), a);
+  for (const a of ['BOC', 'AN', 'DANH', 'HA', 'GUI', 'BAO_U']) assert.match(bar, new RegExp("btn\\('" + a + "', "), a);
   const lb = ui.slice(ui.indexOf('function safeCardsFor('), ui.indexOf('// ================= ĐÁNH BÀI tab'));
   assert.equal(/playBar|playPick|onclick/.test(lb), false, 'no buttons / picking inside LỌC BÀI');
   const play = ui.slice(ui.indexOf('function renderPlay('), ui.indexOf('function playBar('));
-  assert.match(play, /el\('section', \{ class: 'play-panel' \}, tabs, body, runId \? playBar\(runId, picked\) : null\)/, 'the bar is a row of its own, under the hand');
+  assert.match(play, /el\('section', \{ class: 'play-panel' \}, tabs, body, runId \? playBar\(runId, picked, help\) : null\)/, 'the bar is a row of its own, under the hand');
   const css = read('ui-phom/phom-qa.css');
   assert.match(css, /\.play-body \{ flex: 1 1 auto; min-height: 0; overflow: auto;/);
   assert.match(css, /\.play-bar \{ flex: 0 0 auto;/);
@@ -128,4 +128,60 @@ test('ĐÁNH BÀI: the hand comes from the card snapshot of that slot, sorted, p
   assert.deepEqual(h.cards.map((c) => c.code), [4, 17, 30]);
   assert.deepEqual([...h.meld], [4, 17]);
   assert.equal(handOf(snap)('B1'), null);
+});
+
+// ---- B3–B5: the check before a press with picked cards + the help in the ui snapshot ----
+const help = require('../../desktop/protocol/phom/phom-play-help.cjs');
+const { encodeCard } = require('../../desktop/protocol/phom/card-codec.cjs');
+const cc = (r, s) => encodeCard(r, s);
+function tableSnap() {
+  const mine = [cc(1, 0), cc(1, 1), cc(1, 2), cc(5, 3), cc(12, 3), cc(8, 2)]; // 2♠ 2♣ 2♦ 6♥ K♥ 9♦
+  return {
+    nextOf: { A: 'B', B: 'C', C: 'A' }, roundPlayers: ['A', 'B', 'C'], slotBinding: { B2: 'B' },
+    players: {
+      A: { uid: 'A', seat: 0, currentCards: [], melds: [{ meid: 3, cards: [cc(2, 3), cc(3, 3), cc(4, 3)] }], serverMeldCards: [] },
+      B: { uid: 'B', seat: 1, currentCards: mine, currentCardsSource: 'DRAW', controlled: true, melds: [], serverMeldCards: [] },
+      C: { uid: 'C', seat: 2, currentCards: [], melds: [], serverMeldCards: [] },
+    },
+    ledger: mine.map((code) => ({ code, status: 'CURRENT', ownerUid: 'B' })), eats: [{ card: cc(8, 2), eaterUid: 'B' }], observedDiscardEvents: [],
+  };
+}
+
+test('check before a press: Hạ needs exact phỏm, Gửi needs a laid phỏm to fit, Đánh never an eaten card', () => {
+  const s = tableSnap();
+  assert.equal(help.checkPlay(s, 'B', 'HA', [cc(1, 0), cc(1, 1), cc(1, 2)]).ok, true);
+  assert.match(help.checkPlay(s, 'B', 'HA', [cc(1, 0), cc(1, 1), cc(12, 3)]).message, /chưa thành phỏm/);
+  assert.equal(help.checkPlay(s, 'B', 'GUI', [cc(5, 3)]).ok, true, '6♥ fits 3♥ 4♥ 5♥');
+  assert.match(help.checkPlay(s, 'B', 'GUI', [cc(12, 3)]).message, /K♥ không gửi được/);
+  assert.match(help.checkPlay(s, 'B', 'DANH', [cc(8, 2)]).message, /đã ăn/);
+  assert.match(help.checkPlay(s, 'B', 'DANH', [cc(0, 0)]).message, /không còn trên tay/);
+  assert.equal(help.checkPlay(s, 'B', 'HA', []).ok, true, 'nothing picked → the game decides');
+});
+
+test('feature: a failed check refuses before anything reaches the page', async () => {
+  let evaluated = 0;
+  const client = { Runtime: { evaluate: async () => { evaluated++; return { result: { value: { ok: true } } }; } } };
+  const f = createPlayActionsFeature({ clientFor: () => client, precheck: () => ({ ok: false, message: 'Các lá đã chọn chưa thành phỏm' }) });
+  const r = await f.act('BR-1', { action: 'HA', cards: [1, 2, 3] });
+  assert.deepEqual(r.error, { code: 'PHOM_PLAY_PRECHECK', message: 'Các lá đã chọn chưa thành phỏm' });
+  assert.equal(evaluated, 0);
+});
+
+test('playHelp: one object per account for the tab (ranking, recommended, points, hạ plan, ăn, gửi)', () => {
+  const h = help.playHelp(tableSnap(), 'B');
+  assert.deepEqual(Object.keys(h).sort(), ['ha', 'nextPlayerLabel', 'points', 'ranking', 'recommended', 'send', 'take']);
+  assert.equal(h.ranking.some((x) => x.code === cc(8, 2)), false, 'an eaten card is never offered');
+  assert.deepEqual(h.send.map((x) => x.label), ['6♥']);
+  assert.equal(help.playHelp(tableSnap(), 'Z'), null);
+});
+
+test('wiring: main puts the help in the ui snapshot and checks picked cards before a press; Ù is on the bar', () => {
+  const main = read('desktop/phom-main.cjs');
+  assert.match(main, /play\[slot\] = playHelp\.playHelp\(cards, uid\)/);
+  assert.match(main, /ok: true, browsers, cards, analyses, play,/);
+  assert.match(main, /return uid \? playHelp\.checkPlay\(phomSessions\.cardObserverSnapshot\(\), uid, action, cards\) : \{ ok: true \};/);
+  const ui = read('ui-phom/phom-qa.js');
+  assert.match(ui, /playBySlot = snap\.play \|\| \{\};/);
+  assert.match(ui, /btn\('BAO_U', 'Ù',/);
+  assert.match(ui, /'Chọn bộ hạ'/); assert.match(ui, /'Chọn lá gửi'/);
 });

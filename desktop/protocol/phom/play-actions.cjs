@@ -13,6 +13,7 @@
 //   DANH btnDanhBai → onBtnDanhBai  (requestPlayCard of the ONE selected card)
 //   HA   btnHaPhom  → onBtnHaPhom   (requestHaPhom of the selected cards)
 //   GUI  btnGuiBai  → onBtnGuiBai   (requestGuiBai of the selected cards)
+//   BAO_U btnBaoU   → onBtnBaoU     (requestBaoU — Ù)
 // Cards picked in the tool's ĐÁNH BÀI tab are selected first with the hand's own setListCardSelected([serverCode…])
 // (serverCode = the wire code) — exactly what tapping them in the game does; none picked = the game's own selection.
 // ---------------------------------------------------------------------------
@@ -23,6 +24,8 @@ const ACTIONS = Object.freeze({
   DANH: Object.freeze({ btn: 'btnDanhBai', handler: 'onBtnDanhBai', label: 'Đánh', maxCards: 1 }),
   HA: Object.freeze({ btn: 'btnHaPhom', handler: 'onBtnHaPhom', label: 'Hạ', maxCards: 10 }),
   GUI: Object.freeze({ btn: 'btnGuiBai', handler: 'onBtnGuiBai', label: 'Gửi', maxCards: 10 }),
+  // Ù — the game's own Báo Ù (it also presses it by itself for a 3-phỏm / 9-card hand); only while shown
+  BAO_U: Object.freeze({ btn: 'btnBaoU', handler: 'onBtnBaoU', label: 'Ù' }),
 });
 
 // → { ok, action, cards } or { ok:false, error }. cards: the picked wire codes ([] = the game's own selection)

@@ -172,4 +172,31 @@ function sendTargets(snap, uid) {
   return out;
 }
 
-module.exports = { TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, takeInfo, sendTargets, prevOf };
+// Before a press with cards picked in the tool: refuse what the game would refuse anyway, with a plain reason.
+//   HẠ — the picked cards split exactly into phỏm · GỬI — every picked card fits a laid phỏm · ĐÁNH — not a card it ate
+function checkPlay(snap, uid, action, cards) {
+  const picked = (cards || []).filter(isValidCardCode);
+  if (!picked.length) return { ok: true };
+  const hand = handOf(snap, uid);
+  if (!hand) return { ok: true }; // nothing observed yet — the game decides
+  const missing = picked.filter((c) => !hand.includes(c));
+  if (missing.length) return { ok: false, message: 'Lá ' + missing.map((c) => view(c).label).join(' ') + ' không còn trên tay' };
+  if (action === 'HA' && !arrangements(picked).some((a) => !a.loose.length && a.melds.length)) return { ok: false, message: 'Các lá đã chọn chưa thành phỏm (mỗi phỏm 3–4 lá cùng số, hoặc 3+ lá liền nhau cùng chất)' };
+  if (action === 'GUI') {
+    const fits = new Set(sendTargets(snap, uid).map((x) => x.code));
+    const no = picked.filter((c) => !fits.has(c));
+    if (no.length) return { ok: false, message: 'Lá ' + no.map((c) => view(c).label).join(' ') + ' không gửi được vào phỏm nào trên bàn' };
+  }
+  if (action === 'DANH' && eatenBy(snap, uid).has(picked[0])) return { ok: false, message: 'Lá đã ăn phải nằm trong phỏm — không đánh được' };
+  return { ok: true };
+}
+
+// Everything the ĐÁNH BÀI tab shows for one account (null before its hand is seen).
+function playHelp(snap, uid) {
+  if (!snap || uid == null || !handOf(snap, uid)) return null;
+  const d = discardRanking(snap, uid);
+  return { ranking: d.ranking, recommended: d.recommended || null, points: d.points, nextPlayerLabel: d.nextPlayerLabel || null, ha: haPlan(snap, uid), take: takeInfo(snap, uid), send: sendTargets(snap, uid) };
+}
+
+module.exports = {
+  checkPlay, playHelp, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, takeInfo, sendTargets, prevOf };

@@ -43,6 +43,7 @@ const { createLoginOriginFeature } = require('./phom/features/login-origin.cjs')
 const { createHeaderFeature } = require('./phom/features/header.cjs');
 const { createWindowFramesFeature } = require('./phom/features/window-frames.cjs');
 const { createPlayActionsFeature } = require('./phom/features/play-actions.cjs');
+const playHelp = require('./protocol/phom/phom-play-help.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -611,7 +612,7 @@ else {
   // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
   // reads or receives exactly one object.
   function phomUiSnapshot() {
-    if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {} };
+    if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {}, play: {} };
     const browsers = phomSessions.manualBrowserSnapshot() || [];
     const shared = headerSharedRid();
     for (const b of browsers) {
@@ -626,8 +627,11 @@ else {
       const uid = binding[slot];
       if (uid) analyses[slot] = slotAnalyzers[slot].analyze({ snapshot: cards, targetPlayerUid: uid });
     }
+    // ĐÁNH BÀI tab: per account, from its OWN hand + public facts only (phom-play-help publicView)
+    const play = {};
+    for (const slot of ['B1', 'B2', 'B3']) { const uid = binding[slot]; if (uid) { try { play[slot] = playHelp.playHelp(cards, uid); } catch { play[slot] = null; } } }
     return {
-      ok: true, browsers, cards, analyses,
+      ok: true, browsers, cards, analyses, play,
       remaining: phomSessions.remainingCards(),
       sharedRid: phomSessions.sharedRid(), sharedRidOwner: phomSessions.sharedRidOwner(),
       coSeat: phomSessions.coSeatStatus(), group: phomSessions.groupSnapshot(),
@@ -781,7 +785,11 @@ else {
         _memoryFeature,
         _windowFeature,
         // Bốc / Ăn / Đánh / Hạ / Gửi from the tool — the game's own button, only while the game offers it
-        createPlayActionsFeature({ clientFor: runClientFor, log: headerLog }),
+        createPlayActionsFeature({ clientFor: runClientFor, log: headerLog, precheck: (rid, action, cards) => {
+          // picked cards checked against what the table shows (own hand + public facts only) — the game still decides
+          const uid = phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null;
+          return uid ? playHelp.checkPlay(phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
+        } }),
       ],
     });
     return _features;

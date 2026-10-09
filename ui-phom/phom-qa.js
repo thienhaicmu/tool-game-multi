@@ -54,6 +54,7 @@
   let playTab = 'B1';
   let playPinned = false;
   let playPick = { runId: null, codes: [] };
+  let playBySlot = {}; // main's ĐÁNH BÀI help per slot (own hand + public facts only)
   const playBusy = {}; // runId → a play action in flight
   // the pure parts, loaded before this file (ui-kit.js · ui-cards.js · ui-notices.js)
   const { el, $, icon, iconButton, playerLabel, money, errText, note, noteText, openDialog, ringBell } = window.PhomUI;
@@ -628,13 +629,24 @@
   //   Bốc · Ăn — no card · Đánh — exactly one picked card (none = the card selected in the game window)
   //   Hạ · Gửi — the picked cards (none = the cards selected in the game window)
   // A button only works while the game is showing it in that browser; the tool never decides a move.
+  // The hand of one slot from the card snapshot (cards laid on the table / sent are not in the hand any more)
   function handOf(slot) {
     const uid = cardsSnap && cardsSnap.slotBinding ? cardsSnap.slotBinding[slot] : null;
     const p = uid && cardsSnap.players ? cardsSnap.players[uid] : null;
     if (!p) return null;
+    const laid = new Set((p.melds || []).flatMap((m) => m.cards || []).map(Number));
     const meld = new Set((p.serverMeldCards || []).map(Number));
-    return { cards: (p.currentCardsView || []).slice().sort((a, b) => a.code - b.code), meld, laid: p.melds || [] };
+    return { cards: (p.currentCardsView || []).filter((c) => !laid.has(Number(c.code))).sort((a, b) => a.code - b.code), meld, laid: p.melds || [] };
   }
+  // who a uid is at the table: our P1/P2/P3, else the name the table shows, else "Acc lạ"
+  function nameOfUid(uid) {
+    const b = cardsSnap && cardsSnap.slotBinding ? Object.entries(cardsSnap.slotBinding).find(([, u]) => String(u) === String(uid)) : null;
+    if (b) return 'P' + (['B1', 'B2', 'B3'].indexOf(b[0]) + 1);
+    const p = cardsSnap && cardsSnap.players ? cardsSnap.players[uid] : null;
+    return (p && p.name) || 'Acc lạ';
+  }
+  const labels = (cards) => (cards || []).map((x) => x.label).join(' ');
+  const TIER_CLASS = ['t-safe', 't-likely', 't-risk'];
   function renderPlay(r) {
     const turn = turnSlot();
     if (safeFollowTurn && turn && !playPinned) playTab = turn;
@@ -649,43 +661,74 @@
     });
     const runId = assign[SLOTS[['B1', 'B2', 'B3'].indexOf(playTab)]].runId;
     const hand = handOf(playTab);
+    const help = playBySlot[playTab] || null;
     const picked = playPick.runId === runId ? playPick.codes : [];
     const body = el('div', { class: 'play-body' });
     if (!runId) body.appendChild(el('div', { class: 'safe-empty' }, 'Ô này chưa có trình duyệt'));
     else if (!hand || !hand.cards.length) body.appendChild(el('div', { class: 'safe-empty' }, 'Chưa có bài — vào bàn và chia bài để chọn lá'));
     else {
+      // ---- TRÊN BÀN: the card the previous player just discarded to this account + the laid phỏm (public) ----
+      const t = help && help.take;
+      const table = el('div', { class: 'play-table' }, el('span', { class: 'g-label' }, 'Trên bàn'));
+      if (t && t.ok) {
+        table.appendChild(el('span', { class: 'take' + (t.canTake ? ' yes' : '') },
+          'Lá ' + nameOfUid(t.prevUid) + ' vừa đánh: ', el('b', null, t.card.label),
+          t.canTake ? ' — ăn được (' + labels(t.meld) + ')' + (t.pointsIfTaken != null ? ' · còn ' + t.pointsIfTaken + ' điểm' : '') : ' — không ghép được phỏm'));
+      } else table.appendChild(el('span', { class: 'muted' }, t && t.eaten ? 'Lá vừa đánh đã có người ăn' : 'Chưa có lá đánh cho acc này'));
+      const laid = [];
+      for (const [uid, p] of Object.entries((cardsSnap && cardsSnap.players) || {})) for (const m of (p.melds || [])) laid.push(el('span', { class: 'laid', title: 'Phỏm của ' + nameOfUid(uid) }, labels(m.cardsView || []) + ' · ' + nameOfUid(uid)));
+      if (laid.length) table.appendChild(el('span', { class: 'laid-list' }, ...laid));
+      body.appendChild(table);
+      // ---- BÀI TRÊN TAY: safety of every card (own hand + public facts only), the card to play, points ----
+      const tierOf = new Map(((help && help.ranking) || []).map((x) => [x.code, x]));
+      const rec = help && help.recommended;
       body.appendChild(el('div', { class: 'play-h' },
-        el('b', null, 'Bài trên tay · ' + hand.cards.length + ' lá'),
-        el('span', { class: 'muted' }, picked.length ? 'Đã chọn ' + picked.length + ' lá' : 'Bấm lá để chọn'),
+        el('b', null, 'Bài trên tay · ' + hand.cards.length + ' lá' + (help && help.points != null ? ' · ' + help.points + ' điểm' : '')),
+        rec ? el('span', { class: 'rec-line', title: rec.tierLabel + ' · đánh xong còn ' + rec.pointsLeft + ' điểm' }, 'Nên đánh: ', el('b', null, rec.label), ' (' + rec.tierLabel.toLowerCase() + ' · còn ' + rec.pointsLeft + ' điểm)') : null,
         el('span', { class: 'spacer' }),
+        picked.length ? el('span', { class: 'muted' }, 'Đã chọn ' + picked.length + ' lá') : null,
         picked.length ? el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId: null, codes: [] }; renderApp(); } }, 'Bỏ chọn') : null));
+      const sendable = new Map(((help && help.send) || []).map((x) => [x.code, x]));
       const row = el('div', { class: 'cards big play-hand' });
       for (const c of hand.cards) {
         const on = picked.includes(c.code);
-        const inPhom = hand.meld.has(Number(c.code));
-        row.appendChild(el('span', { class: 'card-face big ' + (c.color === 'red' ? 'red' : 'black') + (inPhom ? ' in-phom' : '') + (on ? ' picked' : ''), role: 'button',
-          title: (c.label || '') + (inPhom ? ' · trong phỏm' : '') + (on ? ' · đã chọn' : ''),
+        const info = tierOf.get(c.code);
+        const inPhom = hand.meld.has(Number(c.code)) || (info && info.breaksPhom);
+        const cls = ['card-face', 'big', c.color === 'red' ? 'red' : 'black', inPhom ? 'in-phom' : (info ? TIER_CLASS[info.tier] : ''), rec && rec.code === c.code ? 'recommended' : '', on ? 'picked' : ''].filter(Boolean).join(' ');
+        const tip = [c.label, inPhom ? 'trong phỏm' : (info ? info.tierLabel : ''), info ? 'đánh lá này còn ' + info.pointsLeft + ' điểm' : '', sendable.has(c.code) ? 'gửi được' : '', on ? 'đã chọn' : ''].filter(Boolean).join(' · ');
+        row.appendChild(el('span', { class: cls, role: 'button', title: tip,
           onclick: () => { const codes = on ? picked.filter((x) => x !== c.code) : picked.concat(c.code); playPick = { runId: codes.length ? runId : null, codes }; renderApp(); } },
-        el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
+        el('b', null, c.rank || '?'), el('span', null, c.suit || '?'), sendable.has(c.code) ? el('i', { class: 'send-tag', 'aria-label': 'gửi được' }, '↗') : null));
       }
       body.appendChild(row);
-      if (hand.meld.size) body.appendChild(el('div', { class: 'rem-legend' }, el('span', { class: 'lg lg-phom' }, 'viền tím = lá trong phỏm')));
-      if (hand.laid.length) body.appendChild(el('div', { class: 'play-laid' }, el('span', { class: 'g-label' }, 'Đã hạ'), ...hand.laid.map((m) => el('span', { class: 'laid' }, (m.cardsView || []).map((v) => v.label).join(' ')))));
+      body.appendChild(el('div', { class: 'rem-legend' },
+        el('span', { class: 'lg lg-safe' }, 'chắc chắn không bị ăn'), el('span', { class: 'lg lg-likely' }, 'có thể không bị ăn'), el('span', { class: 'lg lg-risk' }, 'có thể bị ăn'), el('span', { class: 'lg lg-phom' }, 'trong phỏm'), el('span', null, '↗ gửi được')));
+      // ---- gợi ý HẠ (fewest points, then the discard after it by the same order) + GỬI ----
+      const ha = help && help.ha;
+      if (ha && ha.ok) body.appendChild(el('div', { class: 'play-hint' }, el('span', { class: 'g-label' }, 'Gợi ý hạ'),
+        ...ha.melds.map((m) => el('span', { class: 'laid' }, labels(m))),
+        ha.discard ? el('span', { class: 'muted' }, 'rồi đánh ' + ha.discard.label + ' (' + ha.discard.tierLabel.toLowerCase() + ') · còn ' + ha.pointsLeft + ' điểm') : el('span', { class: 'muted' }, 'hết bài rác'),
+        el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId, codes: ha.cards.slice() }; renderApp(); } }, 'Chọn bộ hạ')));
+      if (sendable.size) body.appendChild(el('div', { class: 'play-hint' }, el('span', { class: 'g-label' }, 'Gửi được'),
+        ...[...sendable.values()].map((x) => el('span', { class: 'laid' }, x.label + ' → ' + x.into.map((m) => labels(m.cards) + ' (' + nameOfUid(m.owner) + ')').join(' / '))),
+        el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId, codes: [...sendable.keys()] }; renderApp(); } }, 'Chọn lá gửi')));
     }
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
-    r.appendChild(el('section', { class: 'play-panel' }, tabs, body, runId ? playBar(runId, picked) : null));
+    r.appendChild(el('section', { class: 'play-panel' }, tabs, body, runId ? playBar(runId, picked, help) : null));
   }
-  function playBar(runId, picked) {
+  function playBar(runId, picked, help) {
     const busy = !!playBusy[runId];
     const n = picked.length;
+    const take = help && help.take && help.take.ok ? help.take.card.label : '';
     const btn = (action, label, tip, disabled) => el('button', { class: 'btn play-btn' + (action === 'DANH' ? ' danh' : ''), title: tip, disabled: busy || disabled ? 'disabled' : null,
       onclick: () => onPlayAction(runId, action, ['DANH', 'HA', 'GUI'].includes(action) ? picked : []) }, label);
     return el('div', { class: 'play-bar', role: 'group', 'aria-label': 'Thao tác ván' },
       btn('BOC', 'Bốc', 'Bốc bài (nút Bốc của game)', false),
-      btn('AN', 'Ăn', 'Ăn lá vừa đánh (nút Ăn của game)', false),
+      btn('AN', take ? 'Ăn ' + take : 'Ăn', 'Ăn lá vừa đánh (nút Ăn của game)', false),
       btn('DANH', n === 1 ? 'Đánh lá đã chọn' : 'Đánh', n > 1 ? 'Chỉ được đánh một lá — bỏ bớt lá đã chọn' : n === 1 ? 'Đánh lá đã chọn' : 'Đánh lá đang chọn trong game', n > 1),
       btn('HA', n ? 'Hạ ' + n + ' lá' : 'Hạ', n ? 'Hạ phỏm các lá đã chọn' : 'Hạ phỏm — các lá đang chọn trong game', false),
-      btn('GUI', n ? 'Gửi ' + n + ' lá' : 'Gửi', n ? 'Gửi các lá đã chọn' : 'Gửi bài — các lá đang chọn trong game', false));
+      btn('GUI', n ? 'Gửi ' + n + ' lá' : 'Gửi', n ? 'Gửi các lá đã chọn' : 'Gửi bài — các lá đang chọn trong game', false),
+      btn('BAO_U', 'Ù', 'Báo Ù (nút Ù của game — chỉ khi game hiện nút)', false));
   }
   async function onPlayAction(runId, action, cards) {
     if (!api.playAction || playBusy[runId]) return;
@@ -1031,13 +1074,14 @@
     applyUiSnapshot(snap);
   }
   function applyUiSnapshot(snap) {
-    if (!snap) { manualBrowsers = []; coSeat = null; manualGroup = null; remaining = null; cardsSnap = null; safeBySlot = {}; sharedRid = null; return; }
+    if (!snap) { manualBrowsers = []; coSeat = null; manualGroup = null; remaining = null; cardsSnap = null; safeBySlot = {}; playBySlot = {}; sharedRid = null; return; }
     manualBrowsers = snap.browsers || [];
     coSeat = snap.coSeat || null;
     manualGroup = snap.group || null;
     remaining = snap.remaining || null;
     cardsSnap = snap.cards || null;
     safeBySlot = snap.analyses || {};
+    playBySlot = snap.play || {};
     sharedRid = snap.sharedRid != null ? snap.sharedRid : null;
     reconcileEnterStates();
   }
