@@ -185,3 +185,13 @@ test('wiring: main puts the help in the ui snapshot and checks picked cards befo
   assert.match(ui, /btn\('BAO_U', 'Ù',/);
   assert.match(ui, /'Chọn bộ hạ'/); assert.match(ui, /'Chọn lá gửi'/);
 });
+
+test('GỢI Ý ĐÁNH: the loose cards in two groups — chắc chắn không bị ăn, có thể không bị ăn — a click picks one', () => {
+  const ui = read('ui-phom/phom-qa.js');
+  const play = ui.slice(ui.indexOf('function renderPlay('), ui.indexOf('function playBar('));
+  assert.match(play, /const loose = \(\(help && help\.ranking\) \|\| \[\]\)\.filter\(\(x\) => !x\.breaksPhom\);/);
+  assert.match(play, /group\(0, 'Chắc chắn không bị ăn'\), group\(1, 'Có thể không bị ăn'\)/);
+  assert.match(play, /onclick: \(\) => \{ playPick = \{ runId, codes: \[x\.code\] \}; renderApp\(\); \}/);
+  assert.match(play, /lá ít rủi ro nhất: /, 'no safe card → says so and names the least risky one');
+  assert.ok(read('ui-phom/phom-qa.css').includes('.play-sug {'));
+});

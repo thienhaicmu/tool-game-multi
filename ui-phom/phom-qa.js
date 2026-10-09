@@ -703,6 +703,19 @@
       body.appendChild(row);
       body.appendChild(el('div', { class: 'rem-legend' },
         el('span', { class: 'lg lg-safe' }, 'chắc chắn không bị ăn'), el('span', { class: 'lg lg-likely' }, 'có thể không bị ăn'), el('span', { class: 'lg lg-risk' }, 'có thể bị ăn'), el('span', { class: 'lg lg-phom' }, 'trong phỏm'), el('span', null, '↗ gửi được')));
+      // ---- GỢI Ý ĐÁNH: the loose cards by the user's order — chắc chắn không bị ăn, then có thể không bị ăn (each
+      // group already sorted by the fewest points left); a click picks that card for Đánh ----
+      const loose = ((help && help.ranking) || []).filter((x) => !x.breaksPhom);
+      const pickOne = (x) => el('span', { class: 'card-face ' + (x.color === 'red' ? 'red' : 'black') + ' ' + TIER_CLASS[x.tier] + (picked.length === 1 && picked[0] === x.code ? ' picked' : ''), role: 'button',
+        title: x.tierLabel + ' · đánh lá này còn ' + x.pointsLeft + ' điểm · bấm để chọn', onclick: () => { playPick = { runId, codes: [x.code] }; renderApp(); } },
+      el('b', null, x.rank || '?'), el('span', null, x.suit || '?'));
+      const group = (tier, label) => { const xs = loose.filter((x) => x.tier === tier); return xs.length ? el('div', { class: 'sug-row ' + TIER_CLASS[tier] }, el('span', { class: 'g-label' }, label + ' (' + xs.length + ')'), el('div', { class: 'cards' }, ...xs.map(pickOne))) : null; };
+      const sug = el('div', { class: 'play-sug' }, el('span', { class: 'g-label sug-title' }, 'Gợi ý đánh'),
+        group(0, 'Chắc chắn không bị ăn'), group(1, 'Có thể không bị ăn'));
+      if (!loose.some((x) => x.tier <= 1)) sug.appendChild(el('div', { class: 'muted sug-none' }, loose.length
+        ? 'Chưa có lá nào chắc chắn / có thể không bị ăn — lá ít rủi ro nhất: ' + loose[0].label + ' (còn ' + loose[0].pointsLeft + ' điểm)'
+        : 'Không còn lá rác — mọi lá đều trong phỏm'));
+      body.appendChild(sug);
       // ---- gợi ý HẠ (fewest points, then the discard after it by the same order) + GỬI ----
       const ha = help && help.ha;
       if (ha && ha.ok) body.appendChild(el('div', { class: 'play-hint' }, el('span', { class: 'g-label' }, 'Gợi ý hạ'),
