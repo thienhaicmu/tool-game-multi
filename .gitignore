@@ -26,8 +26,7 @@ release2/
 release3/
 release4/
 release5/
-tools/license-generator/private/
-tools/license-generator/private*
+tools/license-generator/private/*
 tools/private/
 tools/private*
 *.private.pem
@@ -36,6 +35,12 @@ tools/private*
 *service-account*.json
 aviator-license-management-*.json
 google-service-account.json
+# EXCEPTION (owner's choice, private repo): embed the generator's signing keys + service account so a clone runs the
+# generator out of the box. Only these exact files under license-generator/private/; everything else there stays out.
+!tools/license-generator/private/phom-ed25519-private.pem
+!tools/license-generator/private/phom-ed25519-public.pem
+!tools/license-generator/private/wvpt-ed25519-private.pem
+!tools/license-generator/private/wvpt-ed25519-public.pem
 # Issued license assignments / generated license artifacts (seller-side, sensitive)
 tools/assign_*.json
 *.rar
