@@ -218,6 +218,12 @@ button.stat:disabled { opacity: 1; }
 .g-unknown .card-face { background: var(--panel-2); }
 .g-own .card-face { border-style: dashed; border-color: #9db8f2; }
 .card-face.recommended { border: 2px solid var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
+/* Bốc / Ăn / Đánh / Hạ / Gửi — the game's own buttons, pressed from the tool; a LỌC BÀI card is picked for Đánh */
+.play-bar { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; }
+.play-btn { height: 26px; padding: 0 9px; font-size: 12px; }
+.play-btn.danh { border-color: var(--primary); color: var(--primary); }
+.card-face[role="button"] { cursor: pointer; }
+.card-face.picked { transform: translateY(-4px); border: 2px solid var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .18); }
 
 @media (max-width: 640px) {
   .players { grid-template-columns: 1fr; }

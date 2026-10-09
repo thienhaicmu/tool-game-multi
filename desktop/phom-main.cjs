@@ -42,6 +42,7 @@ const { createEnterGameFeature } = require('./phom/features/enter-game.cjs');
 const { createLoginOriginFeature } = require('./phom/features/login-origin.cjs');
 const { createHeaderFeature } = require('./phom/features/header.cjs');
 const { createWindowFramesFeature } = require('./phom/features/window-frames.cjs');
+const { createPlayActionsFeature } = require('./phom/features/play-actions.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -779,6 +780,8 @@ else {
         createProxyAuthFeature({ bindProxyAuth, resolvePassword: (id) => (proxyConfigStore ? proxyConfigStore.resolvePassword(id) : null), log: headerLog, onAuthFailure: (run, code) => send('phom:proxy-auth', { runId: run.id, code }) }),
         _memoryFeature,
         _windowFeature,
+        // Bốc / Ăn / Đánh / Hạ / Gửi from the tool — the game's own button, only while the game offers it
+        createPlayActionsFeature({ clientFor: runClientFor, log: headerLog }),
       ],
     });
     return _features;

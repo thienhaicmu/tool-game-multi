@@ -42,6 +42,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   closeBrowser: (browserId) => ipcRenderer.invoke('phom:close-browser', { browserId }),
   // VÀO GAME PHỎM — the verified `vgcg_8` entry action via the site's own Cocos node
   enterGame: (runId) => ipcRenderer.invoke('phom:enter-game', runId),
+  // Bốc / Ăn / Đánh / Hạ / Gửi — one click, the game's own button (card = the one card to play, Đánh only)
+  playAction: (runId, action, card) => ipcRenderer.invoke('phom:play-action', { runId, action, card: card == null ? null : card }),
   // the Phỏm session: observe the three runs, group actions, one snapshot for the whole screen
   startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
   sessionState: () => ipcRenderer.invoke('phom:session-state'),
