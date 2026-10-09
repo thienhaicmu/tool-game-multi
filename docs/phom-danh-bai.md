@@ -148,17 +148,12 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | Bàn < 4 người: cách đếm lượt dựa trên số lá đã đánh — cần kiểm chứng | mở |
 | Tự đánh (§7) trong ván thật: đủ Đ1–Đ4, Ù, tự tắt khi có người ngoài tool | **CHƯA** |
 | Nút Hạ của game hiện lúc nào (chỉ lượt cuối?) — tự đánh đang dựa vào đếm lượt của tool | mở |
-
-**Ngoài phạm vi (đã quyết):** tự đánh ở ván có người chơi ngoài tool; dùng bài kín của acc khác trong gợi ý tab Đánh bài.
-
 ## 7. Tự đánh (từng acc)
 
 Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bật riêng cho **từng acc** (P1/P2/P3). Mặc định tắt.
 
 | Quy tắc | Nội dung |
 |---|---|
-| Chỉ bàn toàn acc tool | Chỉ chạy khi **mọi người chơi trong ván** (`roundPlayers` = `lpi` của gói 850) là acc của tool: P1/P2/P3 **và acc dự bị** (P4/P5) của phiên (`toolUids`). Có người ngoài tool trong ván ⇒ không bật được; đang chạy thì **tự tắt** trước khi bấm. Acc phải là người chơi của **chính ván đó**: game hiện nút cho acc mà acc không có trong `lpi` (acc đang ở bàn khác — Dò Key / Tạo / vào tay) ⇒ tự tắt, kể cả nút Ù. Công tắc gắn theo **trình duyệt**: sau ĐỔI, tab P1 là trình duyệt dự bị (công tắc riêng, tắt sẵn). |
-| Đúng kịch bản | Nước đi = gợi ý của tab (§2), cùng ranh giới thông tin (bài của chính acc + công khai): Ù nếu game hiện nút Ù → **Ăn** nếu lá vừa đánh ghép được phỏm, không thì **Bốc** → lượt 1–3 **Đánh** lá "Nên đánh" → lượt cuối **① Hạ** bộ trong Gợi ý lượt hạ → **② Gửi** các lá gửi được **ngay** (gửi nối tiếp ở lần bấm sau) → **③ Đánh** lá còn lại an toàn nhất. Móm (không có phỏm) ⇒ chỉ đánh. |
 | Quyền key | Chỉ key PHOM có tích **"Cho dùng Tự đánh"** ở Generator (ký trong `features.autoRun`) mới bật được. Key ký trước khi có ô này ⇒ không có quyền (cấp key mới). Không có quyền ⇒ công tắc khoá + "Key chưa có quyền Tự đánh"; main cũng từ chối (`PHOM_AUTO_PLAY_NOT_LICENSED`); đang chạy mà mất quyền (đổi key) ⇒ tự tắt. Dev bypass: được dùng. |
 | Bấm như người | Đọc nút game đang hiện (chỉ đọc), rồi bấm qua đúng đường của nút trên tool (`checkPlay`, một thao tác một lúc). Một nước chỉ bấm khi đã giữ nguyên ≥ 0,9 giây (chờ bàn cập nhật) và không bấm lại cùng một nước khi **những gì nước đó phụ thuộc** chưa đổi (`stateKey`: bài/phỏm/lá đánh/lá gửi của chính acc + lá trên bàn + lá bị ăn — gói tin bài riêng của 2 acc kia không tính, nên không bấm lặp và không thử lại Ăn đã bị từ chối). |
 | 3 acc cùng bật | Mỗi lượt kiểm tra các acc **song song**; mỗi lần gọi trang có giới hạn 5 giây (một trình duyệt treo không giữ 2 acc còn lại, nút không bị kẹt "đang thực hiện"). Acc đang Tự đánh thì nút bấm tay trên tool của acc đó bị từ chối (`PHOM_PLAY_AUTO_ON`) — tắt Tự đánh trước khi bấm tay. |
