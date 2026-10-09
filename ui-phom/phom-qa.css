@@ -268,6 +268,12 @@ button.stat:disabled { opacity: 1; }
 .play-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--panel-2); }
 .play-btn { height: 30px; padding: 0 14px; font-size: 13px; }
 .play-btn.danh { border-color: var(--primary); color: var(--primary); }
+/* TỰ ĐÁNH — the switch at the end of the bar + what it is doing / why it stopped */
+.play-bar .auto-play { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+.play-bar .auto-play .switch { height: 30px; }
+.auto-play-msg { font-size: 12px; max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.auto-play-msg.off { color: var(--warn, #b45309); }
+.safe-tab .auto-dot { font-size: 11px; font-weight: 800; color: var(--primary); border: 1px solid var(--info-line); background: var(--info-bg); border-radius: 999px; padding: 0 6px; }
 
 @media (max-width: 640px) {
   .players { grid-template-columns: 1fr; }

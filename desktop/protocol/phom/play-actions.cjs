@@ -70,4 +70,26 @@ function buildPlayActionScript({ action, cards = [] }) {
 })()`;
 }
 
-module.exports = { ACTIONS, validatePlayAction, buildPlayActionScript };
+// Which of the buttons above the game is offering right now (shown + interactable) → { ok, atTable, offered: ['BOC', …] }.
+// Read-only — TỰ ĐÁNH asks this before choosing a step. Never throws.
+function buildOfferedScript() {
+  const B = JSON.stringify(Object.fromEntries(Object.entries(ACTIONS).map(([k, v]) => [k, v.btn])));
+  return `(() => {
+  try {
+    const B = ${B};
+    const cc = window.cc;
+    const scene = cc && cc.director && cc.director.getScene && cc.director.getScene();
+    const c = scene && scene.getComponentInChildren ? scene.getComponentInChildren('PhomController') : null;
+    if (!c) return { ok: true, atTable: false, offered: [] };
+    const offered = [];
+    for (const k of Object.keys(B)) {
+      const node = c[B[k]];
+      const button = node && node.getComponent && cc.Button ? node.getComponent(cc.Button) : null;
+      if (node && node.activeInHierarchy && !(button && button.interactable === false)) offered.push(k);
+    }
+    return { ok: true, atTable: true, offered };
+  } catch (e) { return { ok: false, code: 'PHOM_PLAY_PAGE_ERROR', message: String((e && e.message) || e).slice(0, 200) }; }
+})()`;
+}
+
+module.exports = { ACTIONS, validatePlayAction, buildPlayActionScript, buildOfferedScript };

@@ -43,6 +43,7 @@ const { createLoginOriginFeature } = require('./phom/features/login-origin.cjs')
 const { createHeaderFeature } = require('./phom/features/header.cjs');
 const { createWindowFramesFeature } = require('./phom/features/window-frames.cjs');
 const { createPlayActionsFeature } = require('./phom/features/play-actions.cjs');
+const { createAutoPlayFeature } = require('./phom/features/auto-play.cjs');
 const playHelp = require('./protocol/phom/phom-play-help.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -280,7 +281,7 @@ else {
     // §9 lag fix — coalesce the per-frame 'update'/'hands' storm (leading+trailing throttle). pushHeaderStates
     // dedupes unchanged states so steady-state WS traffic costs ~0 CDP evaluates.
     phomSessions.on('update', (snap) => { scheduleSessionBroadcast(snap); });
-    phomSessions.on('cards', (cards) => { scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
+    phomSessions.on('cards', (cards) => { if (_autoPlayFeature) _autoPlayFeature.cardsChanged(); scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
 
     phomSessions.on('kick', (k) => send('phom:kick', k));
     // docs/phom-kich-ban.md — what the group flow just did (created, joined, kicked, table lost, rejoined…).
@@ -612,7 +613,7 @@ else {
   // payload once — the analyzer is memoised by content, so an unchanged round costs nothing — and the renderer
   // reads or receives exactly one object.
   function phomUiSnapshot() {
-    if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {}, play: {} };
+    if (!phomSessions || !phomSessions.active()) return { ok: true, browsers: [], sharedRid: null, sharedRidOwner: null, coSeat: null, group: null, remaining: null, cards: null, analyses: {}, play: {}, autoPlay: {} };
     const browsers = phomSessions.manualBrowserSnapshot() || [];
     const shared = headerSharedRid();
     for (const b of browsers) {
@@ -632,6 +633,7 @@ else {
     for (const slot of ['B1', 'B2', 'B3']) { const uid = binding[slot]; if (uid) { try { play[slot] = playHelp.playHelp(cards, uid); } catch { play[slot] = null; } } }
     return {
       ok: true, browsers, cards, analyses, play,
+      autoPlay: _autoPlayFeature ? _autoPlayFeature.status() : {}, // TỰ ĐÁNH per runId: { on, message }
       remaining: phomSessions.remainingCards(),
       sharedRid: phomSessions.sharedRid(), sharedRidOwner: phomSessions.sharedRidOwner(),
       coSeat: phomSessions.coSeatStatus(), group: phomSessions.groupSnapshot(),
@@ -695,6 +697,7 @@ else {
   // ---- 3.2 features: what the tool does to a browser, one module each (desktop/phom/features) ----
   // Built on first use (they reference functions declared further down). PHOM_FEATURES_OFF=<id,…> switches any off.
   let _features = null; let _memoryFeature = null; let _anDanhFeature = null; let _enterFeature = null; let _headerFeature = null; let _windowFeature = null;
+  let _playFeature = null; let _autoPlayFeature = null;
   const enterFeature = () => (features(), _enterFeature);
   const headerFeature = () => (features(), _headerFeature);
   const windows = () => (features(), _windowFeature);
@@ -767,6 +770,23 @@ else {
       pageClients: () => (runManager ? runManager.list() : []).filter((r) => r.status !== RUN_STATUS.CLOSED).map((r) => ({ runId: r.id, client: runClientFor(r.id) })).filter((x) => x.client),
       log: headerLog,
     });
+    // Bốc / Ăn / Đánh / Hạ / Gửi from the tool — the game's own button, only while the game offers it
+    _playFeature = createPlayActionsFeature({ clientFor: runClientFor, log: headerLog, precheck: (rid, action, cards) => {
+      // picked cards checked against what the table shows (own hand + public facts only) — the game still decides
+      const uid = phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null;
+      return uid ? playHelp.checkPlay(phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
+    } });
+    // TỰ ĐÁNH — per account, switched on by the user, only while every player of the round is one of ours
+    // (docs/phom-danh-bai.md §7); every press goes through the play-actions feature above
+    _autoPlayFeature = createAutoPlayFeature({
+      act: (rid, input) => (features().enabled('play-actions') ? _playFeature.act(rid, input) : { ok: false, error: { code: 'PHOM_FEATURE_OFF', message: 'Nút đánh bài đang tắt (PHOM_FEATURES_OFF)' } }),
+      clientFor: runClientFor,
+      snapshot: () => (phomSessions && phomSessions.active() ? phomSessions.cardObserverSnapshot() : {}),
+      uidOf: (rid) => (phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null),
+      toolUids: () => (phomSessions && phomSessions.active() ? phomSessions.toolUids() : []), // P1–P3 + reserves = ours
+      log: headerLog,
+      refresh: () => scheduleCardsBroadcast(true),
+    });
     _features = createFeatureSet({
       log: headerLog,
       // ORDER MATTERS: the send hook before the game opens its socket; header + an-danh new-document scripts before
@@ -784,12 +804,8 @@ else {
         createProxyAuthFeature({ bindProxyAuth, resolvePassword: (id) => (proxyConfigStore ? proxyConfigStore.resolvePassword(id) : null), log: headerLog, onAuthFailure: (run, code) => send('phom:proxy-auth', { runId: run.id, code }) }),
         _memoryFeature,
         _windowFeature,
-        // Bốc / Ăn / Đánh / Hạ / Gửi from the tool — the game's own button, only while the game offers it
-        createPlayActionsFeature({ clientFor: runClientFor, log: headerLog, precheck: (rid, action, cards) => {
-          // picked cards checked against what the table shows (own hand + public facts only) — the game still decides
-          const uid = phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null;
-          return uid ? playHelp.checkPlay(phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
-        } }),
+        _playFeature,
+        _autoPlayFeature,
       ],
     });
     return _features;

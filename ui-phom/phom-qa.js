@@ -56,6 +56,7 @@
   let playPick = { runId: null, codes: [] };
   let playBySlot = {}; // main's ĐÁNH BÀI help per slot (own hand + public facts only)
   const playBusy = {}; // runId → a play action in flight
+  let autoPlayByRun = {}; // TỰ ĐÁNH per runId from main: { on, message }
   // the pure parts, loaded before this file (ui-kit.js · ui-cards.js · ui-notices.js)
   const { el, $, icon, iconButton, playerLabel, money, errText, note, noteText, openDialog, ringBell } = window.PhomUI;
   const { remainingPanel } = window.PhomUI;
@@ -184,6 +185,8 @@
     requestAnimationFrame(() => { _bgQueued = false; renderApp(); });
   }
   function renderKey() {
+    // ĐÁNH BÀI: the table, every account's help and TỰ ĐÁNH status (the doc: the help is recomputed on every change)
+    if (uiState === UI.CONTROL && activeTab === 'PLAY') return uiState + '|PLAY|' + manualBrowsers.length + '|' + (cardsSnap && cardsSnap.currentTurnUid) + '|' + JSON.stringify(playBySlot) + '|' + JSON.stringify(autoPlayByRun);
     if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + manualBrowsers.length;
     const g = manualGroup;
     const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.money, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.lastError && b.lastError.code].join(',')).join(';');
@@ -657,7 +660,8 @@
       tabs.appendChild(el('button', { class: 'safe-tab' + (playTab === sl ? ' active' : ''), role: 'tab', 'aria-selected': playTab === sl ? 'true' : 'false', style: '--accent:' + ACCENT[i],
         onclick: () => { playTab = sl; playPinned = !!(turn && turn !== sl); renderApp(); } },
         el('b', null, 'P' + (i + 1)), name ? el('span', { class: 'st-name' }, name) : null,
-        turn === sl ? el('span', { class: 'turn-dot', 'aria-label': 'đang tới lượt' }, '● lượt') : null));
+        turn === sl ? el('span', { class: 'turn-dot', 'aria-label': 'đang tới lượt' }, '● lượt') : null,
+        (autoPlayByRun[assign[SLOTS[i]].runId] || {}).on ? el('span', { class: 'auto-dot', title: 'Đang tự đánh' }, 'tự') : null));
     });
     const runId = assign[SLOTS[['B1', 'B2', 'B3'].indexOf(playTab)]].runId;
     const hand = handOf(playTab);
@@ -752,7 +756,27 @@
       btn('DANH', n === 1 ? 'Đánh lá đã chọn' : 'Đánh', n > 1 ? 'Chỉ được đánh một lá — bỏ bớt lá đã chọn' : n === 1 ? 'Đánh lá đã chọn' : 'Đánh lá đang chọn trong game', n > 1),
       btn('HA', n ? 'Hạ ' + n + ' lá' : 'Hạ', n ? 'Hạ phỏm các lá đã chọn' : 'Hạ phỏm — các lá đang chọn trong game', false),
       btn('GUI', n ? 'Gửi ' + n + ' lá' : 'Gửi', n ? 'Gửi các lá đã chọn' : 'Gửi bài — các lá đang chọn trong game', false),
-      btn('BAO_U', 'Ù', 'Báo Ù (nút Ù của game — chỉ khi game hiện nút)', false));
+      btn('BAO_U', 'Ù', 'Báo Ù (nút Ù của game — chỉ khi game hiện nút)', false),
+      autoPlaySwitch(runId));
+  }
+  // TỰ ĐÁNH for THIS account only (docs/phom-danh-bai.md §7): plays the scenario by itself while every player of the
+  // round is one of the tool's accounts; a player outside the tool switches it off. The line says what it does / why it stopped.
+  function autoPlaySwitch(runId) {
+    const a = autoPlayByRun[runId] || {};
+    const id = 'phq-autoplay-' + runId;
+    const box = el('input', { type: 'checkbox', id, onchange: (e) => onAutoPlayToggle(runId, e.target.checked) });
+    box.checked = !!a.on;
+    return el('span', { class: 'auto-play' },
+      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Chỉ chạy khi cả ván là acc của tool — có người ngoài thì tự tắt.' },
+        box, el('span', { class: 'knob' }), 'Tự đánh'),
+      a.message ? el('span', { class: 'muted auto-play-msg' + (a.on ? '' : ' off') }, a.message) : null);
+  }
+  async function onAutoPlayToggle(runId, on) {
+    if (!api.setAutoPlay) return;
+    let res; try { res = await api.setAutoPlay(runId, on); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    if (res && res.ok) autoPlayByRun = { ...autoPlayByRun, [runId]: res.status || { on: !!on, message: null } };
+    renderApp();
+    if (!(res && res.ok)) note((res && res.error && res.error.message) || errText(res), true);
   }
   async function onPlayAction(runId, action, cards) {
     if (!api.playAction || playBusy[runId]) return;
@@ -1098,7 +1122,7 @@
     applyUiSnapshot(snap);
   }
   function applyUiSnapshot(snap) {
-    if (!snap) { manualBrowsers = []; coSeat = null; manualGroup = null; remaining = null; cardsSnap = null; safeBySlot = {}; playBySlot = {}; sharedRid = null; return; }
+    if (!snap) { manualBrowsers = []; coSeat = null; manualGroup = null; remaining = null; cardsSnap = null; safeBySlot = {}; playBySlot = {}; autoPlayByRun = {}; sharedRid = null; return; }
     manualBrowsers = snap.browsers || [];
     coSeat = snap.coSeat || null;
     manualGroup = snap.group || null;
@@ -1106,6 +1130,7 @@
     cardsSnap = snap.cards || null;
     safeBySlot = snap.analyses || {};
     playBySlot = snap.play || {};
+    autoPlayByRun = snap.autoPlay || {};
     sharedRid = snap.sharedRid != null ? snap.sharedRid : null;
     reconcileEnterStates();
   }

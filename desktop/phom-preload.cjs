@@ -44,6 +44,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   enterGame: (runId) => ipcRenderer.invoke('phom:enter-game', runId),
   // Bốc / Ăn / Đánh / Hạ / Gửi — one click, the game's own button (cards = the wire codes picked in ĐÁNH BÀI)
   playAction: (runId, action, cards) => ipcRenderer.invoke('phom:play-action', { runId, action, cards: Array.isArray(cards) ? cards : [] }),
+  // TỰ ĐÁNH for one account (only while every player of the round is one of the tool's accounts)
+  setAutoPlay: (runId, on) => ipcRenderer.invoke('phom:auto-play', { runId, on: !!on }),
   // the Phỏm session: observe the three runs, group actions, one snapshot for the whole screen
   startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
   sessionState: () => ipcRenderer.invoke('phom:session-state'),

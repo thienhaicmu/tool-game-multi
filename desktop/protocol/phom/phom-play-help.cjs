@@ -187,6 +187,26 @@ function haPlan(snap, uid) {
   };
 }
 
+// GỬI → ĐÁNH after the phỏm are laid (the rest of the hạ turn): every loose card that fits a phỏm on the table is sent
+// (in a chain), the discard picked by the same order as haPlan — safety first, then the fewest points left.
+function finishPlan(snap, uid) {
+  const hand = handOf(snap, uid);
+  if (!hand || !hand.length) return { ok: false };
+  const { tier } = safetyOf(snap, uid);
+  const eaten = eatenBy(snap, uid);
+  const laid = laidOnTable(snap);
+  let best = null;
+  for (const d of hand.filter((c) => !eaten.has(c))) {
+    const chain = sendChain(hand.filter((c) => c !== d), laid);
+    const t = tier.has(d) ? tier.get(d) : TIER.OTHER;
+    const left = sumPoints(chain.rest);
+    if (!best || t < best.tier || (t === best.tier && (left < best.pointsLeft || (left === best.pointsLeft && chain.sent.length > best.send.length)))) best = { send: chain.sent, discard: d, tier: t, pointsLeft: left };
+  }
+  if (!best) return { ok: false };
+  return { ok: true, send: best.send.map((x) => ({ ...view(x.code), owner: x.owner, meid: x.meid, into: x.into.map(view) })), sendCards: best.send.map((x) => x.code),
+    discard: { ...view(best.discard), tier: best.tier, tierLabel: TIER_LABEL[best.tier] }, pointsLeft: best.pointsLeft };
+}
+
 // the player who plays right BEFORE uid (the one whose discard uid may eat), from the public turn order
 function prevOf(snap, uid) {
   for (const [a, b] of Object.entries(snap.nextOf || {})) if (String(b) === String(uid)) return String(a);
@@ -272,4 +292,4 @@ function playHelp(snap, uid) {
 }
 
 module.exports = {
-  checkPlay, playHelp, turnInfo, caPartners, sendChain, laidOnTable, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, takeInfo, sendTargets, prevOf };
+  checkPlay, playHelp, turnInfo, caPartners, sendChain, laidOnTable, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, finishPlan, takeInfo, sendTargets, prevOf, handOf, eatenBy };
