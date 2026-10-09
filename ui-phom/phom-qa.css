@@ -253,6 +253,9 @@ button.stat:disabled { opacity: 1; }
 .sug-row .card-face.t-safe { border-color: var(--good); } .sug-row .card-face.t-likely { border-color: #d97706; }
 .sug-row .card-face.picked { border: 2px solid var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .25); }
 .sug-none { font-size: 12px; }
+.sug-row .card-face { position: relative; }
+.ca-tag { position: absolute; bottom: -7px; left: 50%; transform: translateX(-50%); font-style: normal; font-size: 9.5px; font-weight: 700; padding: 0 3px; border-radius: 4px; background: #7c3aed; color: #fff; line-height: 13px; }
+.play-sug .sug-title { text-transform: none; letter-spacing: 0; }
 .play-body .rem-legend { flex: 0 0 auto; flex-wrap: wrap; } /* in a column, flex-basis 100% would be a full-height gap */
 .play-hand .card-face.picked { transform: translateY(-6px); border: 2px solid var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .25); }
 .play-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--panel-2); }

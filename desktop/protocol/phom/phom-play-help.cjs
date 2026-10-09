@@ -9,9 +9,10 @@
 //
 //   publicView(snap, uid)      the card snapshot as that account alone could know it
 //   bestArrangement(hand)      the phỏm split that leaves the fewest loose points (A = 1 … K = 13)
-//   discardRanking(snap, uid)  every card it may discard, ranked as the user asked (every turn, the last one too):
-//                                1. CHẮC CHẮN không bị ăn  2. CÓ THỂ không bị ăn  3. the rest
-//                              and only then the fewest points left — a safe card goes first even when it costs more
+//   discardRanking(snap, uid)  every card it may discard, ranked as the user asked, on every turn:
+//                                1. CHẮC CHẮN không bị ăn  2. CÓ THỂ không bị ăn  3. the rest (a safe card first even
+//                                when it costs more); before the last turn then a card in no live CẠ goes first (a
+//                                cạ is kept to become a phỏm); then the fewest points left. The LAST turn skips the cạ step.
 //   haPlan(snap, uid)          what to lay + the discard after it, by the same order
 //   takeInfo(snap, uid)        the card the player before it just discarded: can it be eaten (a phỏm with the hand)?
 //   sendTargets(snap, uid)     which hand cards fit which laid phỏm on the table (GỬI)
@@ -99,24 +100,60 @@ function handOf(snap, uid) {
 // a card that was EATEN by this account must stay in a phỏm — never a discard
 function eatenBy(snap, uid) { return new Set((snap.eats || []).filter((e) => String(e.eaterUid) === String(uid)).map((e) => e.card)); }
 
-// Loose cards first (in the user's order: tier, then points left); a card of the best phỏm split comes last —
-// discarding it breaks a phỏm ("phá phỏm"), as LỌC BÀI never offers it either.
-function rankDiscards(hand, tier, locked) {
-  const inMeld = new Set(bestArrangement(hand).melds.flat());
+// Which turn of the round this is for the account: every player discards 4 times (the game's deck is 4 × players − 1:
+// the first player's 10th card replaces its first draw), so after 3 discards the coming one is the LAST turn (hạ).
+// Counted from its own public discards.
+function turnInfo(snap, uid) {
+  const p = snap && snap.players ? snap.players[String(uid)] : null;
+  const done = p && Array.isArray(p.discardedHistory) ? p.discardedHistory.length : 0;
+  return { turn: Math.min(done + 1, 4), last: done >= 3 };
+}
+
+// CẠ — two loose cards that a third card would make a phỏm: a pair (same rank) or two of one suit 1–2 ranks apart.
+// A cạ counts only while it is ALIVE: a card that completes it may still come (not public: discarded / laid / eaten /
+// sent). Uses the same public knowledge as everything else here.
+const OUT = new Set(['DISCARDED', 'MELDED', 'EATEN']);
+function caPartners(code, loose, ledgerOut) {
+  const r = Math.floor(code / 4), s = code % 4;
+  const alive = (cands) => cands.some((x) => x >= 0 && x < 52 && !ledgerOut.has(x));
+  const out = [];
+  for (const d of loose) {
+    if (d === code) continue;
+    const rd = Math.floor(d / 4), sd = d % 4;
+    let completes = null;
+    if (rd === r) completes = [0, 1, 2, 3].filter((x) => x !== s && x !== sd).map((x) => r * 4 + x);
+    else if (sd === s && Math.abs(rd - r) === 1) { const lo = Math.min(r, rd), hi = Math.max(r, rd); completes = [lo - 1, hi + 1].filter((x) => x >= 0 && x <= 12).map((x) => x * 4 + s); }
+    else if (sd === s && Math.abs(rd - r) === 2) completes = [((r + rd) / 2) * 4 + s];
+    if (completes && alive(completes)) out.push(d);
+  }
+  return out;
+}
+
+// Loose cards first; a card of the best phỏm split comes last — discarding it breaks a phỏm ("phá phỏm"), as LỌC BÀI
+// never offers it either. Then the user's order (2026-10-09):
+//   a turn before the last: không bị ăn (chắc chắn → có thể) → keep a live CẠ (a card in no cạ goes first) → points
+//   the LAST turn (hạ):     không bị ăn → points (no draw is left to complete a cạ)
+function rankDiscards(hand, tier, locked, { last = false, ledgerOut = new Set() } = {}) {
+  const best = bestArrangement(hand);
+  const inMeld = new Set(best.melds.flat());
+  const loose = best.loose;
   return hand.filter((c) => !locked.has(c)).map((code) => {
     const rest = hand.filter((c) => c !== code);
     const left = bestArrangement(rest).points;
     const t = tier.has(code) ? tier.get(code) : TIER.OTHER;
-    return { ...view(code), tier: t, tierLabel: TIER_LABEL[t], pointsLeft: left, cardPoints: cardPoints(code), breaksPhom: inMeld.has(code) };
-  }).sort((a, b) => (a.breaksPhom - b.breaksPhom) || (a.tier - b.tier) || (a.pointsLeft - b.pointsLeft) || (b.cardPoints - a.cardPoints) || (a.code - b.code));
+    const ca = inMeld.has(code) ? [] : caPartners(code, loose, ledgerOut);
+    return { ...view(code), tier: t, tierLabel: TIER_LABEL[t], pointsLeft: left, cardPoints: cardPoints(code), breaksPhom: inMeld.has(code), inCa: ca.length > 0, caWith: ca.map((d) => view(d).label) };
+  }).sort((a, b) => (a.breaksPhom - b.breaksPhom) || (a.tier - b.tier) || (last ? 0 : (a.inCa - b.inCa)) || (a.pointsLeft - b.pointsLeft) || (b.cardPoints - a.cardPoints) || (a.code - b.code));
 }
 
 function discardRanking(snap, uid) {
   const hand = handOf(snap, uid);
   if (!hand || !hand.length) return { ok: false, ranking: [], points: null };
   const { tier, nextPlayerLabel } = safetyOf(snap, uid);
-  const ranking = rankDiscards(hand, tier, eatenBy(snap, uid));
-  return { ok: true, ranking, recommended: ranking[0] || null, points: bestArrangement(hand).points, nextPlayerLabel };
+  const turn = turnInfo(snap, uid);
+  const ledgerOut = new Set((Array.isArray(snap.ledger) ? snap.ledger : []).filter((e) => OUT.has(e.status)).map((e) => e.code));
+  const ranking = rankDiscards(hand, tier, eatenBy(snap, uid), { last: turn.last, ledgerOut });
+  return { ok: true, ranking, recommended: ranking[0] || null, points: bestArrangement(hand).points, nextPlayerLabel, turn };
 }
 
 // HẠ: which phỏm to lay + the discard after it, by the same order (tier first, then the fewest points left)
@@ -195,8 +232,8 @@ function checkPlay(snap, uid, action, cards) {
 function playHelp(snap, uid) {
   if (!snap || uid == null || !handOf(snap, uid)) return null;
   const d = discardRanking(snap, uid);
-  return { ranking: d.ranking, recommended: d.recommended || null, points: d.points, nextPlayerLabel: d.nextPlayerLabel || null, ha: haPlan(snap, uid), take: takeInfo(snap, uid), send: sendTargets(snap, uid) };
+  return { ranking: d.ranking, recommended: d.recommended || null, points: d.points, nextPlayerLabel: d.nextPlayerLabel || null, turn: d.turn || null, ha: haPlan(snap, uid), take: takeInfo(snap, uid), send: sendTargets(snap, uid) };
 }
 
 module.exports = {
-  checkPlay, playHelp, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, takeInfo, sendTargets, prevOf };
+  checkPlay, playHelp, turnInfo, caPartners, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, takeInfo, sendTargets, prevOf };

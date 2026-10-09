@@ -108,3 +108,50 @@ test('cards already laid on the table are not in the hand any more', () => {
   const s = snap({ mine: cs('2♠ 2♣ 2♦ K♥'), melds: { B: [{ meid: 1, cards: cs('2♠ 2♣ 2♦') }] } });
   assert.deepEqual(H.discardRanking(s, 'B').ranking.map((x) => x.label), ['K♥']);
 });
+
+// ---- user 2026-10-09: before the last turn keep a live CẠ (between safety and points); the last turn as before ----
+const discardsOf = (n) => Array.from({ length: n }, (_, i) => ({ card: 40 + i }));
+function withTurn(s, done) { return { ...s, players: { ...s.players, B: { ...s.players.B, discardedHistory: discardsOf(done) } } }; }
+
+test('turn: counted from the account\'s own discards — after 3 the coming one is the LAST (hạ)', () => {
+  const s = snap({ mine: cs('2♠ 5♥') });
+  assert.deepEqual(H.turnInfo(withTurn(s, 0), 'B'), { turn: 1, last: false });
+  assert.deepEqual(H.turnInfo(withTurn(s, 2), 'B'), { turn: 3, last: false });
+  assert.deepEqual(H.turnInfo(withTurn(s, 3), 'B'), { turn: 4, last: true });
+});
+
+test('before the last turn: same safety → a card in NO live cạ goes first, even if it costs fewer points', () => {
+  // Q♠ + J♠ = a live cạ (10♠ / K♠ may come); 9♦ is alone; all three equally unproven
+  const s = withTurn(snap({ mine: cs('Q♠ J♠ 9♦ 2♣ 2♦ 2♥') }), 1);
+  const r = H.discardRanking(s, 'B');
+  assert.equal(r.turn.last, false);
+  assert.equal(r.recommended.label, '9♦', 'the lone 9♦ goes; the cạ Q♠ J♠ is kept');
+  assert.deepEqual(r.ranking.find((x) => x.label === 'Q♠').caWith, ['J♠']);
+});
+
+test('the LAST turn: no cạ step — safety, then the fewest points (as before)', () => {
+  const s = withTurn(snap({ mine: cs('Q♠ J♠ 9♦ 2♣ 2♦ 2♥') }), 3);
+  const r = H.discardRanking(s, 'B');
+  assert.equal(r.turn.last, true);
+  assert.equal(r.recommended.label, 'Q♠', 'Q (12) out leaves the fewest points');
+});
+
+test('safety still comes first: a proven-safe card in a cạ goes before an unproven lone card', () => {
+  // K♥: every partner public except Q♥ (in my hand) → proven safe; K♥ + Q♥ would be a cạ but J♥ is out → dead cạ anyway
+  const s = withTurn(snap({
+    mine: cs('K♥ Q♥ 9♦ 2♣ 2♦ 2♥'),
+    ledger: cs('K♠ K♣ K♦ J♥').map((code) => ({ code, status: 'DISCARDED', ownerUid: 'A' })),
+  }), 1);
+  const r = H.discardRanking(s, 'B');
+  assert.equal(r.ranking[0].tier <= r.ranking.find((x) => x.label === '9♦').tier, true);
+  assert.notEqual(r.recommended.label, '9♦');
+});
+
+test('a dead cạ (every card that would complete it is out) is not kept', () => {
+  // 5♣ 6♣ needs 4♣ or 7♣ — both discarded → dead
+  const dead = H.caPartners(c('5♣'), cs('5♣ 6♣'), new Set(cs('4♣ 7♣')));
+  assert.deepEqual(dead, []);
+  assert.deepEqual(H.caPartners(c('5♣'), cs('5♣ 6♣'), new Set(cs('4♣'))), [c('6♣')]);
+  assert.deepEqual(H.caPartners(c('5♣'), cs('5♣ 7♣'), new Set()), [c('7♣')], 'a gap of 2 needs the middle card');
+  assert.deepEqual(H.caPartners(c('5♣'), cs('5♣ 5♦'), new Set(cs('5♠ 5♥'))), [], 'a pair with both other suits out is dead');
+});

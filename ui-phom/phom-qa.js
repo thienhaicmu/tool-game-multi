@@ -707,10 +707,11 @@
       // group already sorted by the fewest points left); a click picks that card for Đánh ----
       const loose = ((help && help.ranking) || []).filter((x) => !x.breaksPhom);
       const pickOne = (x) => el('span', { class: 'card-face ' + (x.color === 'red' ? 'red' : 'black') + ' ' + TIER_CLASS[x.tier] + (picked.length === 1 && picked[0] === x.code ? ' picked' : ''), role: 'button',
-        title: x.tierLabel + ' · đánh lá này còn ' + x.pointsLeft + ' điểm · bấm để chọn', onclick: () => { playPick = { runId, codes: [x.code] }; renderApp(); } },
-      el('b', null, x.rank || '?'), el('span', null, x.suit || '?'));
+        title: x.tierLabel + (x.inCa ? ' · cạ với ' + x.caWith.join(' ') : '') + ' · đánh lá này còn ' + x.pointsLeft + ' điểm · bấm để chọn', onclick: () => { playPick = { runId, codes: [x.code] }; renderApp(); } },
+      el('b', null, x.rank || '?'), el('span', null, x.suit || '?'), x.inCa ? el('i', { class: 'ca-tag' }, 'cạ') : null);
       const group = (tier, label) => { const xs = loose.filter((x) => x.tier === tier); return xs.length ? el('div', { class: 'sug-row ' + TIER_CLASS[tier] }, el('span', { class: 'g-label' }, label + ' (' + xs.length + ')'), el('div', { class: 'cards' }, ...xs.map(pickOne))) : null; };
-      const sug = el('div', { class: 'play-sug' }, el('span', { class: 'g-label sug-title' }, 'Gợi ý đánh'),
+      const turn = help && help.turn;
+      const sug = el('div', { class: 'play-sug' }, el('span', { class: 'g-label sug-title' }, 'Gợi ý đánh' + (turn ? (turn.last ? ' · lượt cuối — không bị ăn → điểm' : ' · lượt ' + turn.turn + '/4 — không bị ăn → giữ cạ → điểm') : '')),
         group(0, 'Chắc chắn không bị ăn'), group(1, 'Có thể không bị ăn'));
       if (!loose.some((x) => x.tier <= 1)) sug.appendChild(el('div', { class: 'muted sug-none' }, loose.length
         ? 'Chưa có lá nào chắc chắn / có thể không bị ăn — lá ít rủi ro nhất: ' + loose[0].label + ' (còn ' + loose[0].pointsLeft + ' điểm)'

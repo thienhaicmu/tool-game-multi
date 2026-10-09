@@ -169,7 +169,7 @@ test('feature: a failed check refuses before anything reaches the page', async (
 
 test('playHelp: one object per account for the tab (ranking, recommended, points, hạ plan, ăn, gửi)', () => {
   const h = help.playHelp(tableSnap(), 'B');
-  assert.deepEqual(Object.keys(h).sort(), ['ha', 'nextPlayerLabel', 'points', 'ranking', 'recommended', 'send', 'take']);
+  assert.deepEqual(Object.keys(h).sort(), ['ha', 'nextPlayerLabel', 'points', 'ranking', 'recommended', 'send', 'take', 'turn']);
   assert.equal(h.ranking.some((x) => x.code === cc(8, 2)), false, 'an eaten card is never offered');
   assert.deepEqual(h.send.map((x) => x.label), ['6♥']);
   assert.equal(help.playHelp(tableSnap(), 'Z'), null);
