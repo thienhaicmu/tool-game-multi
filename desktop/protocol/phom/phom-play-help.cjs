@@ -265,7 +265,8 @@ function checkPlay(snap, uid, action, cards) {
 
 // Everything the ĐÁNH BÀI tab shows for one account (null before its hand is seen).
 function playHelp(snap, uid) {
-  if (!snap || uid == null || !handOf(snap, uid)) return null;
+  const own = snap && uid != null ? handOf(snap, uid) : null;
+  if (!own || !own.length) return null; // not dealt into this round (e.g. a reserve swapped in mid-round)
   const d = discardRanking(snap, uid);
   return { ranking: d.ranking, recommended: d.recommended || null, points: d.points, nextPlayerLabel: d.nextPlayerLabel || null, turn: d.turn || null, ha: haPlan(snap, uid), take: takeInfo(snap, uid), send: sendTargets(snap, uid) };
 }
