@@ -198,13 +198,15 @@
   }
 
   // ---- header status ----
+  // the cause in the chip itself (the full message stays in the tooltip)
+  const SHEET_ERROR_LABEL = { GOOGLE_CLOCK_SKEW: 'Sheet: lệch giờ máy', GOOGLE_NETWORK: 'Sheet: không kết nối mạng', GOOGLE_AUTH_FAILED: 'Sheet: đăng nhập Google lỗi',GOOGLE_SHEET_NOT_FOUND: 'Sheet: thiếu tab' };
   async function refreshSheetStatus() {
     const chip = $('sheet-chip');
     let s; try { s = await api.sheetStatus(); } catch { s = null; }
     const set = (cls, text) => { chip.className = `chip ${cls}`; chip.innerHTML = '<i class="dot"></i>'; chip.append(text); };
     if (!s || !s.configured) set('warn', 'Sheet Off');
     else if (s.state === 'connected') set('ok', 'Sheet Ready');
-    else set('bad', 'Sheet Error');
+    else set('bad', SHEET_ERROR_LABEL[s.error && s.error.code] || 'Sheet Error');
     // Actionable tooltip: on error show the message; when unconfigured show WHERE to drop the credential file.
     if (s && s.error) chip.title = s.error.message || s.error.code;
     else if (s && !s.configured && s.expectedPath) chip.title = `Chưa có Google Service Account. Đặt tệp google-service-account.json tại:\n${s.expectedPath}`;

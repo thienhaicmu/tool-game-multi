@@ -183,31 +183,64 @@ function httpsRequest(url, { method = 'GET', headers = {}, body = null, timeoutM
   });
 }
 
+// A transport failure (no network, proxy, TLS inspection, timeout) → a typed error the operator can act on.
+const NETWORK_HINT = 'Không kết nối được tới Google. Kiểm tra mạng / proxy / tường lửa / phần mềm diệt virus chặn HTTPS';
+function networkError(cause) {
+  const code = (cause && (cause.code || cause.message)) || 'NETWORK';
+  const e = new Error(`${NETWORK_HINT} (${String(code).slice(0, 80)}).`);
+  e.code = 'GOOGLE_NETWORK';
+  return e;
+}
+// Google rejects the signed login when the machine clock is off by more than a few minutes
+// (verified 2026-10-09: +10 min, ±7 h → 400 invalid_grant "Check your iat and exp values").
+function isClockRejection(json) {
+  return !!(json && json.error === 'invalid_grant' && /\biat\b|\bexp\b|timeframe/i.test(String(json.error_description || '')));
+}
+
 class GoogleSheetClient {
-  constructor({ serviceAccount, spreadsheetId = SPREADSHEET_ID, sheetId = SHEET_ID, request = httpsRequest } = {}) {
+  // clock: async () => epoch ms used to sign the login (the generator passes its trusted internet time, so a
+  // machine with a wrong clock / time zone still signs in). Default: the local clock.
+  constructor({ serviceAccount, spreadsheetId = SPREADSHEET_ID, sheetId = SHEET_ID, request = httpsRequest, clock = async () => Date.now() } = {}) {
     if (!serviceAccount) throw new Error('GoogleSheetClient requires a serviceAccount');
     this._sa = serviceAccount;
     this._spreadsheetId = spreadsheetId;
     this._sheetId = sheetId;
     this._request = request;
+    this._clock = clock;
     this._token = null; // { accessToken, expEpoch }
     this._sheetTitle = null;
   }
 
   get clientEmail() { return this._sa.client_email; }
 
+  async _send(url, opts) {
+    try { return await this._request(url, opts); } catch (e) { throw networkError(e); }
+  }
+
+  async _nowSeconds() {
+    let ms;
+    try { ms = Number(await this._clock()); } catch { ms = NaN; }
+    return Math.floor((Number.isFinite(ms) ? ms : Date.now()) / 1000);
+  }
+
   async _accessToken() {
-    const now = Math.floor(Date.now() / 1000);
+    const now = await this._nowSeconds();
     if (this._token && this._token.expEpoch - 60 > now) return this._token.accessToken;
     const assertion = signServiceAccountJwt(this._sa, now);
     const form = `grant_type=${encodeURIComponent('urn:ietf:params:oauth:grant-type:jwt-bearer')}&assertion=${encodeURIComponent(assertion)}`;
-    const res = await this._request(this._sa.token_uri || TOKEN_URI, {
+    const res = await this._send(this._sa.token_uri || TOKEN_URI, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'Content-Length': Buffer.byteLength(form) },
       body: form,
     });
     if (res.status !== 200 || !res.json || !res.json.access_token) {
-      const e = new Error('Xác thực Google thất bại (không lấy được access token).');
+      if (isClockRejection(res.json)) {
+        const e = new Error('Google từ chối đăng nhập vì giờ máy bị lệch. Bật "Set time automatically" và chọn đúng múi giờ (UTC+07:00) trong Windows, rồi mở lại Generator.');
+        e.code = 'GOOGLE_CLOCK_SKEW';
+        throw e;
+      }
+      const why = res.json && (res.json.error_description || res.json.error);
+      const e = new Error(`Xác thực Google thất bại (HTTP ${res.status}${why ? ': ' + String(why).slice(0, 160) : ''}).`);
       e.code = 'GOOGLE_AUTH_FAILED';
       throw e;
     }
@@ -221,7 +254,7 @@ class GoogleSheetClient {
     const headers = { Authorization: `Bearer ${token}` };
     let payload = null;
     if (body != null) { payload = JSON.stringify(body); headers['Content-Type'] = 'application/json'; headers['Content-Length'] = Buffer.byteLength(payload); }
-    const res = await this._request(url, { method, headers, body: payload });
+    const res = await this._send(url, { method, headers, body: payload });
     if (res.status < 200 || res.status >= 300) {
       const msg = (res.json && res.json.error && res.json.error.message) || `HTTP ${res.status}`;
       const e = new Error(`Google Sheets API lỗi: ${msg}`);

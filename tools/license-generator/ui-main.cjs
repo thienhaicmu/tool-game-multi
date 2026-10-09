@@ -1,6 +1,6 @@
 'use strict';
 
-const { app, BrowserWindow, ipcMain, clipboard } = require('electron');
+const { app, BrowserWindow, ipcMain, clipboard, net } = require('electron');
 const path = require('node:path');
 const fs = require('node:fs');
 const { TrustedTimeProvider } = require('../../desktop/licensing/trusted-time.cjs');
@@ -13,7 +13,41 @@ const sellerRes = { privateKeyPathForProduct, sheetTitleForProduct };
 const { loadServiceAccount, GoogleSheetClient, trySaveRecord } = require('./google-sheet.cjs');
 
 let win;
-const trustedTime = new TrustedTimeProvider();
+
+// ---- network through Chromium (electron net), not node:https ----
+// On another machine node:https ignores the Windows proxy settings and the Windows certificate store (a proxy, a
+// company firewall or an antivirus that inspects HTTPS then breaks the Sheet / trusted time while a browser works).
+// electron net uses the same network stack as Chrome. Same { status, text, json } shape as google-sheet's httpsRequest.
+async function netRequest(url, { method = 'GET', headers = {}, body = null, timeoutMs = 15000 } = {}) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  const h = { ...headers }; delete h['Content-Length']; // Chromium sets it itself
+  try {
+    const res = await net.fetch(url, { method, headers: h, body: body == null ? undefined : body, signal: ctrl.signal, bypassCustomProtocolHandlers: true });
+    const text = await res.text();
+    let json = null;
+    try { json = text ? JSON.parse(text) : null; } catch { /* non-JSON body */ }
+    return { status: res.status, text, json };
+  } catch (e) {
+    if (ctrl.signal.aborted) { const t = new Error('GOOGLE_TIMEOUT'); t.code = 'GOOGLE_TIMEOUT'; throw t; }
+    throw e;
+  } finally { clearTimeout(timer); }
+}
+// trusted time's Date header, through the same stack
+async function netDateHeader(url, timeoutMs) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await net.fetch(url, { method: 'HEAD', signal: ctrl.signal, bypassCustomProtocolHandlers: true });
+    const ms = Date.parse(String(res.headers.get('date') || ''));
+    return Number.isFinite(ms) ? { ok: true, nowMs: ms, source: url } : { ok: false, error: 'DATE_HEADER_MISSING', source: url };
+  } catch (e) {
+    return { ok: false, error: ctrl.signal.aborted ? 'TIME_AUTHORITY_TIMEOUT' : ((e && e.code) || 'TIME_AUTHORITY_ERROR'), source: url };
+  } finally { clearTimeout(timer); }
+}
+const trustedTime = new TrustedTimeProvider({ fetchDateHeader: netDateHeader });
+// the Google login is signed with trusted internet time — a machine whose clock / time zone is wrong still signs in
+async function sheetClock() { const r = await trustedTime.now(); return r.ok ? r.nowMs : Date.now(); }
 
 // ---- self-contained seller resource resolution (signing key + Google cred) ----
 // Packaged: bundled under process.resourcesPath/private. Dev: generator source dir,
@@ -93,7 +127,7 @@ function getSheetClient() {
   if (sheetClient && sheetClientCredPath === p) return sheetClient;
   const sa = loadServiceAccount(p); // may throw GOOGLE_CREDENTIAL_*
   const { spreadsheetId, sheetId } = sellerResources();
-  sheetClient = new GoogleSheetClient({ serviceAccount: sa, spreadsheetId, sheetId });
+  sheetClient = new GoogleSheetClient({ serviceAccount: sa, spreadsheetId, sheetId, request: netRequest, clock: sheetClock });
   sheetClientCredPath = p;
   return sheetClient;
 }
