@@ -1,6 +1,6 @@
 // TỰ ĐÁNH (user 2026-10-09: "từng player khi user chọn bật … chỉ làm cho 3 player không làm cho người lạ") — per account,
-// switched on by the user, following docs/phom-danh-bai.md turn by turn, ONLY while every player of the round is one
-// of the tool's accounts. Every press is the game's own button through the play-actions feature.
+// switched on by the user, following docs/phom-danh-bai.md turn by turn; since 2026-10-09 also with strangers in the
+// round (the stranger guard was dropped). Every press is the game's own button through the play-actions feature.
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
@@ -33,30 +33,14 @@ function snap({ mine, discarded = 0, prevDiscard = null, laidA = [], laidB = [],
   };
 }
 
-test('the table guard: every player of the round must be one of the tool\'s accounts', () => {
+test('the table guard: only waits for the deal — a stranger in the round does not stop it (user 2026-10-09)', () => {
   assert.equal(auto.tableGuard(snap({ mine: [cc(0, 0)] })).ok, true);
-  const s = auto.tableGuard(snap({ mine: [cc(0, 0)], players: ['A', 'B', 'S', 'C'] }));
-  assert.deepEqual([s.ok, s.stop, s.code], [false, true, 'AUTO_STRANGER']);
+  assert.equal(auto.tableGuard(snap({ mine: [cc(0, 0)], players: ['A', 'B', 'S', 'C'] })).ok, true);
   const none = auto.tableGuard({ slotBinding: { B1: 'A' }, roundPlayers: [] });
   assert.deepEqual([none.ok, !!none.stop], [false, false], 'no deal yet → wait, not stop');
-  const st = auto.nextStep(snap({ mine: [cc(0, 0)], players: ['A', 'B', 'S', 'C'] }), 'B', ['DANH']);
-  assert.equal(st.stop, true, 'a stranger in the round stops it before any press');
-});
-
-test('a reserve of the session (P4/P5, not in a slot) is one of ours, not a stranger', () => {
-  const s = snap({ mine: [cc(0, 0), cc(5, 1)], players: ['A', 'B', 'R4', 'C'] });
-  assert.equal(auto.tableGuard(s).stop, true, 'unknown uid → stranger');
-  assert.equal(auto.tableGuard(s, ['A', 'B', 'C', 'R4']).ok, true);
-  assert.equal(auto.nextStep(s, 'B', ['DANH'], new Set(), ['R4']).action, 'DANH');
-});
-
-test('the session lists the uids of every browser — the playing slots and the reserves', () => {
-  const { HostSessionManager } = require('../../desktop/protocol/phom/host-session-manager.cjs');
-  const m = Object.create(HostSessionManager.prototype);
-  m._c = () => ({ profileIds: () => ['R1', 'R2', 'R3', 'R4', 'R5'], uidOf: (id) => ({ R1: 11, R2: 12, R3: 13, R4: 14 })[id] ?? null });
-  assert.deepEqual(m.toolUids(), ['11', '12', '13', '14'], 'a reserve before its login is simply not known yet');
-  m._c = () => null;
-  assert.deepEqual(m.toolUids(), []);
+  assert.equal(auto.nextStep({ slotBinding: { B1: 'A' }, roundPlayers: [] }, 'B', ['DANH']).wait, true);
+  const st = auto.nextStep(snap({ mine: [cc(0, 0), cc(5, 1)], players: ['A', 'B', 'S', 'C'] }), 'B', ['DANH']);
+  assert.equal(st.action, 'DANH', 'a stranger in the round → it still plays');
 });
 
 test('step 1 — Ăn when the card just discarded makes a phỏm, else Bốc; an Ăn the game refused falls back to Bốc', () => {
@@ -160,7 +144,7 @@ test('feature: off by default; a step is pressed once it stayed the same for set
   assert.equal(r.f.status()['R-B'].on, true);
 });
 
-test('feature: only the account switched on plays; a stranger in the round switches it off (and refuses to switch on)', async () => {
+test('feature: only the account switched on plays; a stranger in the round does not switch it off (nor refuse to switch on)', async () => {
   const r = rig({ snapshot: snap({ mine: mine0 }) });
   r.f.start('R-B');
   await r.f.tick(); r.advance(1000); await r.f.tick();
@@ -168,12 +152,10 @@ test('feature: only the account switched on plays; a stranger in the round switc
   r.page.snap = snap({ mine: mine0, players: ['A', 'B', 'S', 'C'] });
   r.f.cardsChanged();
   await r.f.tick();
-  assert.equal(r.f.status()['R-B'].on, false);
-  assert.match(r.f.status()['R-B'].message, /người chơi ngoài tool/);
+  assert.equal(r.f.status()['R-B'].on, true);
+  r.f.stop('R-B');
   const again = r.f.start('R-B');
-  assert.deepEqual([again.ok, again.error.code], [false, 'AUTO_STRANGER']);
-  r.advance(5000); await r.f.tick();
-  assert.equal(r.presses.length, 1, 'nothing more was pressed');
+  assert.equal(again.ok, true);
 });
 
 test('feature: a press the game did not take — Ăn falls back to Bốc; anything else switches it off', async () => {
@@ -230,7 +212,6 @@ test('wiring: main builds it on the play-actions feature, the preload bridges it
   assert.match(main, /_autoPlayFeature = createAutoPlayFeature\(\{/);
   assert.match(main, /_playFeature\.act\(rid, input\)/);
   assert.match(main, /if \(_autoPlayFeature\) _autoPlayFeature\.cardsChanged\(\);/);
-  assert.match(main, /toolUids: \(\) => \(phomSessions && phomSessions\.active\(\) \? phomSessions\.toolUids\(\) : \[\]\)/);
   assert.match(main, /autoPlay: _autoPlayFeature \? _autoPlayFeature\.status\(\) : \{\}/);
   assert.match(read('desktop/phom-preload.cjs'), /setAutoPlay: \(runId, on\) => ipcRenderer\.invoke\('phom:auto-play', \{ runId, on: !!on \}\)/);
   const ui = read('ui-phom/phom-qa.js');
