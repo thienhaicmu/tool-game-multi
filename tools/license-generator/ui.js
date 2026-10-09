@@ -161,7 +161,9 @@
     $('r-machine').textContent = p.machineId;
     $('r-expires').textContent = fmtDate(p.expiresAt);
     $('r-remaining').textContent = `${Math.ceil((p.expiresAt - p.issuedAt) / DAY)} ngày`;
-    $('r-caps').textContent = `${p.maxBrowsers} profiles · ${p.maxConcurrentBrowsers} browsers`;
+    // the signed rights of this game, so the admin sees what the key grants (PHỎM: Cho dùng Tự đánh ✓/✕)
+    const rights = (cfg ? cfg.features : []).map((f) => `${f.label} ${p.features && p.features[f.key] === true ? '✓' : '✕'}`);
+    $('r-caps').textContent = [`${p.maxBrowsers} profiles · ${p.maxConcurrentBrowsers} browsers`, ...rights].join(' · ');
     $('r-license-id').textContent = p.licenseId;
     $('license-output').value = result.license;
     $('copy-ok').hidden = true;

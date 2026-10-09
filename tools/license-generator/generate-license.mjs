@@ -96,18 +96,21 @@ async function buildPayload({ machineId, durationDays, expires }) {
   const preset = PLAN_PRESETS[plan];
   const maxBrowsers = Number(arg('--max-browsers', preset.maxBrowsers));
   const maxConcurrentBrowsers = Number(arg('--max-concurrent', preset.maxConcurrentBrowsers));
-  const features = {
-    autoRun: boolArg('auto-run', preset.features.autoRun),
-    jackpotLive: boolArg('jackpot-live', preset.features.jackpotLive),
-    jackpotGate: boolArg('jackpot-gate', preset.features.jackpotGate),
-    roundHistory: boolArg('round-history', preset.features.roundHistory),
-  };
-  const check = validateEntitlementInput({ plan, maxBrowsers, maxConcurrentBrowsers, features });
-  if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
   // Signed game entitlement. Defaults to AVIATOR for backward-compatible seller UX;
   // a Phỏm key MUST be issued with --game-product PHOM. New v2 keys always carry it.
   const gameProduct = String(arg('--game-product', 'AVIATOR')).toUpperCase();
   if (!GAME_PRODUCTS.includes(gameProduct)) throw new Error('LICENSE_GAME_PRODUCT_INVALID: game-product must be AVIATOR or PHOM');
+  // PHOM: only autoRun (= "Cho dùng Tự đánh") means anything, and only an explicit --auto-run grants it
+  const features = gameProduct === 'PHOM'
+    ? { autoRun: boolArg('auto-run', false), jackpotLive: false, jackpotGate: false, roundHistory: false }
+    : {
+      autoRun: boolArg('auto-run', preset.features.autoRun),
+      jackpotLive: boolArg('jackpot-live', preset.features.jackpotLive),
+      jackpotGate: boolArg('jackpot-gate', preset.features.jackpotGate),
+      roundHistory: boolArg('round-history', preset.features.roundHistory),
+    };
+  const check = validateEntitlementInput({ plan, maxBrowsers, maxConcurrentBrowsers, features });
+  if (!check.ok) throw new Error(check.errors.map((e) => e.message).join(' '));
   return buildLicensePayloadV2({ machineId, plan, issuedAt, expiresAt, maxBrowsers, maxConcurrentBrowsers, features, licenseId, gameProduct });
 }
 

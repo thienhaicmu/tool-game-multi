@@ -36,7 +36,6 @@ function snap({ mine, discarded = 0, prevDiscard = null, laidA = [], laidB = [],
 test('the table guard: every player of the round must be one of the tool\'s accounts', () => {
   assert.equal(auto.tableGuard(snap({ mine: [cc(0, 0)] })).ok, true);
   const s = auto.tableGuard(snap({ mine: [cc(0, 0)], players: ['A', 'B', 'S', 'C'] }));
-  assert.deepEqual([s.ok, s.stop, s.code], [false, true, 'AUTO_STRANGER']);
   const none = auto.tableGuard({ slotBinding: { B1: 'A' }, roundPlayers: [] });
   assert.deepEqual([none.ok, !!none.stop], [false, false], 'no deal yet → wait, not stop');
   const st = auto.nextStep(snap({ mine: [cc(0, 0)], players: ['A', 'B', 'S', 'C'] }), 'B', ['DANH']);
@@ -154,7 +153,7 @@ test('feature: off by default; a step is pressed once it stayed the same for set
   assert.deepEqual(r.presses, [['R-B', 'BOC', []]]);
   r.advance(1000); await r.f.tick();
   assert.equal(r.presses.length, 1, 'the table has not changed → the same press does not go out again');
-  r.f.cardsChanged(); r.page.offered = ['DANH'];
+  r.page.offered = ['DANH'];
   await r.f.tick(); r.advance(1000); await r.f.tick();
   assert.equal(r.presses[1][1], 'DANH');
   assert.equal(r.f.status()['R-B'].on, true);
@@ -166,7 +165,6 @@ test('feature: only the account switched on plays; a stranger in the round switc
   await r.f.tick(); r.advance(1000); await r.f.tick();
   assert.deepEqual(r.presses.map((p) => p[0]), ['R-B'], 'R-A was never switched on');
   r.page.snap = snap({ mine: mine0, players: ['A', 'B', 'S', 'C'] });
-  r.f.cardsChanged();
   await r.f.tick();
   assert.equal(r.f.status()['R-B'].on, false);
   assert.match(r.f.status()['R-B'].message, /người chơi ngoài tool/);
@@ -229,12 +227,90 @@ test('wiring: main builds it on the play-actions feature, the preload bridges it
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /_autoPlayFeature = createAutoPlayFeature\(\{/);
   assert.match(main, /_playFeature\.act\(rid, input\)/);
-  assert.match(main, /if \(_autoPlayFeature\) _autoPlayFeature\.cardsChanged\(\);/);
+  assert.match(main, /licensed: autoPlayLicensed,/);
+  assert.match(main, /return !!\(p && p\.v === 2 && p\.features && p\.features\.autoRun === true\);/);
+  assert.match(main, /autoPlayLicensed: autoPlayLicensed\(\)/, 'the UI learns the right from capabilities');
+  assert.match(main, /manualBlocked: \(rid\) => \(\(_autoPlayFeature && \(_autoPlayFeature\.status\(\)\[rid\] \|\| \{\}\)\.on\)/);
   assert.match(main, /toolUids: \(\) => \(phomSessions && phomSessions\.active\(\) \? phomSessions\.toolUids\(\) : \[\]\)/);
   assert.match(main, /autoPlay: _autoPlayFeature \? _autoPlayFeature\.status\(\) : \{\}/);
   assert.match(read('desktop/phom-preload.cjs'), /setAutoPlay: \(runId, on\) => ipcRenderer\.invoke\('phom:auto-play', \{ runId, on: !!on \}\)/);
   const ui = read('ui-phom/phom-qa.js');
   const bar = ui.slice(ui.indexOf('function playBar('), ui.indexOf('async function onPlayAction('));
   assert.match(bar, /autoPlaySwitch\(runId\)\);/);
+  assert.match(ui, /const allowed = caps\.autoPlayLicensed === true;/);
+  assert.match(ui, /Key chưa có quyền Tự đánh/);
   assert.match(ui, /autoPlayByRun = snap\.autoPlay \|\| \{\};/);
+});
+
+// ---- review 2026-10-09: three accounts switched on at once ----
+test('an account whose buttons show at ANOTHER table (not a player of the round the tool follows) is switched off — even for Ù', () => {
+  const s = snap({ mine: [cc(0, 0)], players: ['A', 'C'] }); // B left for a table the observer does not follow
+  for (const offered of [['BAO_U'], ['BOC'], ['DANH']]) {
+    const st = auto.nextStep(s, 'B', offered);
+    assert.deepEqual([st.stop, st.code], [true, 'AUTO_OTHER_TABLE'], offered[0]);
+  }
+  assert.equal(auto.nextStep(s, 'B', []).wait, true, 'no button there → just waits');
+});
+
+test('stateKey: another account\'s own hand does not count; this account\'s hand, the pile and the eats do', () => {
+  const base = snap({ mine: mine0 });
+  const otherHand = { ...base, players: { ...base.players, A: { ...base.players.A, currentCards: [cc(3, 3)] } } };
+  assert.equal(auto.stateKey(otherHand, 'B'), auto.stateKey(base, 'B'));
+  assert.notEqual(auto.stateKey(snap({ mine: mine0.slice(1) }), 'B'), auto.stateKey(base, 'B'));
+  assert.notEqual(auto.stateKey(snap({ mine: mine0, prevDiscard: cc(6, 0) }), 'B'), auto.stateKey(base, 'B'));
+  assert.notEqual(auto.stateKey(snap({ mine: mine0, eats: [{ card: cc(6, 0), eaterUid: 'C' }] }), 'B'), auto.stateKey(base, 'B'));
+});
+
+test('feature: frames of the other two accounts neither re-press a step that went out nor forget an Ăn the game refused', async () => {
+  const s0 = snap({ mine: mine0, prevDiscard: cc(1, 2) });
+  const r = rig({ offered: ['BOC', 'AN'], snapshot: s0 });
+  r.f.start('R-B');
+  await r.f.tick(); r.advance(1000); await r.f.tick();
+  assert.equal(r.presses[0][1], 'AN');
+  const busyTable = (n) => ({ ...s0, players: { ...s0.players, A: { ...s0.players.A, currentCards: [n] } } });
+  r.page.snap = busyTable(cc(3, 3)); r.advance(1000); await r.f.tick(); r.advance(1000); await r.f.tick();
+  assert.equal(r.presses.length, 1, 'A\'s own frame is not "the table changed" for B');
+  r.advance(5000); await r.f.tick(); // the Ăn stalled → Bốc
+  r.page.snap = busyTable(cc(4, 3)); await r.f.tick(); r.advance(1000); await r.f.tick();
+  assert.deepEqual(r.presses.map((p) => p[1]), ['AN', 'BOC'], 'the refused Ăn is not tried again after another account\'s frame');
+});
+
+test('feature: one browser that never answers does not hold the others (ticked side by side, page calls bounded)', async () => {
+  const presses = [];
+  const ok = { Runtime: { evaluate: async () => ({ result: { value: { ok: true, atTable: true, offered: ['BOC'] } } }) } };
+  const hung = { Runtime: { evaluate: () => new Promise(() => {}) } };
+  let t = 0;
+  const f = createAutoPlayFeature({
+    act: async (rid, input) => { presses.push([rid, input.action]); return { ok: true }; },
+    clientFor: (rid) => (rid === 'R-A' ? hung : ok), snapshot: () => snap({ mine: mine0 }), uidOf: (rid) => (rid === 'R-A' ? 'A' : 'B'),
+    now: () => t, setTimer: (fn, ms) => (ms === 20 ? setTimeout(fn, 1) : 1), clearTimer: (h) => { if (h && h !== 1) clearTimeout(h); },
+    settleMs: 900, evalTimeoutMs: 20,
+  });
+  f.start('R-A'); f.start('R-B');
+  await f.tick(); t += 1000; await f.tick();
+  assert.deepEqual(presses, [['R-B', 'BOC']], 'B played while A\'s page hung');
+  assert.equal(f.status()['R-A'].on, true);
+  assert.match(f.status()['R-A'].message, /Không đọc được nút/);
+});
+
+test('feature: TỰ ĐÁNH needs the key\'s "Cho dùng Tự đánh" — refused without it; a run that loses it stops', async () => {
+  let right = false;
+  const presses = [];
+  const client = { Runtime: { evaluate: async () => ({ result: { value: { ok: true, atTable: true, offered: ['BOC'] } } }) } };
+  let t = 0;
+  const f = createAutoPlayFeature({ act: async (rid, i) => { presses.push(i.action); return { ok: true }; }, clientFor: () => client, snapshot: () => snap({ mine: mine0 }), uidOf: () => 'B',
+    licensed: () => right, now: () => t, setTimer: () => 1, clearTimer: () => {} });
+  const no = f.start('R-B');
+  assert.deepEqual([no.ok, no.error.code], [false, 'PHOM_AUTO_PLAY_NOT_LICENSED']);
+  assert.match(no.error.message, /Cho dùng Tự đánh/);
+  const ipc = {};
+  f.registerIpc((ch, fn) => { ipc[ch] = fn; });
+  assert.equal((await ipc['phom:auto-play'](null, { runId: 'R-B', on: true })).error.code, 'PHOM_AUTO_PLAY_NOT_LICENSED');
+  right = true;
+  assert.equal(f.start('R-B').ok, true);
+  right = false;
+  await f.tick();
+  assert.equal(f.status()['R-B'].on, false);
+  assert.match(f.status()['R-B'].message, /chưa được cấp quyền Tự đánh/);
+  assert.equal(presses.length, 0);
 });

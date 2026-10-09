@@ -111,6 +111,7 @@ textarea.f { height: auto; padding: 8px; width: 100%; resize: vertical; }
 .switch.on .knob { background: var(--primary); }
 .switch.on .knob::after { transform: translateX(12px); }
 .switch:focus-within { outline: 2px solid var(--primary); outline-offset: 1px; }
+.switch.locked { opacity: .55; cursor: not-allowed; }
 
 /* ---------- PROFILE tab ---------- */
 .panel { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); }

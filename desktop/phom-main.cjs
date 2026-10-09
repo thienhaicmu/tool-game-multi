@@ -281,7 +281,7 @@ else {
     // §9 lag fix — coalesce the per-frame 'update'/'hands' storm (leading+trailing throttle). pushHeaderStates
     // dedupes unchanged states so steady-state WS traffic costs ~0 CDP evaluates.
     phomSessions.on('update', (snap) => { scheduleSessionBroadcast(snap); });
-    phomSessions.on('cards', (cards) => { if (_autoPlayFeature) _autoPlayFeature.cardsChanged(); scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
+    phomSessions.on('cards', (cards) => { scheduleCardsBroadcast(cards); }); // PHASE 6.3.3.2 — card observation
 
     phomSessions.on('kick', (k) => send('phom:kick', k));
     // docs/phom-kich-ban.md — what the group flow just did (created, joined, kicked, table lost, rejoined…).
@@ -775,7 +775,7 @@ else {
       // picked cards checked against what the table shows (own hand + public facts only) — the game still decides
       const uid = phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null;
       return uid ? playHelp.checkPlay(phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
-    } });
+    }, manualBlocked: (rid) => ((_autoPlayFeature && (_autoPlayFeature.status()[rid] || {}).on) ? 'Acc này đang Tự đánh — tắt Tự đánh trước khi bấm tay' : null) });
     // TỰ ĐÁNH — per account, switched on by the user, only while every player of the round is one of ours
     // (docs/phom-danh-bai.md §7); every press goes through the play-actions feature above
     _autoPlayFeature = createAutoPlayFeature({
@@ -783,7 +783,7 @@ else {
       clientFor: runClientFor,
       snapshot: () => (phomSessions && phomSessions.active() ? phomSessions.cardObserverSnapshot() : {}),
       uidOf: (rid) => (phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null),
-      toolUids: () => (phomSessions && phomSessions.active() ? phomSessions.toolUids() : []), // P1–P3 + reserves = ours
+      licensed: autoPlayLicensed, // the key's "Cho dùng Tự đánh" (signed features.autoRun)
       log: headerLog,
       refresh: () => scheduleCardsBroadcast(true),
     });
@@ -1099,6 +1099,14 @@ else {
   }
 
   // ---- license gate ----
+  // TỰ ĐÁNH needs its own signed right: a PHOM v2 key with features.autoRun === true (Generator: "Cho dùng Tự đánh").
+  // A key signed without it — every PHOM key before this right existed — is refused. The dev bypass has no key: allowed.
+  function autoPlayLicensed() {
+    if (devBypass.allowed) return true;
+    if (!licenseActive()) return false;
+    const p = licenseGuard && licenseGuard.status().payload;
+    return !!(p && p.v === 2 && p.features && p.features.autoRun === true);
+  }
   function licenseActive() {
     if (devBypass.forbidden) return false; // packaged + bypass flag → hard block
     const s = licenseGuard && licenseGuard.status();
@@ -1157,7 +1165,7 @@ else {
     ipcMain.handle('phom:license-status', () => licenseStatus());
     ipcMain.handle('phom:license-activate', async (_e, key) => { if (!licenseGuard) return licenseStatus(); const s = await licenseGuard.activateAsync(String(key || '')); return { ...s, gameProduct: GAME_PRODUCT }; });
     ipcMain.handle('phom:machine-id', () => ({ machineId: licenseGuard ? licenseGuard.machineId() : null }));
-    ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), devBypass: devBypass.allowed === true, licenseMode: devBypass.allowed ? 'DEVELOPMENT_BYPASS' : 'LICENSED', proxySecret: (ensureStores(), proxySecretStore.capability()), chromiumSandbox: { mode: lastSandboxPolicy.mode, disabled: !!lastSandboxPolicy.sandboxDisabled, banner: lastSandboxPolicy.banner || null } }));
+    ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), autoPlayLicensed: autoPlayLicensed(), devBypass: devBypass.allowed === true, licenseMode: devBypass.allowed ? 'DEVELOPMENT_BYPASS' : 'LICENSED', proxySecret: (ensureStores(), proxySecretStore.capability()), chromiumSandbox: { mode: lastSandboxPolicy.mode, disabled: !!lastSandboxPolicy.sandboxDisabled, banner: lastSandboxPolicy.banner || null } }));
 
     // Proxy config (metadata only; passwords never returned to the renderer).
     ipcMain.handle('phom:proxy-list', guarded(() => { ensureStores(); return { ok: true, proxies: proxyConfigStore.list() }; }));

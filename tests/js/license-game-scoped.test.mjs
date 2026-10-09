@@ -37,11 +37,11 @@ const payloadOf = (license) => JSON.parse(fromBase64url(license.split('.')[1]).t
 const signRaw = (payload, game) => `WVPT1.${base64url(canonicalJson(payload))}.${base64url(crypto.sign(null, Buffer.from(canonicalJson(payload)), privateKeyForGame(game)))}`;
 
 // ---------------- game configuration ----------------
-test('game configs: canonical ids, per-game signing key ids, PHOM has no features, AVIATOR has its 4', () => {
+test('game configs: canonical ids, per-game signing key ids, PHOM has "Cho dùng Tự đánh" only, AVIATOR has its 4', () => {
   assert.deepEqual(Object.keys(GAME_CONFIGS).sort(), ['AVIATOR', 'PHOM']);
   assert.equal(GAME_CONFIGS.PHOM.signingKeyId, 'PHOM_V1');
   assert.equal(GAME_CONFIGS.AVIATOR.signingKeyId, 'AVIATOR_V1');
-  assert.deepEqual(GAME_CONFIGS.PHOM.features, []);
+  assert.deepEqual(GAME_CONFIGS.PHOM.features.map((f) => [f.key, f.label]), [['autoRun', 'Cho dùng Tự đánh']]);
   assert.deepEqual(GAME_CONFIGS.AVIATOR.features.map((f) => f.key), ['autoRun', 'jackpotLive', 'jackpotGate', 'roundHistory']);
   for (const g of ['PHOM', 'AVIATOR']) {
     const trial = GAME_CONFIGS[g].plans.find((p) => p.id === 'TRIAL');
@@ -56,11 +56,29 @@ test('game configs: canonical ids, per-game signing key ids, PHOM has no feature
   assert.doesNotMatch(JSON.stringify(publicGameConfigs()), /PRIVATE|\.pem/i);
 });
 
-test('stale features from another game never reach the signature', () => {
-  const stale = { autoRun: true, jackpotLive: true, jackpotGate: true, roundHistory: true };
+test('stale features from another game never reach the signature (PHOM keeps only its Tự đánh tick)', () => {
+  const stale = { autoRun: false, jackpotLive: true, jackpotGate: true, roundHistory: true };
   assert.deepEqual(signedFeaturesFor('PHOM', stale), { autoRun: false, jackpotLive: false, jackpotGate: false, roundHistory: false });
   const p = buildGamePayload({ game: 'PHOM', plan: 'PRO', machineId: MACHINE, features: stale }, { issuedAt: ISSUED, licenseId: 'LIC-AAAABBBB' });
   assert.deepEqual(p.features, { autoRun: false, jackpotLive: false, jackpotGate: false, roundHistory: false });
+});
+
+test('PHOM "Cho dùng Tự đánh": signed only when the admin ticks it — never by a plan default', () => {
+  const at = { issuedAt: ISSUED, licenseId: 'LIC-AAAABBBB' };
+  for (const plan of ['TRIAL', 'STANDARD', 'PRO']) assert.equal(buildGamePayload({ game: 'PHOM', plan, machineId: MACHINE }, at).features.autoRun, false, plan + ' without a tick');
+  const ticked = buildGamePayload({ game: 'PHOM', plan: 'STANDARD', machineId: MACHINE, features: { autoRun: true, jackpotLive: true } }, at);
+  assert.deepEqual(ticked.features, { autoRun: true, jackpotLive: false, jackpotGate: false, roundHistory: false });
+  const lic = issue('PHOM', { features: { autoRun: true } });
+  assert.equal(verifyIn('PHOM', lic).ok, true);
+  assert.equal(payloadOf(lic).features.autoRun, true, 'the right is inside the signed payload');
+  const forged = `WVPT1.${base64url(canonicalJson({ ...payloadOf(issue('PHOM')), features: { autoRun: true, jackpotLive: false, jackpotGate: false, roundHistory: false } }))}.${issue('PHOM').split('.')[2]}`;
+  assert.equal(verifyIn('PHOM', forged).ok, false, 'ticking it in a sold key breaks the signature');
+  const diag = (l) => diagnoseLicense(l, { expectedGame: 'PHOM', machineId: MACHINE, nowMs: NOW_MS, signingKeys, productKeyIds }).steps.find((x) => x.id === 'autoPlay');
+  assert.match(diag(lic).detail, /được dùng/);
+  assert.match(diag(issue('PHOM')).detail, /không được dùng/);
+  // the CLI: a PHOM key gets the right only with an explicit --auto-run (the plan presets would grant it)
+  const cli = read('tools/license-generator/generate-license.mjs');
+  assert.match(cli, /gameProduct === 'PHOM'\s*\? \{ autoRun: boolArg\('auto-run', false\), jackpotLive: false, jackpotGate: false, roundHistory: false \}/);
 });
 
 test('game + signing key id are INSIDE the signed canonical payload', () => {

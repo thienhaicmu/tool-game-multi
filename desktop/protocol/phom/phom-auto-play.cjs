@@ -7,6 +7,7 @@
 //
 //   tableGuard(snap, toolUids)             every uid of the round (DEAL lpi) is one of the tool's accounts (P1–P3 or a reserve)?
 //   nextStep(snap, uid, offered, avoid, toolUids) → { action, cards, why } | { wait, why } | { stop, code, message }
+//   stateKey(snap, uid)                    changes when something THIS account's step depends on changed
 //
 // offered = the game's buttons shown right now (play-actions buildOfferedScript); the step is one of them:
 //   Ù shown                                → BAO_U
@@ -81,4 +82,17 @@ function nextStep(snap, uid, offered, avoid = new Set(), toolUids = []) {
 
 const stepKey = (s) => (s && s.action ? s.action + ':' + (s.cards || []).join(',') : '');
 
-module.exports = { tableGuard, nextStep, stepKey };
+// What THIS account's next step depends on: its own hand / phỏm / discards / sends + the public pile and eats. A frame
+// that changes only another account's own hand leaves it alone — so it neither re-opens a press that already went out
+// nor forgets an Ăn the game refused (with three accounts on, their frames arrive all the time).
+function stateKey(snap, uid) {
+  const p = (snap && snap.players && snap.players[String(uid)]) || {};
+  return [
+    snap && snap.roundSeq, ((snap && snap.roundPlayers) || []).join('.'),
+    (p.currentCards || []).slice().sort((a, b) => a - b).join('.'),
+    (p.melds || []).map((m) => (m.cards || []).length).join('.'), (p.discardedHistory || []).length, (p.sentCards || []).length,
+    ((snap && snap.observedDiscardEvents) || []).length, ((snap && snap.eats) || []).length,
+  ].join('|');
+}
+
+module.exports = { tableGuard, nextStep, stepKey, stateKey };

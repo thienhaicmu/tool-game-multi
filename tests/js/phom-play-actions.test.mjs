@@ -195,3 +195,20 @@ test('GỢI Ý ĐÁNH: the loose cards in two groups — chắc chắn không b�
   assert.match(play, /lá ít rủi ro nhất: /, 'no safe card → says so and names the least risky one');
   assert.ok(read('ui-phom/phom-qa.css').includes('.play-sug {'));
 });
+
+// review 2026-10-09 (TỰ ĐÁNH on three accounts)
+test('feature: a tool click on an account TỰ ĐÁNH plays is refused; a press the page never answers frees the browser', async () => {
+  const ipc = {};
+  const ok = { Runtime: { evaluate: async () => ({ result: { value: { ok: true, code: 'PHOM_PLAY_PRESSED' } } }) } };
+  const f = createPlayActionsFeature({ clientFor: () => ok, manualBlocked: (rid) => (rid === 'BR-1' ? 'Acc này đang Tự đánh' : null) });
+  f.registerIpc((ch, fn) => { ipc[ch] = fn; });
+  assert.equal((await ipc['phom:play-action'](null, { runId: 'BR-1', action: 'BOC' })).error.code, 'PHOM_PLAY_AUTO_ON');
+  assert.equal((await ipc['phom:play-action'](null, { runId: 'BR-2', action: 'BOC' })).ok, true);
+  assert.equal((await f.act('BR-1', { action: 'BOC' })).ok, true, 'TỰ ĐÁNH itself presses through act()');
+  let calls = 0;
+  const hung = { Runtime: { evaluate: () => { calls += 1; return calls === 1 ? new Promise(() => {}) : ok.Runtime.evaluate(); } } };
+  const g = createPlayActionsFeature({ clientFor: () => hung, timeoutMs: 10 });
+  const r = await g.act('BR-3', { action: 'DANH', cards: [5] });
+  assert.deepEqual([r.ok, r.error.code], [false, 'PHOM_PLAY_FAILED']);
+  assert.equal((await g.act('BR-3', { action: 'BOC' })).ok, true, 'not stuck "busy" after the hung press');
+});

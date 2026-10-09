@@ -90,6 +90,8 @@ function diagnoseLicense(token, options = {}) {
   const shape = Number.isFinite(nowMs) ? validatePayloadShape(p, nowSeconds) : 'TRUSTED_TIME_UNAVAILABLE';
   const planDetail = p.v === 2 ? `${p.plan} · ${p.maxBrowsers} profiles / ${p.maxConcurrentBrowsers} browsers` : 'LEGACY';
   steps.push(step('plan', 'Gói / giới hạn', shape === null, shape === null ? planDetail : shape));
+  // PHỎM right (not part of activation — the key activates either way): TỰ ĐÁNH only with features.autoRun signed true
+  if (expected === 'PHOM') steps.push(step('autoPlay', 'Tự đánh', null, p.v === 2 && p.features && p.features.autoRun === true ? 'được dùng' : 'không được dùng (key không tích "Cho dùng Tự đánh")'));
 
   // Final: the exact runtime decision for the target app.
   const verdict = verifyLicense(token, { machineId, nowMs, expectedGameProduct: expected, signingKeys, productKeyIds });

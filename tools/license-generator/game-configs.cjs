@@ -10,10 +10,11 @@
 //   - Signing key ids come from public-key.cjs (PRODUCT_DEFAULT_KEY_ID) — one keypair
 //     per game, so the config never chooses a key on its own.
 //   - Plans / capacities / durations come from PLAN_UI_DEFAULTS (plan-ui-defaults.cjs).
-//   - Features: only AVIATOR consumes signed features (main.cjs enforces autoRun,
-//     jackpotLive, jackpotGate, roundHistory). The PHOM runtime consumes NONE of them, so
-//     PHOM exposes no feature options and signs them all `false` (schema v2 still
-//     requires the four booleans; false = "not granted", the fail-closed default).
+//   - Features: AVIATOR consumes all four (main.cjs enforces autoRun, jackpotLive,
+//     jackpotGate, roundHistory). PHOM consumes ONE: autoRun = "Cho dùng Tự đánh"
+//     (phom-main autoPlayLicensed). It is never on by default — the admin ticks it per key;
+//     the other three are signed `false` (schema v2 still requires the four booleans;
+//     false = "not granted", the fail-closed default).
 // ---------------------------------------------------------------------------
 
 const { PLANS, GAME_PRODUCTS, FEATURE_KEYS } = require('../../desktop/licensing/entitlements.cjs');
@@ -35,6 +36,11 @@ const DURATIONS = Object.freeze([
 const CAPACITIES = Object.freeze([
   Object.freeze({ key: 'maxBrowsers', label: 'Max Profiles', min: 1, max: 100000 }),
   Object.freeze({ key: 'maxConcurrentBrowsers', label: 'Max Browsers', min: 1, max: 100000, notAbove: 'maxBrowsers' }),
+]);
+
+// PHOM: TỰ ĐÁNH (docs/phom-danh-bai.md §7) only with this ticked — the plans never tick it
+const PHOM_FEATURES = Object.freeze([
+  Object.freeze({ key: 'autoRun', label: 'Cho dùng Tự đánh' }),
 ]);
 
 const AVIATOR_FEATURES = Object.freeze([
@@ -71,7 +77,7 @@ const GAME_CONFIGS = Object.freeze({
     plans: plansFor(false),
     durations: DURATIONS,
     capacities: CAPACITIES,
-    features: Object.freeze([]),
+    features: PHOM_FEATURES,
   }),
   AVIATOR: Object.freeze({
     game: 'AVIATOR',

@@ -157,10 +157,12 @@ Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bậ
 
 | Quy tắc | Nội dung |
 |---|---|
-| Chỉ bàn toàn acc tool | Chỉ chạy khi **mọi người chơi trong ván** (`roundPlayers` = `lpi` của gói 850) là acc của tool: P1/P2/P3 **và acc dự bị** (P4/P5) của phiên (`toolUids`). Có người ngoài tool trong ván ⇒ không bật được; đang chạy thì **tự tắt** trước khi bấm . Công tắc gắn theo **trình duyệt**: sau ĐỔI, tab P1 là trình duyệt dự bị (công tắc riêng, tắt sẵn). |
+| Chỉ bàn toàn acc tool | Chỉ chạy khi **mọi người chơi trong ván** (`roundPlayers` = `lpi` của gói 850) là acc của tool: P1/P2/P3 **và acc dự bị** (P4/P5) của phiên (`toolUids`). Có người ngoài tool trong ván ⇒ không bật được; đang chạy thì **tự tắt** trước khi bấm. Acc phải là người chơi của **chính ván đó**: game hiện nút cho acc mà acc không có trong `lpi` (acc đang ở bàn khác — Dò Key / Tạo / vào tay) ⇒ tự tắt, kể cả nút Ù. Công tắc gắn theo **trình duyệt**: sau ĐỔI, tab P1 là trình duyệt dự bị (công tắc riêng, tắt sẵn). |
 | Đúng kịch bản | Nước đi = gợi ý của tab (§2), cùng ranh giới thông tin (bài của chính acc + công khai): Ù nếu game hiện nút Ù → **Ăn** nếu lá vừa đánh ghép được phỏm, không thì **Bốc** → lượt 1–3 **Đánh** lá "Nên đánh" → lượt cuối **① Hạ** bộ trong Gợi ý lượt hạ → **② Gửi** các lá gửi được **ngay** (gửi nối tiếp ở lần bấm sau) → **③ Đánh** lá còn lại an toàn nhất. Móm (không có phỏm) ⇒ chỉ đánh. |
-| Bấm như người | Đọc nút game đang hiện (chỉ đọc), rồi bấm qua đúng đường của nút trên tool (`checkPlay`, một thao tác một lúc). Một nước chỉ bấm khi đã giữ nguyên ≥ 0,9 giây (chờ bàn cập nhật) và không bấm lại cùng một nước khi bàn chưa đổi. |
-| Tự tắt | Có người ngoài tool · `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · bấm xong 6 giây bàn không đổi (riêng **Ăn** bị từ chối thì chuyển sang **Bốc**) · game hiện nút nhưng 12 giây không có nước hợp lệ (ví dụ có phỏm cần hạ mà game chưa hiện nút Hạ) · trang tải lại · đóng trình duyệt. Tắt rồi thì **không tự bật lại** — lý do hiện cạnh công tắc. |
+| Quyền key | Chỉ key PHOM có tích **"Cho dùng Tự đánh"** ở Generator (ký trong `features.autoRun`) mới bật được. Key ký trước khi có ô này ⇒ không có quyền (cấp key mới). Không có quyền ⇒ công tắc khoá + "Key chưa có quyền Tự đánh"; main cũng từ chối (`PHOM_AUTO_PLAY_NOT_LICENSED`); đang chạy mà mất quyền (đổi key) ⇒ tự tắt. Dev bypass: được dùng. |
+| Bấm như người | Đọc nút game đang hiện (chỉ đọc), rồi bấm qua đúng đường của nút trên tool (`checkPlay`, một thao tác một lúc). Một nước chỉ bấm khi đã giữ nguyên ≥ 0,9 giây (chờ bàn cập nhật) và không bấm lại cùng một nước khi **những gì nước đó phụ thuộc** chưa đổi (`stateKey`: bài/phỏm/lá đánh/lá gửi của chính acc + lá trên bàn + lá bị ăn — gói tin bài riêng của 2 acc kia không tính, nên không bấm lặp và không thử lại Ăn đã bị từ chối). |
+| 3 acc cùng bật | Mỗi lượt kiểm tra các acc **song song**; mỗi lần gọi trang có giới hạn 5 giây (một trình duyệt treo không giữ 2 acc còn lại, nút không bị kẹt "đang thực hiện"). Acc đang Tự đánh thì nút bấm tay trên tool của acc đó bị từ chối (`PHOM_PLAY_AUTO_ON`) — tắt Tự đánh trước khi bấm tay. |
+| Tự tắt | Có người ngoài tool · mất quyền key · trình duyệt không trả lời khi bấm · `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · bấm xong 6 giây bàn không đổi (riêng **Ăn** bị từ chối thì chuyển sang **Bốc**) · game hiện nút nhưng 12 giây không có nước hợp lệ (ví dụ có phỏm cần hạ mà game chưa hiện nút Hạ) · trang tải lại · đóng trình duyệt. Tắt rồi thì **không tự bật lại** — lý do hiện cạnh công tắc. |
 | Tắt tính năng | `PHOM_FEATURES_OFF=auto-play` (hoặc `play-actions`, vì tự đánh bấm qua đó). |
 
 ## 6. Lịch sử
@@ -175,4 +177,5 @@ Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bậ
 | 2b40377 | Khu Gợi ý đánh (2 nhóm an toàn), áp dụng mọi lượt |
 | 5cf46c9 | Giữ cạ sống ở lượt 1–3; lượt cuối như cũ |
 | 70c2454 | Lượt hạ = Hạ → Gửi → Đánh, điểm thấp nhất |
-| (chưa commit) | Tự đánh từng acc, chỉ bàn toàn acc tool (§7); tab Đánh bài cập nhật theo bàn |
+| 1fb02e8 | Tự đánh từng acc, chỉ bàn toàn acc tool (§7); tab Đánh bài cập nhật theo bàn |
+| (chưa commit) | Tự đánh: quyền key "Cho dùng Tự đánh"; acc ở bàn khác ⇒ tắt; 3 acc song song, gọi trang có giới hạn; chặn bấm tay khi đang tự đánh |
