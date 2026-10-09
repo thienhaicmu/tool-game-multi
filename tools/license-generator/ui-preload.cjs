@@ -17,4 +17,13 @@ contextBridge.exposeInMainWorld('licenseGenerator', {
   // Google Sheet ledger status + retry (no credentials ever cross this bridge).
   sheetStatus: () => ipcRenderer.invoke('sheet-status'),
   syncLicense: record => ipcRenderer.invoke('sheet-sync', record),
+  // Local key/user management (offline store, alongside the Sheet).
+  keysList: input => ipcRenderer.invoke('keys-list', input),
+  keysUsers: () => ipcRenderer.invoke('keys-users'),
+  keysStats: () => ipcRenderer.invoke('keys-stats'),
+  keyGet: licenseId => ipcRenderer.invoke('key-get', licenseId),
+  keyRevoke: input => ipcRenderer.invoke('key-revoke', input),
+  keyRestore: licenseId => ipcRenderer.invoke('key-restore', licenseId),
+  keyDelete: licenseId => ipcRenderer.invoke('key-delete', licenseId),
+  storeOpenFolder: () => ipcRenderer.invoke('store-open-folder'),
 });

@@ -11,6 +11,7 @@
     <div class="brand">🔑 LICENSE GENERATOR</div>
     <nav class="tabs" role="tablist">
       <button id="tab-create" class="tab active" type="button" role="tab">Tạo license</button>
+      <button id="tab-users" class="tab" type="button" role="tab">Người dùng</button>
       <button id="tab-inspect" class="tab" type="button" role="tab">Kiểm tra kích hoạt</button>
     </nav>
     <div class="status">
@@ -120,6 +121,21 @@
       </div>
     </section>
   </main>
+
+  <!-- ============ NGƯỜI DÙNG (kho cục bộ) ============ -->
+  <main id="view-users" class="users-view" hidden>
+    <div class="users-bar">
+      <input id="u-q" class="mono" placeholder="Tìm theo tên khách / SĐT / mã key / mã máy…">
+      <select id="u-status">
+        <option value="all">Tất cả</option>
+        <option value="ACTIVE">Còn hiệu lực</option>
+        <option value="REVOKED">Đã thu hồi</option>
+      </select>
+      <span id="u-stats" class="hint"></span>
+    </div>
+    <div id="u-list" class="users-list"></div>
+  </main>
+
   <script src="ui.js"></script>
 </body>
 </html>

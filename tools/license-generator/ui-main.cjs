@@ -11,6 +11,20 @@ const { diagnoseLicense } = require('./license-diagnostics.cjs');
 const { resolveSellerResources, privateKeyPathForProduct, sheetTitleForProduct, GOOGLE_CREDENTIAL_FILE } = require('./seller-resources.cjs');
 const sellerRes = { privateKeyPathForProduct, sheetTitleForProduct };
 const { loadServiceAccount, GoogleSheetClient, trySaveRecord } = require('./google-sheet.cjs');
+const { createKeyStore } = require('./key-store.cjs');
+
+// LOCAL store of issued keys (alongside the Sheet). Lazy so app.getPath is ready.
+let _store = null;
+function store() { if (!_store) _store = createKeyStore({ dir: path.join(app.getPath('userData'), 'generator') }); return _store; }
+function toStoreEntry(payload, license, metadata) {
+  return {
+    licenseId: payload.licenseId, gameProduct: payload.gameProduct, plan: payload.plan, machineId: payload.machineId,
+    customerName: (metadata && metadata.customerName) || '', phone: (metadata && metadata.phone) || '', note: (metadata && metadata.note) || '',
+    issuedAt: payload.issuedAt, expiresAt: payload.expiresAt,
+    maxBrowsers: payload.maxBrowsers, maxConcurrentBrowsers: payload.maxConcurrentBrowsers,
+    features: payload.features || {}, license,
+  };
+}
 
 let win;
 
@@ -212,10 +226,21 @@ ipcMain.handle('generate-license', async (_event, input) => {
     createdAt: new Date().toISOString(), // management timestamp; fixed for retries
   };
   const record = { payload, license, metadata };
-  // License is CREATED regardless of Google outcome. Attempt the ledger save now.
+  // Save to the LOCAL store first (always succeeds offline), then attempt the Google Sheet.
+  try { store().add(toStoreEntry(payload, license, metadata)); } catch (e) { /* local record is best-effort */ }
   const sheet = await saveRecordToSheet(record);
   return { ok: true, payload, license, metadata, sheet };
 });
+
+// ---- LOCAL key/user management (offline; the Sheet stays the online ledger) ----
+ipcMain.handle('keys-list', (_event, input) => store().list({ q: (input && input.q) || '', status: (input && input.status) || 'all' }));
+ipcMain.handle('keys-users', () => store().users());
+ipcMain.handle('keys-stats', () => store().stats());
+ipcMain.handle('key-get', (_event, licenseId) => store().get(String(licenseId || '')));
+ipcMain.handle('key-revoke', (_event, input) => { const r = store().setStatus(String((input && input.licenseId) || ''), 'REVOKED', (input && input.reason) || ''); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key trong kho.' } }; });
+ipcMain.handle('key-restore', (_event, licenseId) => { const r = store().setStatus(String(licenseId || ''), 'ACTIVE'); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key.' } }; });
+ipcMain.handle('key-delete', (_event, licenseId) => { const r = store().remove(String(licenseId || '')); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key.' } }; });
+ipcMain.handle('store-open-folder', () => { try { require('electron').shell.openPath(store().dir); return { ok: true }; } catch (e) { return { ok: false, error: { message: e.message } }; } });
 
 // Retry / explicit sync of an ALREADY-generated license — no regeneration. Same
 // licenseId => idempotent upsert => never a duplicate row.

@@ -89,3 +89,29 @@ textarea { resize: vertical; }
 .error-title { font-weight: 700; }
 .error-reason span { color: var(--text-2); }
 .error-box summary { font-size: 11px; cursor: pointer; color: var(--text-2); }
+
+/* ---- Người dùng (kho cục bộ) ---- */
+.users-view { display: flex; flex-direction: column; min-height: 0; overflow: hidden; }
+.users-bar { display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-bottom: 1px solid var(--border); background: var(--panel); }
+.users-bar #u-q { flex: 1 1 auto; min-width: 0; height: 30px; padding: 0 9px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text); }
+.users-bar select { flex: 0 0 auto; width: 150px; height: 30px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-2); color: var(--text); }
+.users-bar #u-stats { margin-left: auto; }
+.users-list { flex: 1; overflow: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; }
+.users-list .empty { text-align: center; color: var(--text-faint); padding: 36px; }
+.ugroup { border: 1px solid var(--border); border-radius: 9px; overflow: hidden; background: var(--panel); }
+.ug-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; padding: 8px 11px; background: var(--panel-2); border-bottom: 1px solid var(--border); }
+.ug-head b { font-size: 13px; }
+.ug-keys { display: flex; flex-direction: column; }
+.krow { display: grid; grid-template-columns: 1fr auto auto; gap: 10px; align-items: center; padding: 7px 11px; border-top: 1px solid var(--border); }
+.krow:first-child { border-top: 0; }
+.krow.revoked { opacity: .6; }
+.kcol { min-width: 0; }
+.kcol b { font-size: 12px; }
+.kbadge { font-size: 11px; font-weight: 700; padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); }
+.kbadge.ok { color: var(--success); background: var(--success-bg); border-color: #b7e0c4; }
+.kbadge.warn { color: var(--warning); background: var(--warning-bg); border-color: #f0dcb0; }
+.kbadge.bad { color: var(--error); background: var(--error-bg); border-color: #f0c2c2; }
+.kacts { display: flex; gap: 5px; }
+.mini { height: 26px; padding: 0 9px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); color: var(--text); font-size: 12px; font-weight: 600; cursor: pointer; }
+.mini:hover { background: var(--panel); }
+.mini.warn { color: var(--error); border-color: #f0c2c2; }

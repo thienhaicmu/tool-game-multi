@@ -241,10 +241,74 @@
 
   function showTab(which) {
     $('view-create').hidden = which !== 'create';
+    $('view-users').hidden = which !== 'users';
     $('view-inspect').hidden = which !== 'inspect';
     $('tab-create').classList.toggle('active', which === 'create');
+    $('tab-users').classList.toggle('active', which === 'users');
     $('tab-inspect').classList.toggle('active', which === 'inspect');
     if (which === 'inspect' && game) $('inspect-game').value = game.game;
+    if (which === 'users') loadUsers();
+  }
+
+  // ---- NGƯỜI DÙNG (local store) ----
+  function elem(tag, attrs, ...kids) {
+    const n = document.createElement(tag);
+    if (attrs) for (const k of Object.keys(attrs)) { if (k === 'class') n.className = attrs[k]; else if (k.startsWith('on') && typeof attrs[k] === 'function') n.addEventListener(k.slice(2), attrs[k]); else if (attrs[k] != null && attrs[k] !== false) n.setAttribute(k, attrs[k]); }
+    for (const kid of kids) { if (kid == null || kid === false) continue; n.appendChild(typeof kid === 'string' ? document.createTextNode(kid) : kid); }
+    return n;
+  }
+  let userFilterTimer = null;
+  async function refreshUserStats() { let s; try { s = await api.keysStats(); } catch { s = null; } if (s) $('u-stats').textContent = `${s.total} key · ${s.active} còn hiệu lực · ${s.users} người dùng`; }
+  async function loadUsers() {
+    const box = $('u-list'); if (!box) return;
+    box.replaceChildren(elem('div', { class: 'hint' }, 'Đang tải…'));
+    let keys; try { keys = await api.keysList({ q: $('u-q').value, status: $('u-status').value }); } catch { keys = []; }
+    refreshUserStats();
+    if (!keys.length) { box.replaceChildren(elem('div', { class: 'empty' }, $('u-q').value ? 'Không tìm thấy.' : 'Chưa cấp key nào.')); return; }
+    const groups = new Map();
+    for (const k of keys) { const name = (k.customerName && k.customerName.trim()) || k.machineId || '—'; if (!groups.has(name)) groups.set(name, []); groups.get(name).push(k); }
+    box.replaceChildren(...[...groups.entries()].map(([name, ks]) => userGroup(name, ks)));
+  }
+  function userGroup(name, keys) {
+    const active = keys.filter((k) => (k.status || 'ACTIVE') === 'ACTIVE').length;
+    const phone = keys.map((k) => k.phone).find(Boolean);
+    return elem('div', { class: 'ugroup' },
+      elem('div', { class: 'ug-head' }, elem('b', null, name), elem('span', { class: 'hint' }, (phone ? phone + ' · ' : '') + `${keys.length} key · ${active} còn hiệu lực`)),
+      elem('div', { class: 'ug-keys' }, ...keys.map(keyRow)));
+  }
+  function keyRow(k) {
+    const revoked = (k.status || 'ACTIVE') === 'REVOKED';
+    const expired = Number(k.expiresAt) * 1000 < Date.now();
+    const badge = revoked ? ['Đã thu hồi', 'bad'] : expired ? ['Hết hạn', 'warn'] : ['Hiệu lực', 'ok'];
+    const cfg = configs.games[k.gameProduct];
+    const sub = `${cfg ? cfg.label : k.gameProduct} · ${k.plan} · HSD ${fmtDate(k.expiresAt)}`;
+    return elem('div', { class: 'krow' + (revoked ? ' revoked' : '') },
+      elem('div', { class: 'kcol' }, elem('b', { class: 'mono' }, k.licenseId), elem('div', { class: 'hint' }, sub)),
+      elem('span', { class: 'kbadge ' + badge[1] }, badge[0]),
+      elem('div', { class: 'kacts' },
+        elem('button', { class: 'mini', title: 'Sao chép key', onclick: () => api.copy(k.license) }, 'Chép'),
+        elem('button', { class: 'mini', title: 'Gia hạn — soạn key mới cho máy này', onclick: () => extendKey(k) }, 'Gia hạn'),
+        revoked ? elem('button', { class: 'mini', onclick: () => doRestore(k.licenseId) }, 'Khôi phục')
+          : elem('button', { class: 'mini warn', title: 'Đánh dấu thu hồi (ghi chú cục bộ)', onclick: () => doRevoke(k.licenseId) }, 'Thu hồi'),
+        elem('button', { class: 'mini', title: 'Xóa khỏi kho', onclick: () => doDelete(k.licenseId) }, '🗑')));
+  }
+  async function doRevoke(licenseId) { const reason = window.prompt('Lý do thu hồi (ghi chú cục bộ):', ''); if (reason === null) return; const r = await api.keyRevoke({ licenseId, reason }); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
+  async function doRestore(licenseId) { const r = await api.keyRestore(licenseId); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
+  async function doDelete(licenseId) { if (!window.confirm('Xóa key ' + licenseId + ' khỏi kho cục bộ? (không thu hồi ở máy khách)')) return; const r = await api.keyDelete(licenseId); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
+  // GIA HẠN: prefill the create form from a key (same game/machine/customer), then switch to Tạo license
+  function extendKey(k) {
+    showTab('create');
+    $('game').value = k.gameProduct;
+    selectGame(k.gameProduct);
+    const planOpt = game.plans.find((p) => p.id === k.plan); if (planOpt) { $('plan').value = planOpt.id; applyPlan(null); }
+    $('machine-id').value = k.machineId || '';
+    $('customer-name').value = k.customerName || '';
+    $('customer-phone').value = k.phone || '';
+    $('note').value = k.note || '';
+    for (const c of game.capacities) { const inp = $(`cap-${c.key}`); if (inp && k[c.key] != null) inp.value = k[c.key]; }
+    for (const f of game.features) { const cb = document.querySelector(`#features input[data-feature="${f.key}"]`); if (cb) cb.checked = !!(k.features && k.features[f.key] === true); }
+    applyDependencies();
+    updatePreview();
   }
 
   // ---- wire ----
@@ -257,7 +321,10 @@
   $('copy-license').onclick = copyKey;
   $('inspect').onclick = inspect;
   $('tab-create').onclick = () => showTab('create');
+  $('tab-users').onclick = () => showTab('users');
   $('tab-inspect').onclick = () => showTab('inspect');
+  $('u-q').addEventListener('input', () => { clearTimeout(userFilterTimer); userFilterTimer = setTimeout(loadUsers, 180); });
+  $('u-status').addEventListener('change', loadUsers);
 
   (async () => {
     configs = await api.gameConfigs();
