@@ -253,6 +253,13 @@ button.stat:disabled { opacity: 1; }
 .sug-row .card-face.t-safe { border-color: var(--good); } .sug-row .card-face.t-likely { border-color: #d97706; }
 .sug-row .card-face.picked { border: 2px solid var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .25); }
 .sug-none { font-size: 12px; }
+/* the hạ turn: ① Hạ → ② Gửi → ③ Đánh */
+.play-steps { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid #ddd6fe; border-radius: 8px; background: #f5f3ff; font-size: 12.5px; }
+.play-steps .step-h { display: flex; gap: 10px; align-items: baseline; }
+.play-steps .step { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.play-steps .step > b { min-width: 52px; }
+.play-steps .laid { padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); font-size: 12px; }
+.play-steps .laid.t-safe { border-color: var(--good); color: var(--good); } .play-steps .laid.t-likely { border-color: #d97706; color: #b45309; } .play-steps .laid.t-risk { border-color: #dc2626; color: #b91c1c; }
 .sug-row .card-face { position: relative; }
 .ca-tag { position: absolute; bottom: -7px; left: 50%; transform: translateX(-50%); font-style: normal; font-size: 9.5px; font-weight: 700; padding: 0 3px; border-radius: 4px; background: #7c3aed; color: #fff; line-height: 13px; }
 .play-sug .sug-title { text-transform: none; letter-spacing: 0; }

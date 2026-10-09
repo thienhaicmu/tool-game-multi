@@ -157,24 +157,34 @@ function discardRanking(snap, uid) {
 }
 
 // HẠ: which phỏm to lay + the discard after it, by the same order (tier first, then the fewest points left)
+// HẠ → GỬI → ĐÁNH (the last turn, user 2026-10-09): every way to lay phỏm × every card to discard; every other loose
+// card that fits a phỏm already on the table is sent (in a chain: 6♥ into 3♥4♥5♥ lets 7♥ follow). Chosen by the same
+// order as a discard: the discard's safety first (chắc chắn → có thể không bị ăn), then the fewest points left. A
+// sendable card may be kept as the discard when it is the safest one.
 function haPlan(snap, uid) {
   const hand = handOf(snap, uid);
   if (!hand || hand.length < 3) return { ok: false };
   const { tier } = safetyOf(snap, uid);
   const eaten = eatenBy(snap, uid);
+  const laid = laidOnTable(snap);
   let best = null;
   for (const a of arrangements(hand)) {
     if (!a.melds.length) continue;
     if ([...eaten].some((c) => hand.includes(c) && !a.melds.some((m) => m.includes(c)))) continue; // an eaten card must be laid
     for (const d of a.loose.length ? a.loose : [null]) {
+      const chain = sendChain(a.loose.filter((c) => c !== d), laid);
       const t = d == null ? TIER.SAFE : (tier.has(d) ? tier.get(d) : TIER.OTHER);
-      const left = a.points - (d == null ? 0 : cardPoints(d));
-      const cand = { melds: a.melds, discard: d, tier: t, pointsLeft: left };
-      if (!best || t < best.tier || (t === best.tier && (left < best.pointsLeft || (left === best.pointsLeft && a.melds.length > best.melds.length)))) best = cand;
+      const left = sumPoints(chain.rest);
+      const cand = { melds: a.melds, send: chain.sent, discard: d, tier: t, pointsLeft: left };
+      if (!best || t < best.tier || (t === best.tier && (left < best.pointsLeft || (left === best.pointsLeft && (a.melds.length > best.melds.length || (a.melds.length === best.melds.length && chain.sent.length > best.send.length)))))) best = cand;
     }
   }
   if (!best) return { ok: false };
-  return { ok: true, melds: best.melds.map((m) => m.map(view)), cards: best.melds.flat(), discard: best.discard == null ? null : { ...view(best.discard), tier: best.tier, tierLabel: TIER_LABEL[best.tier] }, pointsLeft: best.pointsLeft };
+  return {
+    ok: true, melds: best.melds.map((m) => m.map(view)), cards: best.melds.flat(),
+    send: best.send.map((x) => ({ ...view(x.code), owner: x.owner, meid: x.meid, into: x.into.map(view) })), sendCards: best.send.map((x) => x.code),
+    discard: best.discard == null ? null : { ...view(best.discard), tier: best.tier, tierLabel: TIER_LABEL[best.tier] }, pointsLeft: best.pointsLeft,
+  };
 }
 
 // the player who plays right BEFORE uid (the one whose discard uid may eat), from the public turn order
@@ -197,13 +207,39 @@ function takeInfo(snap, uid) {
 }
 
 // GỬI: hand cards that fit a laid phỏm on the table (the server picks the phỏm; this only says which fit)
+// every phỏm already laid on the table (anyone's) — where a card can be sent
+function laidOnTable(snap) {
+  const laid = [];
+  for (const p of Object.values((snap && snap.players) || {})) for (const m of (p.melds || [])) if ((m.cards || []).length) laid.push({ owner: p.uid, meid: m.meid, cards: m.cards.slice() });
+  return laid;
+}
+// a card fits a laid phỏm: it extends it into a valid phỏm (a 4-card set takes nothing more)
+const fitsMeld = (cards, code) => !cards.includes(code) && !!classifyMeld(cards.concat(code)) && !(classifyMeld(cards) === 'SET' && cards.length >= 4);
+// send what can be sent, in a chain (a sent card may open a place for the next) → { sent: [{ code, owner, meid, into }], rest }
+function sendChain(cards, laid) {
+  const melds = laid.map((m) => ({ ...m, cards: m.cards.slice() }));
+  const rest = cards.slice();
+  const sent = [];
+  for (let progress = true; progress;) {
+    progress = false;
+    for (const code of rest.slice()) {
+      const m = melds.find((x) => fitsMeld(x.cards, code));
+      if (!m) continue;
+      sent.push({ code, owner: m.owner, meid: m.meid, into: m.cards.slice() });
+      m.cards.push(code);
+      rest.splice(rest.indexOf(code), 1);
+      progress = true;
+    }
+  }
+  return { sent, rest };
+}
+// GỬI: hand cards that fit a laid phỏm on the table (the server picks the phỏm; this only says which fit)
 function sendTargets(snap, uid) {
   const hand = handOf(snap, uid) || [];
-  const laid = [];
-  for (const p of Object.values((snap && snap.players) || {})) for (const m of (p.melds || [])) laid.push({ owner: p.uid, meid: m.meid, cards: m.cards || [] });
+  const laid = laidOnTable(snap);
   const out = [];
   for (const code of hand) {
-    const fits = laid.filter((m) => m.cards.length && !m.cards.includes(code) && classifyMeld(m.cards.concat(code)) && !(classifyMeld(m.cards) === 'SET' && m.cards.length >= 4));
+    const fits = laid.filter((m) => fitsMeld(m.cards, code));
     if (fits.length) out.push({ ...view(code), into: fits.map((m) => ({ owner: m.owner, meid: m.meid, cards: m.cards.map(view) })) });
   }
   return out;
@@ -220,8 +256,7 @@ function checkPlay(snap, uid, action, cards) {
   if (missing.length) return { ok: false, message: 'Lá ' + missing.map((c) => view(c).label).join(' ') + ' không còn trên tay' };
   if (action === 'HA' && !arrangements(picked).some((a) => !a.loose.length && a.melds.length)) return { ok: false, message: 'Các lá đã chọn chưa thành phỏm (mỗi phỏm 3–4 lá cùng số, hoặc 3+ lá liền nhau cùng chất)' };
   if (action === 'GUI') {
-    const fits = new Set(sendTargets(snap, uid).map((x) => x.code));
-    const no = picked.filter((c) => !fits.has(c));
+    const no = sendChain(picked, laidOnTable(snap)).rest;
     if (no.length) return { ok: false, message: 'Lá ' + no.map((c) => view(c).label).join(' ') + ' không gửi được vào phỏm nào trên bàn' };
   }
   if (action === 'DANH' && eatenBy(snap, uid).has(picked[0])) return { ok: false, message: 'Lá đã ăn phải nằm trong phỏm — không đánh được' };
@@ -236,4 +271,4 @@ function playHelp(snap, uid) {
 }
 
 module.exports = {
-  checkPlay, playHelp, turnInfo, caPartners, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, takeInfo, sendTargets, prevOf };
+  checkPlay, playHelp, turnInfo, caPartners, sendChain, laidOnTable, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, takeInfo, sendTargets, prevOf };

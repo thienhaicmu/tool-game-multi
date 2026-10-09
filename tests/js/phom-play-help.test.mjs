@@ -155,3 +155,37 @@ test('a dead cạ (every card that would complete it is out) is not kept', () =>
   assert.deepEqual(H.caPartners(c('5♣'), cs('5♣ 7♣'), new Set()), [c('7♣')], 'a gap of 2 needs the middle card');
   assert.deepEqual(H.caPartners(c('5♣'), cs('5♣ 5♦'), new Set(cs('5♠ 5♥'))), [], 'a pair with both other suits out is dead');
 });
+
+// ---- HẠ → GỬI → ĐÁNH (the last turn): lay, send everything that fits (chained), discard by safety → points ----
+test('hạ plan sends what fits a phỏm on the table, in a chain, then discards — fewest points left', () => {
+  const s = withTurn(snap({
+    mine: cs('2♠ 2♣ 2♦ 6♥ 7♥ 9♦ Q♣'),
+    melds: { A: [{ meid: 3, cards: cs('3♥ 4♥ 5♥') }] },
+  }), 3);
+  const p = H.haPlan(s, 'B');
+  assert.deepEqual(p.melds.map((m) => m.map((x) => x.label).join(' ')), ['2♠ 2♣ 2♦']);
+  assert.deepEqual(p.send.map((x) => x.label), ['6♥', '7♥'], '7♥ goes after 6♥ (chain)');
+  assert.deepEqual(p.sendCards, cs('6♥ 7♥'));
+  assert.equal(p.discard.label, 'Q♣', 'equal safety: Q (12) out leaves 9 points');
+  assert.equal(p.pointsLeft, 9);
+});
+
+test('a sendable card is kept as the discard when it is the only safe one (safety before points)', () => {
+  // K♥ fits nothing… make 6♥ the only proven-safe card: every partner of 6♥ is public
+  const s = withTurn(snap({
+    mine: cs('2♠ 2♣ 2♦ 6♥ 9♦'),
+    melds: { A: [{ meid: 3, cards: cs('3♥ 4♥ 5♥') }] },
+    ledger: [...cs('6♠ 6♣ 6♦ 7♥ 8♥').map((code) => ({ code, status: 'DISCARDED', ownerUid: 'A' })), ...cs('3♥ 4♥ 5♥').map((code) => ({ code, status: 'MELDED', ownerUid: 'A' }))],
+  }), 3);
+  const p = H.haPlan(s, 'B');
+  assert.equal(p.discard.label, '6♥');
+  assert.equal(p.discard.tier, H.TIER.SAFE);
+  assert.deepEqual(p.send, []);
+  assert.equal(p.pointsLeft, 9);
+});
+
+test('check before Gửi accepts a chain the table allows; refuses a card with no place', () => {
+  const s = snap({ mine: cs('6♥ 7♥ K♣'), melds: { A: [{ meid: 3, cards: cs('3♥ 4♥ 5♥') }] } });
+  assert.equal(H.checkPlay(s, 'B', 'GUI', cs('7♥ 6♥')).ok, true, 'order does not matter: 6♥ then 7♥');
+  assert.match(H.checkPlay(s, 'B', 'GUI', cs('7♥')).message, /7♥ không gửi được/);
+});

@@ -719,10 +719,20 @@
       body.appendChild(sug);
       // ---- gợi ý HẠ (fewest points, then the discard after it by the same order) + GỬI ----
       const ha = help && help.ha;
-      if (ha && ha.ok) body.appendChild(el('div', { class: 'play-hint' }, el('span', { class: 'g-label' }, 'Gợi ý hạ'),
-        ...ha.melds.map((m) => el('span', { class: 'laid' }, labels(m))),
-        ha.discard ? el('span', { class: 'muted' }, 'rồi đánh ' + ha.discard.label + ' (' + ha.discard.tierLabel.toLowerCase() + ') · còn ' + ha.pointsLeft + ' điểm') : el('span', { class: 'muted' }, 'hết bài rác'),
-        el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId, codes: ha.cards.slice() }; renderApp(); } }, 'Chọn bộ hạ')));
+      // HẠ → GỬI → ĐÁNH: the three steps of the hạ turn, each with a button that picks its cards (the user presses)
+      if (ha && ha.ok) {
+        const pickBtn = (codes, label) => el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId, codes: codes.slice() }; renderApp(); } }, label);
+        body.appendChild(el('div', { class: 'play-steps' },
+          el('div', { class: 'step-h' }, el('span', { class: 'g-label' }, 'Gợi ý lượt hạ'), el('span', { class: 'muted' }, 'Hạ → Gửi → Đánh · còn ' + ha.pointsLeft + ' điểm')),
+          el('div', { class: 'step' }, el('b', null, '① Hạ'), ...ha.melds.map((m) => el('span', { class: 'laid' }, labels(m))), pickBtn(ha.cards, 'Chọn bộ hạ')),
+          el('div', { class: 'step' }, el('b', null, '② Gửi'), ...(ha.send.length
+            ? ha.send.map((x) => el('span', { class: 'laid', title: 'vào phỏm ' + labels(x.into) + ' của ' + nameOfUid(x.owner) }, x.label + ' → ' + labels(x.into)))
+              .concat([pickBtn(ha.sendCards, 'Chọn lá gửi')])
+            : [el('span', { class: 'muted' }, 'không có lá gửi được')])),
+          el('div', { class: 'step' }, el('b', null, '③ Đánh'), ha.discard
+            ? el('span', { class: 'laid ' + TIER_CLASS[ha.discard.tier] }, ha.discard.label + ' — ' + ha.discard.tierLabel.toLowerCase())
+            : el('span', { class: 'muted' }, 'hết bài rác'), ha.discard ? pickBtn([ha.discard.code], 'Chọn lá đánh') : null)));
+      }
       if (sendable.size) body.appendChild(el('div', { class: 'play-hint' }, el('span', { class: 'g-label' }, 'Gửi được'),
         ...[...sendable.values()].map((x) => el('span', { class: 'laid' }, x.label + ' → ' + x.into.map((m) => labels(m.cards) + ' (' + nameOfUid(m.owner) + ')').join(' / '))),
         el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId, codes: [...sendable.keys()] }; renderApp(); } }, 'Chọn lá gửi')));
