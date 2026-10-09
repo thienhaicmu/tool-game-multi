@@ -50,8 +50,11 @@
   const manualEntering = {};    // runId → VÀO GAME in flight
   const manualEnterError = {};  // runId → why VÀO GAME failed (retryable)
   const manualEnterTimers = {};
-  let playPick = { runId: null, code: null, label: '' }; // the LỌC BÀI card picked for Đánh
-  const playBusy = {};                                    // runId → a play action in flight
+  // ĐÁNH BÀI tab: the account shown, whether the user pinned it (else it follows the turn), the picked cards
+  let playTab = 'B1';
+  let playPinned = false;
+  let playPick = { runId: null, codes: [] };
+  const playBusy = {}; // runId → a play action in flight
   // the pure parts, loaded before this file (ui-kit.js · ui-cards.js · ui-notices.js)
   const { el, $, icon, iconButton, playerLabel, money, errText, note, noteText, openDialog, ringBell } = window.PhomUI;
   const { remainingPanel } = window.PhomUI;
@@ -123,7 +126,7 @@
     const tab = (id, label) => el('button', { class: 'tab' + (activeTab === id ? ' active' : ''), onclick: () => { activeTab = id; renderApp(); } }, label);
     return el('header', { class: 'topbar' },
       el('span', { class: 'brand' }, el('span', { class: 'brand-mark' }, '♠'), 'Phỏm QA'),
-      el('nav', { class: 'tabs' }, tab('SETUP', 'Profile'), tab('PHOM', 'Phỏm')),
+      el('nav', { class: 'tabs' }, tab('SETUP', 'Profile'), tab('PHOM', 'Phỏm'), tab('PLAY', 'Đánh bài')),
       licenseChip());
   }
   // license: "Còn X ngày · HSD dd/mm/yyyy" from the signed expiry (payload.expiresAt, unix seconds)
@@ -152,9 +155,10 @@
     if (uiState === UI.OPENING_CLUSTER) return renderTransient(content, 'Đang mở 3 trình duyệt…', 'Ba cửa sổ Chromium đang bung ra bên ngoài.');
     if (uiState === UI.STOPPING) return renderTransient(content, 'Đang đóng trình duyệt…', 'Cấu hình profile và proxy được giữ nguyên.');
     if (uiState === UI.ERROR) return renderError(content);
-    if (activeTab === 'PHOM') {
-      if (clusterIsOpen() || uiState === UI.CONTROL) renderControl(content);
-      else content.appendChild(el('div', { class: 'empty' }, el('b', null, 'Chưa mở trình duyệt'), el('span', null, 'Sang tab Profile, tick 3–5 profile rồi bấm Mở trình duyệt.')));
+    if (activeTab === 'PHOM' || activeTab === 'PLAY') {
+      if (!(clusterIsOpen() || uiState === UI.CONTROL)) content.appendChild(el('div', { class: 'empty' }, el('b', null, 'Chưa mở trình duyệt'), el('span', null, 'Sang tab Profile, tick 3–5 profile rồi bấm Mở trình duyệt.')));
+      else if (activeTab === 'PLAY') renderPlay(content);
+      else renderControl(content);
     } else renderSetup(content);
   }
   function renderTransient(r, title, sub) { r.appendChild(el('div', { class: 'empty' }, el('span', { class: 'spinner' }), el('b', null, title), el('span', null, sub))); }
@@ -595,56 +599,102 @@
   ];
   function safeCardsFor(slot) {
     const a = safeBySlot[slot];
-    const runId = assign[SLOTS[['B1', 'B2', 'B3'].indexOf(slot)]] ? assign[SLOTS[['B1', 'B2', 'B3'].indexOf(slot)]].runId : null;
     const box = el('div', { class: 'safe' });
     box.appendChild(el('div', { class: 'safe-h' }, el('span', null, '🛡 Lọc bài'), a && a.nextPlayerLabel ? el('span', { class: 'muted' }, 'Lượt sau: ' + playerLabel(a.nextPlayerLabel)) : null));
-    if (runId) box.appendChild(playBar(runId, a));
     if (!a || a.status !== 'OK') { box.appendChild(el('div', { class: 'safe-empty' }, 'Chưa có bài')); return box; }
     let any = false;
     for (const [key, label, cls, tip] of SAFE_GROUPS) {
       const cards = a[key] || [];
       if (!cards.length) continue;
       any = true;
-      box.appendChild(el('div', { class: 'safe-group ' + cls, title: tip }, el('span', { class: 'g-label' }, label), safeCardRow(cards, key === 'safeCards' ? a.recommendedCode : null, runId)));
+      box.appendChild(el('div', { class: 'safe-group ' + cls, title: tip }, el('span', { class: 'g-label' }, label), safeCardRow(cards, key === 'safeCards' ? a.recommendedCode : null)));
     }
     if (!any) box.appendChild(el('div', { class: 'safe-empty' }, 'Chưa đủ dữ liệu'));
     return box;
   }
-  // a card of LỌC BÀI is picked by a click (again = unpicked); Đánh plays the picked one
-  function safeCardRow(cards, recommendedCode, runId) {
+  function safeCardRow(cards, recommendedCode) {
     const row = el('div', { class: 'cards' });
     for (const c of cards) {
       const rec = recommendedCode != null && c.code === recommendedCode;
-      const picked = runId != null && playPick.runId === runId && playPick.code === c.code;
-      const tip = (rec ? 'NÊN ĐÁNH — ' : '') + (c.points != null ? c.points + ' điểm' : '') + (c.openWays ? ' · ' + c.openWays + ' cách bị ăn' : '') + (runId ? ' · bấm để chọn, rồi bấm Đánh' : '');
-      row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') + (rec ? ' recommended' : '') + (picked ? ' picked' : ''), title: tip,
-        role: runId ? 'button' : null, onclick: runId ? () => { playPick = picked ? { runId: null, code: null, label: '' } : { runId, code: c.code, label: (c.rank || '?') + (c.suit || '') }; renderApp(); } : null },
-      el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
+      const tip = (rec ? 'NÊN ĐÁNH — ' : '') + (c.points != null ? c.points + ' điểm' : '') + (c.openWays ? ' · ' + c.openWays + ' cách bị ăn' : '');
+      row.appendChild(el('span', { class: 'card-face ' + (c.color === 'red' ? 'red' : 'black') + (rec ? ' recommended' : ''), title: tip }, el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
     }
     return row;
   }
-  // ---- Bốc / Ăn / Đánh / Hạ / Gửi: one click = the game's own button in THAT browser, only while the game offers it.
-  // Đánh plays the card picked above (none picked → the card selected in the game window); Hạ / Gửi use the game's
-  // own selection. The tool never decides a move.
-  function playBar(runId, a) {
-    const pick = playPick.runId === runId ? playPick : null;
-    const btn = (action, label, tip, card) => el('button', { class: 'btn play-btn' + (action === 'DANH' ? ' danh' : ''), title: tip, disabled: playBusy[runId] ? 'disabled' : null,
-      onclick: () => onPlayAction(runId, action, card) }, label);
-    return el('div', { class: 'play-bar', role: 'group', 'aria-label': 'Thao tác ván' },
-      btn('BOC', 'Bốc', 'Bốc bài (nút Bốc của game)'),
-      btn('AN', 'Ăn', 'Ăn lá vừa đánh (nút Ăn của game)'),
-      btn('DANH', pick ? 'Đánh ' + pick.label : 'Đánh', pick ? 'Đánh lá đã chọn' : 'Đánh lá đang chọn trong game (hoặc bấm 1 lá ở dưới để chọn)', pick ? pick.code : null),
-      btn('HA', 'Hạ', 'Hạ phỏm — các lá đang chọn trong game'),
-      btn('GUI', 'Gửi', 'Gửi bài — các lá đang chọn trong game'));
+
+  // ================= ĐÁNH BÀI tab =================
+  // Its own tab (user 2026-10-09: not mixed into LỌC BÀI — the buttons covered it). One account at a time: its whole
+  // hand (cards in its phỏm marked), click cards to pick them (again = unpick), then one of the game's own buttons:
+  //   Bốc · Ăn — no card · Đánh — exactly one picked card (none = the card selected in the game window)
+  //   Hạ · Gửi — the picked cards (none = the cards selected in the game window)
+  // A button only works while the game is showing it in that browser; the tool never decides a move.
+  function handOf(slot) {
+    const uid = cardsSnap && cardsSnap.slotBinding ? cardsSnap.slotBinding[slot] : null;
+    const p = uid && cardsSnap.players ? cardsSnap.players[uid] : null;
+    if (!p) return null;
+    const meld = new Set((p.serverMeldCards || []).map(Number));
+    return { cards: (p.currentCardsView || []).slice().sort((a, b) => a.code - b.code), meld, laid: p.melds || [] };
   }
-  async function onPlayAction(runId, action, card) {
+  function renderPlay(r) {
+    const turn = turnSlot();
+    if (safeFollowTurn && turn && !playPinned) playTab = turn;
+    const tabs = el('div', { class: 'safe-tabs', role: 'tablist' });
+    ['B1', 'B2', 'B3'].forEach((sl, i) => {
+      const b = manualBrowserById(assign[SLOTS[i]].runId) || {};
+      const name = b.username && b.username !== 'USER_UNKNOWN' ? b.username : '';
+      tabs.appendChild(el('button', { class: 'safe-tab' + (playTab === sl ? ' active' : ''), role: 'tab', 'aria-selected': playTab === sl ? 'true' : 'false', style: '--accent:' + ACCENT[i],
+        onclick: () => { playTab = sl; playPinned = !!(turn && turn !== sl); renderApp(); } },
+        el('b', null, 'P' + (i + 1)), name ? el('span', { class: 'st-name' }, name) : null,
+        turn === sl ? el('span', { class: 'turn-dot', 'aria-label': 'đang tới lượt' }, '● lượt') : null));
+    });
+    const runId = assign[SLOTS[['B1', 'B2', 'B3'].indexOf(playTab)]].runId;
+    const hand = handOf(playTab);
+    const picked = playPick.runId === runId ? playPick.codes : [];
+    const body = el('div', { class: 'play-body' });
+    if (!runId) body.appendChild(el('div', { class: 'safe-empty' }, 'Ô này chưa có trình duyệt'));
+    else if (!hand || !hand.cards.length) body.appendChild(el('div', { class: 'safe-empty' }, 'Chưa có bài — vào bàn và chia bài để chọn lá'));
+    else {
+      body.appendChild(el('div', { class: 'play-h' },
+        el('b', null, 'Bài trên tay · ' + hand.cards.length + ' lá'),
+        el('span', { class: 'muted' }, picked.length ? 'Đã chọn ' + picked.length + ' lá' : 'Bấm lá để chọn'),
+        el('span', { class: 'spacer' }),
+        picked.length ? el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId: null, codes: [] }; renderApp(); } }, 'Bỏ chọn') : null));
+      const row = el('div', { class: 'cards big play-hand' });
+      for (const c of hand.cards) {
+        const on = picked.includes(c.code);
+        const inPhom = hand.meld.has(Number(c.code));
+        row.appendChild(el('span', { class: 'card-face big ' + (c.color === 'red' ? 'red' : 'black') + (inPhom ? ' in-phom' : '') + (on ? ' picked' : ''), role: 'button',
+          title: (c.label || '') + (inPhom ? ' · trong phỏm' : '') + (on ? ' · đã chọn' : ''),
+          onclick: () => { const codes = on ? picked.filter((x) => x !== c.code) : picked.concat(c.code); playPick = { runId: codes.length ? runId : null, codes }; renderApp(); } },
+        el('b', null, c.rank || '?'), el('span', null, c.suit || '?')));
+      }
+      body.appendChild(row);
+      if (hand.meld.size) body.appendChild(el('div', { class: 'rem-legend' }, el('span', { class: 'lg lg-phom' }, 'viền tím = lá trong phỏm')));
+      if (hand.laid.length) body.appendChild(el('div', { class: 'play-laid' }, el('span', { class: 'g-label' }, 'Đã hạ'), ...hand.laid.map((m) => el('span', { class: 'laid' }, (m.cardsView || []).map((v) => v.label).join(' ')))));
+    }
+    r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
+    r.appendChild(el('section', { class: 'play-panel' }, tabs, body, runId ? playBar(runId, picked) : null));
+  }
+  function playBar(runId, picked) {
+    const busy = !!playBusy[runId];
+    const n = picked.length;
+    const btn = (action, label, tip, disabled) => el('button', { class: 'btn play-btn' + (action === 'DANH' ? ' danh' : ''), title: tip, disabled: busy || disabled ? 'disabled' : null,
+      onclick: () => onPlayAction(runId, action, ['DANH', 'HA', 'GUI'].includes(action) ? picked : []) }, label);
+    return el('div', { class: 'play-bar', role: 'group', 'aria-label': 'Thao tác ván' },
+      btn('BOC', 'Bốc', 'Bốc bài (nút Bốc của game)', false),
+      btn('AN', 'Ăn', 'Ăn lá vừa đánh (nút Ăn của game)', false),
+      btn('DANH', n === 1 ? 'Đánh lá đã chọn' : 'Đánh', n > 1 ? 'Chỉ được đánh một lá — bỏ bớt lá đã chọn' : n === 1 ? 'Đánh lá đã chọn' : 'Đánh lá đang chọn trong game', n > 1),
+      btn('HA', n ? 'Hạ ' + n + ' lá' : 'Hạ', n ? 'Hạ phỏm các lá đã chọn' : 'Hạ phỏm — các lá đang chọn trong game', false),
+      btn('GUI', n ? 'Gửi ' + n + ' lá' : 'Gửi', n ? 'Gửi các lá đã chọn' : 'Gửi bài — các lá đang chọn trong game', false));
+  }
+  async function onPlayAction(runId, action, cards) {
     if (!api.playAction || playBusy[runId]) return;
     playBusy[runId] = true; renderApp();
-    let res; try { res = await api.playAction(runId, action, card); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    let res; try { res = await api.playAction(runId, action, cards); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
     playBusy[runId] = false;
-    if (res && res.ok) { if (action === 'DANH') playPick = { runId: null, code: null, label: '' }; note(''); }
-    else note((res && res.error && res.error.message) || errText(res), true);
-    renderApp();
+    if (res && res.ok && cards.length) playPick = { runId: null, codes: [] };
+    renderApp(); // first: a render starts with an empty note line
+    if (!(res && res.ok)) note((res && res.error && res.error.message) || errText(res), true);
   }
 
   function controlFooter() {

@@ -10,35 +10,39 @@
 //
 //   BOC  btnRutBai  → onBtnRutBai   (requestDrawCard)
 //   AN   btnAnBai   → onBtnAnBai    (requestTakeCard of the card on offer)
-//   DANH btnDanhBai → onBtnDanhBai  (requestPlayCard of the ONE selected card) — the tool may name that card: it is
-//                     selected first with the hand's own setListCardSelected([serverCode]) (serverCode = the wire code)
-//   HA   btnHaPhom  → onBtnHaPhom   (requestHaPhom of the selected cards — the game's own selection / suggestion)
+//   DANH btnDanhBai → onBtnDanhBai  (requestPlayCard of the ONE selected card)
+//   HA   btnHaPhom  → onBtnHaPhom   (requestHaPhom of the selected cards)
 //   GUI  btnGuiBai  → onBtnGuiBai   (requestGuiBai of the selected cards)
+// Cards picked in the tool's ĐÁNH BÀI tab are selected first with the hand's own setListCardSelected([serverCode…])
+// (serverCode = the wire code) — exactly what tapping them in the game does; none picked = the game's own selection.
 // ---------------------------------------------------------------------------
 
 const ACTIONS = Object.freeze({
   BOC: Object.freeze({ btn: 'btnRutBai', handler: 'onBtnRutBai', label: 'Bốc' }),
   AN: Object.freeze({ btn: 'btnAnBai', handler: 'onBtnAnBai', label: 'Ăn' }),
-  DANH: Object.freeze({ btn: 'btnDanhBai', handler: 'onBtnDanhBai', label: 'Đánh', card: true }),
-  HA: Object.freeze({ btn: 'btnHaPhom', handler: 'onBtnHaPhom', label: 'Hạ' }),
-  GUI: Object.freeze({ btn: 'btnGuiBai', handler: 'onBtnGuiBai', label: 'Gửi' }),
+  DANH: Object.freeze({ btn: 'btnDanhBai', handler: 'onBtnDanhBai', label: 'Đánh', maxCards: 1 }),
+  HA: Object.freeze({ btn: 'btnHaPhom', handler: 'onBtnHaPhom', label: 'Hạ', maxCards: 10 }),
+  GUI: Object.freeze({ btn: 'btnGuiBai', handler: 'onBtnGuiBai', label: 'Gửi', maxCards: 10 }),
 });
 
-// → { ok, action, card } or { ok:false, error }
-function validatePlayAction({ action, card } = {}) {
+// → { ok, action, cards } or { ok:false, error }. cards: the picked wire codes ([] = the game's own selection)
+function validatePlayAction({ action, cards } = {}) {
   const a = String(action || '').toUpperCase();
   const spec = ACTIONS[a];
   if (!spec) return { ok: false, error: { code: 'PHOM_PLAY_UNKNOWN', message: `Không có thao tác ${action}` } };
-  if (card != null && !spec.card) return { ok: false, error: { code: 'PHOM_PLAY_NO_CARD', message: `${spec.label} không chọn lá từ tool` } };
-  if (card != null && !(Number.isInteger(Number(card)) && Number(card) >= 0 && Number(card) < 52)) return { ok: false, error: { code: 'PHOM_PLAY_BAD_CARD', message: 'Lá bài không hợp lệ' } };
-  return { ok: true, action: a, card: card != null ? Number(card) : null };
+  const list = cards == null ? [] : (Array.isArray(cards) ? cards : [cards]);
+  if (list.length && !spec.maxCards) return { ok: false, error: { code: 'PHOM_PLAY_NO_CARD', message: `${spec.label} không cần chọn lá` } };
+  if (spec.maxCards && list.length > spec.maxCards) return { ok: false, error: { code: 'PHOM_PLAY_TOO_MANY', message: spec.maxCards === 1 ? 'Chỉ được đánh một lá' : 'Chọn quá nhiều lá' } };
+  if (list.some((c) => !(Number.isInteger(Number(c)) && Number(c) >= 0 && Number(c) < 52))) return { ok: false, error: { code: 'PHOM_PLAY_BAD_CARD', message: 'Lá bài không hợp lệ' } };
+  if (new Set(list.map(Number)).size !== list.length) return { ok: false, error: { code: 'PHOM_PLAY_BAD_CARD', message: 'Một lá được chọn hai lần' } };
+  return { ok: true, action: a, cards: list.map(Number) };
 }
 
 // The page expression (runs in that browser's top document) → { ok, code, message }. Never throws.
-function buildPlayActionScript({ action, card = null }) {
+function buildPlayActionScript({ action, cards = [] }) {
   const spec = ACTIONS[action];
   if (!spec) throw new Error('unknown play action ' + action);
-  const A = JSON.stringify({ action, btn: spec.btn, handler: spec.handler, label: spec.label, card });
+  const A = JSON.stringify({ action, btn: spec.btn, handler: spec.handler, label: spec.label, cards: cards || [] });
   return `(() => {
   try {
     const A = ${A};
@@ -50,11 +54,12 @@ function buildPlayActionScript({ action, card = null }) {
     const button = node && node.getComponent && cc.Button ? node.getComponent(cc.Button) : null;
     if (!node || !node.activeInHierarchy || (button && button.interactable === false)) return { ok: false, code: 'PHOM_PLAY_NOT_OFFERED', message: 'Game chưa cho ' + A.label + ' lúc này' };
     if (typeof c[A.handler] !== 'function') return { ok: false, code: 'PHOM_PLAY_NO_HANDLER', message: 'Game đổi bản — không tìm thấy nút ' + A.label };
-    if (A.card != null) {
+    if (A.cards.length) {
       const hand = c.myCardSet;
       const ids = hand && hand.getListCardID ? hand.getListCardID() : [];
-      if (!ids.some((x) => Number(x) === A.card)) return { ok: false, code: 'PHOM_PLAY_CARD_NOT_IN_HAND', message: 'Lá này không còn trên tay' };
-      hand.setListCardSelected([ids.find((x) => Number(x) === A.card)]);
+      const pick = A.cards.map((code) => ids.find((x) => Number(x) === code));
+      if (pick.some((x) => x === undefined)) return { ok: false, code: 'PHOM_PLAY_CARD_NOT_IN_HAND', message: 'Có lá đã chọn không còn trên tay' };
+      hand.setListCardSelected(pick);
     }
     c[A.handler]();
     return { ok: true, code: 'PHOM_PLAY_PRESSED', action: A.action };

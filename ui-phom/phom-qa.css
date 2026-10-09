@@ -218,12 +218,23 @@ button.stat:disabled { opacity: 1; }
 .g-unknown .card-face { background: var(--panel-2); }
 .g-own .card-face { border-style: dashed; border-color: #9db8f2; }
 .card-face.recommended { border: 2px solid var(--good); box-shadow: 0 0 0 3px var(--good-bg); }
-/* Bốc / Ăn / Đánh / Hạ / Gửi — the game's own buttons, pressed from the tool; a LỌC BÀI card is picked for Đánh */
-.play-bar { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px; }
-.play-btn { height: 26px; padding: 0 9px; font-size: 12px; }
-.play-btn.danh { border-color: var(--primary); color: var(--primary); }
+/* ĐÁNH BÀI tab — the hand (scrolls) on top, the game's own buttons in a fixed bar below it (never over the cards) */
+.play-panel { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: var(--shadow); overflow: hidden; }
+.play-body { flex: 1 1 auto; min-height: 0; overflow: auto; padding: 8px 10px; display: flex; flex-direction: column; gap: 8px; }
+.play-h { display: flex; align-items: center; gap: 8px; font-size: 12.5px; }
+.play-h .spacer { flex: 1; }
+.play-clear { height: 24px; padding: 0 8px; font-size: 12px; }
+.play-hand { flex-wrap: wrap; gap: 6px; padding-top: 6px; }
+.play-hand .card-face { transition: transform .08s; }
+.card-face.big.in-phom { border-color: #8b5cf6; box-shadow: inset 0 -3px 0 #8b5cf6; }
 .card-face[role="button"] { cursor: pointer; }
-.card-face.picked { transform: translateY(-4px); border: 2px solid var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .18); }
+.card-face.picked { transform: translateY(-6px); border: 2px solid var(--primary); box-shadow: 0 0 0 3px rgba(37, 99, 235, .2); }
+.lg-phom::before { background: #8b5cf6; }
+.play-laid { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; font-size: 12px; }
+.play-laid .laid { padding: 2px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); }
+.play-bar { flex: 0 0 auto; display: flex; flex-wrap: wrap; gap: 6px; padding: 8px 10px; border-top: 1px solid var(--line); background: var(--panel-2); }
+.play-btn { height: 30px; padding: 0 14px; font-size: 13px; }
+.play-btn.danh { border-color: var(--primary); color: var(--primary); }
 
 @media (max-width: 640px) {
   .players { grid-template-columns: 1fr; }
