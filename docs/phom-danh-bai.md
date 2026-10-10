@@ -150,7 +150,7 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | Nút Hạ của game hiện lúc nào (chỉ lượt cuối?) — tự đánh đang dựa vào đếm lượt của tool | mở |
 ## 7. Tự đánh (từng acc)
 
-Ghi chú nâng cấp: kịch bản Tự đánh đã có các tùy chọn chiến thuật giống `meta-game`: **Nuôi ít tiền**, **Ưu tiên 2 phỏm + cạ ù**, và **Chặn ăn lần 3** (mặc định bật). Khi không bật hai nhánh chủ động, tự đánh giữ thứ tự an toàn mặc định; có người chơi ngoài tool trong ván vẫn tiếp tục chạy.
+Ghi chú nâng cấp: Tự đánh có hai tùy chọn **Nuôi ít tiền** và **Ưu tiên 2 phỏm + cạ ù**. **Chặn ăn lần 3 luôn bật**, không ngoại lệ cạ ù. Ba nhánh này chỉ áp dụng khi người sau là acc trong tool; người ngoài dùng rule bình thường. Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Tiền thiếu không được coi là 0. Chi tiết và công cụ replay: `docs/phom-auto-play-upgrade.md`.
 
 Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bật riêng cho **từng acc** (P1/P2/P3). Mặc định tắt.
 

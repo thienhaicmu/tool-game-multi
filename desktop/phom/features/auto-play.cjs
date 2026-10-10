@@ -33,13 +33,13 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
 
   const st = (rid) => { let s = runs.get(rid); if (!s) { s = { on: false, message: null, pending: null, lastPress: null, waitSince: null, avoid: new Set(), avoidAt: null, busy: false }; runs.set(rid, s); } return s; };
   const anyOn = () => [...runs.values()].some((s) => s.on);
-  function schedule() { if (!timer && anyOn()) timer = setTimer(() => { timer = null; tick().finally(schedule); }, tickMs); }
+  function schedule() { if (!timer && anyOn()) timer = setTimer(() => { timer = null; void tick(); schedule(); }, tickMs); }
   function setMessage(s, m) { if (s.message !== m) { s.message = m; refresh(); } }
 
   function start(rid) {
     if (!licensed()) return { ok: false, error: { ...NOT_LICENSED } };
     const s = st(rid);
-    Object.assign(s, { on: true, pending: null, lastPress: null, waitSince: null, avoid: new Set(), avoidAt: null, message: 'Đang chờ lượt' });
+    Object.assign(s, { on: true, generation: (s.generation || 0) + 1, pending: null, lastPress: null, waitSince: null, probeSince: null, avoid: new Set(), avoidAt: null, message: 'Đang chờ lượt' });
     log('auto-play', { runId: rid, on: true });
     refresh(); schedule();
     return { ok: true, status: status()[rid] };
@@ -47,7 +47,7 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
   function stop(rid, message = null, code = null) {
     const s = runs.get(rid);
     if (!s || !s.on) return { ok: true };
-    Object.assign(s, { on: false, pending: null, lastPress: null, waitSince: null, message });
+    Object.assign(s, { on: false, generation: (s.generation || 0) + 1, pending: null, lastPress: null, waitSince: null, message });
     log('auto-play', { runId: rid, on: false, code });
     refresh();
     if (!anyOn() && timer) { clearTimer(timer); timer = null; }
@@ -55,6 +55,7 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
   }
 
   async function tickOne(rid, s) {
+    const generation = s.generation;
     if (!licensed()) return stop(rid, 'Tự đánh dừng: ' + NOT_LICENSED.message, NOT_LICENSED.code);
     const uid = uidOf(rid);
     if (!uid) return setMessage(s, 'Chưa biết acc của trình duyệt này');
@@ -62,13 +63,39 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
     if (!client || !client.Runtime) return stop(rid, 'Trình duyệt không còn kết nối — đã tắt Tự đánh', 'NO_CLIENT');
     let probe;
     try { const r = await bounded(client.Runtime.evaluate({ expression: buildOfferedScript(), returnByValue: true }), evalTimeoutMs, setTimer, clearTimer); probe = r && r.result && r.result.value; } catch { probe = null; }
-    if (!s.on) return;
-    if (!probe || !probe.ok) return setMessage(s, 'Không đọc được nút của game');
+    if (!s.on || s.generation !== generation) return;
+    if (!probe || !probe.ok) {
+      s.pending = null;
+      if (s.probeSince == null) s.probeSince = now();
+      if (now() - s.probeSince >= waitStallMs) return stop(rid, 'Không đọc được nút game quá thời hạn — đã tắt Tự đánh', 'PROBE_STALL');
+      return setMessage(s, 'Không đọc được nút của game — đang thử lại');
+    }
+    s.probeSince = null;
     if (!probe.atTable) { s.pending = null; s.waitSince = null; return setMessage(s, 'Chưa ở bàn Phỏm'); }
     const snap = snapshot();
-    const state = autoPlay.stateKey(snap, uid);
+    const members = toolUids();
+    const options = autoOptions();
+    const state = autoPlay.stateKey(snap, uid, members) + '|' + JSON.stringify(options);
+    // A sent action remains in flight until this account's corresponding event is observed.
+    if (s.lastPress) {
+      const prev = s.lastPress;
+      const p = snap.players && snap.players[String(uid)] || {};
+      const count = (name) => (p[name] || []).length;
+      const acknowledged = snap.roundSeq !== prev.roundSeq || snap.roundActive === false ||
+        (prev.action === 'BOC' && count('drawnHistory') > prev.drawn) ||
+        (prev.action === 'AN' && (snap.eats || []).filter((e) => String(e.eaterUid) === String(uid)).length > prev.eaten) ||
+        (prev.action === 'DANH' && count('discardedHistory') > prev.discarded) ||
+        (prev.action === 'HA' && count('melds') > prev.melds) ||
+        (prev.action === 'GUI' && count('sentCards') > prev.sent) ||
+        (prev.action === 'BAO_U' && snap.roundActive === false);
+      if (acknowledged) { log('auto-play-confirmed', { runId: rid, action: prev.action }); s.lastPress = null; }
+      else if (now() - prev.at < stallMs) return;
+      else if (prev.action === 'AN' && probe.offered.includes('BOC')) {
+        s.avoid.add('AN'); s.avoidAt = state; s.lastPress = null;
+      } else return stop(rid, 'Chưa xác nhận ' + prev.action + ' — đã tắt Tự đánh', 'NOT_TAKEN');
+    }
     if (s.avoidAt !== state) { s.avoid = new Set(); s.avoidAt = state; }
-    const step = autoPlay.nextStep(snap, uid, probe.offered, s.avoid, toolUids(), autoOptions());
+    const step = autoPlay.nextStep(snap, uid, probe.offered, s.avoid, members, options);
     const t = now();
     if (step.stop) return stop(rid, step.message, step.code);
     if (step.wait) {
@@ -86,13 +113,21 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
       if (step.action === 'AN') { s.avoid.add('AN'); s.lastPress = null; return setMessage(s, 'Game không cho Ăn — chuyển sang Bốc'); }
       return stop(rid, 'Game không nhận ' + step.why + ' — đã tắt Tự đánh', 'NOT_TAKEN');
     }
-    if (!s.pending || s.pending.key !== key) { s.pending = { key, at: t }; return setMessage(s, 'Sắp: ' + step.why); }
+    if (!s.pending || s.pending.key !== key || s.pending.state !== state) { s.pending = { key, state, at: t }; return setMessage(s, 'Sắp: ' + step.why); }
     if (t - s.pending.at < settleMs) return;
     s.pending = null;
+    log('auto-play-decision', { runId: rid, uid: String(uid), snapshot: snap, offered: probe.offered,
+      avoid: [...s.avoid], toolUids: members, options, step });
     const res = await act(rid, { action: step.action, cards: step.cards }); // bounded by the play-actions feature
-    if (!s.on) return;
-    log('auto-play-step', { runId: rid, action: step.action, cards: step.cards.length, ok: !!(res && res.ok), code: res && res.error && res.error.code });
-    if (res && res.ok) { s.lastPress = { key, state, at: now() }; return setMessage(s, 'Vừa: ' + step.why); }
+    if (!s.on || s.generation !== generation) return;
+    log('auto-play-step', { runId: rid, action: step.action, cards: step.cards, why: step.why, state, ok: !!(res && res.ok), code: res && res.error && res.error.code });
+    if (res && res.ok) {
+      const p = snap.players && snap.players[String(uid)] || {};
+      s.lastPress = { key, state, action: step.action, roundSeq: snap.roundSeq, drawn: (p.drawnHistory || []).length,
+        eaten: (snap.eats || []).filter((e) => String(e.eaterUid) === String(uid)).length,
+        discarded: (p.discardedHistory || []).length, melds: (p.melds || []).length, sent: (p.sentCards || []).length, at: now() };
+      return setMessage(s, 'Vừa: ' + step.why);
+    }
     const code = res && res.error && res.error.code;
     if (code && STOP_CODES.has(code)) return stop(rid, 'Tự đánh dừng: ' + ((res.error && res.error.message) || code), code);
     return setMessage(s, (res && res.error && res.error.message) || 'Thử lại'); // busy / not offered yet — the next tick tries again

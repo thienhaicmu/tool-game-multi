@@ -769,10 +769,10 @@
       box.checked = key === 'blockThirdEat' ? cur[key] !== false : cur[key] === true;
       return el('label', { class: 'check auto-strategy-item', for: id, title: tip }, box, label);
     };
-    return el('span', { class: 'auto-strategy', role: 'group', 'aria-label': 'Ká»‹ch báº£n Tá»± Ä‘Ã¡nh' },
-      item('lowMoney', 'NuÃ´i Ã­t tiá»n', 'Tá»± Ä‘Ã¡nh lÃ¡ cho acc káº¿ tiáº¿p Äƒn khi acc Ä‘Ã³ Ä‘ang Ã­t tiá»n nháº¥t'),
-      item('twoPhomCaU', 'Æ¯u tiÃªn 2 phá»m + cáº¡ Ã¹', 'Æ¯u tiÃªn Ä‘Ã¡nh lÃ¡ giÃºp acc káº¿ tiáº¿p cÃ³ 2 phá»m vÃ  cáº¡ Ã¹'),
-      item('blockThirdEat', 'Cháº·n Äƒn láº§n 3', 'KhÃ´ng chá»§ Ä‘á»™ng cho má»™t acc Äƒn láº§n thá»© 3, trá»« tÃ¬nh huá»‘ng cáº¡ Ã¹'));
+    return el('span', { class: 'auto-strategy', role: 'group', 'aria-label': 'Kịch bản Tự đánh' },
+      item('lowMoney', 'Nuôi ít tiền', 'Tự đánh lá cho acc kế tiếp ăn khi acc đó đang ít tiền nhất'),
+      item('twoPhomCaU', 'Ưu tiên 2 phỏm + cạ ù', 'Ưu tiên cạ ù hợp lệ của acc trong tool ngồi kế tiếp; áp dụng chung cho các acc Tự đánh'),
+      el('span', { class: 'auto-strategy-item', title: 'Luôn chặn cho acc trong tool ăn lần 3, không ngoại lệ cạ ù; người ngoài dùng rule bình thường' }, 'Chặn ăn lần 3 · luôn bật'));
   }
   async function setAutoPlayStrategy(patch) {
     if (!api.setAutoPlayStrategy) return;

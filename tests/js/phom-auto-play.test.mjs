@@ -18,6 +18,117 @@ const c = (text) => {
 };
 const cs = (text) => text.split(/\s+/).filter(Boolean).map(c);
 
+test('outside next player uses normal rules for every combination of strategy switches', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥ 2♠ 2♣ 2♦'), next: cs('8♦ 10♦') });
+  const normal = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
+  for (const lowMoney of [false, true]) for (const twoPhomCaU of [false, true]) {
+    const step = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B'], { strategy: { lowMoney, twoPhomCaU } });
+    assert.deepEqual(step, normal);
+  }
+});
+
+test('take evaluation uses only own hand and public information', () => {
+  const s = strategySnap({ mine: cs('8♦ 10♦ 2♠ 2♣ 2♦ 5♥ 6♥ 7♥ K♠'), next: cs('3♠ 4♠') });
+  const before = autoPlay.takeEvaluation(s, 'B', c('9♦'));
+  assert.equal(before.take, true);
+  assert.equal(before.taken, 0);
+  s.players.C.currentCards = cs('A♥ K♥ Q♥');
+  assert.deepEqual(autoPlay.takeEvaluation(s, 'B', c('9♦')), before);
+});
+
+test('take evaluation rejects putting two eaten cards in one meld', () => {
+  const s = strategySnap({ mine: cs('8♦ 10♦ K♠'), next: [], eats: [{ eaterUid: 'B', card: c('8♦') }] });
+  assert.equal(autoPlay.takeEvaluation(s, 'B', c('9♦')).take, false);
+});
+
+test('third-eat protection changes the default discard only for tool members', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('8♦ 10♦'),
+    eats: [{ eaterUid: 'C', card: c('3♠') }, { eaterUid: 'C', card: c('4♠') }] });
+  const protectedStep = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B', 'C']);
+  assert.deepEqual(protectedStep.cards, [c('K♥')]);
+  const outside = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
+  assert.doesNotMatch(outside.why, /chặn ăn/);
+});
+
+test('low-money comparison ignores outsiders but requires every in-tool balance', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('8♦ 10♦'), money: { A: 1, B: 1000, C: 10 } });
+  const ctx = { toolUids: ['B', 'C'] };
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: true }, ctx).code, c('9♦'));
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: true }, { ...ctx, moneyByUid: { B: null, C: 10 } }), null);
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: true }, { ...ctx, moneyByUid: { B: 1000, C: 0 } }).code, c('9♦'));
+});
+
+test('when no ca-u completion can be fed, selection falls back to low-money feeding', () => {
+  const s = strategySnap({ mine: cs('2♥ K♠'), next: cs('2♠ 2♣ 2♦ 5♥ 6♥ 7♥ 8♦ 10♦') });
+  const choice = autoPlay.strategyDiscard(s, 'B', { lowMoney: true, twoPhomCaU: true }, { toolUids: ['A', 'B', 'C'] });
+  assert.equal(choice.code, c('2♥'));
+  assert.match(choice.why, /ít tiền/);
+});
+
+test('final discard also protects the next tool member from a third eat', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('8♦ 10♦'),
+    eats: [{ eaterUid: 'C', card: c('3♠') }, { eaterUid: 'C', card: c('4♠') }] });
+  s.players.B.discardedHistory = [0, 1, 2];
+  const step = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B', 'C']);
+  assert.deepEqual(step.cards, [c('K♥')]);
+});
+
+test('strategy switches normalize independently and default to third-eat protection', () => {
+  assert.deepEqual(autoPlay.normalizeStrategy(), { lowMoney: false, twoPhomCaU: false, blockThirdEat: true });
+  assert.deepEqual(autoPlay.normalizeStrategy({ lowMoney: true, twoPhomCaU: true, blockThirdEat: false }),
+    { lowMoney: true, twoPhomCaU: true, blockThirdEat: true });
+});
+
+test('low-money feeding switches off, rejects a richer next player, and preserves existing melds', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥ 2♠ 2♣ 2♦'), next: cs('8♦ 10♦ A♠ A♣') });
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: false }), null);
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: true }, { toolUids: ['A', 'B', 'C'], moneyByUid: { A: 1, B: 1000, C: 10 } }), null);
+  const meldOnly = strategySnap({ mine: cs('8♦ 9♦ 10♦ K♥'), next: cs('9♠ 9♣') });
+  assert.equal(autoPlay.strategyDiscard(meldOnly, 'B', { lowMoney: true }, { toolUids: ['A', 'B', 'C'] }), null);
+});
+
+test('third-eat protection cannot be disabled by legacy settings', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('8♦ 10♦'),
+    eats: [{ eaterUid: 'C', card: c('3♠') }, { eaterUid: 'C', card: c('4♠') }] });
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: true, blockThirdEat: true }), null);
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: true, blockThirdEat: false }, { toolUids: ['A', 'B', 'C'] }), null);
+});
+
+test('two-meld preference requires two melds and an available completion card', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('2♠ 2♣ 2♦ 5♥ 6♥ 7♥ 8♦ 10♦') });
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { twoPhomCaU: false }), null);
+  s.ledger.push({ code: c('9♦'), status: 'DISCARDED', ownerUid: 'A' });
+  assert.equal(autoPlay.caUInfo(s, 'C').ok, false);
+  s.players.C.currentCards = cs('2♠ 2♣ 2♦ 8♦ 10♦');
+  assert.equal(autoPlay.caUInfo(s, 'C').ok, false);
+});
+
+test('two-meld preference cannot bypass third-eat protection', () => {
+  const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('2♠ 2♣ 2♦ 5♥ 6♥ 7♥ 8♦ 10♦'),
+    eats: [{ eaterUid: 'C', card: c('2♠') }, { eaterUid: 'C', card: c('5♥') }] });
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { twoPhomCaU: true }, { toolUids: ['A', 'B', 'C'] }), null);
+});
+
+test('third-eat protection reports unavoidable feeding without stalling', () => {
+  const s = strategySnap({ mine: cs('9♦'), next: cs('8♦ 10♦'),
+    eats: [{ eaterUid: 'C', card: c('3♠') }, { eaterUid: 'C', card: c('4♠') }] });
+  const step = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B', 'C'], { strategy: { blockThirdEat: true } });
+  assert.deepEqual(step.cards, [c('9♦')]);
+  assert.match(step.why, /không có lá tránh/);
+});
+
+test('a third meld with two unrelated loose cards is not ca-u', () => {
+  const s = strategySnap({ mine: cs('9♦'), next: cs('2♠ 2♣ 2♦ 5♥ 6♥ 7♥ 8♦ 10♦ K♠ Q♣') });
+  assert.equal(autoPlay.caUInfo(s, 'C').ok, false);
+  const help = require('../../desktop/protocol/phom/phom-play-help.cjs');
+  assert.ok(help.bestArrangement(s.players.C.currentCards.concat(c('9♦'))).loose.includes(c('K♠')));
+});
+
+test('null balances never become zero-money targets', () => {
+  const s = strategySnap({ mine: cs('9♦'), next: cs('8♦ 10♦'), money: { A: 500, B: 1000, C: null } });
+  assert.equal(autoPlay.strategyDiscard(s, 'B', { lowMoney: true }, { toolUids: ['A', 'B', 'C'] }), null);
+});
+
 function strategySnap({ mine, next, eats = [], money = { A: 500, B: 1000, C: 10 } }) {
   return {
     roundSeq: 1,
@@ -124,7 +235,7 @@ test('Tự đánh strategic discard can feed the lowest-money next account, but 
       { card: c('4♠'), eaterUid: 'C', fromUid: 'B' },
     ],
   });
-  assert.equal(autoPlay.strategyDiscard(twice, 'B', { lowMoney: true, blockThirdEat: true }, { moneyByUid: { A: 500, B: 1000, C: 10 } }), null);
+  assert.equal(autoPlay.strategyDiscard(twice, 'B', { lowMoney: true, blockThirdEat: true }, { toolUids: ['A', 'B', 'C'], moneyByUid: { A: 500, B: 1000, C: 10 } }), null);
 });
 
 test('Tự đánh strategic discard prioritizes a next account with 2 phỏm and cạ ù', () => {

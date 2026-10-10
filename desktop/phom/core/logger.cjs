@@ -27,7 +27,7 @@ const MAX_QUEUE = 2000;                  // a burst flushes at once rather than 
 const ROTATE_BYTES = 60 * 1024 * 1024;
 const FILE = 'coseat.jsonl';
 // the browser steps that always reach the file
-const ALWAYS_RUN_EVENTS = Object.freeze(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE', 'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY', 'feature-error', 'feature-off-unknown']);
+const ALWAYS_RUN_EVENTS = Object.freeze(['GAME_URL_FOLLOWS_LOGIN', 'AUTO_ENTER_DONE', 'AUTO_ENTER_GAVE_UP', 'DOCUMENT_REPLACED', 'capture-rehook', 'PROXY_AUTH_FAILED', 'PROXY_NAVIGATE', 'BROWSER_MEMORY_HIGH', 'BROWSER_MEMORY_RUNAWAY', 'feature-error', 'feature-off-unknown', 'auto-play', 'auto-play-decision', 'auto-play-step', 'auto-play-confirmed']);
 const HEADER = '# Nhật ký chẩn đoán Phỏm QA — mật khẩu/token đã được che; vẫn có tên acc, số bàn, tiền: chỉ gửi cho người hỗ trợ.\n';
 
 // dir() → the folder (resolved late: Electron's userData is set at startup); redact(entry) → entry

@@ -1,0 +1,74 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { createRequire } from 'node:module';
+const require = createRequire(import.meta.url);
+const { createAutoPlayFeature } = require('../../desktop/phom/features/auto-play.cjs');
+import { replay } from '../../tools/phom-auto-play-replay.mjs';
+
+function fixture() {
+  let time = 0;
+  const calls = [];
+  const snap = { roundSeq: 1, roundPlayers: ['me', 'other'], nextOf: { me: 'other' },
+    players: { me: { uid: 'me', currentCards: [35, 50], melds: [], discardedHistory: [], drawnHistory: [], sentCards: [] },
+      other: { uid: 'other', currentCards: [], melds: [] } }, eats: [], observedDiscardEvents: [], ledger: [] };
+  const timers = new Map();
+  let timerId = 0;
+  const feature = createAutoPlayFeature({ snapshot: () => snap, uidOf: () => 'me',
+    clientFor: () => ({ Runtime: { evaluate: async () => ({ result: { value: { ok: true, atTable: true, offered: ['DANH'] } } }) } }),
+    act: async (rid, input) => { calls.push({ rid, ...input }); return { ok: true }; },
+    now: () => time, setTimer: (fn) => { timers.set(++timerId, fn); return timerId; }, clearTimer: (id) => timers.delete(id),
+    settleMs: 10, stallMs: 100 });
+  return { feature, snap, calls, timers, time: (t) => { time = t; } };
+}
+
+test('unrelated public updates never acknowledge or duplicate an in-flight discard', async () => {
+  const f = fixture();
+  f.feature.start('r');
+  await f.feature.tick(); f.time(20); await f.feature.tick();
+  assert.equal(f.calls.length, 1);
+  f.snap.players.other.melds.push({ meid: 2, cards: [0, 4, 8] });
+  f.time(40); await f.feature.tick();
+  assert.equal(f.calls.length, 1);
+  f.time(130); await f.feature.tick();
+  assert.equal(f.feature.status().r.on, false);
+  assert.equal(f.calls.length, 1);
+});
+
+test('changed state restarts settling and stopping cancels a pending action', async () => {
+  const f = fixture(); f.feature.start('r');
+  await f.feature.tick();
+  f.snap.players.other.melds.push({ meid: 2, cards: [0, 4, 8] });
+  f.time(20); await f.feature.tick();
+  assert.equal(f.calls.length, 0);
+  f.feature.stop('r'); f.time(40); await f.feature.tick();
+  assert.equal(f.calls.length, 0);
+});
+
+test('recorded decisions can be replayed without executing a game action', () => {
+  const f = fixture();
+  const { nextStep } = require('../../desktop/protocol/phom/phom-auto-play.cjs');
+  const step = nextStep(f.snap, 'me', ['DANH']);
+  const results = replay(['# session', JSON.stringify({ event: 'auto-play-decision', snapshot: f.snap,
+    uid: 'me', offered: ['DANH'], step })]);
+  assert.equal(results.length, 1);
+  assert.equal(results[0].same, true);
+  assert.equal(f.calls.length, 0);
+});
+
+test('a busy browser does not prevent ticks for another account', async () => {
+  const f = fixture();
+  let release;
+  const hanging = new Promise((resolve) => { release = resolve; });
+  let probes = 0;
+  const feature = createAutoPlayFeature({ snapshot: () => f.snap, uidOf: () => 'me',
+    clientFor: (rid) => ({ Runtime: { evaluate: () => rid === 'slow' ? hanging : Promise.resolve((probes++,
+      { result: { value: { ok: true, atTable: true, offered: [] } } })) } }),
+    act: async () => ({ ok: true }), setTimer: () => 1, clearTimer: () => {} });
+  feature.start('slow'); feature.start('fast');
+  const first = feature.tick();
+  await new Promise(setImmediate);
+  await feature.tick();
+  assert.equal(probes, 2);
+  release({ result: { value: { ok: true, atTable: true, offered: [] } } });
+  await first; feature.stopAll();
+});

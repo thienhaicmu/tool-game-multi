@@ -151,7 +151,7 @@ else {
     const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
     const autoPlayStrategy = (v) => {
       const x = v && typeof v === 'object' ? v : {};
-      return { lowMoney: x.lowMoney === true, twoPhomCaU: x.twoPhomCaU === true, blockThirdEat: x.blockThirdEat !== false };
+      return { lowMoney: x.lowMoney === true, twoPhomCaU: x.twoPhomCaU === true, blockThirdEat: true };
     };
     _settings = createSettingsStore({
       file: path.join(phomRoot(), 'phom-settings.json'),
@@ -809,13 +809,17 @@ else {
       clientFor: runClientFor,
       snapshot: () => (phomSessions && phomSessions.active() ? phomSessions.cardObserverSnapshot() : {}),
       uidOf: (rid) => (phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null),
+      toolUids: () => {
+        if (!phomSessions || !phomSessions.active()) return [];
+        return (phomSessions.manualBrowserSnapshot() || []).map((b) => phomSessions.uidOf(b.profileId)).filter((uid) => uid != null).map(String);
+      },
       autoOptions: () => {
         const moneyByUid = {};
         const browsers = phomSessions && phomSessions.active() ? (phomSessions.manualBrowserSnapshot() || []) : [];
         for (const b of browsers) {
           const uid = phomSessions.uidOf(b.profileId);
-          const money = Number(b.money);
-          if (uid != null && Number.isFinite(money)) moneyByUid[String(uid)] = money;
+          const money = b.money == null || b.money === '' ? NaN : Number(b.money);
+          if (uid != null) moneyByUid[String(uid)] = Number.isFinite(money) && money >= 0 ? money : null;
         }
         return { strategy: settings().get('autoPlayStrategy'), moneyByUid };
       },

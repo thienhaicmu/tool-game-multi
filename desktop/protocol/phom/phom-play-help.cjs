@@ -59,7 +59,11 @@ function allMelds(hand) {
 const isRunCandidate = (cards, mask) => { let s = null; for (let i = 0; i < cards.length; i++) if (mask & (1 << i)) { const su = cards[i] % 4; if (s == null) s = su; else if (s !== su) return false; } return true; };
 
 // every way to lay disjoint phỏm (including none) → [{ melds, loose, points }]
+const arrangementCache = new Map();
+const copyArrangements = (items) => items.map((a) => ({ ...a, melds: a.melds.map((m) => m.slice()), loose: a.loose.slice() }));
 function arrangements(hand) {
+  const key = hand.join(',');
+  if (arrangementCache.has(key)) return copyArrangements(arrangementCache.get(key));
   const melds = allMelds(hand);
   const out = [];
   const walk = (i, used, chosen) => {
@@ -73,7 +77,9 @@ function arrangements(hand) {
     if (m.every((c) => !used.has(c))) { const u = new Set(used); m.forEach((c) => u.add(c)); walk(i + 1, u, chosen.concat([m])); }
   };
   if (hand.length <= 12) walk(0, new Set(), []);
-  return out;
+  if (arrangementCache.size >= 128) arrangementCache.delete(arrangementCache.keys().next().value);
+  arrangementCache.set(key, out);
+  return copyArrangements(out);
 }
 function bestArrangement(hand) {
   const all = arrangements(hand.filter(isValidCardCode));
@@ -161,7 +167,7 @@ function discardRanking(snap, uid) {
 // card that fits a phỏm already on the table is sent (in a chain: 6♥ into 3♥4♥5♥ lets 7♥ follow). Chosen by the same
 // order as a discard: the discard's safety first (chắc chắn → có thể không bị ăn), then the fewest points left. A
 // sendable card may be kept as the discard when it is the safest one.
-function haPlan(snap, uid) {
+function haPlan(snap, uid, { blocked = new Set() } = {}) {
   const hand = handOf(snap, uid);
   if (!hand || hand.length < 3) return { ok: false };
   const { tier } = safetyOf(snap, uid);
@@ -171,9 +177,10 @@ function haPlan(snap, uid) {
   for (const a of arrangements(hand)) {
     if (!a.melds.length) continue;
     if ([...eaten].some((c) => hand.includes(c) && !a.melds.some((m) => m.includes(c)))) continue; // an eaten card must be laid
+    if (a.melds.some((m) => m.filter((c) => eaten.has(c)).length > 1)) continue;
     for (const d of a.loose.length ? a.loose : [null]) {
       const chain = sendChain(a.loose.filter((c) => c !== d), laid);
-      const t = d == null ? TIER.SAFE : (tier.has(d) ? tier.get(d) : TIER.OTHER);
+      const t = d == null ? TIER.SAFE : (tier.has(d) ? tier.get(d) : TIER.OTHER) + (blocked.has(d) ? 10 : 0);
       const left = sumPoints(chain.rest);
       const cand = { melds: a.melds, send: chain.sent, discard: d, tier: t, pointsLeft: left };
       if (!best || t < best.tier || (t === best.tier && (left < best.pointsLeft || (left === best.pointsLeft && (a.melds.length > best.melds.length || (a.melds.length === best.melds.length && chain.sent.length > best.send.length)))))) best = cand;
@@ -183,13 +190,13 @@ function haPlan(snap, uid) {
   return {
     ok: true, melds: best.melds.map((m) => m.map(view)), cards: best.melds.flat(),
     send: best.send.map((x) => ({ ...view(x.code), owner: x.owner, meid: x.meid, into: x.into.map(view) })), sendCards: best.send.map((x) => x.code),
-    discard: best.discard == null ? null : { ...view(best.discard), tier: best.tier, tierLabel: TIER_LABEL[best.tier] }, pointsLeft: best.pointsLeft,
+    discard: best.discard == null ? null : { ...view(best.discard), tier: best.tier % 10, tierLabel: TIER_LABEL[best.tier % 10] }, pointsLeft: best.pointsLeft,
   };
 }
 
 // GỬI → ĐÁNH after the phỏm are laid (the rest of the hạ turn): every loose card that fits a phỏm on the table is sent
 // (in a chain), the discard picked by the same order as haPlan — safety first, then the fewest points left.
-function finishPlan(snap, uid) {
+function finishPlan(snap, uid, { blocked = new Set() } = {}) {
   const hand = handOf(snap, uid);
   if (!hand || !hand.length) return { ok: false };
   const { tier } = safetyOf(snap, uid);
@@ -198,13 +205,13 @@ function finishPlan(snap, uid) {
   let best = null;
   for (const d of hand.filter((c) => !eaten.has(c))) {
     const chain = sendChain(hand.filter((c) => c !== d), laid);
-    const t = tier.has(d) ? tier.get(d) : TIER.OTHER;
+    const t = (tier.has(d) ? tier.get(d) : TIER.OTHER) + (blocked.has(d) ? 10 : 0);
     const left = sumPoints(chain.rest);
     if (!best || t < best.tier || (t === best.tier && (left < best.pointsLeft || (left === best.pointsLeft && chain.sent.length > best.send.length)))) best = { send: chain.sent, discard: d, tier: t, pointsLeft: left };
   }
   if (!best) return { ok: false };
   return { ok: true, send: best.send.map((x) => ({ ...view(x.code), owner: x.owner, meid: x.meid, into: x.into.map(view) })), sendCards: best.send.map((x) => x.code),
-    discard: { ...view(best.discard), tier: best.tier, tierLabel: TIER_LABEL[best.tier] }, pointsLeft: best.pointsLeft };
+    discard: { ...view(best.discard), tier: best.tier % 10, tierLabel: TIER_LABEL[best.tier % 10] }, pointsLeft: best.pointsLeft };
 }
 
 // the player who plays right BEFORE uid (the one whose discard uid may eat), from the public turn order
