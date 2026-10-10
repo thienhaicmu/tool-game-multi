@@ -20,7 +20,7 @@ function createKeyStore({ dir, now = () => new Date() }) {
     const keys = read(); const k = keys.find((x) => x.licenseId === licenseId);
     if (!k) return { ok: false, found: false };
     k.status = status;
-    if (status === 'REVOKED') { k.revokedAt = now().toISOString(); k.revokeReason = reason || ''; } else { delete k.revokedAt; delete k.revokeReason; }
+    if (status === 'REVOKED') { k.revokedAt = now().toISOString(); k.revokeReason = reason || ''; delete k.restoredAt; } else { delete k.revokedAt; delete k.revokeReason; k.restoredAt = now().toISOString(); } // restoredAt: online publish un-revokes only a key restored here
     write(keys); return { ok: true, found: true };
   }
   function remove(licenseId) { const keys = read(); const next = keys.filter((k) => k.licenseId !== licenseId); if (next.length === keys.length) return { ok: false, found: false }; write(next); return { ok: true, found: true }; }

@@ -1,4 +1,4 @@
 {
-  "_comment": "Thu hồi online cho các sản phẩm cũ (Phỏm QA + Aviator Control). Dán link RAW của revoked.json trên GitHub (public) vào url. File dạng { \"revoked\": { \"<licenseId>\": \"lý do\" } }. Để trống = tắt kiểm tra online. App CHỈ đọc link này.",
-  "url": ""
+  "_comment": "Thu hồi online cho Phỏm QA + Aviator Control: file tool-game-multi-status.json trong repo PUBLIC thienhaicmu/meta-game-status (dùng chung repo với Meta Game Key; file riêng vì Meta Game Key dựng lại status.json từ danh sách key của nó). WVPT Generator ghi (Thu hồi / Khôi phục / Đăng danh sách khóa). Dạng { \"revoked\": { \"<licenseId>\": \"lý do\" } }. App CHỈ đọc link raw này. Để trống = tắt.",
+  "url": "https://raw.githubusercontent.com/thienhaicmu/meta-game-status/main/tool-game-multi-status.json"
 }

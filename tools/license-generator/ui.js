@@ -292,14 +292,20 @@
           : elem('button', { class: 'mini warn', title: 'Đánh dấu thu hồi (ghi chú cục bộ)', onclick: () => doRevoke(k.licenseId) }, 'Thu hồi'),
         elem('button', { class: 'mini', title: 'Xóa khỏi kho', onclick: () => doDelete(k.licenseId) }, '🗑')));
   }
-  async function doRevoke(licenseId) { const reason = window.prompt('Lý do thu hồi (ghi chú cục bộ):', ''); if (reason === null) return; const r = await api.keyRevoke({ licenseId, reason }); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
-  async function doRestore(licenseId) { const r = await api.keyRestore(licenseId); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
-  // copy revoked.json (from locally-revoked keys) → paste into the GitHub file + commit (manual online revoke)
+  async function doRevoke(licenseId) { const reason = window.prompt('Lý do thu hồi:', ''); if (reason === null) return; const r = await api.keyRevoke({ licenseId, reason }); if (!r.ok) return window.alert(r.error && r.error.message); onlineNotice(r.online, 'Đã thu hồi'); loadUsers(); }
+  async function doRestore(licenseId) { const r = await api.keyRestore(licenseId); if (!r.ok) return window.alert(r.error && r.error.message); onlineNotice(r.online, 'Đã khôi phục'); loadUsers(); }
+  // the online publish outcome (shared repo meta-game-status): ok → customers follow within 30 min; failed → say so
+  function onlineNotice(o, what) {
+    if (o && o.ok) return;
+    window.alert(what + ' trong kho, nhưng CHƯA đăng lên GitHub: ' + ((o && o.error && o.error.message) || 'lỗi không rõ') + '\n\nBấm "⤒ Đăng danh sách khóa" để thử lại.');
+  }
+  // publish the revoked list (merged with what is online); GitHub unreachable → copy the JSON for a manual paste
   async function exportDenylist() {
-    let r; try { r = await api.keysDenylist(); } catch { r = null; }
-    if (!r || !r.json) return window.alert('Không xuất được danh sách.');
-    try { await api.copy(r.json); } catch {}
-    window.alert(`Đã chép revoked.json (${r.count} key bị khóa).\n\nDán đè vào file revoked.json trên GitHub rồi commit. Máy khách bị khóa trong ≤ 30 phút.`);
+    let r; try { r = await api.keysPublish(); } catch (e) { r = { ok: false, error: { message: String((e && e.message) || e) } }; }
+    if (r && r.ok) return window.alert((r.published ? 'Đã đăng' : 'Không có gì thay đổi') + ` — ${r.count} key bị khóa.\nMáy khách (Phỏm QA, Aviator Control) bị khóa trong ≤ 30 phút.\n${r.url}`);
+    let j; try { j = await api.keysDenylist(); } catch { j = null; }
+    if (j && j.json) { try { await api.copy(j.json); } catch {} }
+    window.alert('Không đăng được lên GitHub: ' + ((r && r.error && r.error.message) || 'lỗi không rõ') + (j && j.json ? '\n\nĐã chép danh sách (JSON) — có thể dán tay vào file tool-game-multi-status.json trong repo meta-game-status.' : ''));
   }
   async function doDelete(licenseId) { if (!window.confirm('Xóa key ' + licenseId + ' khỏi kho cục bộ? (không thu hồi ở máy khách)')) return; const r = await api.keyDelete(licenseId); if (!r.ok) return window.alert(r.error && r.error.message); loadUsers(); }
   // GIA HẠN: prefill the create form from a key (same game/machine/customer), then switch to Tạo license

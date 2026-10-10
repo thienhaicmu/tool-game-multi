@@ -12,6 +12,7 @@ const { resolveSellerResources, privateKeyPathForProduct, sheetTitleForProduct, 
 const sellerRes = { privateKeyPathForProduct, sheetTitleForProduct };
 const { loadServiceAccount, GoogleSheetClient, trySaveRecord } = require('./google-sheet.cjs');
 const { createKeyStore } = require('./key-store.cjs');
+const { publishRevoked } = require('./online-publish.cjs');
 
 // LOCAL store of issued keys (alongside the Sheet). Lazy so app.getPath is ready.
 let _store = null;
@@ -237,8 +238,15 @@ ipcMain.handle('keys-list', (_event, input) => store().list({ q: (input && input
 ipcMain.handle('keys-users', () => store().users());
 ipcMain.handle('keys-stats', () => store().stats());
 ipcMain.handle('key-get', (_event, licenseId) => store().get(String(licenseId || '')));
-ipcMain.handle('key-revoke', (_event, input) => { const r = store().setStatus(String((input && input.licenseId) || ''), 'REVOKED', (input && input.reason) || ''); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key trong kho.' } }; });
-ipcMain.handle('key-restore', (_event, licenseId) => { const r = store().setStatus(String(licenseId || ''), 'ACTIVE'); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key.' } }; });
+// ONLINE REVOKE: every revoke / restore is published at once to the shared meta-game-status repo (online-publish.cjs);
+// the answer carries the publish outcome so the admin sees whether customers will be locked.
+async function publishNow() {
+  try { return await publishRevoked({ keys: store().list({ status: 'all' }), fetchImpl: (u, o) => net.fetch(u, o) }); }
+  catch (e) { return { ok: false, error: { code: 'PUBLISH_FAILED', message: String((e && e.message) || e) } }; }
+}
+ipcMain.handle('key-revoke', async (_event, input) => { const r = store().setStatus(String((input && input.licenseId) || ''), 'REVOKED', (input && input.reason) || ''); return r.found ? { ok: true, online: await publishNow() } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key trong kho.' } }; });
+ipcMain.handle('key-restore', async (_event, licenseId) => { const r = store().setStatus(String(licenseId || ''), 'ACTIVE'); return r.found ? { ok: true, online: await publishNow() } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key.' } }; });
+ipcMain.handle('keys-publish', () => publishNow());
 ipcMain.handle('key-delete', (_event, licenseId) => { const r = store().remove(String(licenseId || '')); return r.found ? { ok: true } : { ok: false, error: { code: 'KEY_NOT_FOUND', message: 'Không thấy key.' } }; });
 ipcMain.handle('store-open-folder', () => { try { require('electron').shell.openPath(store().dir); return { ok: true }; } catch (e) { return { ok: false, error: { message: e.message } }; } });
 // the denylist to paste into the GitHub revoked.json (online revoke) — every locally-revoked key → { licenseId: reason }

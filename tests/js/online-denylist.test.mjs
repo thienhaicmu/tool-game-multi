@@ -45,3 +45,18 @@ test('guard: url empty → OFF, never locks', async () => {
   assert.equal((await g.poll()).state, STATE.LIVE);
   assert.equal(g.isLocked(), false);
 });
+
+test('a denylist that is not published yet (404) means nobody is revoked — it never runs the grace clock down', async () => {
+  const { checkDenylist } = require('../../desktop/licensing/online-denylist.cjs');
+  const r = await checkDenylist('https://example.invalid/x.json', 'L-1', { fetchImpl: async () => ({ ok: false, status: 404, json: async () => ({}) }) });
+  assert.deepEqual({ ok: r.ok, revoked: r.revoked }, { ok: true, revoked: false });
+  const e = await checkDenylist('https://example.invalid/x.json', 'L-1', { fetchImpl: async () => ({ ok: false, status: 500, json: async () => ({}) }) });
+  assert.equal(e.ok, false);
+});
+
+test('Phỏm QA + Aviator Control read the shared meta-game-status repo (own file, not Meta Game Key\'s status.json)', () => {
+  const cfg = JSON.parse(require('node:fs').readFileSync(new URL('../../desktop/licensing/online-denylist.config.json', import.meta.url), 'utf8'));
+  assert.equal(cfg.url, 'https://raw.githubusercontent.com/thienhaicmu/meta-game-status/main/tool-game-multi-status.json');
+  const { TARGET, rawUrl } = require('../../tools/license-generator/online-publish.cjs');
+  assert.equal(rawUrl(TARGET), cfg.url); // the generator writes exactly what the apps read
+});

@@ -12,6 +12,7 @@
     "tools/license-generator/ui.js",
     "tools/license-generator/duration.cjs",
     "tools/license-generator/key-store.cjs",
+    "tools/license-generator/online-publish.cjs",
     "tools/license-generator/plan-ui-defaults.cjs",
     "tools/license-generator/google-sheet.cjs",
     "tools/license-generator/seller-resources.cjs",

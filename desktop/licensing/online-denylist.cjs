@@ -40,6 +40,8 @@ async function checkDenylist(url, licenseId, { fetchImpl, timeoutMs = 8000 } = {
   const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
   try {
     const res = await fetchImpl(u.toString(), { cache: 'no-store', ...(ctl ? { signal: ctl.signal } : {}) });
+    // no list published yet (or it was removed) = nobody revoked — never lock every customer for a missing file
+    if (res && res.status === 404) return { ok: true, revoked: false, active: true, reason: 'NO_LIST' };
     if (!res || !res.ok) return { ok: false, reason: 'HTTP_' + (res ? res.status : 'ERR') };
     const body = await res.json();
     const reason = revokedEntry(body, licenseId);
