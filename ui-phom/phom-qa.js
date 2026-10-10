@@ -801,7 +801,14 @@
     return el('span', { class: 'auto-play' },
       el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Có người ngoài tool vẫn tiếp tục.' },
         box, el('span', { class: 'knob' }), 'Tự đánh'),
-      a.message ? el('span', { class: 'muted auto-play-msg' + (a.on ? '' : ' off') }, a.message) : null);
+      a.message ? el('span', { class: 'muted auto-play-msg' + (a.on && !a.resuming ? '' : ' off') }, a.message) : null,
+      autoPlayStats(a.stats));
+  }
+  // this session's count for the account (main keeps it): rounds played · stops · self-resumes
+  function autoPlayStats(x) {
+    if (!x || !(x.rounds || x.stops || x.resumed)) return null;
+    return el('span', { class: 'muted auto-play-stats', title: 'Trong phiên này: số ván đã tự đánh · số lần dừng · số lần tự bật lại' },
+      x.rounds + ' ván · dừng ' + x.stops + (x.resumed ? ' · tự bật lại ' + x.resumed : ''));
   }
   async function onAutoPlayToggle(runId, on) {
     if (!api.setAutoPlay) return;
