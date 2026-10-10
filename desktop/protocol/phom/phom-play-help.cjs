@@ -91,8 +91,15 @@ function bestArrangement(hand) {
 function safetyOf(snap, uid) {
   const a = new SafeCardAnalyzer().analyze({ snapshot: publicView(snap, uid), targetPlayerUid: uid });
   const tier = new Map();
-  for (const c of (a.targetCards || [])) tier.set(c.code, c.classification === CLASS.SAFE ? TIER.SAFE : c.classification === CLASS.LIKELY_SAFE ? TIER.LIKELY : TIER.OTHER);
+  // the next player has played its 4 turns (this is the round's last discard): nobody can eat it any more
+  const done = nextDone(snap, uid);
+  for (const c of (a.targetCards || [])) tier.set(c.code, done || c.classification === CLASS.SAFE ? TIER.SAFE : c.classification === CLASS.LIKELY_SAFE ? TIER.LIKELY : TIER.OTHER);
   return { tier, nextPlayerLabel: a.nextPlayerLabel || null, status: a.status };
+}
+function nextDone(snap, uid) {
+  const next = snap && snap.nextOf && snap.nextOf[String(uid)];
+  const p = next != null && snap.players ? snap.players[String(next)] : null;
+  return !!(p && Array.isArray(p.discardedHistory) && p.discardedHistory.length >= 4);
 }
 
 // the account's own cards still in hand (not laid on the table, not sent)
@@ -299,4 +306,4 @@ function playHelp(snap, uid) {
 }
 
 module.exports = {
-  checkPlay, playHelp, turnInfo, caPartners, sendChain, laidOnTable, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, finishPlan, takeInfo, sendTargets, prevOf, handOf, eatenBy };
+  checkPlay, playHelp, turnInfo, nextDone, caPartners, sendChain, laidOnTable, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, finishPlan, takeInfo, sendTargets, prevOf, handOf, eatenBy };

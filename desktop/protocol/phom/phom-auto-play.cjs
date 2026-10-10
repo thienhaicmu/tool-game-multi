@@ -149,10 +149,18 @@ function strategyDiscard(snap, uid, strategyInput, ctx = {}) {
   return { code: best.code, label: cardLabel(best.code), why: 'Đánh ' + cardLabel(best.code) + ' (' + reason + ')', targetUid: next };
 }
 
+// Chặn ăn lần 3 — ALWAYS on, whoever plays next (user 2026-10-10): a 3rd eat almost always means an ù and a đền.
+// A tool account's hand is known: exactly the cards it can eat. An outsider's is hidden: every card not PROVEN safe
+// from the public view (its two eaten cards are public, so they never count as partners).
 function blockedDiscards(snap, uid, toolUids) {
   const next = nextUidOf(snap, uid);
-  if (!next || !toolUids.map(String).includes(next) || eatCount(snap, next) < 2) return new Set();
-  return new Set((help.handOf(snap, uid) || []).filter((c) => canEatCard(snap, next, c)));
+  if (!next || eatCount(snap, next) < 2 || help.nextDone(snap, uid)) return new Set();
+  const hand = help.handOf(snap, uid) || [];
+  const nextHand = help.handOf(snap, next);
+  if (toolUids.map(String).includes(next) && nextHand && nextHand.length) return new Set(hand.filter((c) => canEatCard(snap, next, c)));
+  const r = help.discardRanking(snap, uid);
+  const safe = new Set((r.ranking || []).filter((x) => x.tier === help.TIER.SAFE).map((x) => x.code));
+  return new Set(hand.filter((c) => !safe.has(c)));
 }
 
 function legalDiscards(snap, uid) {

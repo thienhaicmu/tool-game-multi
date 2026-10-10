@@ -1,6 +1,6 @@
 # Tự đánh: quy tắc sau nâng cấp
 
-Ba nhánh chiến thuật chỉ áp dụng khi người ngồi ngay sau là UID của acc trong tool đang chơi trong ván. Người ngoài dùng thứ tự đánh bình thường. Các acc trong tool có thể chia sẻ bài để chọn lá hỗ trợ; gợi ý bấm tay vẫn dùng bài riêng và thông tin công khai.
+Hai nhánh cạ ù và nuôi ít tiền chỉ áp dụng khi người ngồi ngay sau là UID của acc trong tool đang chơi trong ván. Chặn ăn lần 3 áp dụng với mọi người ngồi sau (2026-10-10): acc tool chặn chính xác theo bài; người ngoài chỉ biết thông tin công khai nên chỉ lá chắc chắn không bị ăn mới được coi là chặn được. Còn lại, người ngoài dùng thứ tự đánh bình thường. Các acc trong tool có thể chia sẻ bài để chọn lá hỗ trợ; gợi ý bấm tay vẫn dùng bài riêng và thông tin công khai.
 
 Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Chặn ăn lần 3 luôn bật, không ngoại lệ cạ ù, kể cả cấu hình cũ ghi false. Hai tùy chọn còn lại dùng chung cho các acc bật Tự đánh.
 
@@ -23,3 +23,20 @@ node tools/phom-auto-play-replay.mjs <đường-dẫn-coseat.jsonl>
 ```
 
 Công cụ đối chiếu nước đã ghi với bộ chọn nước hiện tại. Không suy ra kết quả thắng/thua từ replay vì quyết định khác sẽ làm diễn biến ván khác. Cần ván thật để đánh giá điểm rác, móm, ù và kiểm chứng tất cả bước Ăn/Bốc/Hạ/Gửi/Đánh/Ù.
+
+## Mô phỏng (GĐ3 · S4, 2026-10-10)
+
+`tools/phom-sim` chơi ván offline bằng đúng bộ đọc bài (`phom-card-observer`) và bộ chọn nước (`phom-auto-play nextStep`)
+của tool, với một engine luật (`engine.cjs`) và bảng tính tiền theo cược: nhì/ba/bét 1/2/3, móm 4, bị ăn 1, ăn chốt 4,
+ù 5 mỗi người, đền = người cho ăn lá thứ 3 trả thay cả bàn. Bảng này chưa đối chiếu với gói 855 thật (GĐ4).
+
+```powershell
+node tools/phom-sim/run.mjs --rounds 3000 --seed 7 --seats TTTL --outsider-ref 0a0fa30 --out after.json
+node tools/phom-sim/compare.mjs before.json after.json
+```
+
+`T` = acc tool (chia sẻ bài với các T khác), `L` = acc lạ (bài riêng + công khai, kịch bản bình thường). `--outsider-ref`
+giữ acc lạ ở bộ chọn nước của một commit đã phát hành — nếu không, thay đổi áp cho cả hai phía và không đo được lợi của
+nhóm tool. Vòng chia mặc định cố định (ván r bắt đầu ở ghế r mod n) để hai phiên bản chơi **cùng bộ bài, cùng ghế** và
+so theo cặp từng ván. Không mô phỏng: ù khan, "chuyển bài" sau khi ăn, hết nọc. Acc lạ trong mô phỏng là bot đánh như
+kịch bản bình thường — người thật có thể khác.

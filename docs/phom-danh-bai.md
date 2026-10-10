@@ -85,6 +85,8 @@ Thứ tự trong lượt: **lấy lá (Ăn / Bốc) → ① Hạ → ② Gửi �
 3. Chọn phương án theo thứ tự của **lượt cuối** (không xét cạ — không còn lượt bốc):
    **lá đánh không bị ăn** (chắc chắn → có thể) → **điểm còn lại thấp nhất** → hạ nhiều phỏm hơn → gửi nhiều lá hơn.
    Một lá gửi được vẫn có thể được **giữ lại để đánh** nếu nó là lá an toàn nhất.
+   **Lá cuối của ván** (người sau đã đánh đủ 4 lá — không ai ăn được nữa): mọi lá coi là an toàn, chỉ xét điểm còn
+   lại (2026-10-10; mô phỏng: +0,15…+0,24 cược/ván cho nhóm tool).
 
 | Bước | Tool hiện | Người dùng |
 |---|---|---|
@@ -150,7 +152,7 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | Nút Hạ của game hiện lúc nào (chỉ lượt cuối?) — tự đánh đang dựa vào đếm lượt của tool | mở |
 ## 7. Tự đánh (từng acc)
 
-Ghi chú nâng cấp: Tự đánh có hai tùy chọn **Nuôi ít tiền** và **Ưu tiên 2 phỏm + cạ ù**. **Chặn ăn lần 3 luôn bật**, không ngoại lệ cạ ù. Ba nhánh này chỉ áp dụng khi người sau là acc trong tool; người ngoài dùng rule bình thường. Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Tiền thiếu không được coi là 0. Chi tiết và công cụ replay: `docs/phom-auto-play-upgrade.md`.
+Ghi chú nâng cấp: Tự đánh có hai tùy chọn **Nuôi ít tiền** và **Ưu tiên 2 phỏm + cạ ù**. **Chặn ăn lần 3 luôn bật, với mọi người ngồi sau** (user 2026-10-10), không ngoại lệ cạ ù: người sau là acc tool ⇒ chặn chính xác theo bài của nó; người ngoài đã ăn 2 lá ⇒ chỉ đánh lá **chắc chắn không bị ăn** theo thông tin công khai, không có thì đánh lá ít rủi ro nhất và báo "không có lá tránh ăn hợp lệ". Hai nhánh cạ ù / nuôi ít tiền chỉ áp dụng khi người sau là acc trong tool; với người ngoài (người sau / người trước) Tự đánh giữ kịch bản bình thường. Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Tiền thiếu không được coi là 0. Chi tiết và công cụ replay: `docs/phom-auto-play-upgrade.md`.
 
 Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bật riêng cho **từng acc** (P1/P2/P3). Mặc định tắt.
 

@@ -64,3 +64,6 @@ runtime-archives/
 
 # Phom QA packaging: branded copy of runtime/phom-chromium (scripts/phom-brand/before-pack.cjs)
 .phom-brand/
+
+# Phỏm simulator outputs (tools/phom-sim/run.mjs --out)
+tools/phom-sim/results/

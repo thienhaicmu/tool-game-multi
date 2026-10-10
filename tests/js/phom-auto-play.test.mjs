@@ -41,13 +41,14 @@ test('take evaluation rejects putting two eaten cards in one meld', () => {
   assert.equal(autoPlay.takeEvaluation(s, 'B', c('9♦')).take, false);
 });
 
-test('third-eat protection changes the default discard only for tool members', () => {
+test('third-eat protection is exact for a tool member and public-only for an outsider (always on, user 2026-10-10)', () => {
   const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('8♦ 10♦'),
     eats: [{ eaterUid: 'C', card: c('3♠') }, { eaterUid: 'C', card: c('4♠') }] });
   const protectedStep = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B', 'C']);
   assert.deepEqual(protectedStep.cards, [c('K♥')]);
+  // as an outsider C's hand is hidden: neither card is proven safe → it still plays, and says so
   const outside = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
-  assert.doesNotMatch(outside.why, /chặn ăn/);
+  assert.match(outside.why, /chặn ăn lần 3 · không có lá tránh ăn hợp lệ/);
 });
 
 test('low-money comparison ignores outsiders but requires every in-tool balance', () => {
@@ -107,6 +108,17 @@ test('two-meld preference cannot bypass third-eat protection', () => {
   const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('2♠ 2♣ 2♦ 5♥ 6♥ 7♥ 8♦ 10♦'),
     eats: [{ eaterUid: 'C', card: c('2♠') }, { eaterUid: 'C', card: c('5♥') }] });
   assert.equal(autoPlay.strategyDiscard(s, 'B', { twoPhomCaU: true }, { toolUids: ['A', 'B', 'C'] }), null);
+});
+
+test('third-eat protection also covers an outsider next player: only a card proven safe from the public view', () => {
+  // C is outside the tool (its hand is hidden) and has eaten twice; 9♦ could still be eaten (8♦ 10♦ are unseen),
+  // K♥ cannot (the other three kings are public)
+  const s = strategySnap({ mine: cs('9♦ K♥ 2♥'), next: [],
+    eats: [{ eaterUid: 'C', card: c('3♠') }, { eaterUid: 'C', card: c('4♠') }] });
+  for (const k of cs('K♠ K♣ K♦ A♥ 3♥ 4♥')) s.ledger.push({ code: k, status: 'DISCARDED', ownerUid: 'A' });
+  const step = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
+  assert.deepEqual(step.cards, [c('K♥')]);
+  assert.match(step.why, /chặn ăn lần 3/);
 });
 
 test('third-eat protection reports unavoidable feeding without stalling', () => {
@@ -253,4 +265,15 @@ test('Tự đánh strategic discard prioritizes a next account with 2 phỏm and
   assert.equal(step.action, 'DANH');
   assert.deepEqual(step.cards, [c('9♦')]);
   assert.match(step.why, /2 phỏm/);
+});
+
+test('the round\'s last discard ignores safety: the next player has played its 4 turns, so the costliest card goes', () => {
+  const s = strategySnap({ mine: cs('K♥ 2♠ 5♣'), next: [] });
+  for (const k of cs('2♣ 2♦ 2♥ A♠ 3♠')) s.ledger.push({ code: k, status: 'DISCARDED', ownerUid: 'A' });
+  s.players.B.discardedHistory = [0, 1, 2].map((card) => ({ card }));
+  const before = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
+  assert.deepEqual(before.cards, [c('2♠')]); // C still plays after B: the proven-safe card
+  s.players.C.discardedHistory = [4, 5, 6, 7].map((card) => ({ card }));
+  const last = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
+  assert.deepEqual(last.cards, [c('K♥')]);
 });
