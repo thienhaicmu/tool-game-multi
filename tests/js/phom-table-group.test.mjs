@@ -622,3 +622,16 @@ test('B5: the start is refused once → tried again once (conditions checked aga
   m.coord.fire('seats', {}); await tick(); await tick();
   assert.equal(calls, 2, 'no more after the success');
 });
+
+test('VÒNG: loopFacts reports where the group stands; regroupNow re-forms only under TỰ ĐỘNG', async () => {
+  const m = fullTable(); await formed(m);
+  m.coord.players = 3;
+  const facts = m.group.loopFacts();
+  assert.equal(facts.formed, true);
+  assert.equal(facts.keySeated, true);
+  assert.equal(facts.players, 3);
+  assert.equal(facts.roundRunning, false);
+  assert.equal(m.group.regroupNow('NO_STRANGER').ok, m.group.autoActive());
+  const empty = mk().group.loopFacts();
+  assert.deepEqual({ formed: empty.formed, keySeated: empty.keySeated, players: empty.players }, { formed: false, keySeated: false, players: 0 });
+});

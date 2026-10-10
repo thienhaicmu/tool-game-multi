@@ -19,6 +19,9 @@
 // table Tự đánh turns itself on again — at most resumeLimit times per resumeWindowMs; not back at the table within
 // resumeWaitMs, or the limit reached, and it is off for good. Never resumed: the user switched it off, the key lost the
 // right, the browser closed, the feature is off.
+// VÒNG TỰ ĐÁNH (loop.cjs, user 2026-10-10 "vòng tròn khép kín, không tự dừng"): while unlimited() is true there is no
+// limit and no deadline — every recoverable stop resumes, after 3 s → 10 s → 30 s → 1 min (the streak resets once a
+// press is confirmed).
 //
 //  IPC: phom:auto-play { runId, on } → { ok, status }
 // deps: { act(rid, {action, cards}), clientFor(rid), snapshot(), uidOf(rid), toolUids() (slots + reserves), autoOptions(), licensed(), log, refresh() }
@@ -34,7 +37,9 @@ const FINAL_CODES = new Set(['USER', 'CLOSED', 'STOP_ALL', 'PHOM_AUTO_PLAY_NOT_L
 
 const NOT_LICENSED = { code: 'PHOM_AUTO_PLAY_NOT_LICENSED', message: 'Key này chưa được cấp quyền Tự đánh — liên hệ admin để cấp key có tích "Cho dùng Tự đánh"' };
 
-function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () => [], autoOptions = () => ({}), licensed = () => true, log = () => {}, refresh = () => {}, now = Date.now,
+const LOOP_BACKOFF_MS = Object.freeze([3000, 10000, 30000, 60000]);
+
+function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () => [], autoOptions = () => ({}), licensed = () => true, unlimited = () => false, log = () => {}, refresh = () => {}, now = Date.now,
   setTimer = setTimeout, clearTimer = clearTimeout, tickMs = 600, settleMs = 800, jitterMs = 1700, random = Math.random, stallMs = 6000, waitStallMs = 12000, evalTimeoutMs = 5000,
   resumeLimit = 3, resumeWindowMs = 10 * 60 * 1000, resumeWaitMs = 2 * 60 * 1000, resumeDelayMs = 3000 }) {
   // rid → { on, armed, message, pending, lastPress, waitSince, avoid, avoidAt, busy, step, resumes[], stats }
@@ -43,7 +48,7 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
 
   const st = (rid) => {
     let s = runs.get(rid);
-    if (!s) { s = { on: false, armed: null, message: null, pending: null, lastPress: null, waitSince: null, avoid: new Set(), avoidAt: null, busy: false, step: null, resumes: [], stats: { rounds: 0, presses: 0, stops: 0, resumed: 0 }, lastRound: null }; runs.set(rid, s); }
+    if (!s) { s = { on: false, armed: null, message: null, pending: null, lastPress: null, waitSince: null, avoid: new Set(), avoidAt: null, busy: false, step: null, resumes: [], streak: 0, stats: { rounds: 0, presses: 0, stops: 0, resumed: 0 }, lastRound: null }; runs.set(rid, s); }
     return s;
   };
   const anyLive = () => [...runs.values()].some((s) => s.on || s.armed);
@@ -71,9 +76,10 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
     if (wasOn && code !== 'USER') s.stats.stops++;
     const t = now();
     s.resumes = s.resumes.filter((at) => t - at < resumeWindowMs);
-    if (wasOn && !FINAL_CODES.has(code) && s.resumes.length < resumeLimit) {
-      s.armed = { code, since: t };
-      s.message = (message || 'Tự đánh tạm dừng') + ' — sẽ tự bật lại khi về bàn (' + (s.resumes.length + 1) + '/' + resumeLimit + ')';
+    const loop = unlimited();
+    if (wasOn && !FINAL_CODES.has(code) && (loop || s.resumes.length < resumeLimit)) {
+      s.armed = { code, since: t, delay: loop ? LOOP_BACKOFF_MS[Math.min(s.streak, LOOP_BACKOFF_MS.length - 1)] : resumeDelayMs };
+      s.message = (message || 'Tự đánh tạm dừng') + (loop ? ' — tự bật lại sau ' + Math.round(s.armed.delay / 1000) + ' giây khi về bàn' : ' — sẽ tự bật lại khi về bàn (' + (s.resumes.length + 1) + '/' + resumeLimit + ')');
     } else {
       if (wasOn && !FINAL_CODES.has(code)) s.message = (message || 'Tự đánh dừng') + ' — đã tự bật lại ' + resumeLimit + ' lần trong ' + Math.round(resumeWindowMs / 60000) + ' phút, tắt hẳn';
       s.armed = null;
@@ -88,16 +94,16 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
   async function tryResume(rid, s) {
     const t = now();
     if (!licensed()) { s.armed = null; return setMessage(s, 'Tự đánh dừng: ' + NOT_LICENSED.message); }
-    if (t - s.armed.since < resumeDelayMs) return;
-    if (t - s.armed.since >= resumeWaitMs) { s.armed = null; log('auto-play', { runId: rid, on: false, code: 'RESUME_TIMEOUT' }); return setMessage(s, 'Tự đánh tắt: không về bàn trong ' + Math.round(resumeWaitMs / 60000) + ' phút'); }
+    if (t - s.armed.since < (s.armed.delay != null ? s.armed.delay : resumeDelayMs)) return;
+    if (!unlimited() && t - s.armed.since >= resumeWaitMs) { s.armed = null; log('auto-play', { runId: rid, on: false, code: 'RESUME_TIMEOUT' }); return setMessage(s, 'Tự đánh tắt: không về bàn trong ' + Math.round(resumeWaitMs / 60000) + ' phút'); }
     const client = clientFor(rid);
     if (!client || !client.Runtime) return;
     let probe;
     try { const r = await bounded(client.Runtime.evaluate({ expression: buildOfferedScript(), returnByValue: true }), evalTimeoutMs, setTimer, clearTimer); probe = r && r.result && r.result.value; } catch { probe = null; }
     if (!s.armed || s.on || !probe || !probe.ok || !probe.atTable || !uidOf(rid)) return;
     s.resumes.push(now());
-    s.stats.resumed++;
-    begin(s, 'Đã tự bật lại (' + s.resumes.length + '/' + resumeLimit + ') — đang chờ lượt');
+    s.stats.resumed++; s.streak++;
+    begin(s, unlimited() ? 'Đã tự bật lại — đang chờ lượt' : 'Đã tự bật lại (' + s.resumes.length + '/' + resumeLimit + ') — đang chờ lượt');
     log('auto-play', { runId: rid, on: true, resumed: s.resumes.length });
     refresh();
   }
@@ -136,7 +142,7 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
         (prev.action === 'HA' && count('melds') > prev.melds) ||
         (prev.action === 'GUI' && count('sentCards') > prev.sent) ||
         (prev.action === 'BAO_U' && snap.roundActive === false);
-      if (acknowledged) { log('auto-play-confirmed', { runId: rid, action: prev.action }); s.lastPress = null; }
+      if (acknowledged) { log('auto-play-confirmed', { runId: rid, action: prev.action }); s.lastPress = null; s.streak = 0; }
       else if (now() - prev.at < stallMs) return;
       else if (prev.action === 'AN' && probe.offered.includes('BOC')) {
         s.avoid.add('AN'); s.avoidAt = state; s.lastPress = null;

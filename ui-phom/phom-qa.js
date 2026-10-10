@@ -58,6 +58,8 @@
   let playBySlot = {};
   const playBusy = {}; // runId → a play action in flight
   let autoPlayByRun = {}; // TỰ ĐÁNH per runId from main: { on, message }
+  let loopStatus = null;  // VÒNG TỰ ĐÁNH from main: { on, message, resting, stats }
+  let loopBusy = false;
   // the pure parts, loaded before this file (ui-kit.js · ui-cards.js · ui-notices.js)
   const { el, $, icon, iconButton, playerLabel, money, errText, note, noteText, openDialog, ringBell } = window.PhomUI;
   const { remainingPanel } = window.PhomUI;
@@ -189,7 +191,7 @@
   }
   function renderKey() {
     // ĐÁNH BÀI: the table, every account's help and TỰ ĐÁNH status (the doc: the help is recomputed on every change)
-    if (uiState === UI.CONTROL && activeTab === 'PLAY') return uiState + '|PLAY|' + manualBrowsers.length + '|' + (cardsSnap && cardsSnap.currentTurnUid) + '|' + JSON.stringify(playBySlot) + '|' + JSON.stringify(autoPlayByRun) + '|' + JSON.stringify(autoPlayStrategy);
+    if (uiState === UI.CONTROL && activeTab === 'PLAY') return uiState + '|PLAY|' + manualBrowsers.length + '|' + (cardsSnap && cardsSnap.currentTurnUid) + '|' + JSON.stringify(playBySlot) + '|' + JSON.stringify(autoPlayByRun) + '|' + JSON.stringify(autoPlayStrategy) + '|' + JSON.stringify(loopStatus) + loopBusy;
     if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + manualBrowsers.length;
     const g = manualGroup;
     const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.money, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.lastError && b.lastError.code].join(',')).join(';');
@@ -197,7 +199,7 @@
       + '|' + safeTab + safeFollowTurn + (cardsSnap && cardsSnap.currentTurnUid) + remMode + (cardsSnap && cardsSnap.remaining ? cardsSnap.remaining.count + ':' + cardsSnap.remaining.knownOutCount : '')
       + '|' + manualBrowsers.map((b) => b.state && b.state.label).join(',') + '|' + JSON.stringify((clusterSnap && clusterSnap.reserves) || {});
     const slots = SLOTS.map((s) => [assign[s].runId, manualEntering[assign[s].runId], manualEnterError[assign[s].runId], clusterSnap && clusterSnap.profiles && clusterSnap.profiles[s] && clusterSnap.profiles[s].browserState].join(',')).join(';');
-    return [uiState, activeTab, g && g.rid, g && g.stake, g && g.auto, g && g.busy, g && g.recreating, autoStake, autoBusy,
+    return [uiState, activeTab, g && g.rid, g && g.stake, g && g.auto, g && g.busy, g && g.recreating, autoStake, autoBusy, JSON.stringify(loopStatus), loopBusy, JSON.stringify(autoPlayStrategy),
       coSeat && coSeat.result, coSeat && coSeat.seatedCount, sharedRid, browsers, cards, slots, remainingCount(), noteText()].join('|');
   }
 
@@ -745,23 +747,16 @@
         el('button', { class: 'btn ghost play-clear', onclick: () => { playPick = { runId, codes: [...sendable.keys()] }; renderApp(); } }, 'Chọn lá gửi')));
     }
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
-    r.appendChild(el('section', { class: 'play-panel' }, tabs, body, runId ? playBar(runId, picked, help) : null));
+    r.appendChild(el('section', { class: 'play-panel' }, tabs, body, runId ? autoPlayLine(runId) : null));
   }
-  function playBar(runId, picked, help) {
-    const busy = !!playBusy[runId];
-    const n = picked.length;
-    const take = help && help.take && help.take.ok ? help.take.card.label : '';
-    const btn = (action, label, tip, disabled) => el('button', { class: 'btn play-btn' + (action === 'DANH' ? ' danh' : ''), title: tip, disabled: busy || disabled ? 'disabled' : null,
-      onclick: () => onPlayAction(runId, action, ['DANH', 'HA', 'GUI'].includes(action) ? picked : []) }, label);
-    return el('div', { class: 'play-bar', role: 'group', 'aria-label': 'Thao tác ván' },
-      btn('BOC', 'Bốc', 'Bốc bài (nút Bốc của game)', false),
-      btn('AN', take ? 'Ăn ' + take : 'Ăn', 'Ăn lá vừa đánh (nút Ăn của game)', false),
-      btn('DANH', n === 1 ? 'Đánh lá đã chọn' : 'Đánh', n > 1 ? 'Chỉ được đánh một lá — bỏ bớt lá đã chọn' : n === 1 ? 'Đánh lá đã chọn' : 'Đánh lá đang chọn trong game', n > 1),
-      btn('HA', n ? 'Hạ ' + n + ' lá' : 'Hạ', n ? 'Hạ phỏm các lá đã chọn' : 'Hạ phỏm — các lá đang chọn trong game', false),
-      btn('GUI', n ? 'Gửi ' + n + ' lá' : 'Gửi', n ? 'Gửi các lá đã chọn' : 'Gửi bài — các lá đang chọn trong game', false),
-      btn('BAO_U', 'Ù', 'Báo Ù (nút Ù của game — chỉ khi game hiện nút)', false),
-      strategyControls(),
-      autoPlaySwitch(runId));
+  // user 2026-10-10: no hand buttons any more — Tự đánh plays every account (the one TỰ ĐÁNH switch in the footer);
+  // this line says what THIS account's Tự đánh is doing
+  function autoPlayLine(runId) {
+    const a = autoPlayByRun[runId] || {};
+    return el('div', { class: 'play-bar', role: 'status', 'aria-label': 'Tự đánh acc này' },
+      el('span', { class: 'auto-play' }, el('b', null, a.on ? 'Tự đánh' : 'Tự đánh tắt'),
+        a.message ? el('span', { class: 'muted auto-play-msg' + (a.on && !a.resuming ? '' : ' off') }, a.message) : null,
+        autoPlayStats(a.stats)));
   }
   function strategyControls() {
     const cur = autoPlayStrategy || {};
@@ -772,7 +767,7 @@
       return el('label', { class: 'check auto-strategy-item', for: id, title: tip }, box, label);
     };
     return el('span', { class: 'auto-strategy', role: 'group', 'aria-label': 'Kịch bản Tự đánh' },
-      item('lowMoney', 'Nuôi ít tiền', 'Tự đánh lá cho acc kế tiếp ăn khi acc đó đang ít tiền nhất'),
+      item('lowMoney', 'Nuôi ít tiền', 'Tự đánh lá cho acc kế tiếp ăn khi acc đó đang ít tiền nhất (acc trong tool); áp dụng chung cho các acc Tự đánh'),
       item('twoPhomCaU', 'Ưu tiên 2 phỏm + cạ ù', 'Ưu tiên cạ ù hợp lệ của acc trong tool ngồi kế tiếp; áp dụng chung cho các acc Tự đánh'),
       el('span', { class: 'auto-strategy-item', title: 'Luôn chặn cho acc trong tool ăn lần 3, không ngoại lệ cạ ù; người ngoài dùng rule bình thường' }, 'Chặn ăn lần 3 · luôn bật'));
   }
@@ -786,50 +781,14 @@
     else note((res && res.error && res.error.message) || errText(res), true);
     renderApp();
   }
-  // TỰ ĐÁNH for THIS account only (docs/phom-danh-bai.md §7). The line says what it does / why it stopped.
-  // A key without the "Cho dùng Tự đánh" right (Generator) shows the switch locked; main refuses it anyway.
-  function autoPlaySwitch(runId) {
-    const a = autoPlayByRun[runId] || {};
-    const id = 'phq-autoplay-' + runId;
-    const allowed = caps.autoPlayLicensed === true;
-    const box = el('input', { type: 'checkbox', id, disabled: !allowed && !a.on ? true : null, onchange: (e) => onAutoPlayToggle(runId, e.target.checked) });
-    box.checked = !!a.on;
-    if (!allowed && !a.on) return el('span', { class: 'auto-play' },
-      el('label', { class: 'switch locked', for: id, title: 'Key này chưa được cấp quyền Tự đánh — liên hệ admin để cấp key có tích "Cho dùng Tự đánh".' },
-        box, el('span', { class: 'knob' }), 'Tự đánh'),
-      el('span', { class: 'muted auto-play-msg off' }, 'Key chưa có quyền Tự đánh'));
-    return el('span', { class: 'auto-play' },
-      el('label', { class: 'switch' + (a.on ? ' on' : ''), for: id, title: 'Tự đánh acc này theo kịch bản Đánh bài (Ăn/Bốc → Đánh; lượt cuối Hạ → Gửi → Đánh; Ù). Có người ngoài tool vẫn tiếp tục.' },
-        box, el('span', { class: 'knob' }), 'Tự đánh'),
-      a.message ? el('span', { class: 'muted auto-play-msg' + (a.on && !a.resuming ? '' : ' off') }, a.message) : null,
-      autoPlayStats(a.stats));
-  }
   // this session's count for the account (main keeps it): rounds played · stops · self-resumes
   function autoPlayStats(x) {
     if (!x || !(x.rounds || x.stops || x.resumed)) return null;
     return el('span', { class: 'muted auto-play-stats', title: 'Trong phiên này: số ván đã tự đánh · số lần dừng · số lần tự bật lại' },
       x.rounds + ' ván · dừng ' + x.stops + (x.resumed ? ' · tự bật lại ' + x.resumed : ''));
   }
-  async function onAutoPlayToggle(runId, on) {
-    if (!api.setAutoPlay) return;
-    let res; try { res = await api.setAutoPlay(runId, on); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    if (res && res.ok) autoPlayByRun = { ...autoPlayByRun, [runId]: res.status || { on: !!on, message: null } };
-    renderApp();
-    if (!(res && res.ok)) note((res && res.error && res.error.message) || errText(res), true);
-  }
-  async function onPlayAction(runId, action, cards) {
-    if (!api.playAction || playBusy[runId]) return;
-    playBusy[runId] = true; renderApp();
-    let res; try { res = await api.playAction(runId, action, cards); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    playBusy[runId] = false;
-    if (res && res.ok && cards.length) playPick = { runId: null, codes: [] };
-    renderApp(); // first: a render starts with an empty note line
-    if (!(res && res.ok)) note((res && res.error && res.error.message) || errText(res), true);
-  }
-
   function controlFooter() {
     const g = manualGroup;
-    const autoOn = !!(g && g.auto);
     const stakes = autoStakes();
     if (!autoStake && g && g.selectedStake != null) autoStake = String(g.selectedStake); // e.g. after a tool reload
     // the remembered stake stays chosen even before the server's stake list arrives (it is shown as an option)
@@ -837,19 +796,26 @@
     const sel = el('select', { class: 'sel bet-sel', id: 'phq-stake', title: 'Mức cược dùng cho Dò Key / Tạo (cả tool và thanh trong web)', onchange: (e) => onPickStake(e.target.value) },
       el('option', { value: '' }, 'Chọn…'), ...stakes.map((v) => el('option', { value: String(v) }, money(v))));
     sel.value = autoStake;
-    const box = el('input', { type: 'checkbox', id: 'phq-auto', disabled: autoBusy ? 'disabled' : null, onchange: (e) => onAutoToggle(e.target.checked) });
-    box.checked = autoOn;
+    const loopOn = !!(loopStatus && loopStatus.on);
+    const allowed = caps.autoPlayLicensed === true;
+    const box = el('input', { type: 'checkbox', id: 'phq-loop', disabled: loopBusy || (!allowed && !loopOn) ? 'disabled' : null, onchange: (e) => onLoopToggle(e.target.checked) });
+    box.checked = loopOn;
     const anDanhBox = el('input', { type: 'checkbox', id: 'phq-andanh', disabled: anDanhBusy ? 'disabled' : null, onchange: (e) => onAnDanhToggle(e.target.checked) });
     anDanhBox.checked = anDanhOn;
     return el('footer', { class: 'bar' },
       el('label', { class: 'field', for: 'phq-stake' }, 'Mức cược', sel),
-      el('label', { class: 'switch' + (autoOn ? ' on' : ''), for: 'phq-auto', title: 'Bật: Dò Key → Tạo → Vào cho 3 acc như bấm tay; bị đá tự ReJoin; mất bàn tự tìm bàn khác. Tắt: không làm gì tự động.' },
-        box, el('span', { class: 'knob' }), autoBusy ? 'Đang xử lý…' : 'Tự động'),
+      el('label', { class: 'switch' + (loopOn ? ' on' : '') + (allowed ? '' : ' locked'), for: 'phq-loop',
+        title: allowed ? 'TỰ ĐÁNH cả nhóm, chạy vòng khép kín: tìm bàn → chờ người lạ → đánh → ván tiếp / đổi bàn. Lỗi thì tự thử lại, kẹt thì nghỉ 5 phút rồi chạy tiếp. Chỉ dừng khi tắt công tắc này hoặc key hết quyền.'
+          : 'Key này chưa được cấp quyền Tự đánh — liên hệ admin để cấp key có tích "Cho dùng Tự đánh".' },
+        box, el('span', { class: 'knob' }), loopBusy ? 'Đang xử lý…' : 'TỰ ĐÁNH'),
+      loopStatus && loopStatus.message ? el('span', { class: 'muted auto-play-msg' + (loopOn && !loopStatus.resting ? '' : ' off'), title: loopStats(loopStatus.stats) }, loopStatus.message)
+        : (allowed ? null : el('span', { class: 'muted auto-play-msg off' }, 'Key chưa có quyền Tự đánh')),
+      strategyControls(),
       el('label', { class: 'switch' + (anDanhOn ? ' on' : ''), for: 'phq-andanh', title: 'Chế độ ẩn danh của game trên cả 3 trình duyệt. Tắt (mặc định): hiện số bàn thật, không có người chơi giả, xem được chat/bài/hiệu ứng. Bật: giữ ẩn danh như game (áp dụng từ bàn/ván sau).' },
         anDanhBox, el('span', { class: 'knob' }), anDanhBusy ? 'Đang xử lý…' : 'Ẩn danh'),
       el('span', { class: 'spacer' }),
       el('button', { class: 'btn', disabled: g ? null : 'disabled', title: 'Rời bàn này và tìm bàn chờ khác cho cả nhóm', onclick: () => onNewTable() }, 'Bàn khác'),
-      el('button', { class: 'btn danger-outline', title: 'Cả 3 acc rời bàn (tắt tự động)', onclick: step(() => api.leaveAll(), 'Đã thoát bàn tất cả.') }, 'Thoát bàn tất cả'),
+      el('button', { class: 'btn danger-outline', title: 'Cả 3 acc rời bàn (tắt TỰ ĐÁNH)', onclick: step(async () => { await stopLoop(); return api.leaveAll(); }, 'Đã thoát bàn tất cả.') }, 'Thoát bàn tất cả'),
       iconButton('grid', 'Xếp lại cửa sổ theo bố cục', step(() => api.restoreLayout(), 'Đã xếp lại cửa sổ.')),
       iconButton('layout', 'Đổi vị trí cửa sổ (bấm 2 cửa sổ để đổi chỗ)', () => openLayoutDialog()),
       iconButton('rec', 'Ghi WebSocket (gửi log khi báo lỗi)', () => openFrameCapture()),
@@ -872,17 +838,18 @@
     if (api.setStake) { try { await api.setStake(value ? Number(value) : null); } catch { /* the next pick retries */ } }
     bgRender();
   }
-  async function onAutoToggle(on) {
-    if (on && !manualGroup && !autoStake) { note('Chọn mức cược trước khi bật Tự động.', true); renderApp(); return; }
-    const creator = autoCreatorRunId();
-    if (on && !manualGroup && !creator) { note('Chưa có acc nào vào game.', true); renderApp(); return; }
-    autoBusy = true; note(on ? (manualGroup ? 'Bật tự động — giữ bàn hiện tại…' : 'Đang tìm bàn và gọi các acc vào…') : 'Tắt tự động.'); renderApp();
-    let res; try { res = await api.setAuto(on, creator, autoStake ? Number(autoStake) : null); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
-    autoBusy = false;
-    if (res && res.ok === false) note(errText(res), true);
-    else if (on) note('Tự động đang giữ bàn ' + (res && res.rid != null ? res.rid : '') + '.');
-    await refreshManual(); renderApp();
+  // VÒNG TỰ ĐÁNH — the one switch (main: features/loop.cjs)
+  async function onLoopToggle(on) {
+    if (on && !manualGroup && !autoStake) { note('Chọn mức cược trước khi bật TỰ ĐÁNH.', true); renderApp(); return; }
+    loopBusy = true; renderApp();
+    let res; try { res = await api.setLoop(on); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
+    loopBusy = false;
+    if (res && res.ok) { loopStatus = res.status || { on: !!on, message: null }; note(on ? 'TỰ ĐÁNH đang chạy — chỉ dừng khi tắt công tắc.' : 'Đã tắt TỰ ĐÁNH — các acc giữ chỗ ngồi.'); }
+    else note((res && res.error && res.error.message) || errText(res), true);
+    renderApp();
   }
+  async function stopLoop() { if (loopStatus && loopStatus.on && api.setLoop) { try { await api.setLoop(false); } catch { /* best effort */ } loopStatus = { ...loopStatus, on: false }; } }
+  function loopStats(x) { return x ? 'Trong phiên: ' + x.rounds + ' ván · đổi bàn ' + x.regroups + ' · nghỉ ' + x.rests + ' · khôi phục trình duyệt ' + x.recoveries : ''; }
   async function onAnDanhToggle(on) {
     anDanhBusy = true; renderApp();
     let res; try { res = await api.setAnDanh(on); } catch (e) { res = { ok: false, error: { code: 'IPC_FAILED', message: String(e && e.message || e) } }; }
@@ -1144,6 +1111,7 @@
   }
   async function closeBrowsers() {
     if (!window.confirm('Đóng cả 3 trình duyệt? Cấu hình profile và proxy được giữ nguyên.')) return;
+    await stopLoop(); // the loop would reopen them
     phomSessionStarted = false;
     uiState = UI.STOPPING; renderApp();
     try { await api.closeBrowsers(); } catch {}
@@ -1161,7 +1129,7 @@
     applyUiSnapshot(snap);
   }
   function applyUiSnapshot(snap) {
-    if (!snap) { manualBrowsers = []; coSeat = null; manualGroup = null; remaining = null; cardsSnap = null; safeBySlot = {}; playBySlot = {}; autoPlayByRun = {}; sharedRid = null; return; }
+    if (!snap) { manualBrowsers = []; coSeat = null; manualGroup = null; remaining = null; cardsSnap = null; safeBySlot = {}; playBySlot = {}; autoPlayByRun = {}; loopStatus = null; sharedRid = null; return; }
     manualBrowsers = snap.browsers || [];
     coSeat = snap.coSeat || null;
     manualGroup = snap.group || null;
@@ -1170,6 +1138,7 @@
     safeBySlot = snap.analyses || {};
     playBySlot = snap.play || {};
     autoPlayByRun = snap.autoPlay || {};
+    loopStatus = snap.loop || null;
     autoPlayStrategy = (snap.settings && snap.settings.autoPlayStrategy) || autoPlayStrategy;
     sharedRid = snap.sharedRid != null ? snap.sharedRid : null;
     reconcileEnterStates();
@@ -1187,6 +1156,7 @@
   if (api.onUi) api.onUi((snap) => { applyUiSnapshot(snap); if (!$('workspace').hidden && uiState === UI.CONTROL) bgRender(); });
   if (api.onNotice) api.onNotice(async (n) => {
     if (n && n.event === 'FOURTH_READY') ringBell(4);
+    if (n && n.event === 'LOOP_REST') { ringBell(3); note(n.message || 'TỰ ĐÁNH đang nghỉ', true); return; }
     const t = noticeText(n); if (t) note(t, /KICK|FAIL|LOST|LOOP_GUARD|RUNAWAY/.test(n.event));
     // a reserve was swapped in by itself (a playing browser was closed from its window): the cards follow at once
     if (n && /^SLOT_AUTO_/.test(n.event)) {

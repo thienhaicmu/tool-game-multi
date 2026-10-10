@@ -130,3 +130,21 @@ test('R4: presses and rounds are counted per account', async () => {
   await f.feature.tick(); f.time(20); await f.feature.tick();
   assert.deepEqual({ ...f.feature.status().r.stats, stops: 0 }, { rounds: 1, presses: 1, stops: 0, resumed: 0 });
 });
+
+test('VÒNG: while the loop runs there is no resume limit and no deadline; the wait grows 3 s → 10 s → 30 s → 1 min', async () => {
+  const f = fixture({ unlimited: () => true });
+  f.feature.start('r');
+  let t = 0;
+  const waits = [];
+  for (let i = 0; i < 6; i++) {
+    f.feature.documentReplaced({ run: { id: 'r' } });
+    const since = t;
+    while (f.feature.status().r.resuming) { t += 500; f.time(t); await f.feature.tick(); }
+    waits.push(t - since);
+  }
+  assert.deepEqual(waits.map((w) => Math.round(w / 1000)), [3, 10, 30, 60, 60, 60]);
+  assert.equal(f.feature.status().r.stats.resumed, 6);
+  f.feature.documentReplaced({ run: { id: 'r' } });
+  t += 10 * 60000; f.time(t); await f.feature.tick(); // not back for 10 min: still armed, then resumes once at the table
+  assert.equal(f.feature.status().r.on, true);
+});

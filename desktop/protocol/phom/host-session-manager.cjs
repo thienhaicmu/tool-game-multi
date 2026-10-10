@@ -227,6 +227,8 @@ class HostSessionManager extends EventEmitter {
   groupBusy() { const g = this._g(); return g ? g.busy() : null; }
   groupSnapshot() { const g = this._g(); return g ? g.snapshot() : null; }
   groupRoleOf(id) { const g = this._g(); return g ? g.roleOf(id) : null; }
+  loopFacts() { const g = this._g(); return g ? g.loopFacts() : null; }                                 // VÒNG TỰ ĐÁNH
+  regroupNow(reason) { const g = this._g(); return g ? g.regroupNow(reason) : { ok: false }; }
 }
 
 module.exports = { HostSessionManager };

@@ -83,6 +83,10 @@ Thứ tự chuẩn: **acc 1 Dò Key** (KEY) → **acc 2 Tạo** (ra SS, ngồi t
 
 ## 2. Chế độ TỰ ĐỘNG — ô ☐ TỰ ĐỘNG ở cuối tool
 
+> **2026-10-10**: ô TỰ ĐỘNG được gộp vào công tắc **TỰ ĐÁNH** (VÒNG TỰ ĐÁNH, `docs/phom-danh-bai.md` §7a). Các luật
+> A1–A6 dưới đây vẫn là cách TỰ ĐỘNG chạy; vòng bật lại TỰ ĐỘNG mỗi khi nó tắt, đổi bàn khi 3 phút không có người lạ,
+> nghỉ 5 phút khi kẹt — không tự dừng.
+
 Chỉ chạy khi ô **được tích**. Acc KEY = acc đầu tiên (thứ tự A, B, C) đang ở trong game.
 
 | Mã | Tình huống | Tool làm (tuần tự, mỗi bước có nhịp) |

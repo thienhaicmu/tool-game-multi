@@ -25,14 +25,16 @@ test('layout order: status line · note · one card per account · controls at t
   assert.ok(fn('coSeatStat').includes("'Cùng bàn'"));
 });
 
-test('bottom controls: Mức cược + Tự động switch + Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả', () => {
+test('bottom controls: Mức cược + TỰ ĐÁNH switch + Nuôi ít tiền / cạ ù + Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả', () => {
   const f = fn('controlFooter');
-  for (const label of ["'Mức cược'", "type: 'checkbox'", "'Tự động'", "'Bàn khác'", "'Thoát bàn tất cả'", "'Xếp lại cửa sổ theo bố cục'", "openLayoutDialog()", 'openFrameCapture()', "'Đóng tất cả'"]) assert.ok(f.includes(label), label);
+  for (const label of ["'Mức cược'", "type: 'checkbox'", "'TỰ ĐÁNH'", 'strategyControls()', "'Bàn khác'", "'Thoát bàn tất cả'", "'Xếp lại cửa sổ theo bố cục'", "openLayoutDialog()", 'openFrameCapture()', "'Đóng tất cả'"]) assert.ok(f.includes(label), label);
   assert.match(fn('autoStakes'), /betOptions/);
 });
 
-test('TỰ ĐỘNG checkbox → phom:auto-set (on/off); BÀN KHÁC → new-table', () => {
-  assert.match(fn('onAutoToggle'), /api\.setAuto\(on, creator, autoStake \? Number\(autoStake\) : null\)/);
+// user 2026-10-10: the TỰ ĐỘNG checkbox is folded into the ONE TỰ ĐÁNH switch (VÒNG TỰ ĐÁNH, main loop.cjs drives
+// phomSessions.setAuto); phom:auto-set stays for the in-page bars
+test('TỰ ĐÁNH switch → phom:loop (TỰ ĐỘNG + Tự đánh for the group); BÀN KHÁC → new-table', () => {
+  assert.match(fn('onLoopToggle'), /api\.setLoop\(on\)/);
   assert.match(fn('onNewTable'), /api\.newTable\(/);
   assert.match(preload, /setAuto: \(on, browserId, stake\) => ipcRenderer\.invoke\('phom:auto-set'/);
   assert.match(main, /'phom:auto-set'[\s\S]*?phomSessions\.setAuto\(/);

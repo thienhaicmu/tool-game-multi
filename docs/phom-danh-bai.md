@@ -150,11 +150,46 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | Bàn < 4 người: cách đếm lượt dựa trên số lá đã đánh — cần kiểm chứng | mở |
 | Tự đánh (§7) trong ván thật: đủ Đ1–Đ4, Ù, tiếp tục khi có người ngoài tool | **CHƯA** |
 | Nút Hạ của game hiện lúc nào (chỉ lượt cuối?) — tự đánh đang dựa vào đếm lượt của tool | mở |
-## 7. Tự đánh (từng acc)
+## 7. Tự đánh
+
+### 7a. VÒNG TỰ ĐÁNH — một công tắc cho cả nhóm (user duyệt 2026-10-10)
+
+**Công tắc TỰ ĐÁNH** ở thanh dưới của tool (cạnh **Mức cược**, **Nuôi ít tiền**, **Ưu tiên 2 phỏm + cạ ù**,
+**Chặn ăn lần 3 · luôn bật**) thay cho ô TỰ ĐỘNG và các công tắc Tự đánh từng acc. **Không còn nút đánh tay**
+(Bốc / Ăn / Đánh / Hạ / Gửi / Ù); tab Đánh bài chỉ để xem bài + gợi ý, dưới mỗi tay bài là dòng trạng thái Tự đánh của acc
+đó. Code: `desktop/phom/features/loop.cjs`.
+
+| Bước | Việc |
+|---|---|
+| ① Tìm bàn | TỰ ĐỘNG (Dò Key → Tạo → Vào, mục 2 kịch bản bàn) |
+| ② Chờ người lạ | luật T8; **3 phút** không có người lạ sẵn sàng (kể cả người lạ ngồi mà không sẵn sàng) ⇒ cả nhóm rời bàn, về ① |
+| ③ Đánh | Tự đánh cả 3 acc (mục 7b) |
+| ④ Hết ván | người lạ còn ⇒ sẵn sàng → KEY bắt đầu → ③ · người lạ đi ⇒ ② |
+
+**Không tự dừng** — cái gì trước đây tắt thì nay thử lại:
+
+| Trước | Bây giờ |
+|---|---|
+| Tự đánh tự bật lại tối đa 3 lần / 10 phút | không giới hạn, chờ 3 giây → 10 giây → 30 giây → tối đa 1 phút; không về bàn bao lâu cũng không tắt |
+| TỰ ĐỘNG tắt (tìm bàn lỗi, dựng lại nhóm quá 3 lần / 5 phút, KEY bị thay) | bật lại sau 3 giây → 10 giây → 30 giây → 1 phút |
+| — | đổi **3 bàn** liền không có người lạ, hoặc tìm bàn lỗi **6 lần** liền ⇒ **nghỉ 5 phút** (rời bàn, chuông) rồi chạy tiếp |
+| — | **kẹt 5 phút** (không ngồi bàn, không chờ người lạ, không đánh) ⇒ rời bàn hết, tìm lại |
+| Trình duyệt **crash** / thoát bất thường | dự bị P4/P5 đang mở thay vào; không có dự bị ⇒ **mở lại** profile của ô đó (30 giây → 1 → 2 → 5 phút) |
+| Bạn **tự đóng** cửa sổ (hoặc tool đóng) | dự bị thay vào; không có dự bị ⇒ các acc còn lại chơi tiếp, không mở lại |
+| Acc **không đủ tiền** cược | dự bị có tiền thay vào (không bao giờ giữa ván) |
+
+**Chỉ dừng khi**: tắt công tắc TỰ ĐÁNH · key hết hạn / bị thu hồi / mất quyền Tự đánh · đóng app. Tắt công tắc thì các acc
+giữ chỗ ngồi; **Thoát bàn tất cả** và **Đóng tất cả** tắt TỰ ĐÁNH trước (không thì vòng sẽ mở lại / tìm bàn lại).
+
+**Không tự sẵn sàng của game**: lệnh 363 aRd "true" do chính trang game gửi (ô "Tự sẵn sàng" của game) được đổi thành
+"false" trong trang (`protocol/phom/auto-ready-guard.cjs`, port từ meta-game) — acc dự bị nào cũng không tự sẵn sàng
+trước người lạ.
+
+### 7b. Tự đánh từng acc
 
 Ghi chú nâng cấp: Tự đánh có hai tùy chọn **Nuôi ít tiền** (mặc định tắt) và **Ưu tiên 2 phỏm + cạ ù** (**mặc định bật** từ 2026-10-10 — mô phỏng: +0,38 cược/ván cho nhóm tool, ù ×2,7; ai đã tự tắt thì vẫn tắt). **Chặn ăn lần 3 luôn bật, với mọi người ngồi sau** (user 2026-10-10), không ngoại lệ cạ ù: người sau là acc tool ⇒ chặn chính xác theo bài của nó; người ngoài đã ăn 2 lá ⇒ chỉ đánh lá **chắc chắn không bị ăn** theo thông tin công khai, không có thì đánh lá ít rủi ro nhất và báo "không có lá tránh ăn hợp lệ". Hai nhánh cạ ù / nuôi ít tiền chỉ áp dụng khi người sau là acc trong tool; với người ngoài (người sau / người trước) Tự đánh giữ kịch bản bình thường. Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Tiền thiếu không được coi là 0. Chi tiết và công cụ replay: `docs/phom-auto-play-upgrade.md`.
 
-Công tắc **Tự đánh** ở cuối thanh nút của tab Đánh bài — bật riêng cho **từng acc** (P1/P2/P3). Mặc định tắt.
+Mỗi acc đang chơi được VÒNG TỰ ĐÁNH bật Tự đánh (mục 7a); bảng dưới là cách Tự đánh của một acc chạy.
 
 | Quy tắc | Nội dung |
 |---|---|

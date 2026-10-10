@@ -108,12 +108,12 @@ test('wiring: main builds the feature, the preload bridges it; ĐÁNH BÀI is it
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /tab\('SETUP', 'Profile'\), tab\('PHOM', 'Phỏm'\), tab\('PLAY', 'Đánh bài'\)/);
   assert.match(ui, /else if \(activeTab === 'PLAY'\) renderPlay\(content\);/);
-  const bar = ui.slice(ui.indexOf('function playBar('), ui.indexOf('async function onPlayAction('));
-  for (const a of ['BOC', 'AN', 'DANH', 'HA', 'GUI', 'BAO_U']) assert.match(bar, new RegExp("btn\\('" + a + "', "), a);
+  // user 2026-10-10: no hand buttons — Tự đánh plays (the TỰ ĐÁNH switch); the row under the hand is its status line
+  for (const a of ['BOC', 'AN', 'DANH', 'HA', 'GUI', 'BAO_U']) assert.equal(ui.includes("btn('" + a + "', "), false, a);
   const lb = ui.slice(ui.indexOf('function safeCardsFor('), ui.indexOf('// ================= ĐÁNH BÀI tab'));
   assert.equal(/playBar|playPick|onclick/.test(lb), false, 'no buttons / picking inside LỌC BÀI');
-  const play = ui.slice(ui.indexOf('function renderPlay('), ui.indexOf('function playBar('));
-  assert.match(play, /el\('section', \{ class: 'play-panel' \}, tabs, body, runId \? playBar\(runId, picked, help\) : null\)/, 'the bar is a row of its own, under the hand');
+  const play = ui.slice(ui.indexOf('function renderPlay('), ui.indexOf('function autoPlayLine('));
+  assert.match(play, /el\('section', \{ class: 'play-panel' \}, tabs, body, runId \? autoPlayLine\(runId\) : null\)/, 'the status row is a row of its own, under the hand');
   const css = read('ui-phom/phom-qa.css');
   assert.match(css, /\.play-body \{ flex: 1 1 auto; min-height: 0; overflow: auto;/);
   assert.match(css, /\.play-bar \{ flex: 0 0 auto;/);
@@ -175,20 +175,20 @@ test('playHelp: one object per account for the tab (ranking, recommended, points
   assert.equal(help.playHelp(tableSnap(), 'Z'), null);
 });
 
-test('wiring: main puts the help in the ui snapshot and checks picked cards before a press; Ù is on the bar', () => {
+test('wiring: main puts the help in the ui snapshot and checks picked cards before a press; no Ù button (Tự đánh presses it)', () => {
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /play\[slot\] = playHelp\.playHelp\(cards, uid\)/);
   assert.match(main, /ok: true, browsers, cards, analyses, play,/);
   assert.match(main, /return uid \? playHelp\.checkPlay\(phomSessions\.cardObserverSnapshot\(\), uid, action, cards\) : \{ ok: true \};/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /playBySlot = snap\.play \|\| \{\};/);
-  assert.match(ui, /btn\('BAO_U', 'Ù',/);
+  assert.equal(ui.includes("btn('BAO_U', 'Ù',"), false);
   assert.match(ui, /'Chọn bộ hạ'/); assert.match(ui, /'Chọn lá gửi'/);
 });
 
 test('GỢI Ý ĐÁNH: the loose cards in two groups — chắc chắn không bị ăn, có thể không bị ăn — a click picks one', () => {
   const ui = read('ui-phom/phom-qa.js');
-  const play = ui.slice(ui.indexOf('function renderPlay('), ui.indexOf('function playBar('));
+  const play = ui.slice(ui.indexOf('function renderPlay('), ui.indexOf('function autoPlayLine('));
   assert.match(play, /const loose = \(\(help && help\.ranking\) \|\| \[\]\)\.filter\(\(x\) => !x\.breaksPhom\);/);
   assert.match(play, /group\(0, 'Chắc chắn không bị ăn'\), group\(1, 'Có thể không bị ăn'\)/);
   assert.match(play, /onclick: \(\) => \{ playPick = \{ runId, codes: \[x\.code\] \}; renderApp\(\); \}/);

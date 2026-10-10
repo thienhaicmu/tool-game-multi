@@ -47,6 +47,8 @@ contextBridge.exposeInMainWorld('phomQA', {
   // TỰ ĐÁNH for one account
   setAutoPlay: (runId, on) => ipcRenderer.invoke('phom:auto-play', { runId, on: !!on }),
   setAutoPlayStrategy: (autoPlayStrategy) => ipcRenderer.invoke('phom:auto-play-strategy-set', { autoPlayStrategy }),
+  // VÒNG TỰ ĐÁNH — the one switch for the group (TỰ ĐỘNG + Tự đánh, never stopping by itself)
+  setLoop: (on) => ipcRenderer.invoke('phom:loop', { on: !!on }),
   // the Phỏm session: observe the three runs, group actions, one snapshot for the whole screen
   startSession: (cfg) => ipcRenderer.invoke('phom:start-session', cfg),
   sessionState: () => ipcRenderer.invoke('phom:session-state'),

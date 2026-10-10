@@ -44,6 +44,9 @@ const { createHeaderFeature } = require('./phom/features/header.cjs');
 const { createWindowFramesFeature } = require('./phom/features/window-frames.cjs');
 const { createPlayActionsFeature } = require('./phom/features/play-actions.cjs');
 const { createAutoPlayFeature } = require('./phom/features/auto-play.cjs');
+const { createLoopFeature } = require('./phom/features/loop.cjs');
+const { createNoAutoReadyFeature } = require('./phom/features/no-auto-ready.cjs');
+const { applyAutoReadyGuard } = require('./protocol/phom/auto-ready-guard.cjs');
 const playHelp = require('./protocol/phom/phom-play-help.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
@@ -127,7 +130,7 @@ else {
       log: (e) => { try { log.file({ at: Date.now(), tag: 'PHOM-ONLINE', ...e }); } catch {} },
       onChange: (d) => {
         _onlineLocked = d.state === 'LOCKED';
-        if (_onlineLocked) { try { if (phomSessions && phomSessions.setAuto) phomSessions.setAuto(false); } catch {} }
+        if (_onlineLocked) { try { if (_loopFeature) _loopFeature.stop('Tự đánh dừng: key đã bị khóa', 'PHOM_AUTO_PLAY_NOT_LICENSED'); if (phomSessions && phomSessions.setAuto) phomSessions.setAuto(false); } catch {} }
         _onlineReason = _onlineLocked ? (d.reason || 'REVOKED') : null;
         _licenseWasActive = licenseActive();
         try { send('phom:license', { active: _licenseWasActive, revoked: _onlineLocked, onlineReason: d.reason || null, error: onlineLockError(), gameProduct: GAME_PRODUCT }); } catch {}
@@ -673,6 +676,7 @@ else {
     return {
       ok: true, browsers, cards, analyses, play,
       autoPlay: _autoPlayFeature ? _autoPlayFeature.status() : {}, // TỰ ĐÁNH per runId: { on, message }
+      loop: _loopFeature ? _loopFeature.status() : null, // VÒNG TỰ ĐÁNH (the one switch)
       settings: uiSettings,
       remaining: phomSessions.remainingCards(),
       sharedRid: phomSessions.sharedRid(), sharedRidOwner: phomSessions.sharedRidOwner(),
@@ -737,7 +741,7 @@ else {
   // ---- 3.2 features: what the tool does to a browser, one module each (desktop/phom/features) ----
   // Built on first use (they reference functions declared further down). PHOM_FEATURES_OFF=<id,…> switches any off.
   let _features = null; let _memoryFeature = null; let _anDanhFeature = null; let _enterFeature = null; let _headerFeature = null; let _windowFeature = null;
-  let _playFeature = null; let _autoPlayFeature = null;
+  let _playFeature = null; let _autoPlayFeature = null; let _loopFeature = null;
   const enterFeature = () => (features(), _enterFeature);
   const headerFeature = () => (features(), _headerFeature);
   const windows = () => (features(), _windowFeature);
@@ -837,6 +841,35 @@ else {
         return { strategy: settings().get('autoPlayStrategy'), moneyByUid };
       },
       licensed: autoPlayLicensed, // the key's "Cho dùng Tự đánh" (signed features.autoRun)
+      unlimited: () => !!(_loopFeature && _loopFeature.active()), // VÒNG TỰ ĐÁNH: no resume limit, no deadline
+      log: headerLog,
+      refresh: () => scheduleCardsBroadcast(true),
+    });
+    // VÒNG TỰ ĐÁNH — one switch for the group: TỰ ĐỘNG + Tự đánh, never stopping by itself (features/loop.cjs)
+    // one cluster place (A/B/C or D/E) as the loop reads it: its run, browserState and the account's money
+    const slotRow = (key, p, money) => ({ slot: key, reserve: key, runId: p && p.profileId ? String(p.profileId) : null,
+      state: p ? p.browserState : 'NOT_OPEN', money: p && p.profileId ? money(String(p.profileId)) : null });
+    const moneyOf = () => {
+      const m = new Map();
+      try { for (const b of (phomSessions && phomSessions.active() ? phomSessions.manualBrowserSnapshot() || [] : [])) { const v = b.money == null || b.money === '' ? NaN : Number(b.money); m.set(String(b.profileId), Number.isFinite(v) ? v : null); } } catch { /* no session */ }
+      return (rid) => (m.has(rid) ? m.get(rid) : null);
+    };
+    _loopFeature = createLoopFeature({
+      licensed: autoPlayLicensed,
+      group: {
+        autoActive: () => !!(phomSessions && phomSessions.active() && phomSessions.autoActive()),
+        setAuto: (on, opts) => { ensurePhomSessions(); return phomSessions.setAuto(on, opts); },
+        selectedStake: () => (phomSessions && phomSessions.active() ? phomSessions.selectedStake() : null),
+        loopFacts: () => (phomSessions && phomSessions.active() ? phomSessions.loopFacts() : null),
+        regroupNow: (reason) => (phomSessions ? phomSessions.regroupNow(reason) : { ok: false }),
+        leaveAll: () => (phomSessions && phomSessions.active() ? phomSessions.leaveAllTables() : null),
+      },
+      autoPlay: _autoPlayFeature,
+      slots: () => { if (!phomCluster || !phomCluster.active()) return []; const snap = phomCluster.getClusterSnapshot(); const money = moneyOf(); return SLOTS_ABC.map((k) => slotRow(k, snap.profiles[k], money)); },
+      reserves: () => { if (!phomCluster || !phomCluster.active()) return []; const snap = phomCluster.getClusterSnapshot(); const money = moneyOf(); return RESERVE_SLOTS.map((k) => slotRow(k, snap.reserves && snap.reserves[k], money)); },
+      swapSlot: (slot, reserve) => swapSlot(slot, reserve),
+      reopenSlot: (slot) => replaceSlot(slot, null),
+      bell: (message) => send('phom:notice', { event: 'LOOP_REST', message }),
       log: headerLog,
       refresh: () => scheduleCardsBroadcast(true),
     });
@@ -849,6 +882,7 @@ else {
         createCaptureFeature({ capture, targetsOf: runTargets, injectSendHook: (client) => wsReplay.injectSession(client, undefined), log: headerLog, now: nowMs }),
         createBrowserAgentFeature({ browserAgent, notify: (p) => send('phom:agent-applied', p) }),
         createWsHookFeature({ injectSendHook: (client) => wsReplay.injectSession(client, undefined) }),
+        createNoAutoReadyFeature({ apply: applyAutoReadyGuard }), // the game's own "Tự sẵn sàng" never readies an account
         _anDanhFeature,
         createDocNavFeature({ onDocument: (rid, url) => onRunDocumentReplaced(rid, url) }),
         _enterFeature,
@@ -1178,7 +1212,7 @@ else {
     const active = licenseActive();
     if (active === _licenseWasActive) return;
     _licenseWasActive = active;
-    if (!active) { try { if (phomSessions && phomSessions.setAuto) phomSessions.setAuto(false); } catch {} }
+    if (!active) { try { if (_loopFeature) _loopFeature.stop('Tự đánh dừng: key không còn hiệu lực', 'PHOM_AUTO_PLAY_NOT_LICENSED'); if (phomSessions && phomSessions.setAuto) phomSessions.setAuto(false); } catch {} }
     try { log.file({ at: Date.now(), tag: 'PHOM-LICENSE', event: active ? 'ACTIVE' : 'LOCKED', code: status && status.error && status.error.code }); } catch {}
     send('phom:license', { ...status, active, revoked: _onlineLocked, ...(_onlineLocked ? { error: onlineLockError() } : {}), gameProduct: GAME_PRODUCT });
   }
@@ -1325,6 +1359,7 @@ else {
     ipcMain.handle('phom:new-table', guarded(() => { ensurePhomSessions(); return phomSessions.newTable(); }));
     // 3.2 — each feature registers its own channels (an-danh: phom:an-danh-get / phom:an-danh-set)
     features().registerIpc((channel, fn, opts) => ipcMain.handle(channel, opts && opts.guarded ? guarded(fn) : fn));
+    _loopFeature.registerIpc((channel, fn, opts) => ipcMain.handle(channel, opts && opts.guarded ? guarded(fn) : fn));
     ipcMain.handle('phom:ui-snapshot', () => phomUiSnapshot());
     // PHASE 6.3.2.2 — BROWSER RUNTIME preference (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME). get returns the
     // saved preference + what each option currently resolves to (so SETUP can show availability).

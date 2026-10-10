@@ -114,6 +114,29 @@ class TableGroup extends EventEmitter {
     };
   }
 
+  // VÒNG TỰ ĐÁNH (desktop/phom/features/loop.cjs) reads where the group stands — facts only, it acts through setAuto /
+  // regroupNow / leaveAll like the user would.
+  loopFacts() {
+    const g = this._group;
+    const c = this._coord;
+    const has = (f) => !!c && typeof c[f] === 'function';
+    const key = g ? g.creatorId : null;
+    return {
+      formed: !!g, rid: g ? g.rid : null, auto: this._auto, busy: this._busy, recreating: !!(g && g.recreating),
+      keySeated: !!(g && this._atGroupTable(key)),
+      roundRunning: has('roundRunning') && this._orderedIds().some((id) => c.roundRunning(String(id))),
+      players: g && has('tablePlayerCount') ? Number(c.tablePlayerCount(key)) || 0 : 0,
+      strangerSeated: !!(g && has('strangerSeated') && c.strangerSeated(key)),
+      strangerReady: !!(g && has('strangerReady') && c.strangerReady(key)),
+    };
+  }
+  // VÒNG: nobody to play with at this table → everyone leaves and TỰ ĐỘNG searches again (its own B4 regroup)
+  regroupNow(reason = 'LOOP') {
+    if (!this._group || !this._auto || this._group.recreating) return { ok: false };
+    this._regroup(reason);
+    return { ok: true };
+  }
+
   // ---- pacing + serial queue --------------------------------------------------
   // Every command waits a random 0.8–2.5s. `gen` makes a cancelled operation stop at its next step.
   async pace(gen) {
