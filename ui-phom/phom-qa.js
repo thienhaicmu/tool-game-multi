@@ -91,6 +91,8 @@
     if (e.code === 'LICENSE_PHOM_ENTITLEMENT_REQUIRED') return 'Key cũ không có quyền Phỏm QA. Cần key có quyền PHOM.';
     if (e.code === 'LICENSE_MACHINE_MISMATCH') return 'Key không khớp thiết bị này.';
     if (e.code === 'LICENSE_EXPIRED') return 'Key đã hết hạn.';
+    if (e.code === 'LICENSE_REVOKED_ONLINE') return 'Key đã bị khóa' + (e.message ? ' (' + e.message + ')' : '') + '. Liên hệ admin để cấp key mới.';
+    if (e.code === 'LICENSE_OFFLINE_TOO_LONG') return 'Không kiểm tra được key quá 24 giờ (mất mạng). Kết nối mạng rồi mở lại.';
     return e.message || e.code || 'Kích hoạt thất bại.';
   }
 
@@ -1189,7 +1191,13 @@
   });
   // a browser's proxy refused the saved credentials (or none were saved) — say which one, it cannot load the game
   if (api.onProxyAuth) api.onProxyAuth((p) => { if (p) note(playerLabelOf(p.runId) + ': proxy từ chối đăng nhập (' + (p.code === 'PROXY_AUTH_REQUIRED' ? 'proxy cần user/mật khẩu' : 'sai user/mật khẩu') + ') — sửa proxy ở tab Profile.', true); });
-  if (api.onLicense) api.onLicense((s) => { if (s && s.active && !$('activation').hidden) boot(); });
+  // the key changed state while the app runs (expired · revoked online · offline too long · a new key): back to the
+  // activation screen with the reason — the browser windows stay open; a valid key brings the workspace back
+  if (api.onLicense) api.onLicense((s) => {
+    if (!s) return;
+    if (s.active && !$('activation').hidden) boot();
+    else if (s.active === false && !$('workspace').hidden) showActivation(s);
+  });
   if (api.onCluster) api.onCluster((snap) => { clusterSnap = snap; if (!$('workspace').hidden && (uiState === UI.CONTROL || uiState === UI.OPENING_CLUSTER)) bgRender(); });
   if (api.onKick) api.onKick(() => { if (uiState === UI.CONTROL) refreshManual().then(bgRender); });
   document.addEventListener('DOMContentLoaded', boot);

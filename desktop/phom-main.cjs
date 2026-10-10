@@ -107,17 +107,30 @@ else {
   // TỰ ĐỘNG is turned off, and the renderer is told so it locks the buttons — the browser windows stay open.
   let _onlineLocked = false;
   let _onlineGuard = null;
+  let _onlineLicenseId = null;
+  let _onlineReason = null;
+  // what the activation screen says while the online check locks the key
+  function onlineLockError() {
+    if (!_onlineLocked) return null;
+    if (_onlineReason === 'GRACE_EXPIRED') return { code: 'LICENSE_OFFLINE_TOO_LONG', message: 'Offline longer than 24 h' };
+    return { code: 'LICENSE_REVOKED_ONLINE', message: _onlineReason && _onlineReason !== 'REVOKED' ? String(_onlineReason) : '' };
+  }
+  // started at startup AND after a key is activated in the app; another key → a new guard for that key's id
   function startOnlineRevoke(status) {
     const url = readUrlConfig(path.join(__dirname, 'licensing', 'online-denylist.config.json'));
     const licenseId = (status && status.payload && status.payload.licenseId) || (status && status.licenseId) || null;
-    if (!url || !licenseId || _onlineGuard) return;
+    if (!url || !licenseId || (_onlineGuard && _onlineLicenseId === licenseId)) return;
+    if (_onlineGuard) { _onlineGuard.stop(); _onlineGuard = null; _onlineLocked = false; _onlineReason = null; }
+    _onlineLicenseId = licenseId;
     _onlineGuard = createDenylistGuard({
       url, licenseId, fetchImpl: createHttpsFetch(),
       log: (e) => { try { log.file({ at: Date.now(), tag: 'PHOM-ONLINE', ...e }); } catch {} },
       onChange: (d) => {
         _onlineLocked = d.state === 'LOCKED';
         if (_onlineLocked) { try { if (phomSessions && phomSessions.setAuto) phomSessions.setAuto(false); } catch {} }
-        try { send('phom:license', { active: licenseActive(), revoked: _onlineLocked, onlineReason: d.reason || null, gameProduct: GAME_PRODUCT }); } catch {}
+        _onlineReason = _onlineLocked ? (d.reason || 'REVOKED') : null;
+        _licenseWasActive = licenseActive();
+        try { send('phom:license', { active: _licenseWasActive, revoked: _onlineLocked, onlineReason: d.reason || null, error: onlineLockError(), gameProduct: GAME_PRODUCT }); } catch {}
       },
     });
     _onlineGuard.start();
@@ -1153,6 +1166,23 @@ else {
     const s = licenseGuard && licenseGuard.status();
     return Boolean(s && s.active);
   }
+  // The key is re-verified every 5 minutes (the trusted clock keeps ticking offline once it has been read): a key that
+  // expires mid-session locks like a revoked one — Tự đánh stops at its licensed() gate, TỰ ĐỘNG off, the renderer is
+  // told — and the browser windows stay. Only a change is pushed.
+  const LICENSE_RECHECK_MS = 5 * 60 * 1000;
+  let _licenseWasActive = false;
+  async function recheckLicense() {
+    if (!licenseGuard || devBypass.allowed) return;
+    let status;
+    try { status = await licenseGuard.refreshAsync({ consumeLaunch: false }); } catch { return; }
+    const active = licenseActive();
+    if (active === _licenseWasActive) return;
+    _licenseWasActive = active;
+    if (!active) { try { if (phomSessions && phomSessions.setAuto) phomSessions.setAuto(false); } catch {} }
+    try { log.file({ at: Date.now(), tag: 'PHOM-LICENSE', event: active ? 'ACTIVE' : 'LOCKED', code: status && status.error && status.error.code }); } catch {}
+    send('phom:license', { ...status, active, revoked: _onlineLocked, ...(_onlineLocked ? { error: onlineLockError() } : {}), gameProduct: GAME_PRODUCT });
+  }
+
   async function licenseStatus() {
     // Startup assertion (§3): a bypass flag in a packaged build is forbidden.
     if (devBypass.forbidden) return { active: false, error: { code: DEV_BYPASS_FORBIDDEN, message: 'Development license bypass is not allowed in a packaged build.' }, gameProduct: GAME_PRODUCT };
@@ -1162,6 +1192,8 @@ else {
       if (status.active) status = await licenseGuard.refreshAsync({ consumeLaunch: false });
       else status = await licenseGuard.refreshAsync();
     }
+    // the signed key may be fine while the online check locks it: the app is locked either way
+    if (status.active && _onlineLocked && !devBypass.allowed) status = { ...status, active: false, error: onlineLockError() };
     return { ...status, gameProduct: GAME_PRODUCT };
   }
 
@@ -1204,7 +1236,12 @@ else {
   // ---- IPC (phom: namespace only) ----
   function registerIpc() {
     ipcMain.handle('phom:license-status', () => licenseStatus());
-    ipcMain.handle('phom:license-activate', async (_e, key) => { if (!licenseGuard) return licenseStatus(); const s = await licenseGuard.activateAsync(String(key || '')); return { ...s, gameProduct: GAME_PRODUCT }; });
+    ipcMain.handle('phom:license-activate', async (_e, key) => {
+      if (!licenseGuard) return licenseStatus();
+      const s = await licenseGuard.activateAsync(String(key || ''));
+      if (s && s.active) { startOnlineRevoke(s); _licenseWasActive = licenseActive(); }
+      return { ...s, active: licenseActive(), revoked: _onlineLocked, gameProduct: GAME_PRODUCT };
+    });
     ipcMain.handle('phom:machine-id', () => ({ machineId: licenseGuard ? licenseGuard.machineId() : null }));
     ipcMain.handle('phom:capabilities', () => ({ featureEnabled: process.env.PHOM_QA_ENABLED === '1', authorized: phomAuthorizedEnv(), licensed: licenseActive(), autoPlayLicensed: autoPlayLicensed(), devBypass: devBypass.allowed === true, licenseMode: devBypass.allowed ? 'DEVELOPMENT_BYPASS' : 'LICENSED', proxySecret: (ensureStores(), proxySecretStore.capability()), chromiumSandbox: { mode: lastSandboxPolicy.mode, disabled: !!lastSandboxPolicy.sandboxDisabled, banner: lastSandboxPolicy.banner || null } }));
 
@@ -1337,7 +1374,12 @@ else {
     });
     licenseGuard = new LicenseGuard({ userDataPath: PHOM_USERDATA, safeStorage, expectedGameProduct: GAME_PRODUCT, devBypass: devBypass.allowed });
     licenseGuard.initialize();
-    licenseGuard.initializeAsync().then((status) => { send('phom:license', { ...status, gameProduct: GAME_PRODUCT }); if (status && status.active) startOnlineRevoke(status); }).catch(() => {});
+    licenseGuard.initializeAsync().then((status) => {
+      send('phom:license', { ...status, gameProduct: GAME_PRODUCT });
+      if (status && status.active) startOnlineRevoke(status);
+      _licenseWasActive = licenseActive();
+    }).catch(() => {});
+    setInterval(() => { recheckLicense().catch(() => {}); }, LICENSE_RECHECK_MS).unref();
     registerIpc();
     createWindow();
     windows().start();
