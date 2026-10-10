@@ -1,7 +1,7 @@
 'use strict';
 
 const EventEmitter = require('node:events');
-const { classifyPhomFrame, normalizeChannel, normalizeSeat, ZONE, GID } = require('./phom-frame-classify.cjs');
+const { classifyPhomFrame, normalizeChannel, normalizeSeat, isTableRoom, ZONE, GID } = require('./phom-frame-classify.cjs');
 
 // ---------------------------------------------------------------------------
 // PhomContext — per-BrowserRun (per-profile) Phỏm session context. Mirrors the
@@ -46,7 +46,7 @@ class PhomContext extends EventEmitter {
     // QUICK_PLAY (cmd 313) replies — the server naming a table. The seq lets the caller tell a fresh reply from an old one.
     this._roomAssign = null;    // { ok, rid, stake, maxPlayers, password, message, at, seq }
     this._roomAssignSeq = 0;
-    // The SỐ BÀN list: rs[] rows that are real tables (7-digit rid, rn without '#'), kept apart from the stake
+    // The SỐ BÀN list: rs[] rows that are real tables (rn without '#' — isTableRow), kept apart from the stake
     // channels. The server sends the full table list rarely (~every 60s) while every CMD 300 reply carries only the
     // 14 channels — storing both in _channels meant the table list was overwritten seconds after it arrived.
     this._roomList = [];
@@ -339,12 +339,11 @@ function dropSeat(ts, uid) {
 
 function hostOf(u) { try { return new URL(u).host; } catch { return String(u || ''); } }
 
-// A real TABLE row of rs[] (a số bàn), not a stake channel: channels are named "Phom#<n>" with small rids
-// (139…152); tables are named "Phom" with 7-digit rids (live capture 2026-09-21: 3673500, 3538594, …).
+// A real TABLE row of rs[] (a số bàn), not a stake channel: channels are named "Phom#<n>" (rid 139…152), tables
+// "Phom" — with 7-digit rids on 2026-09-21, 5-digit ones on 2026-10-11 (isTableRoom: the name decides).
 function isTableRow(c) {
-  if (!c || !Number.isFinite(Number(c.rid)) || Number(c.rid) < 100000) return false;
-  if ((c.zn != null && c.zn !== ZONE) || (c.gid != null && Number(c.gid) !== GID)) return false;
-  return !(c.rn && c.rn.includes('#'));
+  if (!c || !isTableRoom(c.rid, c.rn)) return false;
+  return !((c.zn != null && c.zn !== ZONE) || (c.gid != null && Number(c.gid) !== GID));
 }
 
 module.exports = { PhomContext, buildTableState, isTableRow };

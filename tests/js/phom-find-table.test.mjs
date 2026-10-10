@@ -198,6 +198,44 @@ test('TẠO: probes every named table with U+200B, sits only where ONE player is
   assert.deepEqual(sim.rooms.get(keyRid).seats, ['1_1', '1_2']);
 });
 
+// Live 2026-10-11: the server's table numbers were 5-digit (36614, 37359, 38273). The old "rid >= 100000" rule took
+// every one for a stake channel: TẠO logged SCAN_SKIP isTable:false for the KEY's own table (uC 1) for minutes.
+test('TẠO: 5-digit table numbers are tables — the KEY\'s table is found (live 2026-10-11)', async () => {
+  const { coord, sim } = mk({ scan: ['full', 'channel', 'lone'] });
+  sim.nextRid = 36614;
+  await coord.findKeyTable('B1', { stake: 20000 });
+  const keyRid = sim.keyRoom().rid;
+  assert.ok(keyRid < 100000);
+  const r = await coord.scanForKeyTable('B2', { stake: 20000, keyUid: '1_1' });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.rid, keyRid);
+  assert.deepEqual(sim.rooms.get(keyRid).seats, ['1_1', '1_2']);
+});
+
+test('CHANNEL vs TABLE: the room name decides, not the size of the number', () => {
+  const assigned = (ri) => classifyPhomFrame(JSON.stringify([5, { ri: { b: 100, Mu: 4, hpwd: false, ...ri }, cmd: 313 }]));
+  assert.equal(assigned({ rid: 38273, uC: 1, rn: 'Phom' }).isTable, true);
+  assert.equal(assigned({ rid: 7907972, uC: 1, rn: 'Phom' }).isTable, true);
+  assert.equal(assigned({ rid: 139, uC: 3, rn: 'Phom#1' }).isTable, false);
+  assert.equal(assigned({ rid: 139, uC: 3 }).isTable, false, 'no name: a small rid is a channel');
+  assert.equal(assigned({ rid: 38273, uC: 1 }).isTable, true, 'no name: a big rid is a table');
+  const ctx = new PhomContext({ profileId: 'B1' });
+  const rows = [{ rid: 38273, b: 100, uC: 1, Mu: 4, zn: 'Simms', gid: 8, rn: 'Phom' }, { rid: 139, b: 100, uC: 20, Mu: 4, zn: 'Simms', gid: 8, rn: 'Phom#0' }];
+  ctx.observe({ direction: 'recv', targetId: 'B1', url: 'wss://sim', raw: JSON.stringify([5, { rs: rows, cmd: 300 }]), now: 1000 });
+  assert.deepEqual(ctx.roomList().map((t) => t.rid), [38273]);
+});
+
+test('DÒ KEY: a 5-digit TABLE row of the same stake is never taken for the stake channel', async () => {
+  const { coord, sim } = mk();
+  // the full table list (tables first) lands in the channel rows too
+  const rows = [{ rid: 38273, b: 20000, uC: 1, Mu: 4, zn: 'Simms', gid: 8, rn: 'Phom' }, ...CHANNELS.map((c, i) => ({ rid: c.rid, b: c.b, uC: 20, Mu: 4, zn: 'Simms', gid: 8, rn: 'Phom#' + i }))];
+  sim.feed('B1', JSON.stringify([5, { rs: rows, cmd: 300 }]));
+  const r = await coord.findKeyTable('B1', { stake: 20000 });
+  assert.equal(r.ok, true, JSON.stringify(r));
+  assert.equal(r.channel, 145);
+  assert.deepEqual(op(sim, 'B1', 3)[0], [3, 'Simms', 145, '', true]);
+});
+
 test('TẠO: the game client seating the account itself at a stranger\'s table is undone, and the search goes on', async () => {
   const { coord, sim } = mk({ scan: ['full'], gameAutoJoin: true });
   await coord.findKeyTable('B1', { stake: 20000 });

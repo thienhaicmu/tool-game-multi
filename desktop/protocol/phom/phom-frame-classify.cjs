@@ -27,6 +27,20 @@ const GID = 8;
 // NOT a URL/deep-link and NOT a guessed selector.
 const GAME_ID = 'vgcg_8';
 
+// A stake CHANNEL vs a real TABLE (a số bàn): a channel is named "Phom#<n>" (rid 139–152), a table "Phom". The NAME
+// decides — table numbers are not always 7-digit: live 2026-10-11 the server's tables were 36614–38273 and the old
+// "rid >= 100000" rule took every one of them for a channel (TẠO skipped the KEY's table forever). Without a name,
+// a rid below CHANNEL_RID_MAX is a channel.
+const CHANNEL_RID_MAX = 1000;
+function isChannelRoom(rid, rn) {
+  if (typeof rn === 'string' && rn) return rn.includes('#');
+  return Number(rid) < CHANNEL_RID_MAX;
+}
+function isTableRoom(rid, rn) {
+  const r = Number(rid);
+  return Number.isFinite(r) && r > 0 && !isChannelRoom(r, rn);
+}
+
 // Confirmed command set. Names are stable semantic labels for UI / evidence.
 const CMD = Object.freeze({
   SELF_IDENTITY: 100,  // server push of the OWN session identity (uid + own wallet As) — live-captured
@@ -194,10 +208,10 @@ function classifyPhomFrame(raw) {
         // How many are already seated there, straight from the answer: the tool can skip a table that cannot hold
         // the rest of the group without joining it first (live capture 2026-10-02 carries uC on every reply).
         seated: ri && Number.isFinite(Number(ri.uC)) ? Number(ri.uC) : null,
-        // A stake CHANNEL answers with rn "Phom#6" and a small rid; a real table with rn "Phom" and a 7-digit rid.
-        // Only the latter is a số bàn the other browsers can join.
+        // A stake CHANNEL answers with rn "Phom#6"; a real table with rn "Phom". Only the latter is a số bàn the other
+        // browsers can join.
         roomName: ri && typeof ri.rn === 'string' ? ri.rn : null,
-        isTable: !!(ri && Number(ri.rid) >= 100000 && !(typeof ri.rn === 'string' && ri.rn.includes('#'))),
+        isTable: !!(ri && isTableRoom(ri.rid, ri.rn)),
         locked: !!(ri && ri.hpwd === true),
         password: ri && typeof ri.pwd === 'string' ? ri.pwd : '',
         hasPassword: !!(ri && typeof ri.pwd === 'string' && ri.pwd.length > 0),
@@ -351,5 +365,5 @@ function normalizeSeat(entry) {
 
 module.exports = {
   ZONE, GID, GAME_ID, CMD, OP, CMD_TYPE, HAND_EVENT_TYPES, SERVER_EVIDENCE_TYPES,
-  classifyPhomFrame, normalizeChannel, normalizeSeat,
+  classifyPhomFrame, normalizeChannel, normalizeSeat, isChannelRoom, isTableRoom, CHANNEL_RID_MAX,
 };

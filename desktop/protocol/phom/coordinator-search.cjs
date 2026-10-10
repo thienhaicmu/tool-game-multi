@@ -6,7 +6,7 @@
 // coordinator (this._rec, this._log, this._changed, … live there).
 // ---------------------------------------------------------------------------
 
-const { ZONE, GID } = require('./phom-frame-classify.cjs');
+const { ZONE, GID, isChannelRoom } = require('./phom-frame-classify.cjs');
 const { buildQuickPlayFrame, buildChannelQuickJoinFrame, buildProbeJoinFrame } = require('./phom-wire.cjs');
 
 // The pause between two asks of a search when no group pacing is supplied.
@@ -262,9 +262,10 @@ class CoordinatorSearch {
     return true;
   }
 
-  // The stake CHANNEL of this stake (rs[] row "Phom#n", small rid) — what DÒ KEY quick-plays into.
+  // The stake CHANNEL of this stake (rs[] row "Phom#n") — what DÒ KEY quick-plays into. Never a table row: table
+  // numbers can be small too (2026-10-11: 5-digit).
   _stakeChannel(rec, stake) {
-    const c = rec.ctx.channels().find((x) => Number(x.b) === Number(stake) && Number(x.rid) < 100000
+    const c = rec.ctx.channels().find((x) => Number(x.b) === Number(stake) && isChannelRoom(x.rid, x.rn)
       && (x.zn == null || x.zn === ZONE) && (x.gid == null || Number(x.gid) === GID));
     return c ? Number(c.rid) : null;
   }
