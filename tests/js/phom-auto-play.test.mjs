@@ -75,7 +75,8 @@ test('final discard also protects the next tool member from a third eat', () => 
 });
 
 test('strategy switches normalize independently and default to third-eat protection', () => {
-  assert.deepEqual(autoPlay.normalizeStrategy(), { lowMoney: false, twoPhomCaU: false, blockThirdEat: true });
+  assert.deepEqual(autoPlay.normalizeStrategy(), { lowMoney: false, twoPhomCaU: true, blockThirdEat: true }); // cạ ù on by default (2026-10-10)
+  assert.equal(autoPlay.normalizeStrategy({ twoPhomCaU: false }).twoPhomCaU, false);
   assert.deepEqual(autoPlay.normalizeStrategy({ lowMoney: true, twoPhomCaU: true, blockThirdEat: false }),
     { lowMoney: true, twoPhomCaU: true, blockThirdEat: true });
 });

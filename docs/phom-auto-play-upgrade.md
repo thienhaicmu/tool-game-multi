@@ -2,7 +2,7 @@
 
 Hai nhánh cạ ù và nuôi ít tiền chỉ áp dụng khi người ngồi ngay sau là UID của acc trong tool đang chơi trong ván. Chặn ăn lần 3 áp dụng với mọi người ngồi sau (2026-10-10): acc tool chặn chính xác theo bài; người ngoài chỉ biết thông tin công khai nên chỉ lá chắc chắn không bị ăn mới được coi là chặn được. Còn lại, người ngoài dùng thứ tự đánh bình thường. Các acc trong tool có thể chia sẻ bài để chọn lá hỗ trợ; gợi ý bấm tay vẫn dùng bài riêng và thông tin công khai.
 
-Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Chặn ăn lần 3 luôn bật, không ngoại lệ cạ ù, kể cả cấu hình cũ ghi false. Hai tùy chọn còn lại dùng chung cho các acc bật Tự đánh.
+Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Chặn ăn lần 3 luôn bật, không ngoại lệ cạ ù, kể cả cấu hình cũ ghi false. Hai tùy chọn còn lại dùng chung cho các acc bật Tự đánh; **Ưu tiên 2 phỏm + cạ ù mặc định bật** (2026-10-10, mô phỏng +0,38 cược/ván), Nuôi ít tiền mặc định tắt (mô phỏng ≈ 0: chỉ chuyển tiền giữa các acc nhà).
 
 Tiền được đọc từ snapshot trình duyệt theo profileId/UID. Tiền null/rỗng/âm không được coi là 0. So sánh trong các acc thuộc tool đang tham gia ván, không so với người ngoài; nếu một thành viên thiếu tiền thì bỏ nhánh nuôi. Đồng tiền thấp nhất vẫn có thể được hỗ trợ nếu ngồi ngay sau. Chưa có timestamp tiền từ nguồn nên chưa thể xác minh độ mới độc lập; số tiền dùng là giá trị mới nhất coordinator cung cấp.
 

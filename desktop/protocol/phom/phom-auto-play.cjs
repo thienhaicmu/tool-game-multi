@@ -22,7 +22,8 @@ const { rankPartners, runWindows, cardPoints } = require('./phom-rules.cjs');
 
 const labels = (cards) => (cards || []).map((x) => x.label).join(' ');
 const cardLabel = (code) => decodeCard(code).label;
-const DEFAULT_STRATEGY = Object.freeze({ lowMoney: false, twoPhomCaU: false, blockThirdEat: true });
+// "Ưu tiên 2 phỏm + cạ ù" is ON by default (user 2026-10-10; simulator: +0.38 bets/round for the tool group)
+const DEFAULT_STRATEGY = Object.freeze({ lowMoney: false, twoPhomCaU: true, blockThirdEat: true });
 
 // toolUids is kept for API compatibility; auto-play no longer stops just because a round includes outside players.
 function tableGuard(snap, toolUids = [], uid = null) {
@@ -40,7 +41,7 @@ const nextUidOf = (snap, uid) => uidStr(snap && snap.nextOf && snap.nextOf[Strin
 const numOrNull = (v) => (v == null || v === '' || typeof v === 'boolean' ? null : Number.isFinite(Number(v)) && Number(v) >= 0 ? Number(v) : null);
 const normalizeStrategy = (x = {}) => ({
   lowMoney: x.lowMoney === true,
-  twoPhomCaU: x.twoPhomCaU === true,
+  twoPhomCaU: x.twoPhomCaU !== false,
   blockThirdEat: true,
 });
 

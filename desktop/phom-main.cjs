@@ -164,7 +164,7 @@ else {
     const num = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : null);
     const autoPlayStrategy = (v) => {
       const x = v && typeof v === 'object' ? v : {};
-      return { lowMoney: x.lowMoney === true, twoPhomCaU: x.twoPhomCaU === true, blockThirdEat: true };
+      return { lowMoney: x.lowMoney === true, twoPhomCaU: x.twoPhomCaU !== false, blockThirdEat: true }; // cạ ù ON unless switched off (sim: +0.38 bets/round)
     };
     _settings = createSettingsStore({
       file: path.join(phomRoot(), 'phom-settings.json'),
@@ -177,7 +177,7 @@ else {
         windowLayout: { default: { ...windowLayout.DEFAULT_LAYOUT }, normalize: windowLayout.normalizeLayout, legacy: { file: path.join(phomRoot(), 'window-layout.json') } },
         // the browser runtime (AUTO | CUSTOM_CHROMIUM | GOOGLE_CHROME); nothing saved → the bundled Chromium (user 2026-10-05)
         browserRuntime: { default: 'CUSTOM_CHROMIUM', normalize: browserRuntimeResolver.normalizePreference, legacy: { file: path.join(phomRoot(), 'browser-runtime.json'), pick: (j) => j.preference } },
-        autoPlayStrategy: { default: { lowMoney: false, twoPhomCaU: false, blockThirdEat: true }, normalize: autoPlayStrategy },
+        autoPlayStrategy: { default: { lowMoney: false, twoPhomCaU: true, blockThirdEat: true }, normalize: autoPlayStrategy },
         // the tool window's last bounds (re-clamped to the current display on start)
         toolWindow: { default: null, normalize: (v) => (v && typeof v === 'object' && num(v.x) != null && num(v.width) != null ? { x: num(v.x), y: num(v.y), width: num(v.width), height: num(v.height) } : null), legacy: { file: path.join(PHOM_USERDATA, 'window-state.json') } },
       },

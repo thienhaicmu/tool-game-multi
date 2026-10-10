@@ -54,7 +54,7 @@
   let playTab = 'B1';
   let playPinned = false;
   let playPick = { runId: null, codes: [] };
-  let autoPlayStrategy = { lowMoney: false, twoPhomCaU: false, blockThirdEat: true };
+  let autoPlayStrategy = { lowMoney: false, twoPhomCaU: true, blockThirdEat: true };
   let playBySlot = {};
   const playBusy = {}; // runId → a play action in flight
   let autoPlayByRun = {}; // TỰ ĐÁNH per runId from main: { on, message }
