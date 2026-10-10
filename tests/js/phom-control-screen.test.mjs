@@ -25,10 +25,19 @@ test('layout order: status line · note · one card per account · controls at t
   assert.ok(fn('coSeatStat').includes("'Cùng bàn'"));
 });
 
-test('bottom controls: Mức cược + TỰ ĐÁNH switch + Nuôi ít tiền / cạ ù + Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả', () => {
+test('bottom controls: Mức cược + Ẩn danh + Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả', () => {
   const f = fn('controlFooter');
-  for (const label of ["'Mức cược'", "type: 'checkbox'", "'TỰ ĐÁNH'", 'strategyControls()', "'Bàn khác'", "'Thoát bàn tất cả'", "'Xếp lại cửa sổ theo bố cục'", "openLayoutDialog()", 'openFrameCapture()', "'Đóng tất cả'"]) assert.ok(f.includes(label), label);
+  for (const label of ["'Mức cược'", "type: 'checkbox'", "'Bàn khác'", "'Thoát bàn tất cả'", "'Xếp lại cửa sổ theo bố cục'", "openLayoutDialog()", 'openFrameCapture()', "'Đóng tất cả'"]) assert.ok(f.includes(label), label);
+  // user 2026-10-11: no Tự đánh control in the Phỏm tab — they are in the Tự đánh tab
+  for (const gone of ["'TỰ ĐÁNH'", 'strategyControls()', 'onLoopToggle']) assert.ok(!f.includes(gone), gone + ' is not in the Phỏm tab');
   assert.match(fn('autoStakes'), /betOptions/);
+});
+
+test('Tự đánh tab: its bottom bar holds the TỰ ĐÁNH switch, the loop status, the strategy options and the stake', () => {
+  const f = fn('autoPlayFooter');
+  for (const label of ["'TỰ ĐÁNH'", 'onLoopToggle(e.target.checked)', 'loopStatus.message', 'strategyControls()', 'Chưa chọn mức cược (tab Phỏm)']) assert.ok(f.includes(label), label);
+  assert.match(fn('renderPlay'), /r\.appendChild\(autoPlayFooter\(\)\);/);
+  assert.match(js, /SHOW_PLAY_TAB \? tab\('PLAY', 'Tự đánh'\) : null/);
 });
 
 // user 2026-10-10: the TỰ ĐỘNG checkbox is folded into the ONE TỰ ĐÁNH switch (VÒNG TỰ ĐÁNH, main loop.cjs drives

@@ -1,12 +1,13 @@
 'use strict';
 
 // Phỏm QA — the tool window. Talks ONLY to window.phomQA (typed preload): no raw WS sender, no CDP, no proxy
-// password. Two tabs in one window:
+// password. Three tabs in one window:
 //   PROFILE — the device-profile table (tick 3 → P1/P2/P3), bulk proxy, per-profile editor, MỞ TRÌNH DUYỆT.
 //   PHỎM    — one status line, then ONE CARD PER ACCOUNT: who it is, what it is doing, its buttons, and its LỌC BÀI
 //             (the cards the next player cannot eat). Controls at the bottom.
+//   TỰ ĐÁNH — one account's hand + play help, and EVERY Tự đánh control (the TỰ ĐÁNH switch, the strategy options).
 // Manual play is each Chromium's own bar (Dò Key · Tạo · Vào · ReJoin · Thoát); nothing automatic runs here unless
-// TỰ ĐỘNG is ticked.
+// the TỰ ĐÁNH switch is on.
 (function () {
   const api = window.phomQA || {};
   const SLOTS = ['A', 'B', 'C'];
@@ -129,11 +130,14 @@
   }
 
   // ---------- frame ----------
+  // user 2026-10-11: the Tự đánh tab is HIDDEN from the user — only its button in the tab bar; renderPlay and every
+  // Tự đánh feature behind it stay as they are (true here shows it again)
+  const SHOW_PLAY_TAB = false;
   function renderTabBar() {
     const tab = (id, label) => el('button', { class: 'tab' + (activeTab === id ? ' active' : ''), onclick: () => { activeTab = id; renderApp(); } }, label);
     return el('header', { class: 'topbar' },
       el('span', { class: 'brand' }, el('span', { class: 'brand-mark' }, '♠'), 'Phỏm QA'),
-      el('nav', { class: 'tabs' }, tab('SETUP', 'Profile'), tab('PHOM', 'Phỏm'), tab('PLAY', 'Đánh bài')),
+      el('nav', { class: 'tabs' }, tab('SETUP', 'Profile'), tab('PHOM', 'Phỏm'), SHOW_PLAY_TAB ? tab('PLAY', 'Tự đánh') : null),
       licenseChip());
   }
   // license: "Còn X ngày · HSD dd/mm/yyyy" from the signed expiry (payload.expiresAt, unix seconds)
@@ -191,7 +195,7 @@
   }
   function renderKey() {
     // ĐÁNH BÀI: the table, every account's help and TỰ ĐÁNH status (the doc: the help is recomputed on every change)
-    if (uiState === UI.CONTROL && activeTab === 'PLAY') return uiState + '|PLAY|' + manualBrowsers.length + '|' + (cardsSnap && cardsSnap.currentTurnUid) + '|' + JSON.stringify(playBySlot) + '|' + JSON.stringify(autoPlayByRun) + '|' + JSON.stringify(autoPlayStrategy) + '|' + JSON.stringify(loopStatus) + loopBusy;
+    if (uiState === UI.CONTROL && activeTab === 'PLAY') return uiState + '|PLAY|' + manualBrowsers.length + '|' + (cardsSnap && cardsSnap.currentTurnUid) + '|' + JSON.stringify(playBySlot) + '|' + JSON.stringify(autoPlayByRun) + '|' + JSON.stringify(autoPlayStrategy) + '|' + JSON.stringify(loopStatus) + loopBusy + '|' + caps.autoPlayLicensed + '|' + autoStake + '|' + noteText();
     if (uiState !== UI.CONTROL || activeTab !== 'PHOM') return uiState + '|' + activeTab + '|' + manualBrowsers.length;
     const g = manualGroup;
     const browsers = manualBrowsers.map((b) => [b.profileId, b.manualState, b.rid, b.ready, b.groupRole, b.isTableHost, b.username, b.accountId, b.money, b.searchKind, b.rejoinOn, b.connected, b.socketReady, b.channelCount, b.lastError && b.lastError.code].join(',')).join(';');
@@ -418,7 +422,8 @@
   //   status line   — số bàn (copy) · cược · cùng bàn · tự động / đang xử lý
   //   note line     — what the group just did (notices)
   //   3 player cards — P1 · P2 · P3: account, state, buttons, and its own LỌC BÀI
-  //   footer        — Mức cược · TỰ ĐỘNG · Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả
+  //   footer        — Mức cược · Ẩn danh · Bàn khác · Thoát bàn tất cả · Xếp cửa sổ · Ghi WS · Đóng tất cả
+  //                   (the TỰ ĐÁNH switch + strategy are in the Tự đánh tab)
   function renderControl(r) {
     r.appendChild(statusLine());
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
@@ -748,6 +753,25 @@
     }
     r.appendChild(el('div', { class: 'note', id: 'phq-note' }, ''));
     r.appendChild(el('section', { class: 'play-panel' }, tabs, body, runId ? autoPlayLine(runId) : null));
+    r.appendChild(autoPlayFooter());
+  }
+  // the Tự đánh tab's bottom bar (user 2026-10-11: every Tự đánh control here, none in the Phỏm tab): the TỰ ĐÁNH switch
+  // (VÒNG TỰ ĐÁNH), what the loop is doing, the strategy options; the stake is picked in the Phỏm tab and only shown
+  function autoPlayFooter() {
+    const loopOn = !!(loopStatus && loopStatus.on);
+    const allowed = caps.autoPlayLicensed === true;
+    const box = el('input', { type: 'checkbox', id: 'phq-loop', disabled: loopBusy || (!allowed && !loopOn) ? 'disabled' : null, onchange: (e) => onLoopToggle(e.target.checked) });
+    box.checked = loopOn;
+    const stake = autoStake || (manualGroup && manualGroup.selectedStake != null ? String(manualGroup.selectedStake) : '');
+    return el('footer', { class: 'bar' },
+      el('label', { class: 'switch' + (loopOn ? ' on' : '') + (allowed ? '' : ' locked'), for: 'phq-loop',
+        title: allowed ? 'TỰ ĐÁNH cả nhóm, chạy vòng khép kín: tìm bàn → chờ người lạ → đánh → ván tiếp / đổi bàn. Lỗi thì tự thử lại, kẹt thì nghỉ 5 phút rồi chạy tiếp. Chỉ dừng khi tắt công tắc này hoặc key hết quyền.'
+          : 'Key này chưa được cấp quyền Tự đánh — liên hệ admin để cấp key có tích "Cho dùng Tự đánh".' },
+        box, el('span', { class: 'knob' }), loopBusy ? 'Đang xử lý…' : 'TỰ ĐÁNH'),
+      el('span', { class: 'muted', title: 'Đổi mức cược ở tab Phỏm' }, stake ? 'Cược ' + money(Number(stake)) : 'Chưa chọn mức cược (tab Phỏm)'),
+      loopStatus && loopStatus.message ? el('span', { class: 'muted auto-play-msg' + (loopOn && !loopStatus.resting ? '' : ' off'), title: loopStats(loopStatus.stats) }, loopStatus.message)
+        : (allowed ? null : el('span', { class: 'muted auto-play-msg off' }, 'Key chưa có quyền Tự đánh')),
+      strategyControls());
   }
   // user 2026-10-10: no hand buttons any more — Tự đánh plays every account (the one TỰ ĐÁNH switch in the footer);
   // this line says what THIS account's Tự đánh is doing
@@ -796,21 +820,11 @@
     const sel = el('select', { class: 'sel bet-sel', id: 'phq-stake', title: 'Mức cược dùng cho Dò Key / Tạo (cả tool và thanh trong web)', onchange: (e) => onPickStake(e.target.value) },
       el('option', { value: '' }, 'Chọn…'), ...stakes.map((v) => el('option', { value: String(v) }, money(v))));
     sel.value = autoStake;
-    const loopOn = !!(loopStatus && loopStatus.on);
-    const allowed = caps.autoPlayLicensed === true;
-    const box = el('input', { type: 'checkbox', id: 'phq-loop', disabled: loopBusy || (!allowed && !loopOn) ? 'disabled' : null, onchange: (e) => onLoopToggle(e.target.checked) });
-    box.checked = loopOn;
     const anDanhBox = el('input', { type: 'checkbox', id: 'phq-andanh', disabled: anDanhBusy ? 'disabled' : null, onchange: (e) => onAnDanhToggle(e.target.checked) });
     anDanhBox.checked = anDanhOn;
+    // user 2026-10-11: the Tự đánh controls live in the Tự đánh tab (autoPlayFooter), not here
     return el('footer', { class: 'bar' },
       el('label', { class: 'field', for: 'phq-stake' }, 'Mức cược', sel),
-      el('label', { class: 'switch' + (loopOn ? ' on' : '') + (allowed ? '' : ' locked'), for: 'phq-loop',
-        title: allowed ? 'TỰ ĐÁNH cả nhóm, chạy vòng khép kín: tìm bàn → chờ người lạ → đánh → ván tiếp / đổi bàn. Lỗi thì tự thử lại, kẹt thì nghỉ 5 phút rồi chạy tiếp. Chỉ dừng khi tắt công tắc này hoặc key hết quyền.'
-          : 'Key này chưa được cấp quyền Tự đánh — liên hệ admin để cấp key có tích "Cho dùng Tự đánh".' },
-        box, el('span', { class: 'knob' }), loopBusy ? 'Đang xử lý…' : 'TỰ ĐÁNH'),
-      loopStatus && loopStatus.message ? el('span', { class: 'muted auto-play-msg' + (loopOn && !loopStatus.resting ? '' : ' off'), title: loopStats(loopStatus.stats) }, loopStatus.message)
-        : (allowed ? null : el('span', { class: 'muted auto-play-msg off' }, 'Key chưa có quyền Tự đánh')),
-      strategyControls(),
       el('label', { class: 'switch' + (anDanhOn ? ' on' : ''), for: 'phq-andanh', title: 'Chế độ ẩn danh của game trên cả 3 trình duyệt. Tắt (mặc định): hiện số bàn thật, không có người chơi giả, xem được chat/bài/hiệu ứng. Bật: giữ ẩn danh như game (áp dụng từ bàn/ván sau).' },
         anDanhBox, el('span', { class: 'knob' }), anDanhBusy ? 'Đang xử lý…' : 'Ẩn danh'),
       el('span', { class: 'spacer' }),

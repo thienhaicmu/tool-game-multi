@@ -156,9 +156,11 @@ test('wiring: main builds the loop over TỰ ĐỘNG + Tự đánh (unlimited wh
   assert.match(ui, /onchange: \(e\) => onLoopToggle\(e\.target\.checked\)/);
   for (const gone of ["btn('BOC'", "btn('DANH'", "btn('HA'", "btn('GUI'", "btn('BAO_U'", 'function autoPlaySwitch', "id: 'phq-auto',"]) assert.ok(!ui.includes(gone), gone + ' is gone from the UI');
   assert.match(ui, /await stopLoop\(\); \/\/ the loop would reopen them/);
-  // user 2026-10-10: Nuôi ít tiền + cạ ù sit in the bottom bar next to TỰ ĐÁNH (not hidden)
-  const footer = ui.slice(ui.indexOf('function controlFooter'), ui.indexOf('function autoStakes'));
+  // user 2026-10-10: Nuôi ít tiền + cạ ù sit in the bottom bar next to TỰ ĐÁNH (not hidden); 2026-10-11: that bar is
+  // the Tự đánh tab's
+  const footer = ui.slice(ui.indexOf('function autoPlayFooter'), ui.indexOf('function autoPlayLine'));
   assert.match(footer, /strategyControls\(\)/);
+  assert.match(footer, /onLoopToggle\(e\.target\.checked\)/);
   assert.match(ui, /item\('lowMoney', 'Nuôi ít tiền'/);
   assert.match(ui, /item\('twoPhomCaU', 'Ưu tiên 2 phỏm \+ cạ ù'/);
 });

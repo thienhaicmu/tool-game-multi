@@ -106,7 +106,8 @@ test('wiring: main builds the feature, the preload bridges it; ĐÁNH BÀI is it
   assert.match(main, /createPlayActionsFeature\(\{ clientFor: runClientFor, log: headerLog, precheck: /);
   assert.match(read('desktop/phom-preload.cjs'), /playAction: \(runId, action, cards\) => ipcRenderer\.invoke\('phom:play-action', \{ runId, action, cards: Array\.isArray\(cards\) \? cards : \[\] \}\)/);
   const ui = read('ui-phom/phom-qa.js');
-  assert.match(ui, /tab\('SETUP', 'Profile'\), tab\('PHOM', 'Phỏm'\), tab\('PLAY', 'Đánh bài'\)/);
+  assert.match(ui, /tab\('SETUP', 'Profile'\), tab\('PHOM', 'Phỏm'\), SHOW_PLAY_TAB \? tab\('PLAY', 'Tự đánh'\) : null/);
+  assert.match(ui, /const SHOW_PLAY_TAB = false;/, 'user 2026-10-11: the Tự đánh tab is hidden from the user');
   assert.match(ui, /else if \(activeTab === 'PLAY'\) renderPlay\(content\);/);
   // user 2026-10-10: no hand buttons — Tự đánh plays (the TỰ ĐÁNH switch); the row under the hand is its status line
   for (const a of ['BOC', 'AN', 'DANH', 'HA', 'GUI', 'BAO_U']) assert.equal(ui.includes("btn('" + a + "', "), false, a);
