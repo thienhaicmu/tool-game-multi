@@ -21,7 +21,7 @@ const { createTableGroup } = require('../../desktop/protocol/phom/table-group.cj
 const { readFileSync } = require('node:fs');
 const readMain = () => readFileSync(new URL('../../desktop/phom-main.cjs', import.meta.url), 'utf8');
 // The group flow (docs/phom-kich-ban.md) runs unpaced here; its pacing/queueing rules are phom-table-group.test.mjs.
-const groupFor = (coord) => createTableGroup({ coord, paceMinMs: 0, paceMaxMs: 0, sleep: () => Promise.resolve() });
+const groupFor = (coord, extra = {}) => createTableGroup({ coord, paceMinMs: 0, paceMaxMs: 0, sleep: () => Promise.resolve(), ...extra });
 const ZWSP = '​';
 const CHANNELS = [{ rid: 139, b: 100 }, { rid: 145, b: 20000 }];
 
@@ -45,7 +45,8 @@ class Sim {
   broadcast(room) { for (const [bid, uid] of Object.entries(this.uids)) if (room.seats.includes(uid)) this.feed(bid, this.table(room)); }
   seat(id, room) { room.seats.push(this.uids[id]); this.feed(id, '[3,true,0,-1,null]'); this.broadcast(room); }
   unseat(id) { for (const room of this.rooms.values()) { if (room.seats.includes(this.uids[id])) { room.seats = room.seats.filter((u) => u !== this.uids[id]); this.broadcast(room); } } }
-  keyRoom() { return [...this.rooms.values()].find((r) => r.seats.length === 1 && this.ours(r.seats[0])) || null; }
+  // the KEY's table: opened by one of ours, no other of ours there yet (guests may sit with the KEY), not full
+  keyRoom() { return [...this.rooms.values()].find((r) => r.seats.length && r.seats.length < r.Mu && this.ours(r.seats[0]) && r.seats.filter((u) => this.ours(u)).length === 1) || null; }
   kick(id, msg = 'Bạn bị kick vì không sẵn sàng') { this.unseat(id); this.feed(id, JSON.stringify([4, true, 2, -1, 2, msg])); }
   named(b) {
     const kind = this.scan.length ? this.scan.shift() : (this.keyNever ? 'full' : 'key');
@@ -102,7 +103,7 @@ function mk(simOpts) {
 }
 // The group flow on top of the sim, plus the account AUTO-READY preference (CMD 363): a client whose preference is on
 // readies by itself when it sits down (live 2026-09-21T12-06), so NOT_READY must switch it off first.
-function mkGroup(simOpts) {
+function mkGroup(simOpts, groupOpts = {}) {
   const { coord, sim } = mk(simOpts);
   sim.pref = {}; sim.readyFrames = []; sim.order = [];
   const baseSeat = sim.seat.bind(sim);
@@ -118,7 +119,7 @@ function mkGroup(simOpts) {
       return inner(frame);
     };
   }
-  return { coord, sim, group: groupFor(coord) };
+  return { coord, sim, group: groupFor(coord, groupOpts) };
 }
 const op = (sim, id, n) => sim.sent[id].filter((f) => f[0] === n);
 const asks = (sim, id) => sim.sent[id].filter((f) => f[0] === 6 && f[3] && f[3].cmd === 313);
@@ -541,6 +542,44 @@ test('LỌC BÀI lives in the Phỏm QA tool (a tab per account) — never on th
 // ---- TẠO fast path (2026-10-05 "Tạo is slow, it browses"): the table list broadcast after the KEY sat down -------
 const listFrame = (rows) => JSON.stringify([5, { rs: rows.map((r) => ({ zn: 'Simms', gid: 8, rn: 'Phom', Mu: 4, hpwd: false, ...r })), cmd: 300 }]);
 
+// Meta Game 7ec0de4 — TẠO recognises the KEY's table by the KEY's live player count
+test('TẠO (live 2026-10-10: 43 asks, 130 s, never found): a guest sat with the KEY → the answer naming its 2-player table is the one joined', async () => {
+  const { coord, sim } = mk({ scan: [] });
+  await coord.findKeyTable('B1', { stake: 100 });
+  const room = sim.keyRoom();
+  room.seats.push('s_guest'); sim.broadcast(room); // the KEY now sees 2 players at its table
+  const r = await coord.scanForKeyTable('B2', { stake: 100, keyUid: sim.uids.B1 });
+  assert.equal(r.ok, true, JSON.stringify(r.error || r));
+  assert.equal(r.rid, room.rid);
+  assert.equal(sim.asks, 1, 'the first answer');
+  assert.ok(sim.sent.B2.some((j) => j[0] === 6 && j[3] && j[3].cmd === 300), 'the lobby list was asked too');
+});
+
+test('TẠO fast path follows the KEY\'s player count: its 2-player table, not a newer lone one', async () => {
+  const { coord, sim } = mk({ scan: [] });
+  const b = 100;
+  const seatedAt = Date.now() - 5;
+  await coord.findKeyTable('B1', { stake: b });
+  const room = sim.keyRoom();
+  room.seats.push('s_guest'); sim.broadcast(room);
+  const lone = sim.room(b, 1); // newer number, one stranger
+  sim.feed('B2', listFrame([{ rid: room.rid, b, uC: 2 }, { rid: lone.rid, b, uC: 1 }]));
+  const r = await coord.scanForKeyTable('B2', { stake: b, keyUid: sim.uids.B1, keySeatedAt: seatedAt });
+  assert.equal(r.rid, room.rid);
+  assert.equal(sim.asks, 0);
+  assert.deepEqual(op(sim, 'B2', 8).map((j) => j[2]), [room.rid]);
+});
+
+test('TẠO: the KEY\'s table filled up with guests → refused at once (no 3-minute search, no ask)', async () => {
+  const { coord, sim } = mk({ scan: [] });
+  await coord.findKeyTable('B1', { stake: 100 });
+  const room = sim.keyRoom();
+  room.seats.push('s_1', 's_2', 's_3'); sim.broadcast(room);
+  const r = await coord.scanForKeyTable('B2', { stake: 100, keyUid: sim.uids.B1 });
+  assert.equal(r.error.code, 'PHOM_KEY_TABLE_FULL');
+  assert.equal(sim.asks, 0);
+});
+
 test('TẠO fast path: a table list received after the KEY sat → its one-player table (newest number) is joined directly, no 313', async () => {
   const { coord, sim } = mk({ scan: [] });
   const b = CHANNELS[0].b;
@@ -838,12 +877,60 @@ test('B2 e2e: CHƯA SS lost its seat (table full) → when a seat frees up it co
 });
 
 // B4 (user 2026-10-06, refined): the rule is "the host is ONE OF OUR accounts at the table". Manual stays manual.
-async function formedOn(mode) {
-  const m = mkGroup({ scan: [] });
+async function formedOn(mode, groupOpts = {}) {
+  const m = mkGroup({ scan: [] }, groupOpts);
   if (mode === 'auto') await m.group.setAuto(true, { creatorId: 'B1', stake: 20000 });
   else { m.group.setStake(20000); await m.group.findTable('B1', {}); await m.group.scanTable('B2'); await m.group.joinTable('B3', m.group.rid()); }
   return m;
 }
+
+// ---- OUR THREE (VÒNG + Nuôi ít tiền, user 2026-10-11, Meta Game 7ec0de4) — 8 s scaled down to 60 ms ---------------
+const OWN = { ownRoundWaitMs: 60, rejoinDelayMs: 20 };
+
+test('NUÔI ÍT TIỀN: no guest for 8 s → acc 3 readies, then the KEY starts with our three', async () => {
+  const { sim, group } = await formedOn('auto', OWN);
+  assert.deepEqual(sim.readyFrames, ['B2'], 'SẴN SÀNG readied as CHƯA SS sat');
+  group.setOwnRounds(() => true);
+  group.checkSeats();
+  assert.deepEqual(sim.readyFrames, ['B2'], 'nobody readies before the 8 s ran out');
+  assert.ok(group.loopFacts().ownWaitLeft > 0);
+  await until(() => sim.readyFrames.includes('B1'));
+  assert.deepEqual(sim.readyFrames, ['B2', 'B3', 'B1']);
+  assert.equal(group.loopFacts().players, 3);
+});
+
+test('NUÔI ÍT TIỀN: a guest sits within the 8 s → the T8 rules: acc 3 waits for the guest\'s ready', async () => {
+  const { sim, group } = await formedOn('auto', OWN);
+  group.setOwnRounds(() => true);
+  group.checkSeats();
+  const room = groupRoom(sim, group);
+  strangerSits(sim, room);
+  for (let i = 0; i < 4; i++) await tick();
+  assert.deepEqual(sim.readyFrames, ['B2'], 'the guest is not ready: acc 3 stays unready, no start with three');
+  strangerReadies(sim, room);
+  await until(() => sim.readyFrames.includes('B1'));
+  assert.deepEqual(sim.readyFrames, ['B2', 'B3', 'B1']);
+});
+
+test('NUÔI ÍT TIỀN: acc 3 kicked → it sits again, readies and the round starts at once (the 8 s are not counted again)', async () => {
+  const { sim, group } = await formedOn('auto', { ...OWN, ownRoundWaitMs: 200 });
+  group.setOwnRounds(() => true);
+  group.checkSeats();
+  sim.kick('B3');
+  await until(() => sim.readyFrames.includes('B1'));
+  assert.deepEqual(sim.readyFrames, ['B2', 'B3', 'B1']);
+  assert.ok(groupRoom(sim, group).seats.includes(sim.uids.B3), 'acc 3 is back at the table');
+});
+
+test('Nuôi ít tiền NOT ticked: no guest → acc 3 never readies, the group waits for a stranger', async () => {
+  const { sim, group } = await formedOn('auto', OWN);
+  group.setOwnRounds(() => false);
+  group.checkSeats();
+  for (let i = 0; i < 5; i++) await tick();
+  assert.deepEqual(sim.readyFrames, ['B2']);
+  assert.equal(group.loopFacts().ownRound, false);
+  assert.equal(group.loopFacts().ownWaitLeft, null);
+});
 for (const mode of ['manual', 'auto']) {
   test(`B4 e2e (${mode}): the KEY is kicked and the server makes SẴN SÀNG the host → it is the KEY now; the table is kept`, async () => {
     const { sim, group, coord } = await formedOn(mode);

@@ -42,6 +42,7 @@ class HostSessionManager extends EventEmitter {
     const group = createTableGroup({ coord, log: (event, data) => this.emit('log', { tag: 'PHOM-GROUP', event, ...data }) });
     group.on('update', () => this.emit('update', coord.snapshot()));
     group.on('notice', (n) => this.emit('notice', n));
+    if (this._ownRounds) group.setOwnRounds(this._ownRounds); // VÒNG set it before this session began
     this._group = group;
     coord.on('update', (snap) => this.emit('update', snap));
     coord.on('hands', (hands) => this.emit('hands', hands));
@@ -229,6 +230,8 @@ class HostSessionManager extends EventEmitter {
   groupRoleOf(id) { const g = this._g(); return g ? g.roleOf(id) : null; }
   loopFacts() { const g = this._g(); return g ? g.loopFacts() : null; }                                 // VÒNG TỰ ĐÁNH
   regroupNow(reason) { const g = this._g(); return g ? g.regroupNow(reason) : { ok: false }; }
+  setOwnRounds(fn) { this._ownRounds = typeof fn === 'function' ? fn : null; if (this._group) this._group.setOwnRounds(this._ownRounds); } // VÒNG + Nuôi ít tiền (kept for a later session too)
+  checkSeats() { const g = this._g(); if (g) g.checkSeats(); }
 }
 
 module.exports = { HostSessionManager };

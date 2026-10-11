@@ -57,15 +57,27 @@ test('loose cards first (tier, then fewest points left); a card of a phỏm come
   assert.deepEqual(r.ranking.slice(2).map((x) => x.breaksPhom), [true, true, true], '2♠ 2♣ 2♦ only after every loose card — even 2♦ that is proven safe');
 });
 
-test('KNOWLEDGE BOUNDARY: the teammate\'s hidden hand is never used — it is treated exactly like a stranger', () => {
-  // C (our own account) plays after B and holds NOTHING that eats 9♦. With its hand known Lọc bài would call 9♦ safe;
-  // here C's cards are unknown, so 9♦ is NOT proven safe.
+test('KNOWLEDGE (2026-10-10, Meta Game 70e6eb5): every known hand counts — a teammate\'s known hand proves a card safe', () => {
+  // C (our own account) plays after B and holds NOTHING that eats 9♦: with its hand known 9♦ is proven safe, as Lọc bài
+  // says. publicView (that account alone) still strips it — Tự đánh's press bookkeeping uses that.
   const s = snap({ mine: cs('9♦ 2♠ 2♣ 2♦'), teammate: cs('A♠ A♣ 5♥ 6♥ J♣') });
   const pv = H.publicView(s, 'B');
   assert.deepEqual(pv.players.C.currentCards, []);
   assert.equal(pv.ledger.some((e) => e.ownerUid === 'C' && e.status === 'CURRENT'), false);
   const r = H.discardRanking(s, 'B');
-  assert.notEqual(r.ranking.find((x) => x.label === '9♦').tier, H.TIER.SAFE);
+  assert.equal(r.ranking.find((x) => x.label === '9♦').tier, H.TIER.SAFE);
+  // the same table with C's hand unknown (a guest): 9♦ is NOT proven safe
+  const guest = snap({ mine: cs('9♦ 2♠ 2♣ 2♦') });
+  assert.notEqual(H.discardRanking(guest, 'B').ranking.find((x) => x.label === '9♦').tier, H.TIER.SAFE);
+});
+
+test('withHand: the game\'s own hand replaces the frames\' — laid / public cards never count as held', () => {
+  const s = snap({ mine: cs('9♦ 2♠'), ledger: [{ code: c('K♠'), status: 'DISCARDED', ownerUid: 'A' }] });
+  const w = H.withHand(s, 'B', cs('5♥ 6♥ K♠'));
+  assert.deepEqual(H.handOf(w, 'B'), cs('5♥ 6♥'), 'K♠ is public — not in the hand');
+  assert.equal(w.ledger.some((e) => e.code === c('9♦')), false, 'the frames\' card the game does not hold is dropped');
+  assert.equal(w.ledger.some((e) => e.code === c('5♥') && e.status === 'CURRENT' && e.ownerUid === 'B'), true);
+  assert.deepEqual(H.handOf(s, 'B'), cs('9♦ 2♠'), 'the original snapshot is untouched');
 });
 
 test('a card this account ATE must stay in a phỏm — never offered as a discard', () => {

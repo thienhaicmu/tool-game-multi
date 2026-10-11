@@ -7,10 +7,14 @@
 //   Tự đánh   (features/auto-play.cjs, every playing account, unlimited resume while the loop is on)
 //
 //   find a table → wait for a stranger → play → round over: the stranger stays → next round · leaves → wait again
+//   NUÔI ÍT TIỀN ticked (user 2026-10-11, Meta Game 7ec0de4): no guest sits down within 8 s → our three play (acc 3
+//     readies, the KEY starts; protocol/phom/table-group-full-table.cjs _ownRound) — a kicked acc 3 sits again, readies
+//     and the round starts at once
 //
 // Never stops by itself — what used to switch something off is retried:
 //   TỰ ĐỘNG went off (a search failed, the regroup ceiling, the KEY replaced)  → on again after 3 s → 10 s → 30 s → 1 min
-//   no stranger ready at the table for strangerWaitMs (3 min)                 → the group leaves and searches again
+//   no stranger ready at the table for strangerWaitMs (20 min, user 2026-10-11; was 3 min) — also one seated but never
+//     ready → the group leaves, Dò Key → Tạo → Vào a new table together and waits again
 //   regroupLimit (3) searches in a row without a round, or failLimit (6) failed restarts → REST: everyone leaves, the
 //     bell rings, restMs (5 min) later it starts again
 //   no progress (not seated at a table, not waiting for a stranger, not playing) for stuckMs (5 min) → everyone leaves,
@@ -21,7 +25,8 @@
 //   Tự đánh off on a playing account → on again
 // It stops ONLY when the user switches it off, the key loses the Tự đánh right (expired / revoked), or the app closes.
 //
-// deps: licensed(), group: { autoActive, setAuto(on, {stake}), selectedStake, loopFacts, regroupNow(reason), leaveAll },
+// deps: licensed(), lowMoney() (the Nuôi ít tiền switch, read live), group: { autoActive, setAuto(on, {stake}), selectedStake,
+//   loopFacts, regroupNow(reason), leaveAll, setOwnRounds(fn | null), checkSeats },
 //   autoPlay: { start(rid), stop(rid, msg, code), status() }, slots() → [{ slot, runId, state, money }] (state = the
 //   cluster's browserState: OPEN · CRASHED · EXITED_UNEXPECTEDLY · CLOSED_BY_USER · CLOSED_BY_APP · …),
 //   reserves() → [{ reserve, runId, state, money }], swapSlot(slot, reserve), reopenSlot(slot), bell(message), log, refresh
@@ -33,10 +38,12 @@ const SLOT_BACKOFF_MS = Object.freeze([30000, 60000, 120000, 300000]);
 const CRASH_STATES = new Set(['CRASHED', 'EXITED_UNEXPECTEDLY']);
 const DOWN_GRACE_MS = 10000; // a browser closed from its window is swapped for a reserve by main at once — let that finish
 const NOT_LICENSED = { code: 'PHOM_AUTO_PLAY_NOT_LICENSED', message: 'Key này chưa được cấp quyền Tự đánh — liên hệ admin để cấp key có tích "Cho dùng Tự đánh"' };
+// "19 phút 05 giây" / "45 giây" — a 20-minute countdown in seconds is unreadable
+const waitText = (ms) => { const s = Math.ceil(ms / 1000); return s >= 60 ? Math.floor(s / 60) + ' phút ' + String(s % 60).padStart(2, '0') + ' giây' : s + ' giây'; };
 
-function createLoopFeature({ licensed = () => true, group, autoPlay, slots = () => [], reserves = () => [], swapSlot = async () => ({ ok: false }), reopenSlot = async () => ({ ok: false }),
+function createLoopFeature({ licensed = () => true, lowMoney = () => false, group, autoPlay, slots = () => [], reserves = () => [], swapSlot = async () => ({ ok: false }), reopenSlot = async () => ({ ok: false }),
   bell = () => {}, log = () => {}, refresh = () => {}, now = Date.now, setTimer = setTimeout, clearTimer = clearTimeout,
-  tickMs = 2000, strangerWaitMs = 3 * 60000, stuckMs = 5 * 60000, restMs = 5 * 60000, regroupLimit = 3, failLimit = 6 }) {
+  tickMs = 2000, strangerWaitMs = 20 * 60000, stuckMs = 5 * 60000, restMs = 5 * 60000, regroupLimit = 3, failLimit = 6 }) {
   let on = false;
   let timer = null;
   let busy = false;
@@ -55,6 +62,7 @@ function createLoopFeature({ licensed = () => true, group, autoPlay, slots = () 
       return { ok: false, error: { code: 'PHOM_INVALID_STAKE', message: 'Chọn Mức cược trước khi bật Tự đánh' } };
     }
     on = true; st = fresh();
+    if (group.setOwnRounds) group.setOwnRounds(() => on && !!lowMoney()); // read live: ticking it while waiting counts at once
     log('loop', { on: true });
     setMessage('Đang bắt đầu');
     void tick().finally(schedule);
@@ -66,6 +74,7 @@ function createLoopFeature({ licensed = () => true, group, autoPlay, slots = () 
     on = false;
     if (timer) { clearTimer(timer); timer = null; }
     for (const s of safe(slots)) if (s.runId) { try { autoPlay.stop(String(s.runId), null, code === 'USER' ? 'USER' : 'STOP_ALL'); } catch { /* gone */ } }
+    try { if (group.setOwnRounds) group.setOwnRounds(null); } catch { /* no session */ }
     try { group.setAuto(false); } catch { /* no session */ }
     log('loop', { on: false, code });
     if (st) st.message = message;
@@ -153,7 +162,12 @@ function createLoopFeature({ licensed = () => true, group, autoPlay, slots = () 
         st.stuckSince = null;
         if (st.strangerSince == null) st.strangerSince = t;
         const left = st.strangerSince + strangerWaitMs - t;
-        if (left > 0) return setMessage((facts.strangerSeated ? 'Người lạ chưa sẵn sàng' : 'Chờ người lạ vào bàn') + ' — đổi bàn sau ' + Math.ceil(left / 1000) + ' giây');
+        // Nuôi ít tiền: no guest → our three play; the group decides on its own clock — the loop looks again every tick
+        if (facts.ownRound && !facts.strangerSeated) {
+          if (group.checkSeats) group.checkSeats();
+          if (left > 0) return setMessage(facts.ownWaitLeft ? 'Chờ khách ' + Math.ceil(facts.ownWaitLeft / 1000) + ' giây — không có thì 3 acc đánh (nuôi ít tiền)' : 'Không có khách — 3 acc sẵn sàng, bắt đầu ván (nuôi ít tiền)');
+        }
+        if (left > 0) return setMessage((facts.strangerSeated ? 'Người lạ chưa sẵn sàng' : 'Chờ người lạ vào bàn') + ' — đổi bàn sau ' + waitText(left));
         st.strangerSince = null;
         if (st.regroupsNoRound >= regroupLimit) return rest('đổi ' + regroupLimit + ' bàn không có người lạ');
         st.regroupsNoRound++; st.stats.regroups++;
@@ -188,4 +202,4 @@ function createLoopFeature({ licensed = () => true, group, autoPlay, slots = () 
   };
 }
 
-module.exports = { createLoopFeature, GROUP_BACKOFF_MS, SLOT_BACKOFF_MS };
+module.exports = { createLoopFeature, GROUP_BACKOFF_MS, SLOT_BACKOFF_MS, waitText };

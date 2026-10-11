@@ -6,7 +6,8 @@
 // same browser while one is still running is refused (no double send). Every press is logged.
 //  IPC: phom:play-action { runId, action, cards? } → { ok, code, message }
 //
-// deps: { clientFor(rid), log, precheck?(rid, action, cards) → { ok, message } } — refuses picked cards the game would refuse
+// deps: { clientFor(rid), log, precheck?(rid, action, cards, view) → { ok, message } } — refuses picked cards the game would
+//       refuse (view = the snapshot TỰ ĐÁNH decided from — its hand may be the game's own; null = the tool's)
 //       manualBlocked?(rid) → message | null — a click from the tool refused while TỰ ĐÁNH plays that account
 // ---------------------------------------------------------------------------
 
@@ -22,11 +23,11 @@ function createPlayActionsFeature({ clientFor, log = () => {}, precheck = () => 
   timeoutMs = 5000, setTimer = setTimeout, clearTimer = clearTimeout }) {
   const inFlight = new Set();
 
-  async function act(runId, input = {}) {
+  async function act(runId, input = {}, view = null) {
     const rid = String(runId == null ? '' : runId);
     const v = validatePlayAction(input);
     if (!v.ok) return v;
-    let pre; try { pre = precheck(rid, v.action, v.cards) || { ok: true }; } catch { pre = { ok: true }; }
+    let pre; try { pre = precheck(rid, v.action, v.cards, view) || { ok: true }; } catch { pre = { ok: true }; }
     if (!pre.ok) return { ok: false, error: { code: 'PHOM_PLAY_PRECHECK', message: pre.message || 'Không hợp lệ' } };
     if (inFlight.has(rid)) return { ok: false, error: { code: 'PHOM_PLAY_BUSY', message: 'Đang thực hiện thao tác trước' } };
     const client = clientFor(rid);
@@ -35,8 +36,9 @@ function createPlayActionsFeature({ clientFor, log = () => {}, precheck = () => 
     try {
       const r = await bounded(client.Runtime.evaluate({ expression: buildPlayActionScript({ action: v.action, cards: v.cards }), returnByValue: true }), timeoutMs, setTimer, clearTimer);
       if (r === null) {
+        // the press may still have gone through — TỰ ĐÁNH waits for the game's confirmation like a press
         log('play-action', { runId: rid, action: v.action, ok: false, code: 'PHOM_PLAY_TIMEOUT' });
-        return { ok: false, error: { code: 'PHOM_PLAY_FAILED', message: 'Trình duyệt không trả lời khi bấm ' + v.action } };
+        return { ok: false, error: { code: 'PHOM_PLAY_TIMEOUT', message: 'Trình duyệt không trả lời khi bấm ' + v.action } };
       }
       const res = (r && r.result && r.result.value) || { ok: false, code: 'PHOM_PLAY_PAGE_ERROR', message: 'no result' };
       log('play-action', { runId: rid, action: v.action, cards: v.cards.length, ok: !!res.ok, code: res.code });

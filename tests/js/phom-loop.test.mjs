@@ -9,10 +9,12 @@ const { createLoopFeature } = require('../../desktop/phom/features/loop.cjs');
 function fixture({ stake = 100, slots, reserves = [], licensed = true } = {}) {
   let time = 1000;
   const calls = [];
-  const facts = { formed: false, auto: false, busy: null, recreating: false, keySeated: false, roundRunning: false, players: 0, strangerSeated: false, strangerReady: false };
-  const state = { licensed, auto: false, ap: {} };
+  const facts = { formed: false, auto: false, busy: null, recreating: false, keySeated: false, roundRunning: false, players: 0, strangerSeated: false, strangerReady: false, ownRound: false, ownWaitLeft: null };
+  const state = { licensed, auto: false, ap: {}, lowMoney: false, own: () => false };
   const slotList = slots || [{ slot: 'A', runId: 'r1', state: 'OPEN', money: 1000 }, { slot: 'B', runId: 'r2', state: 'OPEN', money: 1000 }, { slot: 'C', runId: 'r3', state: 'OPEN', money: 1000 }];
   const group = {
+    setOwnRounds: (fn) => { state.own = fn || (() => false); },
+    checkSeats: () => calls.push(['checkSeats']),
     autoActive: () => state.auto,
     setAuto: (on, opts) => { calls.push(['setAuto', on, opts]); state.auto = on; return { ok: true }; },
     selectedStake: () => stake,
@@ -27,7 +29,7 @@ function fixture({ stake = 100, slots, reserves = [], licensed = true } = {}) {
   };
   const bells = [];
   const loop = createLoopFeature({
-    licensed: () => state.licensed, group, autoPlay, slots: () => slotList, reserves: () => reserves,
+    licensed: () => state.licensed, lowMoney: () => state.lowMoney, group, autoPlay, slots: () => slotList, reserves: () => reserves,
     swapSlot: async (slot, reserve) => { calls.push(['swap', slot, reserve]); return { ok: true }; },
     reopenSlot: async (slot) => { calls.push(['reopen', slot]); return { ok: true }; },
     bell: (m) => bells.push(m), now: () => time, setTimer: () => 0, clearTimer: () => {},
@@ -58,17 +60,20 @@ test('TỰ ĐỘNG going off is switched on again, slower each time (3 s → 10 
   await f.at(14200); assert.equal(f.count('setAuto'), 3);
 });
 
-test('no stranger ready for 3 min → the group searches again; after 3 such tables → rest 5 min (leave all, bell), then on again', async () => {
+test('no stranger ready for 20 min (user 2026-10-11; was 3) → the group searches again; after 3 such tables → rest 5 min (leave all, bell), then on again', async () => {
   const f = fixture();
   f.loop.start(); await f.at(1000);
   Object.assign(f.facts, { formed: true, keySeated: true, players: 3 });
+  await f.at(2000); await f.at(2000 + 19 * MIN);
+  assert.equal(f.count('regroup'), 0, 'still waiting after 19 min');
+  assert.match(f.loop.status().message, /Chờ người lạ vào bàn — đổi bàn sau 1 phút 00 giây/);
   let t = 2000;
   for (let i = 1; i <= 3; i++) {
-    await f.at(t); t += 3 * MIN + 1; await f.at(t);
+    await f.at(t); t += 20 * MIN + 1; await f.at(t);
     assert.equal(f.count('regroup'), i);
     t += 1000;
   }
-  await f.at(t); t += 3 * MIN + 1; await f.at(t);
+  await f.at(t); t += 20 * MIN + 1; await f.at(t);
   assert.equal(f.count('leaveAll'), 1);
   assert.equal(f.bells.length, 1);
   assert.equal(f.loop.status().resting, true);
@@ -81,11 +86,29 @@ test('a stranger seated but never ready counts as no stranger; a round resets ev
   const f = fixture();
   f.loop.start(); await f.at(1000);
   Object.assign(f.facts, { formed: true, keySeated: true, players: 4, strangerSeated: true, strangerReady: false });
-  await f.at(2000); await f.at(2000 + 3 * MIN + 1);
+  await f.at(2000); await f.at(2000 + 20 * MIN + 1);
   assert.equal(f.count('regroup'), 1);
-  f.facts.roundRunning = true; await f.at(4 * MIN);
+  f.facts.roundRunning = true; await f.at(21 * MIN);
   assert.equal(f.loop.status().stats.rounds, 1);
   assert.match(f.loop.status().message, /Đang đánh/);
+});
+
+test('NUÔI ÍT TIỀN (user 2026-10-11): our three play only while the loop runs AND the switch is ticked; the loop keeps the group looking', async () => {
+  const f = fixture();
+  f.loop.start(); await f.at(1000);
+  assert.equal(f.state.own(), false, 'not ticked: wait for a stranger');
+  f.state.lowMoney = true;
+  assert.equal(f.state.own(), true, 'ticked while running: at once');
+  Object.assign(f.facts, { formed: true, keySeated: true, players: 3, ownRound: true, ownWaitLeft: 5000 });
+  await f.at(2000);
+  assert.ok(f.count('checkSeats') >= 1);
+  assert.match(f.loop.status().message, /Chờ khách 5 giây — không có thì 3 acc đánh/);
+  f.facts.ownWaitLeft = 0; await f.at(4000);
+  assert.match(f.loop.status().message, /3 acc sẵn sàng, bắt đầu ván/);
+  f.facts.strangerSeated = true; f.facts.players = 4; await f.at(6000);
+  assert.match(f.loop.status().message, /Người lạ chưa sẵn sàng/, 'a guest sat: the T8 wait');
+  f.loop.stop(null, 'USER');
+  assert.equal(f.state.own(), false, 'switched off with the loop');
 });
 
 test('stuck 5 min (searching, a ready stranger but no round) → everyone leaves and it starts again', async () => {

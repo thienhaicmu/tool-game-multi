@@ -149,7 +149,7 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | Ù khan, móm, đền… (tính tiền cuối ván): chưa tính | mở |
 | Bàn < 4 người: cách đếm lượt dựa trên số lá đã đánh — cần kiểm chứng | mở |
 | Tự đánh (§7) trong ván thật: đủ Đ1–Đ4, Ù, tiếp tục khi có người ngoài tool | **CHƯA** |
-| Nút Hạ của game hiện lúc nào (chỉ lượt cuối?) — tự đánh đang dựa vào đếm lượt của tool | mở |
+| Nút Hạ của game hiện lúc nào — từ 2026-10-11 Tự đánh theo nút game (Hạ / Gửi hiện ⇒ lượt hạ), không theo đếm lượt | đã xử lý, chưa kiểm chứng live |
 ## 7. Tự đánh
 
 ### 7a. VÒNG TỰ ĐÁNH — một công tắc cho cả nhóm (user duyệt 2026-10-10)
@@ -162,7 +162,7 @@ Controller tìm bằng `cc.director.getScene().getComponentInChildren('PhomContr
 | Bước | Việc |
 |---|---|
 | ① Tìm bàn | TỰ ĐỘNG (Dò Key → Tạo → Vào, mục 2 kịch bản bàn) |
-| ② Chờ người lạ | luật T8; **3 phút** không có người lạ sẵn sàng (kể cả người lạ ngồi mà không sẵn sàng) ⇒ cả nhóm rời bàn, về ① |
+| ② Chờ người lạ | luật T8; **20 phút** (2026-10-11, trước 3 phút) không có người lạ sẵn sàng (kể cả người lạ ngồi mà không sẵn sàng) ⇒ cả nhóm rời bàn, Dò Key → Tạo → Vào bàn mới, về ② · **tích Nuôi ít tiền**: bàn **8 giây** không có khách và đủ 3 acc ⇒ acc 3 sẵn sàng, KEY bắt đầu ván **3 acc** (acc 3 bị kick ⇒ vào lại, sẵn sàng, bắt đầu ngay); khách ngồi ⇒ T8 như cũ |
 | ③ Đánh | Tự đánh cả 3 acc (mục 7b) |
 | ④ Hết ván | người lạ còn ⇒ sẵn sàng → KEY bắt đầu → ③ · người lạ đi ⇒ ② |
 
@@ -187,6 +187,17 @@ trước người lạ.
 
 ### 7b. Tự đánh từng acc
 
+**2026-10-11 — chuyển từ Meta Game (3882443, 70e6eb5, ede6239, 7ec0de4):**
+
+| Kịch bản (log thật 2026-10-10) | Nội dung |
+|---|---|
+| Khách ngồi sau | Người ngồi ngay sau **không phải acc của tool** (và còn lượt ăn): **ngay từ lượt đầu** chỉ đánh lá **chắc chắn không bị ăn** — lá rác an toàn → phá **cạ** lấy lá an toàn → phá **phỏm** lấy lá an toàn (chấp nhận móm); luôn trong các lá được phép đánh. Không có lá nào chắc chắn an toàn ⇒ lá **ít đường bị ăn nhất** và dòng trạng thái ghi "khách ngồi sau · không có lá chắc chắn an toàn". "Chắc chắn" tính từ **bài đã biết của các acc tool + lá đã lộ trên bàn** (trước đây chỉ bài của chính acc đó); bài khách chưa biết vẫn là chưa biết. |
+| Lượt hạ theo nút game | Game hiện **Hạ** hoặc **Gửi** (hoặc acc đã hạ) ⇒ lượt hạ. Chỉ hiện **Đánh** ⇒ đánh ngay, dù tool đếm "đã đánh 3 lá" — trước đây tool chờ nút Hạ không bao giờ hiện, game hết giờ tự đánh hộ một lá không qua lọc (≈ 50 lượt / 17 ván). |
+| Không để hết giờ lượt | Game tự đánh sau ~20 giây. Chờ mà game cho bấm quá **4 giây**, hoặc lượt đã **12 giây** ⇒ bấm nước tốt nhất các nút đang hiện (Bốc / lá đánh an toàn nhất / Hạ). Từ **10 giây** bỏ nhịp chờ kiểu người. Mỗi acc chạy **nhịp riêng** — trình duyệt chậm không giữ acc khác. |
+| Game không nhận nút | Nút vừa bấm vẫn hiện sau **2,5 giây** ⇒ bị từ chối: Ăn → Bốc, Hạ / Gửi → đánh tiếp, Đánh → lá khác; **3 lần** liền ⇒ dừng (tự bật lại). |
+| Bài trên tay theo game | Lúc đọc nút, tool đọc luôn bài game đang giữ (`getListCardID`). Gói tin bỏ sót (mất gói chia bài, game báo "lá không còn trên tay", nước bấm không thấy trong lịch sử) ⇒ dùng bài của game cho hết ván. Bốc không cần biết bài. Trình duyệt trả lời chậm giữa lúc bấm ⇒ chờ game xác nhận như một lần bấm. |
+| Log | Mỗi nước (`auto-play-decision`) ghi người ngồi sau (`next`, `nextOurs`), luật chặn (`guard`), nước của lưới an toàn (`fallback`), tuổi lượt (`turnMs`), nguồn bài (`hand`); `auto-play-refused` / `auto-play-unconfirmed`; mọi lần ăn bài ghi `EAT` (ai ăn lá gì của ai, `guestAte`). |
+
 Ghi chú nâng cấp: Tự đánh có hai tùy chọn **Nuôi ít tiền** (mặc định tắt) và **Ưu tiên 2 phỏm + cạ ù** (**mặc định bật** từ 2026-10-10 — mô phỏng: +0,38 cược/ván cho nhóm tool, ù ×2,7; ai đã tự tắt thì vẫn tắt). **Chặn ăn lần 3 luôn bật, với mọi người ngồi sau** (user 2026-10-10), không ngoại lệ cạ ù: người sau là acc tool ⇒ chặn chính xác theo bài của nó; người ngoài đã ăn 2 lá ⇒ chỉ đánh lá **chắc chắn không bị ăn** theo thông tin công khai, không có thì đánh lá ít rủi ro nhất và báo "không có lá tránh ăn hợp lệ". Hai nhánh cạ ù / nuôi ít tiền chỉ áp dụng khi người sau là acc trong tool; với người ngoài (người sau / người trước) Tự đánh giữ kịch bản bình thường. Thứ tự: đúng luật → chặn ăn lần 3 → cạ ù hợp lệ → nuôi ít tiền → mặc định. Tiền thiếu không được coi là 0. Chi tiết và công cụ replay: `docs/phom-auto-play-upgrade.md`.
 
 Mỗi acc đang chơi được VÒNG TỰ ĐÁNH bật Tự đánh (mục 7a); bảng dưới là cách Tự đánh của một acc chạy.
@@ -196,7 +207,7 @@ Mỗi acc đang chơi được VÒNG TỰ ĐÁNH bật Tự đánh (mục 7a); b
 | Quyền key | Chỉ key PHOM có tích **"Cho dùng Tự đánh"** ở Generator (ký trong `features.autoRun`) mới bật được. Key ký trước khi có ô này ⇒ không có quyền (cấp key mới). Không có quyền ⇒ công tắc khoá + "Key chưa có quyền Tự đánh"; main cũng từ chối (`PHOM_AUTO_PLAY_NOT_LICENSED`); đang chạy mà mất quyền (đổi key) ⇒ tự tắt. Dev bypass: được dùng. |
 | Bấm như người | Đọc nút game đang hiện (chỉ đọc), rồi bấm qua đúng đường của nút trên tool (`checkPlay`, một thao tác một lúc). Nút Ù được ưu tiên khi game hiện. Một nước chỉ bấm sau một khoảng nghỉ **ngẫu nhiên 0,8–2,5 giây** mà nước đó giữ nguyên (nhịp như người, chờ bàn cập nhật; 2026-10-10) và không bấm lại cùng một nước khi **những gì nước đó phụ thuộc** chưa đổi (`stateKey`: bài/phỏm/lá đánh/lá gửi của chính acc + lá trên bàn + lá bị ăn — gói tin bài riêng của 2 acc kia không tính, nên không bấm lặp và không thử lại Ăn đã bị từ chối). |
 | 3 acc cùng bật | Mỗi lượt kiểm tra các acc **song song**; mỗi lần gọi trang có giới hạn 5 giây (một trình duyệt treo không giữ 2 acc còn lại, nút không bị kẹt "đang thực hiện"). Acc đang Tự đánh thì nút bấm tay trên tool của acc đó bị từ chối (`PHOM_PLAY_AUTO_ON`) — tắt Tự đánh trước khi bấm tay. |
-| Tự tắt | Mất quyền key · trình duyệt không trả lời khi bấm · `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · bấm xong 6 giây bàn không đổi (riêng **Ăn** bị từ chối thì chuyển sang **Bốc**) · game hiện nút nhưng 12 giây không có nước hợp lệ (ví dụ có phỏm cần hạ/gửi mà game chưa hiện nút) · trang tải lại · đóng trình duyệt. **Tự bật lại** (2026-10-10): trừ khi bạn tự tắt, key mất quyền, đóng trình duyệt — công tắc vẫn bật, chờ acc về bàn Phỏm rồi tự chạy tiếp; tối đa **3 lần / 10 phút**, không về bàn trong 2 phút hoặc quá 3 lần ⇒ tắt hẳn. Lý do và số lần hiện cạnh công tắc, kèm số ván · số lần dừng trong phiên. |
+| Tự tắt | Mất quyền key · trình duyệt không trả lời khi bấm · `checkPlay` hoặc game từ chối (không ở bàn, lá không còn trên tay…) · game từ chối cùng một nước **3 lần** (nút vẫn hiện 2,5 giây sau khi bấm; Ăn → Bốc, Hạ / Gửi → đánh, Đánh → lá khác trước khi tính là từ chối) · game hiện nút mà không có nước nào bấm được (lưới an toàn 4 giây / hạn lượt 12 giây đã thử) · trang tải lại · đóng trình duyệt. **Tự bật lại** (2026-10-10): trừ khi bạn tự tắt, key mất quyền, đóng trình duyệt — công tắc vẫn bật, chờ acc về bàn Phỏm rồi tự chạy tiếp; tối đa **3 lần / 10 phút**, không về bàn trong 2 phút hoặc quá 3 lần ⇒ tắt hẳn. Lý do và số lần hiện cạnh công tắc, kèm số ván · số lần dừng trong phiên. |
 | Tắt tính năng | `PHOM_FEATURES_OFF=auto-play` (hoặc `play-actions`, vì tự đánh bấm qua đó). |
 
 ## 6. Lịch sử

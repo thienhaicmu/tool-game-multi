@@ -48,6 +48,7 @@ const { createLoopFeature } = require('./phom/features/loop.cjs');
 const { createNoAutoReadyFeature } = require('./phom/features/no-auto-ready.cjs');
 const { applyAutoReadyGuard } = require('./protocol/phom/auto-ready-guard.cjs');
 const playHelp = require('./protocol/phom/phom-play-help.cjs');
+const { decodeCard } = require('./protocol/phom/card-codec.cjs');
 const { BrowserRunManager, STATUS: RUN_STATUS } = require('./browser-run/browser-run-manager.cjs');
 const { CaptureCorrelator } = require('./cdp/capture.cjs');
 const { WsReplay } = require('./cdp/ws-replay.cjs');
@@ -688,6 +689,22 @@ else {
     const snap = phomUiSnapshot();
     try { ensureRoundJournal().observe(snap.cards, snap.analyses); } catch { /* the journal never breaks the UI push */ }
     send('phom:ui', snap);
+    try { logNewEats(snap.cards); } catch { /* logging never breaks the UI push */ }
+  }
+  // every eat in coseat.jsonl (Meta Game 3882443): a guest eating a card of ours is traced to that account's
+  // auto-play-decision (its next / guard fields)
+  let _eatsSeen = { round: null, n: 0 };
+  function logNewEats(cards) {
+    if (!cards || !Array.isArray(cards.eats)) return;
+    if (_eatsSeen.round !== cards.roundSeq) _eatsSeen = { round: cards.roundSeq, n: 0 };
+    const binding = cards.slotBinding || {};
+    const slotOf = (uid) => Object.keys(binding).find((k) => uid != null && String(binding[k]) === String(uid)) || null;
+    const nameOf = (uid) => (cards.players && cards.players[String(uid)] && cards.players[String(uid)].name) || (uid != null ? String(uid) : null);
+    for (const e of cards.eats.slice(_eatsSeen.n)) {
+      const eaterSlot = slotOf(e.eaterUid); const fromSlot = slotOf(e.fromUid);
+      headerLog('EAT', { card: Number.isInteger(e.card) ? decodeCard(e.card).label : e.card, eater: nameOf(e.eaterUid), eaterSlot, from: nameOf(e.fromUid), fromSlot, guestAte: !eaterSlot && !!fromSlot, round: cards.roundSeq });
+    }
+    _eatsSeen.n = cards.eats.length;
   }
   let roundJournal = null;
   function ensureRoundJournal() {
@@ -815,14 +832,14 @@ else {
       log: headerLog,
     });
     // Bốc / Ăn / Đánh / Hạ / Gửi from the tool — the game's own button, only while the game offers it
-    _playFeature = createPlayActionsFeature({ clientFor: runClientFor, log: headerLog, precheck: (rid, action, cards) => {
-      // picked cards checked against what the table shows; the game still decides
+    _playFeature = createPlayActionsFeature({ clientFor: runClientFor, log: headerLog, precheck: (rid, action, cards, view) => {
+      // picked cards checked against what the table shows (TỰ ĐÁNH: the picture it decided from); the game still decides
       const uid = phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null;
-      return uid ? playHelp.checkPlay(phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
+      return uid ? playHelp.checkPlay(view || phomSessions.cardObserverSnapshot(), uid, action, cards) : { ok: true };
     }, manualBlocked: (rid) => ((_autoPlayFeature && (_autoPlayFeature.status()[rid] || {}).on) ? 'Acc này đang Tự đánh — tắt Tự đánh trước khi bấm tay' : null) });
     // TỰ ĐÁNH — per account, switched on by the user; every press goes through the play-actions feature above
     _autoPlayFeature = createAutoPlayFeature({
-      act: (rid, input) => (features().enabled('play-actions') ? _playFeature.act(rid, input) : { ok: false, error: { code: 'PHOM_FEATURE_OFF', message: 'Nút đánh bài đang tắt (PHOM_FEATURES_OFF)' } }),
+      act: (rid, input, view) => (features().enabled('play-actions') ? _playFeature.act(rid, input, view) : { ok: false, error: { code: 'PHOM_FEATURE_OFF', message: 'Nút đánh bài đang tắt (PHOM_FEATURES_OFF)' } }),
       clientFor: runClientFor,
       snapshot: () => (phomSessions && phomSessions.active() ? phomSessions.cardObserverSnapshot() : {}),
       uidOf: (rid) => (phomSessions && phomSessions.active() ? phomSessions.uidOf(rid) : null),
@@ -856,7 +873,10 @@ else {
     };
     _loopFeature = createLoopFeature({
       licensed: autoPlayLicensed,
+      lowMoney: () => !!((settings().get('autoPlayStrategy') || {}).lowMoney), // Nuôi ít tiền → our three play when no guest comes
       group: {
+        setOwnRounds: (fn) => { ensurePhomSessions(); phomSessions.setOwnRounds(fn); },
+        checkSeats: () => { if (phomSessions && phomSessions.active()) phomSessions.checkSeats(); },
         autoActive: () => !!(phomSessions && phomSessions.active() && phomSessions.autoActive()),
         setAuto: (on, opts) => { ensurePhomSessions(); return phomSessions.setAuto(on, opts); },
         selectedStake: () => (phomSessions && phomSessions.active() ? phomSessions.selectedStake() : null),

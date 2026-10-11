@@ -7,7 +7,7 @@
 // ---------------------------------------------------------------------------
 
 const { ZONE, GID, isChannelRoom } = require('./phom-frame-classify.cjs');
-const { buildQuickPlayFrame, buildChannelQuickJoinFrame, buildProbeJoinFrame } = require('./phom-wire.cjs');
+const { buildQuickPlayFrame, buildChannelQuickJoinFrame, buildProbeJoinFrame, buildChannelListFrame } = require('./phom-wire.cjs');
 
 // The pause between two asks of a search when no group pacing is supplied.
 const REROLL_COOLDOWN_MS = 1500;
@@ -15,9 +15,13 @@ const REROLL_COOLDOWN_MS = 1500;
 const PROBE_ACK_MS = 1500;
 // The whole DÒ KEY / TẠO budget before the user is told.
 const SEARCH_BUDGET_MS = 180000;
-// TẠO fast path: at most this many one-player tables taken from the table list are sat at per search (the KEY's is
-// normally the newest; the cap keeps the account from sitting at a row of strangers' tables).
+// TẠO fast path: at most this many tables with the KEY's player count taken from the table list are sat at per search
+// (the KEY's is normally the newest; the cap keeps the account from sitting at a row of strangers' tables).
 const LIST_CANDIDATE_MAX = 6;
+// TẠO asks the lobby list (cmd 300) at most this often while not seated (Meta Game 7ec0de4)
+const LIST_ASK_MS = 15000;
+// a Phỏm table seats 4 (Mu 4)
+const TABLE_MAX_PLAYERS = 4;
 // TẠO lottery: at most this many 313 asks a minute, all accounts together (each ask = one wrong-password join).
 const LOTTERY_PER_MIN = 15;
 
@@ -31,9 +35,11 @@ class CoordinatorSearch {
   //  TẠO (the other accounts) — ask 313 for a table of the stake, over and over. The answer NAMES a table (rid + uC)
   //  and seats nobody. Every named table gets a JOIN with the invisible password U+200B, which is always refused (103)
   //  — so the account never ends up at a stranger's table, whatever the game client does with the answer. A table with
-  //  exactly ONE player may be the KEY sitting alone: that one is really joined (op 8) and kept only when the KEY's uid
-  //  is in its ps[] (the reference tool skips that check and twice sat down at a stranger's table). The rid of that
-  //  join IS the group's số bàn.
+  //  AS MANY players as the KEY sees at its own table (1 when alone; 2 once a guest sat with it — Meta Game 7ec0de4,
+  //  live 2026-10-10: a guest sat with the KEY 3 s after it, "exactly 1 player" skipped the right table and never looked
+  //  again — 43 asks, 130 s) may be the KEY's: that one is really joined (op 8) and kept only when the KEY's uid is in
+  //  its ps[] (the reference tool skips that check and twice sat down at a stranger's table). The rid of that join IS
+  //  the group's số bàn. A table is put aside only once the account sat there and saw no KEY.
   //
   // Both give up after the search budget (3 minutes) with a typed error; cancelSearch() stops either at its next step.
   async findKeyTable(profileId, opts = {}) {
@@ -44,7 +50,7 @@ class CoordinatorSearch {
     if (channel == null) return this._searchFail(rec, 'PHOM_NO_STAKE_CHANNEL', `Chưa thấy kênh cược ${stake} trong sảnh — tải lại danh sách cược rồi thử lại`, { stake });
     this._searchBegin(rec, 'KEY');
     for (let attempt = 0; ; attempt++) {
-      if (!await this._searchBreathe(rec, sg, opts)) return this._searchCancelled(rec);
+      if (!await this._searchBreathe(rec, sg, opts, attempt)) return this._searchCancelled(rec);
       const myGen = this._searchStep(rec, attempt);
       const tableBefore = rec.ctx.tableSeq();
       const ackBefore = rec.ctx.ackSeq();
@@ -91,17 +97,20 @@ class CoordinatorSearch {
     // by number (newest first). Those rows are tried first, straight with op 8; the 313 lottery only runs while no
     // such list has arrived yet. Rows already tried (either way) are never tried again; strangers' tables tried from
     // the list are capped.
-    const tried = new Set();
+    const tried = new Set(); // tables this account sat at and saw no KEY — never the KEY's table
     let listTries = 0;
+    let listAskedAt = null;
     let lotteryAsks = 0;
     let lastGate = null;
     // when the KEY last sat down — a function (the group's current value: the KEY may be kicked and sit again) or a number
     const keySince = () => { const v = typeof opts.keySeatedAt === 'function' ? opts.keySeatedAt() : opts.keySeatedAt; return v != null ? Number(v) : null; };
     const keyRec = [...this._profiles.values()].find((r) => r.ctx.uid() != null && String(r.ctx.uid()) === keyUid) || null;
     let waitingKey = false;
+    // how many sit at the KEY's table right now, as the KEY sees it (1 = alone; unknown → 1, the KEY sat alone)
+    const keyCount = () => { const n = keyRec && keyRec !== rec && this._ownSeated(keyRec) ? this.tablePlayerCount(keyRec.id) : 0; return n > 0 ? n : 1; };
     const giveUp = (attempt) => this._searchFail(rec, 'PHOM_NO_KEY_TABLE', `Chưa dò ra bàn của acc KEY (cược ${stake}) sau 3 phút${lastMessage ? ` — máy chủ: ${lastMessage}` : ''}`, { stake, attempts: attempt + 1 });
     for (let attempt = 0; ; attempt++) {
-      if (!await this._searchBreathe(rec, sg, opts)) return this._searchCancelled(rec);
+      if (!await this._searchBreathe(rec, sg, opts, attempt)) return this._searchCancelled(rec);
       const myGen = this._searchStep(rec, attempt);
       // (1) The KEY is not at a table (kicked — its table is gone — or re-running Dò Key): nothing to look for. Wait
       // for it to sit again WITHOUT asking (live 2026-10-05: the KEY's table lived ~20s, the lottery chased dead tables
@@ -114,15 +123,27 @@ class CoordinatorSearch {
         continue;
       }
       waitingKey = false;
-      const listRid = listTries < LIST_CANDIDATE_MAX ? this._listCandidates(stake, keySince(), tried)[0] : undefined;
+      // the KEY's table filled up with guests: no seat for this account there — say so now, not after 3 minutes
+      if (keyCount() >= TABLE_MAX_PLAYERS) return this._searchFail(rec, 'PHOM_KEY_TABLE_FULL', 'Bàn của acc KEY đã đủ người — không vào chung được, cần Dò Key bàn khác', { stake, attempts: attempt + 1 });
+      // (2a) the lobby list, asked now and then while not seated (the game client asks the same in the lobby): a list
+      //      newer than the KEY's seat names its table directly, no 313 ask (a reply with no table rows changes nothing)
+      const listEvery = this._listAskMs != null ? this._listAskMs : LIST_ASK_MS;
+      if (listEvery > 0 && !this._ownSeated(rec) && rec.ctx.aid() != null && (listAskedAt == null || this._now() - listAskedAt >= listEvery)) {
+        listAskedAt = this._now();
+        await this._searchSend(rec, buildChannelListFrame(rec.ctx.aid()));
+        this._log('SCAN_LIST_ASKED', rec, { attempt });
+      }
+      // (2b) fast path from the table list
+      const listRid = listTries < LIST_CANDIDATE_MAX ? this._listCandidates(stake, keySince(), tried, keyCount())[0] : undefined;
       if (listRid != null) {
-        tried.add(listRid); listTries += 1;
-        this._log('SCAN_LIST_CANDIDATE', rec, { rid: listRid, attempt, listTries });
+        listTries += 1;
+        this._log('SCAN_LIST_CANDIDATE', rec, { rid: listRid, attempt, listTries, want: keyCount() });
         const j = await this._joinTable(rec, listRid, { timeoutMs });
         if (j.superseded || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
         if (j.ok && this._seatedWith(rec, keyUid)) return this._scanFound(rec, listRid, attempt);
         rec.manualState = 'SEARCHING';
         if (j.ok) {
+          tried.add(listRid);
           this._log('SCAN_NOT_KEY', rec, { rid: listRid, host: rec._hostUid, attempt, from: 'list' });
           const lv = await this._leaveConfirmed(rec, rec._manualGen);
           if (lv.cancelled || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
@@ -165,11 +186,11 @@ class CoordinatorSearch {
       }
       const rid = Number(res.rid);
       const seatedFresh = () => this._ownSeated(rec) && rec.ctx.tableSeq() > tableBefore;
-      if (res.isTable && tried.has(rid) && !seatedFresh()) { // already looked at this one (from the list or before)
+      if (res.isTable && tried.has(rid) && !seatedFresh()) { // sat there before and saw no KEY
+        this._log('SCAN_SKIP', rec, { rid, attempt, tried: true });
         if (this._now() >= deadline) return giveUp(attempt);
         continue;
       }
-      if (res.isTable) tried.add(rid);
       if (res.isTable) {
         // The game client answers the 313 with its own JOIN, armed to the invisible password → refused (103). That
         // refusal is the proof the account did not sit down: wait for it first, and send the tool's own probe (a
@@ -194,18 +215,20 @@ class CoordinatorSearch {
         if (this._now() >= deadline) return giveUp(attempt);
         continue;
       }
-      if (!(res.isTable && !res.locked && Number(res.seated) === 1)) {
-        this._log('SCAN_SKIP', rec, { rid, seated: res.seated, isTable: res.isTable, locked: res.locked, attempt });
+      const want = keyCount();
+      if (!(res.isTable && !res.locked && Number(res.seated) === want)) {
+        this._log('SCAN_SKIP', rec, { rid, seated: res.seated, want, isTable: res.isTable, locked: res.locked, attempt });
         if (this._now() >= deadline) return giveUp(attempt);
         continue;
       }
-      // One player at this table — maybe the KEY. Sit down for real and look.
-      this._log('SCAN_CANDIDATE', rec, { rid, attempt });
+      // As many players as at the KEY's table — maybe it. Sit down for real and look.
+      this._log('SCAN_CANDIDATE', rec, { rid, attempt, want });
       const j = await this._joinTable(rec, rid, { timeoutMs });
       if (j.superseded || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
       if (j.ok && this._seatedWith(rec, keyUid)) return this._scanFound(rec, rid, attempt);
       rec.manualState = 'SEARCHING';
       if (j.ok) {
+        tried.add(rid);
         this._log('SCAN_NOT_KEY', rec, { rid, host: rec._hostUid, attempt });
         const lv = await this._leaveConfirmed(rec, rec._manualGen);
         if (lv.cancelled || this._searchStopped(rec, sg)) return this._searchCancelled(rec);
@@ -227,9 +250,10 @@ class CoordinatorSearch {
     L.asks.push(now);
     return { wait: 0 };
   }
-  // TẠO fast path — one-player public tables of the stake from the FRESHEST table list any of our browsers received,
-  // only if that list arrived AFTER the KEY sat down (an older list cannot contain its table), newest number first.
-  _listCandidates(stake, sinceMs, tried) {
+  // TẠO fast path — public tables of the stake with as many players as the KEY's (`want`) from the FRESHEST table list
+  // any of our browsers received, only if that list arrived AFTER the KEY sat down (an older list cannot contain its
+  // table), newest number first.
+  _listCandidates(stake, sinceMs, tried, want = 1) {
     let best = null;
     for (const r of this._profiles.values()) {
       const at = r.ctx.roomListAt();
@@ -237,7 +261,7 @@ class CoordinatorSearch {
     }
     if (!best || (sinceMs != null && best.at < sinceMs)) return [];
     return best.rows
-      .filter((c) => Number(c.b) === Number(stake) && Number(c.uC) === 1 && !c.hpwd && !tried.has(Number(c.rid)))
+      .filter((c) => Number(c.b) === Number(stake) && Number(c.uC) === Number(want) && !c.hpwd && !tried.has(Number(c.rid)))
       .map((c) => Number(c.rid))
       .sort((a, b) => b - a);
   }
@@ -303,8 +327,10 @@ class CoordinatorSearch {
   }
   _searchStopped(rec, sg) { return this._stopped || rec._searchGen !== sg; }
   // The pause before every ask: the group's pacing when it drives the search, else the reroll cooldown.
-  async _searchBreathe(rec, sg, opts) {
+  // the pause between two asks; the first ask goes at once when the group paces (it paced right before it called the search)
+  async _searchBreathe(rec, sg, opts, attempt) {
     if (this._searchStopped(rec, sg)) return false;
+    if (attempt === 0 && typeof opts.pace === 'function') return true;
     if (typeof opts.pace === 'function') { if (await opts.pace() === false) return false; }
     else await this._waitManual(() => false, rec, rec._manualGen, this._rerollCooldownMs);
     return !this._searchStopped(rec, sg);
@@ -330,4 +356,4 @@ class CoordinatorSearch {
   }
 }
 
-module.exports = { CoordinatorSearch, REROLL_COOLDOWN_MS, PROBE_ACK_MS, SEARCH_BUDGET_MS, LIST_CANDIDATE_MAX, LOTTERY_PER_MIN };
+module.exports = { CoordinatorSearch, REROLL_COOLDOWN_MS, PROBE_ACK_MS, SEARCH_BUDGET_MS, LIST_CANDIDATE_MAX, LIST_ASK_MS, TABLE_MAX_PLAYERS, LOTTERY_PER_MIN };

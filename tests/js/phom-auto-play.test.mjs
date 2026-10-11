@@ -27,7 +27,7 @@ test('outside next player uses normal rules for every combination of strategy sw
   }
 });
 
-test('take evaluation uses only own hand and public information', () => {
+test('take evaluation reads the known cards from the ledger (a player record alone changes nothing)', () => {
   const s = strategySnap({ mine: cs('8♦ 10♦ 2♠ 2♣ 2♦ 5♥ 6♥ 7♥ K♠'), next: cs('3♠ 4♠') });
   const before = autoPlay.takeEvaluation(s, 'B', c('9♦'));
   assert.equal(before.take, true);
@@ -41,14 +41,58 @@ test('take evaluation rejects putting two eaten cards in one meld', () => {
   assert.equal(autoPlay.takeEvaluation(s, 'B', c('9♦')).take, false);
 });
 
-test('third-eat protection is exact for a tool member and public-only for an outsider (always on, user 2026-10-10)', () => {
+test('third-eat protection is exact for a tool member; a GUEST next is guarded by proven-safe cards (Meta Game 2026-10-10)', () => {
   const s = strategySnap({ mine: cs('9♦ K♥'), next: cs('8♦ 10♦'),
     eats: [{ eaterUid: 'C', card: c('3♠') }, { eaterUid: 'C', card: c('4♠') }] });
   const protectedStep = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B', 'C']);
   assert.deepEqual(protectedStep.cards, [c('K♥')]);
-  // as an outsider C's hand is hidden: neither card is proven safe → it still plays, and says so
-  const outside = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
-  assert.match(outside.why, /chặn ăn lần 3 · không có lá tránh ăn hợp lệ/);
+  // C a guest (its hand hidden): neither card is proven safe → it still plays the least risky one, and says so
+  const hidden = strategySnap({ mine: cs('9♦ K♥'), next: [], eats: s.eats });
+  const outside = autoPlay.nextStep(hidden, 'B', ['DANH'], new Set(), ['A', 'B']);
+  assert.match(outside.why, /khách ngồi sau · không có lá chắc chắn an toàn/);
+});
+
+test('GUEST next: guarded from the FIRST turn (no eats needed) — a proven-safe card even out of a phỏm', () => {
+  // C is a guest with a hidden hand and has eaten nothing. K♥ is proven safe (the other kings + Q♥ J♥ are public); the
+  // loose 9♦ is wide open. Before 2026-10-10 a guest was only guarded after 2 eats.
+  const s = strategySnap({ mine: cs('9♦ K♥ 2♠ 2♣ 2♦'), next: [] });
+  for (const k of cs('K♠ K♣ K♦ Q♥ J♥')) s.ledger.push({ code: k, status: 'DISCARDED', ownerUid: 'A' });
+  const step = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
+  assert.deepEqual(step.cards, [c('K♥')]);
+  assert.match(step.why, /khách ngồi sau/);
+  assert.equal(autoPlay.guardDiscards(s, 'B', ['A', 'B']).kind, 'GUEST');
+  // one of ours next (no 2 eats): no guard at all
+  assert.equal(autoPlay.guardDiscards(s, 'B', ['A', 'B', 'C']).kind, null);
+});
+
+test('the hạ turn follows the GAME\'s buttons: only Đánh shown after 3 discards → a discard now, never a wait for Hạ', () => {
+  const s = strategySnap({ mine: cs('2♠ 2♣ 2♦ 9♦ K♥'), next: cs('A♣') });
+  s.players.B.discardedHistory = [0, 1, 2]; // the tool's count says "last turn"
+  const onlyDanh = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B', 'C']);
+  assert.equal(onlyDanh.action, 'DANH', 'live 2026-10-10: the tool waited for a Hạ the game never showed');
+  const ha = autoPlay.nextStep(s, 'B', ['DANH', 'HA'], new Set(), ['A', 'B', 'C']);
+  assert.equal(ha.action, 'HA');
+  // a Hạ the game refused: the turn goes on with the discard
+  const refused = autoPlay.nextStep(s, 'B', ['DANH', 'HA'], new Set(['HA']), ['A', 'B', 'C']);
+  assert.equal(refused.action, 'DANH');
+});
+
+test('Bốc is pressed before the hand is known (a missed deal must not cost the turn)', () => {
+  const s = strategySnap({ mine: [], next: cs('A♣') });
+  assert.deepEqual(autoPlay.nextStep(s, 'B', ['BOC'], new Set(), ['A', 'B', 'C']), { action: 'BOC', cards: [], why: 'Bốc' });
+});
+
+test('LƯỚI AN TOÀN / HẠN LƯỢT: forcedStep presses the best step the shown buttons allow', () => {
+  const s = strategySnap({ mine: cs('2♠ 2♣ 2♦ 9♦ K♥'), next: cs('A♣') });
+  assert.equal(autoPlay.forcedStep(s, 'B', ['BOC', 'AN']).action, 'BOC');
+  const d = autoPlay.forcedStep(s, 'B', ['DANH'], new Set(), ['A', 'B', 'C']);
+  assert.equal(d.action, 'DANH'); assert.match(d.why, /game chờ lâu/);
+  assert.equal(autoPlay.forcedStep(s, 'B', ['HA']).action, 'HA');
+  assert.equal(autoPlay.forcedStep(s, 'B', ['HA'], new Set(['HA'])), null, 'a refused Hạ is not forced again');
+  assert.equal(autoPlay.forcedStep(s, 'B', []), null);
+  // the eat rules find no legal card (the picture is off) → still a card, never the game's timer
+  const off = strategySnap({ mine: cs('7♠'), next: [], eats: [{ eaterUid: 'B', card: c('7♠') }] });
+  assert.deepEqual(autoPlay.fallbackStep(off, 'B', ['A', 'B']).cards, [c('7♠')]);
 });
 
 test('low-money comparison ignores outsiders but requires every in-tool balance', () => {
@@ -111,7 +155,7 @@ test('two-meld preference cannot bypass third-eat protection', () => {
   assert.equal(autoPlay.strategyDiscard(s, 'B', { twoPhomCaU: true }, { toolUids: ['A', 'B', 'C'] }), null);
 });
 
-test('third-eat protection also covers an outsider next player: only a card proven safe from the public view', () => {
+test('a GUEST next player who ate twice: only a card proven safe from the known cards', () => {
   // C is outside the tool (its hand is hidden) and has eaten twice; 9♦ could still be eaten (8♦ 10♦ are unseen),
   // K♥ cannot (the other three kings are public)
   const s = strategySnap({ mine: cs('9♦ K♥ 2♥'), next: [],
@@ -119,7 +163,7 @@ test('third-eat protection also covers an outsider next player: only a card prov
   for (const k of cs('K♠ K♣ K♦ A♥ 3♥ 4♥')) s.ledger.push({ code: k, status: 'DISCARDED', ownerUid: 'A' });
   const step = autoPlay.nextStep(s, 'B', ['DANH'], new Set(), ['A', 'B']);
   assert.deepEqual(step.cards, [c('K♥')]);
-  assert.match(step.why, /chặn ăn lần 3/);
+  assert.match(step.why, /khách ngồi sau/);
 });
 
 test('third-eat protection reports unavoidable feeding without stalling', () => {

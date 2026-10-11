@@ -180,7 +180,9 @@ test('wiring: main puts the help in the ui snapshot and checks picked cards befo
   const main = read('desktop/phom-main.cjs');
   assert.match(main, /play\[slot\] = playHelp\.playHelp\(cards, uid\)/);
   assert.match(main, /ok: true, browsers, cards, analyses, play,/);
-  assert.match(main, /return uid \? playHelp\.checkPlay\(phomSessions\.cardObserverSnapshot\(\), uid, action, cards\) : \{ ok: true \};/);
+  // TỰ ĐÁNH's press is checked against the picture it decided from (its hand may be the game's own — Meta Game ede6239)
+  assert.match(main, /return uid \? playHelp\.checkPlay\(view \|\| phomSessions\.cardObserverSnapshot\(\), uid, action, cards\) : \{ ok: true \};/);
+  assert.match(main, /_playFeature\.act\(rid, input, view\)/);
   const ui = read('ui-phom/phom-qa.js');
   assert.match(ui, /playBySlot = snap\.play \|\| \{\};/);
   assert.equal(ui.includes("btn('BAO_U', 'Ù',"), false);
@@ -210,6 +212,6 @@ test('feature: a tool click on an account TỰ ĐÁNH plays is refused; a press 
   const hung = { Runtime: { evaluate: () => { calls += 1; return calls === 1 ? new Promise(() => {}) : ok.Runtime.evaluate(); } } };
   const g = createPlayActionsFeature({ clientFor: () => hung, timeoutMs: 10 });
   const r = await g.act('BR-3', { action: 'DANH', cards: [5] });
-  assert.deepEqual([r.ok, r.error.code], [false, 'PHOM_PLAY_FAILED']);
+  assert.deepEqual([r.ok, r.error.code], [false, 'PHOM_PLAY_TIMEOUT'], 'its own code: TỰ ĐÁNH waits for the game to confirm a press that may have gone');
   assert.equal((await g.act('BR-3', { action: 'BOC' })).ok, true, 'not stuck "busy" after the hung press');
 });

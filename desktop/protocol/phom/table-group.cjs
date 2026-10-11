@@ -31,7 +31,7 @@
 
 const EventEmitter = require('node:events');
 
-const { ROLE, PACE_MIN_MS, PACE_MAX_MS, REJOIN_DELAY_MS, REPLACE_POLL_MS, REPLACE_WAIT_MS, CANCELLED } = require('./table-group-constants.cjs');
+const { ROLE, PACE_MIN_MS, PACE_MAX_MS, REJOIN_DELAY_MS, REPLACE_POLL_MS, REPLACE_WAIT_MS, OWN_ROUND_WAIT_MS, CANCELLED } = require('./table-group-constants.cjs');
 const { mixin } = require('./mixin.cjs');
 // the group's other parts (same class, split by concern — 3.2)
 const { GroupManual } = require('./table-group-manual.cjs');
@@ -57,6 +57,9 @@ class TableGroup extends EventEmitter {
     this._fullReadyMin = deps.fullReadyMinMs != null ? Number(deps.fullReadyMinMs) : 1000;
     this._fullReadyMax = deps.fullReadyMaxMs != null ? Number(deps.fullReadyMaxMs) : 2000;
     this._replaceWaitMs = deps.replaceWaitMs != null ? Number(deps.replaceWaitMs) : REPLACE_WAIT_MS;
+    // VÒNG + Nuôi ít tiền: no guest for this long → our three play (table-group-full-table.cjs _ownRound)
+    this._ownWaitMs = deps.ownRoundWaitMs != null ? Number(deps.ownRoundWaitMs) : OWN_ROUND_WAIT_MS;
+    this._ownRounds = () => false; // VÒNG sets it (setOwnRounds)
     this._timers = new Set(); // rejoin + replacement timers — all cleared by reset / leaveAll / auto off
     // ONE operation per account at a time (GĐ3): whatever asks — the bar, the tool window, a timer — a second request
     // for an account that is already doing something is refused with what it is doing.
@@ -128,8 +131,16 @@ class TableGroup extends EventEmitter {
       players: g && has('tablePlayerCount') ? Number(c.tablePlayerCount(key)) || 0 : 0,
       strangerSeated: !!(g && has('strangerSeated') && c.strangerSeated(key)),
       strangerReady: !!(g && has('strangerReady') && c.strangerReady(key)),
+      ownRound: this._ownRoundOn(),
+      ownWaitLeft: g && g.ownSince != null ? Math.max(0, g.ownSince + this._ownWaitMs - this._now()) : null,
     };
   }
+  // VÒNG: when the test holds (the loop runs + Nuôi ít tiền), a table with no guest for ownRoundWaitMs is played by our
+  // three (table-group-full-table.cjs _ownRound); null switches it off
+  setOwnRounds(fn) { this._ownRounds = typeof fn === 'function' ? fn : () => false; }
+  _ownRoundOn() { try { return !!this._ownRounds(); } catch { return false; } }
+  // VÒNG asks the table to be looked at again (a switch changed, a clock ran out) — the same check every seat frame runs
+  checkSeats() { this._onSeats(); }
   // VÒNG: nobody to play with at this table → everyone leaves and TỰ ĐỘNG searches again (its own B4 regroup)
   regroupNow(reason = 'LOOP') {
     if (!this._group || !this._auto || this._group.recreating) return { ok: false };

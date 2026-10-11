@@ -59,6 +59,7 @@ class HostTableCoordinator extends EventEmitter {
     this._probeAckMs = deps.probeAckMs != null ? Number(deps.probeAckMs) : PROBE_ACK_MS;
     this._lotteryPerMin = deps.lotteryPerMin != null ? Number(deps.lotteryPerMin) : LOTTERY_PER_MIN;
     this._lottery = { owner: null, asks: [] };
+    this._listAskMs = deps.listAskMs != null ? Number(deps.listAskMs) : null; // null = LIST_ASK_MS (coordinator-search)
     this._findBudgetMs = deps.findBudgetMs != null ? Number(deps.findBudgetMs) : SEARCH_BUDGET_MS;
     this._stopped = false;
     this._roundRunning = false;

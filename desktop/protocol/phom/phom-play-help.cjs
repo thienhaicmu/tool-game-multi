@@ -3,9 +3,10 @@
 // ---------------------------------------------------------------------------
 // ĐÁNH BÀI help (pure) — what the tool shows next to the play buttons for ONE account.
 //
-// Knowledge boundary (user 2026-10-09, kept on purpose): ONLY that account's own hand + what everyone at the table
-// sees (discards, eats, laid phỏm, sent cards, public turn order). The hands of the tool's other accounts are NOT used
-// here — publicView() strips them before anything is computed — so a teammate is treated exactly like a stranger.
+// Knowledge (user 2026-10-10, as in Meta Game 70e6eb5): every hand the tool KNOWS (its accounts at the table) + what
+// everyone at the table sees (discards, eats, laid phỏm, sent cards, public turn order). A guest's hand stays unknown.
+// publicView() (that account alone) is kept for the press bookkeeping of Tự đánh (a teammate's frames must not reopen
+// an Ăn the game refused).
 //
 //   publicView(snap, uid)      the card snapshot as that account alone could know it
 //   bestArrangement(hand)      the phỏm split that leaves the fewest loose points (A = 1 … K = 13)
@@ -87,14 +88,23 @@ function bestArrangement(hand) {
   return all.sort((a, b) => (a.points - b.points) || (b.melds.length - a.melds.length))[0];
 }
 
-// ---- safety, from the public view only ----
+// ---- safety, from every known hand + the public cards ----
 function safetyOf(snap, uid) {
-  const a = new SafeCardAnalyzer().analyze({ snapshot: publicView(snap, uid), targetPlayerUid: uid });
+  const a = new SafeCardAnalyzer().analyze({ snapshot: snap, targetPlayerUid: uid });
   const tier = new Map();
+  const ways = new Map(); // how many ways a hidden hand could still eat it (0 = safe / likely safe)
   // the next player has played its 4 turns (this is the round's last discard): nobody can eat it any more
   const done = nextDone(snap, uid);
-  for (const c of (a.targetCards || [])) tier.set(c.code, done || c.classification === CLASS.SAFE ? TIER.SAFE : c.classification === CLASS.LIKELY_SAFE ? TIER.LIKELY : TIER.OTHER);
-  return { tier, nextPlayerLabel: a.nextPlayerLabel || null, status: a.status };
+  for (const c of (a.targetCards || [])) {
+    tier.set(c.code, done || c.classification === CLASS.SAFE ? TIER.SAFE : c.classification === CLASS.LIKELY_SAFE ? TIER.LIKELY : TIER.OTHER);
+    ways.set(c.code, done ? 0 : c.openWays || 0);
+  }
+  return { tier, ways, nextPlayerLabel: a.nextPlayerLabel || null, status: a.status };
+}
+// cards that can no longer come to this account: public (discarded / laid / eaten) or in another known hand
+function outFor(snap, uid) {
+  return new Set((Array.isArray(snap.ledger) ? snap.ledger : [])
+    .filter((e) => OUT.has(e.status) || (PRIVATE_STATUSES.has(e.status) && String(e.ownerUid) !== String(uid))).map((e) => e.code));
 }
 function nextDone(snap, uid) {
   const next = snap && snap.nextOf && snap.nextOf[String(uid)];
@@ -146,7 +156,7 @@ function caPartners(code, loose, ledgerOut) {
 // never offers it either. Then the user's order (2026-10-09):
 //   a turn before the last: không bị ăn (chắc chắn → có thể) → keep a live CẠ (a card in no cạ goes first) → points
 //   the LAST turn (hạ):     không bị ăn → points (no draw is left to complete a cạ)
-function rankDiscards(hand, tier, locked, { last = false, ledgerOut = new Set() } = {}) {
+function rankDiscards(hand, tier, locked, { last = false, ledgerOut = new Set(), ways = new Map() } = {}) {
   const best = bestArrangement(hand);
   const inMeld = new Set(best.melds.flat());
   const loose = best.loose;
@@ -155,17 +165,16 @@ function rankDiscards(hand, tier, locked, { last = false, ledgerOut = new Set() 
     const left = bestArrangement(rest).points;
     const t = tier.has(code) ? tier.get(code) : TIER.OTHER;
     const ca = inMeld.has(code) ? [] : caPartners(code, loose, ledgerOut);
-    return { ...view(code), tier: t, tierLabel: TIER_LABEL[t], pointsLeft: left, cardPoints: cardPoints(code), breaksPhom: inMeld.has(code), inCa: ca.length > 0, caWith: ca.map((d) => view(d).label) };
+    return { ...view(code), tier: t, tierLabel: TIER_LABEL[t], openWays: ways.get(code) || 0, pointsLeft: left, cardPoints: cardPoints(code), breaksPhom: inMeld.has(code), inCa: ca.length > 0, caWith: ca.map((d) => view(d).label) };
   }).sort((a, b) => (a.breaksPhom - b.breaksPhom) || (a.tier - b.tier) || (last ? 0 : (a.inCa - b.inCa)) || (a.pointsLeft - b.pointsLeft) || (b.cardPoints - a.cardPoints) || (a.code - b.code));
 }
 
 function discardRanking(snap, uid) {
   const hand = handOf(snap, uid);
   if (!hand || !hand.length) return { ok: false, ranking: [], points: null };
-  const { tier, nextPlayerLabel } = safetyOf(snap, uid);
+  const { tier, ways, nextPlayerLabel } = safetyOf(snap, uid);
   const turn = turnInfo(snap, uid);
-  const ledgerOut = new Set((Array.isArray(snap.ledger) ? snap.ledger : []).filter((e) => OUT.has(e.status)).map((e) => e.code));
-  const ranking = rankDiscards(hand, tier, eatenBy(snap, uid), { last: turn.last, ledgerOut });
+  const ranking = rankDiscards(hand, tier, eatenBy(snap, uid), { last: turn.last, ledgerOut: outFor(snap, uid), ways });
   return { ok: true, ranking, recommended: ranking[0] || null, points: bestArrangement(hand).points, nextPlayerLabel, turn };
 }
 
@@ -305,5 +314,26 @@ function playHelp(snap, uid) {
   return { ranking: d.ranking, recommended: d.recommended || null, points: d.points, nextPlayerLabel: d.nextPlayerLabel || null, turn: d.turn || null, ha: haPlan(snap, uid), take: takeInfo(snap, uid), send: sendTargets(snap, uid) };
 }
 
+// The snapshot with THIS account's hand replaced by `hand` (Tự đánh: the game's own hand when the frames missed
+// something, or the tool's hand minus cards the game refused). Laid / public cards never count as held; the ledger
+// follows the hand. (Meta Game knowledge.withHand, 2026-10-11.)
+function withHand(snap, uid, hand) {
+  if (!snap || !snap.players) return snap;
+  const me = String(uid);
+  const p = snap.players[me] || { uid: me, currentCards: [], melds: [], discardedHistory: [], drawnHistory: [], sentCards: [], controlled: true };
+  const laid = (p.melds || []).flatMap((m) => m.cards || []);
+  const laidSet = new Set(laid);
+  const ledger0 = Array.isArray(snap.ledger) ? snap.ledger : [];
+  const shown = new Set(ledger0.filter((e) => !PRIVATE_STATUSES.has(e.status)).map((e) => e.code));
+  const cards = [...new Set(hand || [])].filter((c) => isValidCardCode(c) && !laidSet.has(c) && !shown.has(c));
+  const held = new Set(cards);
+  const ledger = ledger0.filter((e) => !(PRIVATE_STATUSES.has(e.status) && String(e.ownerUid) === me && !held.has(e.code)));
+  const listed = new Set(ledger.map((e) => e.code));
+  for (const c of cards) if (!listed.has(c)) ledger.push({ code: c, status: 'CURRENT', ownerUid: me, source: 'GAME' });
+  const all = cards.concat(laid);
+  return { ...snap, ledger, players: { ...snap.players, [me]: { ...p, currentCards: all, currentCardsView: all.map(view), currentCardsCount: all.length, controlled: true } } };
+}
+
 module.exports = {
-  checkPlay, playHelp, turnInfo, nextDone, caPartners, sendChain, laidOnTable, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, finishPlan, takeInfo, sendTargets, prevOf, handOf, eatenBy };
+  checkPlay, playHelp, turnInfo, nextDone, caPartners, sendChain, laidOnTable, TIER, TIER_LABEL, publicView, allMelds, arrangements, bestArrangement, discardRanking, haPlan, finishPlan, takeInfo, sendTargets, prevOf, handOf, eatenBy,
+  outFor, withHand };

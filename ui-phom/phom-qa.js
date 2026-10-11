@@ -791,7 +791,7 @@
       return el('label', { class: 'check auto-strategy-item', for: id, title: tip }, box, label);
     };
     return el('span', { class: 'auto-strategy', role: 'group', 'aria-label': 'Kịch bản Tự đánh' },
-      item('lowMoney', 'Nuôi ít tiền', 'Tự đánh lá cho acc kế tiếp ăn khi acc đó đang ít tiền nhất (acc trong tool); áp dụng chung cho các acc Tự đánh'),
+      item('lowMoney', 'Nuôi ít tiền', 'Tự đánh lá cho acc kế tiếp ăn khi acc đó đang ít tiền nhất (acc trong tool); áp dụng chung cho các acc Tự đánh. Khi TỰ ĐÁNH chạy: 8 giây không có khách vào bàn ⇒ 3 acc sẵn sàng và đánh luôn (acc 3 bị kick thì vào lại, sẵn sàng, bắt đầu ngay). Không tích ⇒ chờ khách lạ, 20 phút không có thì đổi bàn'),
       item('twoPhomCaU', 'Ưu tiên 2 phỏm + cạ ù', 'Ưu tiên cạ ù hợp lệ của acc trong tool ngồi kế tiếp; áp dụng chung cho các acc Tự đánh'),
       el('span', { class: 'auto-strategy-item', title: 'Luôn chặn cho acc trong tool ăn lần 3, không ngoại lệ cạ ù; người ngoài dùng rule bình thường' }, 'Chặn ăn lần 3 · luôn bật'));
   }

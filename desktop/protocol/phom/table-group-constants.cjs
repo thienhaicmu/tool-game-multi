@@ -18,8 +18,11 @@ const SEAT_FREE_MAX_PER_MIN = 3;      // B2 — back to a free seat
 const SEAT_FREE_BACKOFF_MS = 30000;   // after a refused B2 join
 const REGROUP_MAX = 3;                // B4 — TỰ ĐỘNG re-forms the group …
 const REGROUP_WINDOW_MS = 5 * 60000;  // … per 5 minutes, then TỰ ĐỘNG switches off
+// VÒNG + Nuôi ít tiền (user 2026-10-11, Meta Game 7ec0de4): no guest sat down at the group's table for this long → our
+// three play (table-group-full-table.cjs _ownRound)
+const OWN_ROUND_WAIT_MS = 8000;
 // what an account is busy with, in the words of a "đợi xong" refusal
 const ACT_WORD = Object.freeze({ FIND: 'Dò Key', SCAN: 'Tạo (dò bàn KEY)', JOIN: 'vào bàn', REJOIN: 'vào lại bàn', LEAVE: 'rời bàn' });
 const CANCELLED = Object.freeze({ ok: false, cancelled: true, error: { code: 'PHOM_OPERATION_CANCELLED', message: 'Đã hủy' } });
 
-module.exports = { ROLE, PACE_MIN_MS, PACE_MAX_MS, REJOIN_DELAY_MS, REPLACE_POLL_MS, REPLACE_WAIT_MS, RESET_MAX_PER_MIN, SEAT_FREE_MAX_PER_MIN, SEAT_FREE_BACKOFF_MS, REGROUP_MAX, REGROUP_WINDOW_MS, ACT_WORD, CANCELLED };
+module.exports = { ROLE, PACE_MIN_MS, PACE_MAX_MS, REJOIN_DELAY_MS, REPLACE_POLL_MS, REPLACE_WAIT_MS, RESET_MAX_PER_MIN, SEAT_FREE_MAX_PER_MIN, SEAT_FREE_BACKOFF_MS, REGROUP_MAX, REGROUP_WINDOW_MS, OWN_ROUND_WAIT_MS, ACT_WORD, CANCELLED };

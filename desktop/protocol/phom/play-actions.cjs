@@ -70,8 +70,10 @@ function buildPlayActionScript({ action, cards = [] }) {
 })()`;
 }
 
-// Which of the buttons above the game is offering right now (shown + interactable) → { ok, atTable, offered: ['BOC', …] }.
-// Read-only — TỰ ĐÁNH asks this before choosing a step. Never throws.
+// Which of the buttons above the game is offering right now (shown + interactable), and the hand the game itself holds
+// (the same getListCardID the presses pick from; null when unreadable) → { ok, atTable, offered: ['BOC', …], hand }.
+// Read-only — TỰ ĐÁNH asks this before choosing a step, and falls back to the game's hand when the frames missed
+// something (Meta Game ede6239). Never throws.
 function buildOfferedScript() {
   const B = JSON.stringify(Object.fromEntries(Object.entries(ACTIONS).map(([k, v]) => [k, v.btn])));
   return `(() => {
@@ -87,7 +89,13 @@ function buildOfferedScript() {
       const button = node && node.getComponent && cc.Button ? node.getComponent(cc.Button) : null;
       if (node && node.activeInHierarchy && !(button && button.interactable === false)) offered.push(k);
     }
-    return { ok: true, atTable: true, offered };
+    let hand = null;
+    try {
+      const set = c.myCardSet;
+      const ids = set && set.getListCardID ? set.getListCardID() : null;
+      if (ids && typeof ids.length === 'number') hand = Array.from(ids, Number).filter((x) => Number.isInteger(x) && x >= 0 && x < 52);
+    } catch (e) { hand = null; }
+    return { ok: true, atTable: true, offered, hand };
   } catch (e) { return { ok: false, code: 'PHOM_PLAY_PAGE_ERROR', message: String((e && e.message) || e).slice(0, 200) }; }
 })()`;
 }
