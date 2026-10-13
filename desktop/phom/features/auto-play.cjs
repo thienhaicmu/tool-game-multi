@@ -6,8 +6,10 @@
 // Every tick, for each account switched on: read which buttons the game offers (read-only page script), choose the
 // step (protocol/phom/phom-auto-play.cjs nextStep) and press it
 // through the play-actions feature — the same path as a click on the tool's button (precheck, one action at a time).
-// A step is pressed only after it stayed the same for a human pause (settleMs + a random 0…jitterMs: 0.8–2.5 s, the
-// table rhythm of docs/phom-kich-ban.md §0 — the card snapshot also catches up with the buttons meanwhile). The chosen
+// A step is pressed only after it stayed the same for a HUMAN PAUSE that depends on the button (user 2026-10-13):
+// Bốc 0.5–1.2 s · Ăn 0.8–2 s · Đánh 1.5–4 s · Hạ 2–5 s · Gửi 1–2.5 s · Ù 0.5–1.5 s, drawn like a person's reaction time
+// (humanPause: most presses in the lower middle, a long right tail, now and then a long think near the top) — the card
+// snapshot also catches up with the buttons meanwhile. The chosen
 // step is kept per state, so an unchanged table is not re-computed every tick. A press stays in flight until THIS
 // account's own history shows it (drawn / ate / discarded / laid / sent, or the round moved on). Every account ticks
 // on its OWN clock and every page call is bounded (evalTimeoutMs), so one slow browser never holds another's turn.
@@ -56,8 +58,30 @@ const NOT_LICENSED = { code: 'PHOM_AUTO_PLAY_NOT_LICENSED', message: 'Key này c
 
 const LOOP_BACKOFF_MS = Object.freeze([3000, 10000, 30000, 60000]);
 
+// HUMAN PAUSE per button, [min, max] ms (user 2026-10-13: Bốc 0.5–1.2 s, Đánh 1.5–4 s, Hạ 2–5 s; the other three by the
+// same idea — Ăn is a decision, Gửi follows a Hạ, Ù is pressed as soon as it is seen). DEFAULT: any other step.
+const PAUSE_MS = Object.freeze({
+  BOC: [500, 1200], AN: [800, 2000], DANH: [1500, 4000], HA: [2000, 5000], GUI: [1000, 2500], BAO_U: [500, 1500], DEFAULT: [800, 2500],
+});
+const LONG_THINK = 0.08; // how often a person stops to think: the pause lands in the top 30 % of the range
+
+// A person's reaction time inside [min, max]: right-skewed (a bell around 35 % of the range + an exponential tail),
+// sometimes a long think (70–100 %). Never outside the range. Pure: `random` is injected.
+function humanPause(action, random = Math.random, ranges = PAUSE_MS) {
+  const [min, max] = ranges[action] || ranges.DEFAULT || PAUSE_MS.DEFAULT;
+  if (!(max > min)) return Math.max(0, Math.round(min));
+  let x;
+  if (random() < LONG_THINK) x = 0.7 + 0.3 * random();
+  else {
+    const bell = (random() + random() + random()) / 3;          // ~ normal, mean 0.5, sd 0.17
+    const tail = -Math.log(1 - Math.min(random(), 0.999999)) * 0.12; // exponential, mean 0.12
+    x = 0.35 + (bell - 0.5) * 0.9 + tail;
+  }
+  return Math.round(min + Math.min(1, Math.max(0, x)) * (max - min));
+}
+
 function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () => [], autoOptions = () => ({}), licensed = () => true, unlimited = () => false, log = () => {}, refresh = () => {}, now = Date.now,
-  setTimer = setTimeout, clearTimer = clearTimeout, tickMs = 600, settleMs = 800, jitterMs = 1700, random = Math.random, stallMs = 6000, refuseMs = 2500, waitStallMs = 12000, fallbackMs = 4000,
+  setTimer = setTimeout, clearTimer = clearTimeout, tickMs = 600, pauseMs = PAUSE_MS, random = Math.random, stallMs = 6000, refuseMs = 2500, waitStallMs = 12000, fallbackMs = 4000,
   turnForceMs = 12000, hurryMs = 10000, hurryPauseMs = 300, turnGapMs = 3000, pressRetries = 3, evalTimeoutMs = 5000,
   resumeLimit = 3, resumeWindowMs = 10 * 60 * 1000, resumeWaitMs = 2 * 60 * 1000, resumeDelayMs = 3000 }) {
   // rid → { on, armed, message, pending, lastPress, waitSince, avoid, avoidAt, busy, timer, step, fails, distrust, turnSince, … }
@@ -80,7 +104,7 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
   }
   const schedule = () => { for (const [rid, s] of runs) scheduleOne(rid, s); };
   function setMessage(s, m) { if (s.message !== m) { s.message = m; refresh(); } }
-  const pause = () => settleMs + Math.floor(random() * Math.max(0, jitterMs));
+  const pause = (action) => humanPause(action, random, pauseMs);
 
   // a new run: earlier probes, refused steps, the press in flight and the turn's clock are forgotten
   function begin(s, message) {
@@ -247,16 +271,18 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
     const key = autoPlay.stepKey(step);
     // the pause starts again when the step or this account's own picture changed — a teammate's hand or a balance does not
     if (!s.pending || s.pending.key !== key || s.pending.state !== refusalState) {
-      s.pending = { key, state: refusalState, at: t, wait: elapsed >= hurryMs ? Math.min(pause(), hurryPauseMs) : pause() };
+      const human = pause(step.action);
+      s.pending = { key, state: refusalState, at: t, wait: elapsed >= hurryMs ? Math.min(human, hurryPauseMs) : human };
       return setMessage(s, 'Sắp: ' + step.why);
     }
     if (t - s.pending.at < s.pending.wait) return;
+    const pausedMs = s.pending.wait; // the human pause drawn for this press (the log shows the rhythm)
     s.pending = null;
     // who sits next (one of ours or a GUEST) and what the guard blocked: every eat can be traced back to its discard
     const next = snap.nextOf && snap.nextOf[String(uid)] != null ? String(snap.nextOf[String(uid)]) : null;
     const guard = step.action === 'DANH' ? autoPlay.guardDiscards(snap, uid, members) : null;
     log('auto-play-decision', { runId: rid, uid: String(uid), snapshot: snap, offered, avoid: [...s.avoid], toolUids: members, options, step,
-      next, nextOurs: next != null ? members.map(String).includes(next) : null, turnMs: elapsed,
+      next, nextOurs: next != null ? members.map(String).includes(next) : null, turnMs: elapsed, pauseMs: pausedMs,
       guard: guard && guard.kind ? { kind: guard.kind, blocked: guard.blocked.size } : null, ...(snap !== raw ? { hand: view.source } : {}),
       ...(step.fallback ? { fallback: true, waited: step.waited } : {}) });
     const press = { key, action: step.action, cards: step.cards, why: step.why, ...counts(raw, uid) };
@@ -324,4 +350,4 @@ function createAutoPlayFeature({ act, clientFor, snapshot, uidOf, toolUids = () 
   };
 }
 
-module.exports = { createAutoPlayFeature };
+module.exports = { createAutoPlayFeature, humanPause, PAUSE_MS, LONG_THINK };

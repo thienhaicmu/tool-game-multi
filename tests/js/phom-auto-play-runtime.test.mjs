@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
-const { createAutoPlayFeature } = require('../../desktop/phom/features/auto-play.cjs');
+const { createAutoPlayFeature, humanPause, PAUSE_MS } = require('../../desktop/phom/features/auto-play.cjs');
 import { replay } from '../../tools/phom-auto-play-replay.mjs';
 
 const { decodeCard } = require('../../desktop/protocol/phom/card-codec.cjs');
@@ -23,7 +23,7 @@ function fixture({ probeFor = null, actFor = null, offered = ['DANH'], ...extra 
     act: async (rid, input, view) => { calls.push({ rid, ...input, view }); return actFor ? actFor(input, calls.length) : { ok: true }; },
     log: (ev, d) => logs.push({ ev, ...d }),
     now: () => time, setTimer: (fn) => { timers.set(++timerId, fn); return timerId; }, clearTimer: (id) => timers.delete(id),
-    settleMs: 10, jitterMs: 0, stallMs: 100, refuseMs: 100, ...extra });
+    pauseMs: { DEFAULT: [10, 10] }, stallMs: 100, refuseMs: 100, ...extra });
   return { feature, snap, calls, logs, timers, time: (t) => { time = t; } };
 }
 // tick at each time in turn
@@ -114,7 +114,7 @@ test('"not in the hand" from the game → its own hand is used and the turn goes
 });
 
 test('HẠN LƯỢT: once the turn is turnForceMs old a wait becomes the step the buttons allow; from hurryMs the pause is short', async () => {
-  const f = fixture({ settleMs: 800, fallbackMs: 1e9, waitStallMs: 1e9, turnForceMs: 1100, hurryMs: 1000, hurryPauseMs: 50 });
+  const f = fixture({ pauseMs: { DEFAULT: [800, 800] }, fallbackMs: 1e9, waitStallMs: 1e9, turnForceMs: 1100, hurryMs: 1000, hurryPauseMs: 50 });
   const meld = ['5♥', '6♥', '7♥'].map(cardOf);
   f.snap.players.me.currentCards = [cardOf('8♥'), cardOf('K♣'), ...meld];
   f.snap.players.me.melds = [{ meid: 1, cards: meld }];
@@ -184,14 +184,33 @@ test('a busy browser does not prevent ticks for another account', async () => {
   await first; feature.stopAll();
 });
 
-test('R1: each press waits a human pause of settleMs + random·jitterMs (0.8–2.5 s by default)', async () => {
-  const f = fixture({ settleMs: 800, jitterMs: 1700, random: () => 0.5 }); // 800 + 850
+test('R1: each press waits a human pause by its button (user 2026-10-13): Đánh 1.5–4 s — random 0.5 → 2583 ms, logged', async () => {
+  const f = fixture({ pauseMs: PAUSE_MS, random: () => 0.5 }); // x = 0.35 + 0 + (−ln 0.5)·0.12 = 0.4332 → 1500 + 0.4332·2500
   f.feature.start('r');
   await f.feature.tick();
-  f.time(1600); await f.feature.tick();
+  f.time(2580); await f.feature.tick();
   assert.equal(f.calls.length, 0);
-  f.time(1700); await f.feature.tick();
+  f.time(2590); await f.feature.tick();
   assert.equal(f.calls.length, 1);
+  assert.equal(f.logs.find((l) => l.ev === 'auto-play-decision').pauseMs, 2583);
+});
+
+test('R1: the human pause per button — the user\'s ranges, right-skewed, sometimes a long think, never outside the range', () => {
+  assert.deepEqual([PAUSE_MS.BOC, PAUSE_MS.DANH, PAUSE_MS.HA], [[500, 1200], [1500, 4000], [2000, 5000]]);
+  let seed = 12345;
+  const rnd = () => { seed = (seed * 1103515245 + 12345) % 2147483648; return seed / 2147483648; }; // deterministic
+  for (const action of ['BOC', 'AN', 'DANH', 'HA', 'GUI', 'BAO_U']) {
+    const [min, max] = PAUSE_MS[action];
+    const xs = Array.from({ length: 4000 }, () => humanPause(action, rnd)).sort((a, b) => a - b);
+    assert.ok(xs[0] >= min && xs[xs.length - 1] <= max, `${action} stays in ${min}–${max}`);
+    const at = (q) => (xs[Math.floor(q * xs.length)] - min) / (max - min);
+    assert.ok(at(0.5) > 0.3 && at(0.5) < 0.5, `${action}: the median sits in the lower middle (${at(0.5).toFixed(2)})`);
+    assert.ok(at(0.97) > 0.75, `${action}: a long right tail / long thinks reach the top (${at(0.97).toFixed(2)})`);
+    assert.ok(at(0.02) < 0.2, `${action}: some quick presses too (${at(0.02).toFixed(2)})`);
+  }
+  // Bốc is always quicker than the slowest Đánh, Hạ the slowest kind
+  assert.ok(humanPause('BOC', () => 0.999) < humanPause('DANH', () => 0.001));
+  assert.equal(humanPause('XYZ', () => 0.5, { DEFAULT: [10, 10] }), 10, 'a fixed range is that value');
 });
 
 test('R3: a recoverable stop resumes once back at the table; the user switching off cancels it', async () => {
